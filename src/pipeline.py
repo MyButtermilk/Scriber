@@ -8,7 +8,7 @@ import os
 import time
 import inspect
 import re
-from typing import Any, Callable, Optional
+from typing import Any, BinaryIO, Callable, Optional
 
 from loguru import logger
 
@@ -36,7 +36,10 @@ from pipecat.utils.time import time_now_iso8601
 
 from src.runtime.media_tools import find_media_tool
 from src.runtime.provider_dependencies import import_provider_runtime_module
-from src.runtime.subprocess_utils import hidden_subprocess_kwargs
+from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
+from src.runtime.http_response import read_response_json_limited, read_response_text_limited
+from src.runtime.audio_spool import pcm_stream_to_wav
+from src.runtime.env_values import env_float as _safe_env_float
 
 try:
     from pipecat.audio.streams.input import SoundDeviceAudioInputStream
@@ -163,15 +166,7 @@ def _create_vad_analyzer(*, quiet_mic: bool = False):
 
 
 def _env_float(name: str, default: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
-    try:
-        value = float(os.getenv(name, str(default)) or default)
-    except Exception:
-        value = default
-    if minimum is not None:
-        value = max(minimum, value)
-    if maximum is not None:
-        value = min(maximum, value)
-    return value
+    return _safe_env_float(name, default, minimum=minimum, maximum=maximum)
 
 
 def _redact_provider_error_text(message: str) -> str:
@@ -341,33 +336,32 @@ class SonioxAsyncProcessor(FrameProcessor):
             self._buffer_size += len(frame.audio)
             await self.push_frame(frame, direction)
         elif isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
-            if getattr(self, "_skip_terminal_transcription", False):
-                logger.info("Soniox async: skipping terminal transcription for silent recording")
-                self._reset_buffer()
-                await self.push_frame(frame, direction)
-                return
-            if not self._buffer_size:
-                logger.debug("Soniox async: no audio buffered; skipping transcription")
-                await self.push_frame(frame, direction)
-                return
             try:
-                self._buffer.seek(0)
-                audio_bytes = self._buffer.read()
-                text = await self._transcribe_async(audio_bytes)
-                await self.push_frame(
-                    TranscriptionFrame(
-                        text=text,
-                        user_id="user",
-                        timestamp=time_now_iso8601(),
-                        result=None,
-                    ),
-                    direction,
-                )
+                if getattr(self, "_skip_terminal_transcription", False):
+                    logger.info("Soniox async: skipping terminal transcription for silent recording")
+                elif not self._buffer_size:
+                    logger.debug("Soniox async: no audio buffered; skipping transcription")
+                else:
+                    self._buffer.seek(0)
+                    text = await self._transcribe_async(
+                        audio_stream=self._buffer,
+                        audio_size=self._buffer_size,
+                    )
+                    await self.push_frame(
+                        TranscriptionFrame(
+                            text=text,
+                            user_id="user",
+                            timestamp=time_now_iso8601(),
+                            result=None,
+                        ),
+                        direction,
+                    )
             except Exception as e:
                 logger.error(f"Soniox async transcription failed: {e}")
                 await self.push_frame(ErrorFrame(error=f"soniox async error: {e}"), direction)
+            finally:
+                self._reset_buffer()
             await self.push_frame(frame, direction)
-            self._reset_buffer()
         else:
             await self.push_frame(frame, direction)
 
@@ -379,11 +373,18 @@ class SonioxAsyncProcessor(FrameProcessor):
             except Exception:
                 pass
 
-    async def _transcribe_async(self, audio_bytes: bytes) -> str:
+    async def _transcribe_async(
+        self,
+        audio_bytes: bytes | None = None,
+        *,
+        audio_stream: BinaryIO | None = None,
+        audio_size: int | None = None,
+    ) -> str:
         """
         Upload audio to Soniox async API as WebM/Opus, with a local WAV encoding fallback.
         """
-        if not audio_bytes:
+        raw_audio_size = len(audio_bytes) if audio_bytes is not None else int(audio_size or 0)
+        if raw_audio_size <= 0:
             return ""
         headers = {"Authorization": f"Bearer {self.api_key}"}
         done_statuses = {"completed", "done", "succeeded", "success"}
@@ -392,22 +393,33 @@ class SonioxAsyncProcessor(FrameProcessor):
         # Heuristic: allow at least 60s, or up to ~3x audio duration (min 2m, max 10m)
         sr = self._sample_rate or 16000
         ch = self._channels or 1
-        audio_secs = len(audio_bytes) / max(1, (sr * ch * 2))
+        audio_secs = raw_audio_size / max(1, (sr * ch * 2))
         poll_timeout = min(600.0, max(120.0, max(60.0, audio_secs * 3.0)))
 
         self._report_progress("Uploading audio...")
 
-        file_bytes, content_type, filename = await self._encode_audio(
-            audio_bytes,
-            prefer_webm=True,
-        )
+        cleanup_paths: tuple[str, ...] = ()
+        encoded_stream: BinaryIO | None = None
+        if audio_stream is not None:
+            encoded_stream, content_type, filename, cleanup_paths = await self._encode_audio_stream(
+                audio_stream,
+                prefer_webm=True,
+            )
+            file_content: bytes | BinaryIO = encoded_stream
+            encoded_size = self._stream_size(encoded_stream)
+        else:
+            file_content, content_type, filename = await self._encode_audio(
+                audio_bytes or b"",
+                prefer_webm=True,
+            )
+            encoded_size = len(file_content)
         if Config.DEBUG:
             logger.info(
-                f"Soniox async upload using {filename} ({len(file_bytes)} bytes)"
+                f"Soniox async upload using {filename} ({encoded_size} bytes)"
             )
 
         async def upload_file(
-            content: bytes,
+            content: bytes | BinaryIO,
             *,
             upload_content_type: str,
             upload_filename: str,
@@ -426,16 +438,16 @@ class SonioxAsyncProcessor(FrameProcessor):
                 timeout=aiohttp.ClientTimeout(total=120),
             ) as response:
                 if response.status in (200, 201):
-                    payload = await response.json()
+                    payload = await read_response_json_limited(response, 64 * 1024 * 1024)
                     uploaded_file_id = str(payload.get("id") or "").strip()
                     if not uploaded_file_id:
                         raise RuntimeError("Soniox file upload response did not include an id")
                     return uploaded_file_id
 
-                error_body = await response.text()
+                error_body = await read_response_text_limited(response, 64 * 1024 * 1024)
                 logger.error(
                     "Soniox file upload failed: "
-                    f"status={response.status}, body={error_body}"
+                    f"status={response.status}, body={error_body[:500]}"
                 )
                 response.raise_for_status()
                 raise RuntimeError(f"Soniox file upload failed ({response.status})")
@@ -444,7 +456,7 @@ class SonioxAsyncProcessor(FrameProcessor):
         transcription_id: str | None = None
         try:
             file_id = await upload_file(
-                file_bytes,
+                file_content,
                 upload_content_type=content_type,
                 upload_filename=filename,
             )
@@ -468,7 +480,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                 timeout=aiohttp.ClientTimeout(total=60),
             ) as resp2:
                 resp2.raise_for_status()
-                transcription_id = (await resp2.json())["id"]
+                transcription_id = (await read_response_json_limited(resp2, 64 * 1024 * 1024))["id"]
 
                 # Poll status with exponential backoff
                 self._report_progress("Processing transcription...")
@@ -487,7 +499,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                         timeout=aiohttp.ClientTimeout(total=15),
                     ) as r:
                         r.raise_for_status()
-                        status_payload = await r.json()
+                        status_payload = await read_response_json_limited(r, 64 * 1024 * 1024)
                         status = (status_payload.get("status") or "").lower()
                         if status in done_statuses:
                             break
@@ -531,7 +543,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                 timeout=aiohttp.ClientTimeout(total=60),
             ) as r3:
                 r3.raise_for_status()
-                transcript_payload = await r3.json()
+                transcript_payload = await read_response_json_limited(r3, 64 * 1024 * 1024)
                 tokens = transcript_payload.get("tokens")
                 token_list = tokens if isinstance(tokens, list) else []
                 text = ""
@@ -563,6 +575,120 @@ class SonioxAsyncProcessor(FrameProcessor):
             except Exception:
                 pass
             raise
+        finally:
+            if encoded_stream is not None:
+                try:
+                    encoded_stream.close()
+                except Exception:
+                    pass
+            for cleanup_path in cleanup_paths:
+                try:
+                    os.unlink(cleanup_path)
+                except FileNotFoundError:
+                    pass
+                except Exception as exc:
+                    logger.debug(f"Could not remove Soniox temporary audio file: {exc}")
+
+    @staticmethod
+    def _stream_size(stream: BinaryIO) -> int:
+        current = stream.tell()
+        stream.seek(0, os.SEEK_END)
+        size = stream.tell()
+        stream.seek(current)
+        return max(0, int(size))
+
+    async def _encode_audio_stream(
+        self,
+        audio_stream: BinaryIO,
+        *,
+        prefer_webm: bool = True,
+    ) -> tuple[BinaryIO, str, str, tuple[str, ...]]:
+        """Encode spooled PCM without materializing the recording as one bytes object."""
+        sr = self._sample_rate or 16000
+        ch = self._channels or 1
+        ffmpeg = find_media_tool("ffmpeg") if prefer_webm else None
+        if ffmpeg:
+            output = tempfile.NamedTemporaryFile(suffix=".webm", delete=False)
+            output_path = output.name
+            output.close()
+            proc = None
+            feed_task: asyncio.Task | None = None
+            try:
+                cmd = [
+                    ffmpeg,
+                    "-y",
+                    "-f",
+                    "s16le",
+                    "-ar",
+                    str(sr),
+                    "-ac",
+                    str(ch),
+                    "-i",
+                    "pipe:0",
+                    "-c:a",
+                    "libopus",
+                    "-ar",
+                    "48000",
+                    "-ac",
+                    "1",
+                    "-b:a",
+                    "32k",
+                    "-application",
+                    "voip",
+                    output_path,
+                ]
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    **hidden_subprocess_kwargs(),
+                )
+
+                async def _feed_pcm() -> None:
+                    assert proc is not None and proc.stdin is not None
+                    audio_stream.seek(0)
+                    try:
+                        while chunk := audio_stream.read(1024 * 1024):
+                            proc.stdin.write(chunk)
+                            await proc.stdin.drain()
+                    finally:
+                        proc.stdin.close()
+
+                feed_task = asyncio.create_task(_feed_pcm(), name="soniox_ffmpeg_pcm_feed")
+                _stdout, stderr = await communicate_or_kill_on_cancel(
+                    proc,
+                    max_stdout_bytes=64 * 1024,
+                    max_stderr_bytes=1024 * 1024,
+                )
+                await feed_task
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        f"FFmpeg encoding failed: {stderr.decode('utf-8', errors='replace')}"
+                    )
+                encoded = open(output_path, "rb")
+                return encoded, "audio/webm", "audio.webm", (output_path,)
+            except asyncio.CancelledError:
+                if feed_task is not None and not feed_task.done():
+                    feed_task.cancel()
+                    await asyncio.gather(feed_task, return_exceptions=True)
+                try:
+                    os.unlink(output_path)
+                except OSError:
+                    pass
+                raise
+            except Exception as exc:
+                if feed_task is not None and not feed_task.done():
+                    feed_task.cancel()
+                    await asyncio.gather(feed_task, return_exceptions=True)
+                try:
+                    os.unlink(output_path)
+                except OSError:
+                    pass
+                logger.warning(f"WebM stream encode failed ({exc}); falling back to WAV")
+
+        wav_stream = await asyncio.to_thread(pcm_stream_to_wav, audio_stream, sr, ch)
+        return wav_stream, "audio/wav", "audio.wav", ()
 
     async def _encode_audio(self, audio_bytes: bytes, prefer_webm: bool = True):
         """
@@ -620,7 +746,11 @@ class SonioxAsyncProcessor(FrameProcessor):
                     **hidden_subprocess_kwargs(),
                 )
 
-                _, stderr = await proc.communicate()
+                _, stderr = await communicate_or_kill_on_cancel(
+                    proc,
+                    max_stdout_bytes=64 * 1024,
+                    max_stderr_bytes=1024 * 1024,
+                )
 
                 if proc.returncode != 0:
                     raise RuntimeError(f"FFmpeg encoding failed: {stderr.decode()}")
@@ -698,6 +828,7 @@ from src.audio_devices import (
     normalize_device_name,
     resolve_input_microphone_device,
 )
+from src.device_monitor import get_device_guard_lock
 from src.injector import TextInjector
 from src.microphone import MicrophoneInput
 from src.audio_file_input import FfmpegAudioFileInput
@@ -856,10 +987,12 @@ def invalidate_mic_device_resolution_cache() -> None:
 
 
 def _mic_device_resolution_cache_ttl() -> float:
-    try:
-        return max(0.0, float(os.getenv("SCRIBER_MIC_DEVICE_CACHE_TTL_SEC", "10.0") or 10.0))
-    except Exception:
-        return 10.0
+    return _env_float(
+        "SCRIBER_MIC_DEVICE_CACHE_TTL_SEC",
+        10.0,
+        minimum=0.0,
+        maximum=3600.0,
+    )
 
 
 def _mic_device_cache_key(sd_module, device_name: str, sample_rate: int, channels: int) -> tuple[int, str, str, int, int]:
@@ -922,8 +1055,8 @@ def _resolve_mic_device(device_name: str) -> str:
     def remember(resolved: str) -> str:
         _set_cached_mic_resolution(cache_key, resolved)
         return resolved
-    return remember(
-        resolve_input_microphone_device(
+    with get_device_guard_lock():
+        resolved = resolve_input_microphone_device(
             sd,
             device_name=device_name,
             favorite_name=getattr(Config, "FAVORITE_MIC", "") or "",
@@ -931,7 +1064,7 @@ def _resolve_mic_device(device_name: str) -> str:
             channels=requested_channels,
             logger=logger,
         )
-    )
+    return remember(resolved)
 
 
 class ConnectionErrorHandlerProcessor(FrameProcessor):
@@ -2182,12 +2315,42 @@ class ScriberPipeline:
             await self._cleanup_audio_input()
             self._start_done.set()
 
+    async def _cleanup_aborted_file_pipeline(
+        self,
+        run_task: asyncio.Task | None,
+        file_input: FfmpegAudioFileInput | None,
+    ) -> None:
+        if self.task and not self.task.has_finished():
+            try:
+                await asyncio.wait_for(
+                    self.task.cancel(reason="file transcription aborted"),
+                    timeout=5.0,
+                )
+            except Exception as exc:
+                logger.debug(f"File pipeline task cancellation warning: {exc}")
+        if self.runner:
+            try:
+                await asyncio.wait_for(self.runner.cancel(), timeout=5.0)
+            except Exception as exc:
+                logger.debug(f"File pipeline runner cancellation warning: {exc}")
+        if run_task is not None and not run_task.done():
+            run_task.cancel()
+        if run_task is not None:
+            await asyncio.gather(run_task, return_exceptions=True)
+        if file_input is not None:
+            try:
+                await asyncio.wait_for(file_input.stop(EndFrame()), timeout=7.0)
+            except Exception as exc:
+                logger.debug(f"File input abort cleanup warning: {exc}")
+
     async def transcribe_file(self, file_path: str) -> None:
         if self.is_active:
             return
         logger.info(f"Transcribing audio file with {self.service_name}: {file_path}")
         self._start_done.clear()
         file_input: FfmpegAudioFileInput | None = None
+        run_task: asyncio.Task | None = None
+        pipeline_finished = False
         try:
             async with aiohttp.ClientSession() as session:
                 stt_service = self._create_stt_service(session, for_file=True)
@@ -2235,6 +2398,7 @@ class ScriberPipeline:
                 await self.task.stop_when_done()
 
                 await run_task
+                pipeline_finished = True
 
                 if file_input.error:
                     raise RuntimeError(file_input.error)
@@ -2252,6 +2416,8 @@ class ScriberPipeline:
                 self.on_status_change("Error")
             raise
         finally:
+            if not pipeline_finished:
+                await self._cleanup_aborted_file_pipeline(run_task, file_input)
             self.is_active = False
             self._start_done.set()
 
@@ -2670,7 +2836,7 @@ class ScriberPipeline:
                             timeout=aiohttp.ClientTimeout(total=300),  # 5 min for large files
                         ) as resp:
                             resp.raise_for_status()
-                            file_id = (await resp.json())["id"]
+                            file_id = (await read_response_json_limited(resp, 64 * 1024 * 1024))["id"]
 
                     # Start transcription with speaker diarization enabled for file/youtube
                     payload = {"file_id": file_id, "model": model}
@@ -2689,7 +2855,7 @@ class ScriberPipeline:
                         timeout=aiohttp.ClientTimeout(total=60),
                     ) as resp2:
                         resp2.raise_for_status()
-                        transcription_id = (await resp2.json())["id"]
+                        transcription_id = (await read_response_json_limited(resp2, 64 * 1024 * 1024))["id"]
 
                     # Poll for completion
                     if self.on_progress:
@@ -2712,7 +2878,7 @@ class ScriberPipeline:
                             timeout=aiohttp.ClientTimeout(total=15),
                         ) as r:
                             r.raise_for_status()
-                            status_payload = await r.json()
+                            status_payload = await read_response_json_limited(r, 64 * 1024 * 1024)
                             status = (status_payload.get("status") or "").lower()
 
                             if status in done_statuses:
@@ -2737,7 +2903,7 @@ class ScriberPipeline:
                         timeout=aiohttp.ClientTimeout(total=60),
                     ) as r3:
                         r3.raise_for_status()
-                        transcript_payload = await r3.json()
+                        transcript_payload = await read_response_json_limited(r3, 64 * 1024 * 1024)
 
                         # Parse speaker diarization if available
                         tokens = transcript_payload.get("tokens", [])

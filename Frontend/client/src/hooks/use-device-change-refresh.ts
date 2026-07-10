@@ -2,6 +2,7 @@ import { useEffect } from "react";
 
 import { apiUrl } from "@/lib/backend";
 import type { MicrophonesRefreshResponse } from "@/lib/api-types";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 
 export function useDeviceChangeRefresh(enabled: boolean): void {
   useEffect(() => {
@@ -20,10 +21,10 @@ export function useDeviceChangeRefresh(enabled: boolean): void {
         window.clearTimeout(refreshTimer);
       }
       refreshTimer = window.setTimeout(() => {
-        void fetch(apiUrl("/api/microphones/refresh"), {
+        void fetchWithTimeout(apiUrl("/api/microphones/refresh"), {
           method: "POST",
           credentials: "include",
-        }).then(async (res): Promise<MicrophonesRefreshResponse | null> => {
+        }, 8_000).then(async (res): Promise<MicrophonesRefreshResponse | null> => {
           if (!res.ok) {
             return null;
           }

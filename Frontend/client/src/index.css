@@ -3353,6 +3353,18 @@ html:has(body[data-scroll-locked]) {
   box-shadow: 0 0 14px rgba(0, 0, 0, 0.24);
 }
 
+@media (max-width: 767px) {
+  .delete-pill,
+  .copy-pill,
+  .delete-pill--sm,
+  .copy-pill--sm {
+    --action-size: 44px;
+    --action-icon-size: 16px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
 

@@ -339,6 +339,27 @@ async def test_list_microphones_dedupes_hostapi_variants(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+async def test_list_microphones_trusts_default_only_monitor_cache(monkeypatch: pytest.MonkeyPatch):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    try:
+        ctl._device_monitor_enabled = True
+        monkeypatch.setattr(
+            ctl._device_monitor,
+            "get_devices",
+            lambda: [{"deviceId": "default", "label": "Default"}],
+        )
+        monkeypatch.setattr(
+            "src.web_api.list_unique_input_microphones",
+            lambda *_args, **_kwargs: pytest.fail("cached monitor result must avoid PortAudio enumeration"),
+        )
+
+        assert ctl.list_microphones() == [{"deviceId": "default", "label": "Default"}]
+    finally:
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_list_microphones_prefers_wasapi_even_if_default_points_to_mme(monkeypatch: pytest.MonkeyPatch):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)

@@ -5,6 +5,7 @@ import {
   type FrontendReadyResponse,
 } from "@/lib/api-types";
 import { responseDetailMessage } from "@/lib/request-errors";
+import { fetchWithTimeout, withPromiseTimeout } from "@/lib/fetch-with-timeout";
 
 declare global {
   interface Window {
@@ -24,6 +25,9 @@ export let backendSessionToken =
 let backendSessionTokenRequired =
   (typeof window !== "undefined" ? window.__SCRIBER_BACKEND_SESSION_TOKEN_REQUIRED__ === true : false);
 let frontendReadyReportKey = "";
+let backendAccessLoadInFlight: Promise<string> | null = null;
+let backendAccessRetryAfterMs = 0;
+let desktopAutostartLoadInFlight: Promise<AutostartStatus> | null = null;
 export const BACKEND_SESSION_TOKEN_REQUIRED_EVENT = "scriber-backend-session-token-required-change";
 
 interface BackendAccess {
@@ -118,24 +122,52 @@ function appendSessionToken(url: string): string {
   return url;
 }
 
-export async function loadBackendBaseUrlFromTauri(): Promise<string> {
+export function loadBackendBaseUrlFromTauri(): Promise<string> {
   if (!isTauriRuntime()) {
-    return backendBaseUrl;
+    return Promise.resolve(backendBaseUrl);
   }
+  if (Date.now() < backendAccessRetryAfterMs) {
+    return Promise.resolve(backendBaseUrl);
+  }
+  if (backendAccessLoadInFlight) {
+    return backendAccessLoadInFlight;
+  }
+  const request = loadBackendAccessFromTauri().finally(() => {
+    if (backendAccessLoadInFlight === request) {
+      backendAccessLoadInFlight = null;
+    }
+  });
+  backendAccessLoadInFlight = request;
+  return request;
+}
+
+async function loadBackendAccessFromTauri(): Promise<string> {
+  let loaded = false;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const access = await invoke<BackendAccess>("get_backend_access");
+    const access = await withPromiseTimeout(
+      invoke<BackendAccess>("get_backend_access"),
+      2_000,
+      "Tauri backend access",
+    );
     setBackendBaseUrl(access.baseUrl);
     setBackendSessionToken(access.sessionToken);
+    loaded = true;
   } catch (error) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const baseUrl = await invoke<string>("get_backend_base_url");
+      const baseUrl = await withPromiseTimeout(
+        invoke<string>("get_backend_base_url"),
+        2_000,
+        "Tauri backend URL fallback",
+      );
       setBackendBaseUrl(baseUrl);
+      loaded = true;
     } catch {
       console.debug("Tauri backend URL lookup failed; using configured backend URL.", error);
     }
   }
+  backendAccessRetryAfterMs = loaded ? 0 : Date.now() + 60_000;
   return backendBaseUrl;
 }
 
@@ -186,11 +218,27 @@ export async function reportFrontendReady(options: { force?: boolean } = {}): Pr
 
 export async function getAutostartStatus(): Promise<AutostartStatus> {
   if (isTauriRuntime()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<AutostartStatus>("get_desktop_autostart");
+    if (!desktopAutostartLoadInFlight) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const request = invoke<AutostartStatus>("get_desktop_autostart");
+      desktopAutostartLoadInFlight = request;
+      request.then(
+        () => {
+          if (desktopAutostartLoadInFlight === request) desktopAutostartLoadInFlight = null;
+        },
+        () => {
+          if (desktopAutostartLoadInFlight === request) desktopAutostartLoadInFlight = null;
+        },
+      );
+    }
+    return withPromiseTimeout(desktopAutostartLoadInFlight, 5_000, "Autostart status lookup");
   }
 
-  const res = await fetch(apiUrl("/api/autostart"), { credentials: "include" });
+  const res = await fetchWithTimeout(
+    apiUrl("/api/autostart"),
+    { credentials: "include" },
+    5_000,
+  );
   if (!res.ok) {
     throw new Error(await responseMessage(res, "Failed to load autostart status"));
   }
@@ -200,15 +248,19 @@ export async function getAutostartStatus(): Promise<AutostartStatus> {
 export async function setAutostartEnabled(enabled: boolean): Promise<AutostartStatus> {
   if (isTauriRuntime()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<AutostartStatus>("set_desktop_autostart", { enabled });
+    return withPromiseTimeout(
+      invoke<AutostartStatus>("set_desktop_autostart", { enabled }),
+      5_000,
+      "Autostart update",
+    );
   }
 
-  const res = await fetch(apiUrl("/api/autostart"), {
+  const res = await fetchWithTimeout(apiUrl("/api/autostart"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
     credentials: "include",
-  });
+  }, 5_000);
   if (!res.ok) {
     throw new Error(await responseMessage(res, "Failed to update autostart"));
   }
@@ -220,7 +272,11 @@ export async function refreshGlobalHotkey(): Promise<DesktopHotkeyStatus | null>
     return null;
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<DesktopHotkeyStatus>("refresh_global_hotkey");
+  return withPromiseTimeout(
+    invoke<DesktopHotkeyStatus>("refresh_global_hotkey"),
+    10_000,
+    "Global hotkey refresh",
+  );
 }
 
 export async function setGlobalHotkeyCaptureActive(active: boolean): Promise<void> {
@@ -228,7 +284,11 @@ export async function setGlobalHotkeyCaptureActive(active: boolean): Promise<voi
     return;
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_global_hotkey_capture_active", { active });
+  await withPromiseTimeout(
+    invoke("set_global_hotkey_capture_active", { active }),
+    5_000,
+    "Global hotkey capture update",
+  );
 }
 
 export async function getGlobalHotkeyStatus(): Promise<DesktopHotkeyStatus | null> {
@@ -236,7 +296,11 @@ export async function getGlobalHotkeyStatus(): Promise<DesktopHotkeyStatus | nul
     return null;
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<DesktopHotkeyStatus>("global_hotkey_status");
+  return withPromiseTimeout(
+    invoke<DesktopHotkeyStatus>("global_hotkey_status"),
+    5_000,
+    "Global hotkey status",
+  );
 }
 
 export async function getTrayStatus(): Promise<TrayStatus | null> {
@@ -244,7 +308,7 @@ export async function getTrayStatus(): Promise<TrayStatus | null> {
     return null;
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<TrayStatus>("tray_status");
+  return withPromiseTimeout(invoke<TrayStatus>("tray_status"), 5_000, "Tray status");
 }
 
 export async function setTrayUpdateStatus(status: TrayUpdateStatusPayload): Promise<TrayStatus | null> {
@@ -252,7 +316,11 @@ export async function setTrayUpdateStatus(status: TrayUpdateStatusPayload): Prom
     return null;
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<TrayStatus>("set_tray_update_status", { status });
+  return withPromiseTimeout(
+    invoke<TrayStatus>("set_tray_update_status", { status }),
+    5_000,
+    "Tray update status",
+  );
 }
 
 export async function setTrayRecordingState(active: boolean, mode?: string): Promise<TrayStatus | null> {
@@ -260,7 +328,11 @@ export async function setTrayRecordingState(active: boolean, mode?: string): Pro
     return null;
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<TrayStatus>("set_tray_recording_state", { active, mode });
+  return withPromiseTimeout(
+    invoke<TrayStatus>("set_tray_recording_state", { active, mode }),
+    5_000,
+    "Tray recording state",
+  );
 }
 
 export async function trayAction(action: string): Promise<void> {
@@ -268,7 +340,7 @@ export async function trayAction(action: string): Promise<void> {
     return;
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("tray_action", { action });
+  await withPromiseTimeout(invoke("tray_action", { action }), 10_000, "Tray action");
 }
 
 export async function hideTrayPanel(): Promise<void> {
@@ -276,7 +348,7 @@ export async function hideTrayPanel(): Promise<void> {
     return;
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("hide_tray_panel");
+  await withPromiseTimeout(invoke("hide_tray_panel"), 5_000, "Hide tray panel");
 }
 
 export function wsUrl(path: string): string {

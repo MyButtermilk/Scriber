@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, useCallback, useRef, ReactNode } from "react";
 import {
     apiUrl,
     backendSessionToken,
@@ -37,6 +37,27 @@ const BackendStatusContext = createContext<BackendStatus | null>(null);
 
 const CHECK_INTERVAL_MS = 5000; // Check every 5 seconds when offline
 const ONLINE_CHECK_INTERVAL_MS = 30000; // Check every 30 seconds when online
+const TAURI_ACCESS_TIMEOUT_MS = 3000;
+const TAURI_SUPERVISOR_TIMEOUT_MS = 5000;
+
+function withDeadline<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        const timeoutId = window.setTimeout(
+            () => reject(new Error(`${label} timed out`)),
+            timeoutMs,
+        );
+        promise.then(
+            (value) => {
+                window.clearTimeout(timeoutId);
+                resolve(value);
+            },
+            (error) => {
+                window.clearTimeout(timeoutId);
+                reject(error);
+            },
+        );
+    });
+}
 
 function isManagedBackendStarting(status: TauriBackendStatus): boolean {
     if (!status.managed || !status.running || status.ready) {
@@ -60,15 +81,28 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
     const [checkCount, setCheckCount] = useState(0);
     const [lastChecked, setLastChecked] = useState<Date | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const checkInFlightRef = useRef<Promise<boolean> | null>(null);
 
-    const checkHealth = useCallback(async (): Promise<boolean> => {
+    const runHealthCheck = useCallback(async (): Promise<boolean> => {
         setIsChecking(true);
         try {
             if (isTauriRuntime()) {
-                await loadBackendBaseUrlFromTauri();
+                try {
+                    await withDeadline(
+                        loadBackendBaseUrlFromTauri(),
+                        TAURI_ACCESS_TIMEOUT_MS,
+                        "Tauri backend access lookup",
+                    );
+                } catch (accessError) {
+                    console.debug("Tauri backend access lookup failed; continuing with the known URL.", accessError);
+                }
                 try {
                     const { invoke } = await import("@tauri-apps/api/core");
-                    const status = await invoke<TauriBackendStatus>("ensure_backend_running");
+                    const status = await withDeadline(
+                        invoke<TauriBackendStatus>("ensure_backend_running"),
+                        TAURI_SUPERVISOR_TIMEOUT_MS,
+                        "Tauri backend supervisor check",
+                    );
                     if (status.baseUrl) {
                         setBackendBaseUrl(status.baseUrl);
                     }
@@ -97,11 +131,14 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
 
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 3000);
-
-            const res = await fetch(apiUrl("/api/health"), {
-                signal: controller.signal,
-            });
-            clearTimeout(timeoutId);
+            let res: Response;
+            try {
+                res = await fetch(apiUrl("/api/health"), {
+                    signal: controller.signal,
+                });
+            } finally {
+                clearTimeout(timeoutId);
+            }
 
             const health = res.ok ? ((await res.json()) as BackendHealthResponse) : null;
             const online = health?.apiVersion === REST_API_VERSION && health.ok === true && health.ready === true;
@@ -165,6 +202,21 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
             setIsChecking(false);
         }
     }, []);
+
+    const checkHealth = useCallback((): Promise<boolean> => {
+        const existing = checkInFlightRef.current;
+        if (existing) {
+            return existing;
+        }
+        const request = runHealthCheck();
+        checkInFlightRef.current = request;
+        void request.finally(() => {
+            if (checkInFlightRef.current === request) {
+                checkInFlightRef.current = null;
+            }
+        });
+        return request;
+    }, [runHealthCheck]);
 
     // Initial check on mount
     useEffect(() => {

@@ -17,6 +17,8 @@ UNSUPPORTED_YOUTUBE_URL_MESSAGE = (
 _YOUTUBE_VIDEO_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
 _YOUTUBE_HOST_SUFFIXES = ("youtube.com", "youtube-nocookie.com")
 _YOUTU_BE_HOSTS = {"youtu.be", "www.youtu.be"}
+_MAX_YOUTUBE_API_RESPONSE_BYTES = 4 * 1024 * 1024
+_MAX_PUBLIC_COUNT = (1 << 63) - 1
 
 
 class YouTubeApiError(RuntimeError):
@@ -74,6 +76,8 @@ def _youtube_host(hostname: str | None) -> str:
 
 def is_youtube_url_like(value: str) -> bool:
     parsed = urlparse(_normalized_url(value))
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False
     host = _youtube_host(parsed.hostname)
     return host in _YOUTU_BE_HOSTS or any(host == suffix or host.endswith(f".{suffix}") for suffix in _YOUTUBE_HOST_SUFFIXES)
 
@@ -96,6 +100,35 @@ def _clamp_max_results(value: int, *, default: int = 10) -> int:
     return 50 if value > 50 else value
 
 
+def _safe_nonnegative_count(value: Any) -> int:
+    raw = str(value or "").strip()
+    if not raw.isascii() or not raw.isdigit():
+        return 0
+    # Avoid Python's large-integer conversion limit and keep REST values within
+    # the range safely represented by common database/consumer types.
+    if len(raw) > 19:
+        return _MAX_PUBLIC_COUNT
+    return min(int(raw), _MAX_PUBLIC_COUNT)
+
+
+async def _read_youtube_json_response(resp: Any) -> Any:
+    content_length = getattr(resp, "content_length", None)
+    if isinstance(content_length, int) and content_length > _MAX_YOUTUBE_API_RESPONSE_BYTES:
+        raise YouTubeApiError("YouTube API response was too large", status=502)
+
+    body = bytearray()
+    async for chunk in resp.content.iter_chunked(64 * 1024):
+        body.extend(chunk)
+        if len(body) > _MAX_YOUTUBE_API_RESPONSE_BYTES:
+            raise YouTubeApiError("YouTube API response was too large", status=502)
+    if not body:
+        return {}
+    try:
+        return json.loads(body.decode(resp.charset or "utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise YouTubeApiError("Unexpected YouTube API response", status=502) from exc
+
+
 async def _request_json(
     session: ClientSession,
     url: str,
@@ -105,11 +138,7 @@ async def _request_json(
 ) -> dict[str, Any]:
     try:
         async with session.get(url, params=params, timeout=timeout) as resp:
-            try:
-                payload: Any = await resp.json(content_type=None)
-            except Exception:
-                raw = await resp.text()
-                payload = json.loads(raw) if raw else {}
+            payload: Any = await _read_youtube_json_response(resp)
 
             if resp.status >= 400:
                 message = ""
@@ -145,6 +174,10 @@ async def search_youtube_videos(
         raise ValueError("Missing API key")
     if not query:
         raise ValueError("Missing search query")
+    if len(query) > 500:
+        raise ValueError("Search query is too long")
+    if page_token and len(page_token) > 512:
+        raise ValueError("Page token is too long")
 
     max_results = _clamp_max_results(int(max_results) if str(max_results).strip().isdigit() else 10)
 
@@ -207,8 +240,8 @@ async def search_youtube_videos(
             seconds = parse_iso8601_duration(iso)
             
             statistics = v.get("statistics") if isinstance(v.get("statistics"), dict) else {}
-            view_count = int(statistics.get("viewCount") or 0)
-            like_count = int(statistics.get("likeCount") or 0)
+            view_count = _safe_nonnegative_count(statistics.get("viewCount"))
+            like_count = _safe_nonnegative_count(statistics.get("likeCount"))
             
             durations[vid] = {
                 "duration": format_duration(seconds),
@@ -230,8 +263,8 @@ async def search_youtube_videos(
         "query": query,
         "nextPageToken": search.get("nextPageToken") if isinstance(search.get("nextPageToken"), str) else "",
         "prevPageToken": search.get("prevPageToken") if isinstance(search.get("prevPageToken"), str) else "",
-        "totalResults": int(page_info.get("totalResults") or 0),
-        "resultsPerPage": int(page_info.get("resultsPerPage") or 0),
+        "totalResults": _safe_nonnegative_count(page_info.get("totalResults")),
+        "resultsPerPage": _safe_nonnegative_count(page_info.get("resultsPerPage")),
         "items": out_items,
     }
 
@@ -250,6 +283,8 @@ async def get_video_by_id(
         raise ValueError("Missing API key")
     if not video_id:
         raise ValueError("Missing video ID")
+    if not _is_valid_video_id(video_id):
+        raise ValueError("Invalid YouTube video ID")
 
     videos_params: dict[str, str] = {
         "part": "snippet,contentDetails,statistics",
@@ -276,8 +311,8 @@ async def get_video_by_id(
     
     iso = content_details.get("duration") if isinstance(content_details.get("duration"), str) else ""
     seconds = parse_iso8601_duration(iso)
-    view_count = int(statistics.get("viewCount") or 0)
-    like_count = int(statistics.get("likeCount") or 0)
+    view_count = _safe_nonnegative_count(statistics.get("viewCount"))
+    like_count = _safe_nonnegative_count(statistics.get("likeCount"))
     
     return {
         "videoId": vid.strip(),
@@ -301,6 +336,8 @@ def extract_youtube_video_id(url: str) -> str | None:
         return None
 
     parsed = urlparse(_normalized_url(raw_url))
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return None
     host = _youtube_host(parsed.hostname)
     path_parts = [part for part in parsed.path.split("/") if part]
 

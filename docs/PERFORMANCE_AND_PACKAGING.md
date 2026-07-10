@@ -1,6 +1,6 @@
 # Performance And Packaging
 
-Last verified: 2026-07-09
+Last verified: 2026-07-10
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
@@ -81,12 +81,20 @@ Backend/WebSocket:
   refresh behavior.
 - Transcript append handling avoids repeated full transcript string rebuilds for
   long sessions.
+- WebSocket sends are serialized per client, bounded by deadlines, and coalesce
+  high-frequency interim/control payloads while preserving final transcripts.
+- Provider response bodies, shell/sidecar protocol lines, Tauri backend JSON,
+  FFmpeg diagnostics, settings fields, and support-bundle inputs have explicit
+  memory bounds.
 
 Data and frontend:
 
 - Transcript list endpoints use pagination and avoid full content loading for
   metadata views.
 - Frontend history pages use infinite loading and scroll-container virtualization.
+- Local REST queries and desktop invokes use cancellation, single-flight guards,
+  and operation-appropriate deadlines so wedged workers do not leave permanent
+  loading states.
 - Production frontend build uses manual vendor chunks.
 - Live Mic, YouTube, File, and Settings are eager primary-tab modules in the
   local WebView. Debug Console, transcript detail, and not-found remain lazy.
@@ -106,6 +114,8 @@ I/O:
   practical.
 - Job and latency stores reuse SQLite connections more efficiently.
 - Settings persistence is debounced and flushed on shutdown.
+- Buffered live async audio stays in spooled files and streams through encoders
+  and provider uploads rather than creating recording-sized heap copies.
 
 Packaging/build:
 

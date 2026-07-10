@@ -8,6 +8,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useLocation } from "wouter";
 import { useState, useEffect, useMemo, useCallback, memo, useRef } from "react";
 import { apiUrl } from "@/lib/backend";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -391,7 +392,7 @@ export default function Youtube() {
       if (isYouTubeUrl(q)) {
         // Fetch video directly by URL
         const url = apiUrl(`/api/youtube/video?url=${encodeURIComponent(q)}`);
-        const res = await fetch(url, { credentials: "include" });
+        const res = await fetchWithTimeout(url, { credentials: "include" }, 30_000);
         if (!res.ok) {
           throw new Error(await responseErrorMessage(res));
         }
@@ -404,7 +405,7 @@ export default function Youtube() {
       } else {
         // Regular search
         const url = apiUrl(`/api/youtube/search?q=${encodeURIComponent(q)}&maxResults=10`);
-        const res = await fetch(url, { credentials: "include" });
+        const res = await fetchWithTimeout(url, { credentials: "include" }, 30_000);
         if (!res.ok) {
           throw new Error(await responseErrorMessage(res));
         }
@@ -433,7 +434,7 @@ export default function Youtube() {
     setStartingVideoId(item.videoId);
 
     try {
-      const res = await fetch(apiUrl("/api/youtube/transcribe"), {
+      const res = await fetchWithTimeout(apiUrl("/api/youtube/transcribe"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -445,7 +446,7 @@ export default function Youtube() {
           duration: item.duration,
           videoId: item.videoId,
         }),
-      });
+      }, 15_000);
       if (!res.ok) {
         throw new Error(await responseErrorMessage(res));
       }
@@ -500,10 +501,10 @@ export default function Youtube() {
     deletingRef.current = id;
     setDeletingId(id);
     try {
-      const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
+      const res = await fetchWithTimeout(apiUrl(`/api/transcripts/${id}`), {
         method: "DELETE",
         credentials: "include",
-      });
+      }, 15_000);
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.message || res.statusText);
@@ -537,9 +538,9 @@ export default function Youtube() {
     setCopyingId(id);
     try {
       // Fetch the full transcript content
-      const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
+      const res = await fetchWithTimeout(apiUrl(`/api/transcripts/${id}`), {
         credentials: "include",
-      });
+      }, 15_000);
       if (!res.ok) {
         throw new Error(res.statusText);
       }

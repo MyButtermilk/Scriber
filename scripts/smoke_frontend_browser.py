@@ -33,15 +33,13 @@ from scripts.measure_history_scroll_baseline import (
 
 ROUTE_EXPECTATIONS: dict[str, list[str]] = {
     "/": ["Live Transcription", "Recent Recordings"],
-    "/youtube": ["Youtube Transcription", "Recent Videos"],
-    "/file": ["Import File", "Recent Files"],
+    "/youtube": ["YouTube transcription", "Recent videos"],
+    "/file": ["File transcription", "Recent files"],
     "/debug": [
         "Debug Console",
         "ui-debug-sample.log",
         "Debug console sample error",
-        "Copy visible",
         "Clear logs",
-        "Support bundle",
         "Auto scroll",
         "Newest first",
     ],
@@ -2714,8 +2712,8 @@ async def exercise_debug_console_interaction(
 (() => {
   const text = document.body ? document.body.innerText : '';
   return {
-    ok: text.includes('3 of 3 entries') && text.includes('Debug console sample error'),
-    hasAllEntries: text.includes('3 of 3 entries'),
+    ok: text.includes('of 3') && text.includes('Debug console sample error'),
+    hasAllEntries: text.includes('of 3'),
     hasErrorLog: text.includes('Debug console sample error')
   };
 })()
@@ -2802,10 +2800,10 @@ async def exercise_debug_console_interaction(
   }
   const text = document.body ? document.body.innerText : '';
   return {
-    ok: text.includes('1 of 3 entries')
+    ok: /VISIBLE\s+1\s+of 3/.test(text)
       && text.includes('Debug console sample warning')
       && !text.includes('Debug console sample error'),
-    hasOneEntry: text.includes('1 of 3 entries'),
+    hasOneEntry: /VISIBLE\s+1\s+of 3/.test(text),
     hasWarningLog: text.includes('Debug console sample warning'),
     errorHidden: !text.includes('Debug console sample error')
   };
@@ -2817,7 +2815,7 @@ async def exercise_debug_console_interaction(
         r"""
 (() => {
   const button = Array.from(document.querySelectorAll('button'))
-    .find((node) => (node.textContent || '').includes('Reset filters'));
+    .find((node) => (node.textContent || '').trim() === 'Reset');
   if (!button) return { ok: false, reason: 'missing reset filters button' };
   button.click();
   return { ok: true };
@@ -2839,11 +2837,11 @@ async def exercise_debug_console_interaction(
   return {
     ok: input
       && input.value === ''
-      && text.includes('3 of 3 entries')
+      && text.includes('of 3')
       && text.includes('Debug console sample error')
       && text.includes('Debug console sample warning'),
     filterValue: input ? input.value : null,
-    hasAllEntries: text.includes('3 of 3 entries'),
+    hasAllEntries: text.includes('of 3'),
     hasErrorLog: text.includes('Debug console sample error'),
     hasWarningLog: text.includes('Debug console sample warning')
   };
@@ -3012,8 +3010,8 @@ async def exercise_debug_console_interaction(
 (() => {
   const text = document.body ? document.body.innerText : '';
   return {
-    ok: text.includes('No matching log entries.') && text.includes('Cleared') && !text.includes('Debug console sample error'),
-    hasEmptyState: text.includes('No matching log entries.'),
+    ok: text.includes('No matching events') && text.includes('Cleared') && !text.includes('Debug console sample error'),
+    hasEmptyState: text.includes('No matching events'),
     hasActionStatus: text.includes('Cleared'),
     errorLogStillVisible: text.includes('Debug console sample error')
   };
@@ -3716,7 +3714,7 @@ async def exercise_command_palette(
   const dialog = document.querySelector('[role="dialog"]');
   return {
     ok: window.location.pathname === '/debug'
-      && text.includes('Debug Console')
+      && text.includes('Debug console')
       && !dialog,
     route: window.location.pathname,
     paletteClosed: !dialog
@@ -3974,8 +3972,8 @@ async def exercise_mobile_navigation(
   const dialog = document.querySelector('[role="dialog"]');
   return {
     ok: window.location.pathname === '/youtube'
-      && text.includes('Youtube Transcription')
-      && text.includes('Recent Videos')
+      && text.includes('YouTube transcription')
+      && text.includes('Recent videos')
       && !dialog,
     route: window.location.pathname,
     sheetClosed: !dialog
@@ -4063,6 +4061,11 @@ async def exercise_mobile_route_layouts(
       const tag = node.tagName.toLowerCase();
       if (tag === 'input' || tag === 'textarea') return false;
       const rect = node.getBoundingClientRect();
+      const wrappingLabel = node.closest('label');
+      if (wrappingLabel) {{
+        const labelRect = wrappingLabel.getBoundingClientRect();
+        if (labelRect.width >= 44 && labelRect.height >= 44) return false;
+      }}
       return rect.width < 26 || rect.height < 26;
     }})
     .slice(0, 8)

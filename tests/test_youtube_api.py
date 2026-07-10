@@ -3,7 +3,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from aiohttp import ClientSession
 
-from src.youtube_api import extract_youtube_video_id, is_youtube_url_like, parse_iso8601_duration, search_youtube_videos
+from src.youtube_api import (
+    _safe_nonnegative_count,
+    extract_youtube_video_id,
+    get_video_by_id,
+    is_youtube_url_like,
+    parse_iso8601_duration,
+    search_youtube_videos,
+)
 
 
 def test_parse_iso8601_duration():
@@ -28,6 +35,8 @@ def test_youtube_url_like_detects_unknown_youtube_urls_for_better_errors():
     assert extract_youtube_video_id("https://www.youtube.com/channel/example") is None
     assert extract_youtube_video_id("https://www.youtube.com/live/not-valid!") is None
     assert not is_youtube_url_like("https://example.com/watch?v=-Ppvp4uM7Kw")
+    assert not is_youtube_url_like("ftp://youtube.com/watch?v=-Ppvp4uM7Kw")
+    assert extract_youtube_video_id("ftp://youtube.com/watch?v=-Ppvp4uM7Kw") is None
 
 
 @pytest.mark.asyncio
@@ -89,4 +98,41 @@ async def test_search_youtube_videos_skips_videos_call_when_no_items():
 
     assert out["items"] == []
     assert mocked.await_count == 1
+
+
+def test_youtube_counts_tolerate_malformed_and_oversized_values():
+    assert _safe_nonnegative_count("123") == 123
+    assert _safe_nonnegative_count("not-a-number") == 0
+    assert _safe_nonnegative_count("9" * 10_000) == (1 << 63) - 1
+
+
+@pytest.mark.asyncio
+async def test_search_youtube_videos_tolerates_malformed_statistics():
+    search_payload = {
+        "items": [{"id": {"videoId": "abc"}, "snippet": {}}],
+        "pageInfo": {"totalResults": "unknown", "resultsPerPage": "2"},
+    }
+    videos_payload = {
+        "items": [
+            {
+                "id": "abc",
+                "contentDetails": {"duration": "PT1S"},
+                "statistics": {"viewCount": "private", "likeCount": None},
+            }
+        ]
+    }
+    with patch("src.youtube_api._request_json", new=AsyncMock(side_effect=[search_payload, videos_payload])):
+        async with ClientSession() as session:
+            out = await search_youtube_videos("k", "query", session=session)
+
+    assert out["totalResults"] == 0
+    assert out["resultsPerPage"] == 2
+    assert out["items"][0]["viewCount"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_video_by_id_rejects_invalid_id_before_network():
+    async with ClientSession() as session:
+        with pytest.raises(ValueError, match="Invalid YouTube video ID"):
+            await get_video_by_id("k", "not-valid", session=session)
 

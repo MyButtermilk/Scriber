@@ -546,6 +546,19 @@ class _ChunkUploadField:
         return self._chunks.pop(0)
 
 
+def test_multipart_content_length_allows_framing_overhead_at_file_limit():
+    file_limit = 25 * 1024 * 1024
+
+    assert web_api._multipart_request_is_definitely_oversized(
+        file_limit + web_api._MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES,
+        file_limit=file_limit,
+    ) is False
+    assert web_api._multipart_request_is_definitely_oversized(
+        file_limit + web_api._MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES + 1,
+        file_limit=file_limit,
+    ) is True
+
+
 @pytest.mark.asyncio
 async def test_write_upload_stream_to_disk_writes_chunks_off_hot_path(tmp_path):
     target = tmp_path / "upload.bin"
@@ -579,6 +592,34 @@ async def test_write_upload_stream_to_disk_stops_before_oversized_chunk(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_write_upload_stream_batches_disk_dispatches(monkeypatch, tmp_path):
+    target = tmp_path / "upload.bin"
+    field = _ChunkUploadField([b"ab"] * 10)
+    real_to_thread = asyncio.to_thread
+    write_calls = 0
+
+    async def tracking_to_thread(func, /, *args, **kwargs):
+        nonlocal write_calls
+        if getattr(func, "__name__", "") == "write":
+            write_calls += 1
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(web_api.asyncio, "to_thread", tracking_to_thread)
+    bytes_read, too_large = await web_api._write_upload_stream_to_disk(
+        field,
+        target,
+        max_bytes=64,
+        chunk_size=2,
+        write_batch_size=6,
+    )
+
+    assert bytes_read == 20
+    assert too_large is False
+    assert target.read_bytes() == b"ab" * 10
+    assert write_calls == 4
+
+
+@pytest.mark.asyncio
 async def test_render_transcript_export_async_runs_renderer(monkeypatch):
     def fake_render(**kwargs):
         assert kwargs["export_format"] == "pdf"
@@ -601,13 +642,26 @@ async def test_render_transcript_export_async_runs_renderer(monkeypatch):
     assert ext == "pdf"
 
 
+def test_attachment_content_disposition_supports_unicode_safely():
+    header = web_api._attachment_content_disposition('会议 "notes"\r\n.pdf')
+
+    assert "\r" not in header
+    assert "\n" not in header
+    assert 'filename="notes.pdf"' in header
+    assert "filename*=UTF-8''" in header
+    assert "%E4%BC%9A%E8%AE%AE" in header
+
+    unicode_only_header = web_api._attachment_content_disposition("会议.pdf")
+    assert 'filename="download.pdf"' in unicode_only_header
+
+
 @pytest.mark.asyncio
 async def test_update_settings_debounces_env_persistence(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "0.05")
     persist_mock = MagicMock()
-    monkeypatch.setattr(web_api.Config, "persist_to_env_file", persist_mock)
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", persist_mock)
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
 
@@ -623,12 +677,76 @@ async def test_update_settings_debounces_env_persistence(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_update_settings_rejects_oversized_text_before_mutation(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "HOTKEY", "ctrl+alt+space")
+    monkeypatch.setattr(web_api.Config, "CUSTOM_VOCAB", "existing")
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    with pytest.raises(ValueError, match="customVocab exceeds"):
+        await ctl.update_settings(
+            {
+                "hotkey": "ctrl+shift+space",
+                "customVocab": "x" * (web_api._SETTINGS_PROMPT_MAX_BYTES + 1),
+            }
+        )
+
+    assert web_api.Config.HOTKEY == "ctrl+alt+space"
+    assert web_api.Config.CUSTOM_VOCAB == "existing"
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_update_settings_rejects_oversized_api_secret(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    with pytest.raises(ValueError, match=r"apiKeys\.openai exceeds"):
+        await ctl.update_settings(
+            {"apiKeys": {"openai": "x" * (web_api._SETTINGS_SECRET_MAX_BYTES + 1)}}
+        )
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_settings_update_waits_for_inflight_persistence_snapshot(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "0")
+    persist_started = threading.Event()
+    release_persist = threading.Event()
+
+    def _persist() -> None:
+        persist_started.set()
+        assert release_persist.wait(timeout=2)
+
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", _persist)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    await ctl.update_settings({"language": "en"})
+    assert await asyncio.to_thread(persist_started.wait, 1)
+    second_update = asyncio.create_task(ctl.update_settings({"language": "de"}))
+    await asyncio.sleep(0.02)
+    assert second_update.done() is False
+
+    release_persist.set()
+    await asyncio.wait_for(second_update, timeout=1)
+    await asyncio.sleep(0)
+    if ctl._settings_persist_task is not None:
+        await asyncio.gather(ctl._settings_persist_task, return_exceptions=True)
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_update_settings_flushes_pending_persist_on_shutdown(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
     persist_mock = MagicMock()
-    monkeypatch.setattr(web_api.Config, "persist_to_env_file", persist_mock)
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", persist_mock)
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
 
@@ -752,7 +870,7 @@ async def test_update_settings_toggles_idle_mic_prewarm(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
-    monkeypatch.setattr(web_api.Config, "persist_to_env_file", MagicMock())
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", MagicMock())
     monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
     _FakeRustMicPrewarmManager.instances.clear()
 
@@ -781,7 +899,7 @@ async def test_update_settings_ignores_invalid_mic_always_on_type(monkeypatch, t
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
-    monkeypatch.setattr(web_api.Config, "persist_to_env_file", MagicMock())
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", MagicMock())
     monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
     _FakeRustMicPrewarmManager.instances.clear()
 
@@ -1790,6 +1908,100 @@ async def test_audio_level_broadcast_is_throttled_to_sixty_hz():
 
 
 @pytest.mark.asyncio
+async def test_audio_level_broadcast_coalesces_pending_payloads():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    delivered: list[float] = []
+
+    async def slow_broadcast(payload):
+        delivered.append(float(payload["rms"]))
+        if len(delivered) == 1:
+            first_started.set()
+            await release_first.wait()
+
+    with patch.object(ctl, "broadcast", side_effect=slow_broadcast):
+        ctl._enqueue_audio_broadcast({"type": "audio_level", "rms": 0.1})
+        await first_started.wait()
+        ctl._enqueue_audio_broadcast({"type": "audio_level", "rms": 0.2})
+        ctl._enqueue_audio_broadcast({"type": "audio_level", "rms": 0.3})
+        release_first.set()
+        task = ctl._audio_broadcast_task
+        assert task is not None
+        await task
+        await asyncio.sleep(0)
+
+    assert delivered == [0.1, 0.3]
+
+
+@pytest.mark.asyncio
+async def test_transcript_broadcast_coalesces_interim_but_preserves_finals():
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    delivered: list[tuple[str, bool]] = []
+
+    async def slow_broadcast(payload):
+        delivered.append((str(payload["text"]), bool(payload["isFinal"])))
+        if len(delivered) == 1:
+            first_started.set()
+            await release_first.wait()
+
+    with patch.object(ctl, "broadcast", side_effect=slow_broadcast):
+        ctl._queue_transcript_broadcast({"text": "partial-1", "isFinal": False}, False)
+        await first_started.wait()
+        ctl._queue_transcript_broadcast({"text": "partial-2", "isFinal": False}, False)
+        ctl._queue_transcript_broadcast({"text": "partial-3", "isFinal": False}, False)
+        ctl._queue_transcript_broadcast({"text": "final-1", "isFinal": True}, True)
+        ctl._queue_transcript_broadcast({"text": "final-2", "isFinal": True}, True)
+        ctl._queue_transcript_broadcast({"text": "next-partial", "isFinal": False}, False)
+        release_first.set()
+        task = ctl._transcript_broadcast_task
+        assert task is not None
+        await task
+
+    assert delivered == [
+        ("partial-1", False),
+        ("final-1", True),
+        ("final-2", True),
+        ("next-partial", False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_control_broadcast_coalesces_latest_payload_per_event_type():
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    delivered: list[tuple[str, str]] = []
+
+    async def slow_broadcast(payload):
+        delivered.append((str(payload["type"]), str(payload["value"])))
+        if len(delivered) == 1:
+            first_started.set()
+            await release_first.wait()
+
+    with patch.object(ctl, "broadcast", side_effect=slow_broadcast):
+        ctl._enqueue_control_broadcast({"type": "status", "value": "one"})
+        await first_started.wait()
+        ctl._enqueue_control_broadcast({"type": "status", "value": "two"})
+        ctl._enqueue_control_broadcast({"type": "status", "value": "three"})
+        ctl._enqueue_control_broadcast({"type": "input_warning", "value": "old"})
+        ctl._enqueue_control_broadcast({"type": "input_warning", "value": "new"})
+        release_first.set()
+        task = ctl._control_broadcast_task
+        assert task is not None
+        await task
+
+    assert delivered == [
+        ("status", "one"),
+        ("input_warning", "new"),
+        ("status", "three"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_audio_level_updates_overlay_without_ws_clients():
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
@@ -1916,13 +2128,13 @@ async def test_completed_live_mic_session_is_persisted_and_searchable(monkeypatc
     assert rec.status == "completed"
     assert rec in ctl._history
 
-    listed = ctl.list_transcripts(transcript_type="mic", include_content=False)
+    listed = await ctl.list_transcripts(transcript_type="mic", include_content=False)
     assert listed["total"] == 1
     assert listed["items"][0]["id"] == session_id
     assert listed["items"][0]["status"] == "completed"
     assert listed["items"][0]["preview"] == "persisted live history smoke text"
 
-    detail = ctl.get_transcript(session_id)
+    detail = await ctl.get_transcript(session_id)
     assert detail is not None
     assert detail["content"] == "persisted live history smoke text"
     assert detail["summaryStatus"] == "idle"

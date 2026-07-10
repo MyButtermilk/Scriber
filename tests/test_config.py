@@ -1,8 +1,31 @@
 import os
 import unittest
+from pathlib import Path
 
 import src.config as config_module
 from src.config import Config
+
+
+def test_numeric_env_helpers_fall_back_and_clamp(monkeypatch):
+    monkeypatch.setenv("TEST_SCRIBER_INT", "broken")
+    monkeypatch.setenv("TEST_SCRIBER_FLOAT", "nan")
+    assert config_module._env_int("TEST_SCRIBER_INT", 12, minimum=1, maximum=20) == 12
+    assert config_module._env_float("TEST_SCRIBER_FLOAT", 2.5, minimum=0.0, maximum=5.0) == 2.5
+
+    monkeypatch.setenv("TEST_SCRIBER_INT", "999")
+    monkeypatch.setenv("TEST_SCRIBER_FLOAT", "-4")
+    assert config_module._env_int("TEST_SCRIBER_INT", 12, minimum=1, maximum=20) == 20
+    assert config_module._env_float("TEST_SCRIBER_FLOAT", 2.5, minimum=0.0, maximum=5.0) == 0.0
+
+
+def test_json_settings_loader_rejects_oversized_or_non_object_payload(monkeypatch, tmp_path):
+    target = tmp_path / "settings.json"
+    monkeypatch.setattr(config_module, "_JSON_SETTINGS_PATH", target)
+    target.write_bytes(b"x" * (config_module._MAX_JSON_SETTINGS_BYTES + 1))
+    assert config_module._load_json_settings() == {}
+
+    target.write_text('["not", "an", "object"]', encoding="utf-8")
+    assert config_module._load_json_settings() == {}
 
 class TestConfig(unittest.TestCase):
     def test_default_values(self):
@@ -170,3 +193,44 @@ def test_persist_to_env_file_includes_vad_segmentation_setting(monkeypatch, tmp_
     Config.persist_to_env_file(str(target))
 
     assert "SCRIBER_SEGMENT_SPEECH_WITH_VAD=1" in target.read_text(encoding="utf-8")
+
+
+def test_json_setting_setters_are_batched_until_explicit_persist(monkeypatch, tmp_path):
+    target = tmp_path / "settings.json"
+    writes = []
+    monkeypatch.setattr(config_module, "_JSON_SETTINGS_PATH", target)
+    monkeypatch.setattr(
+        config_module,
+        "_atomic_write_text",
+        lambda path, content: writes.append((Path(path), content)),
+    )
+
+    Config.set_post_processing_enabled(False)
+    Config.set_post_processing_model("test/model")
+    Config.set_segment_speech_with_vad(True)
+
+    assert writes == []
+    Config.persist_json_settings()
+    assert len(writes) == 1
+    assert writes[0][0] == target
+    assert '"postProcessingModel": "test/model"' in writes[0][1]
+
+
+def test_atomic_write_cleans_unique_temporary_file_after_replace_failure(monkeypatch, tmp_path):
+    target = tmp_path / "settings.json"
+    target.write_text("old", encoding="utf-8")
+
+    def _fail_replace(_source, _target):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(config_module.os, "replace", _fail_replace)
+
+    try:
+        config_module._atomic_write_text(target, "new")
+    except OSError as exc:
+        assert str(exc) == "replace failed"
+    else:
+        raise AssertionError("replace failure must propagate")
+
+    assert target.read_text(encoding="utf-8") == "old"
+    assert list(tmp_path.glob(".settings.json.*.tmp")) == []

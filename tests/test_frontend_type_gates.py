@@ -35,6 +35,88 @@ def test_tauri_backend_status_trusts_supervisor_readiness() -> None:
     assert "Tauri backend supervisor check failed; falling back to HTTP health probe." in source
     assert "void reportFrontendReady().catch" in source
     assert "return true;" in source[source.index('invoke<TauriBackendStatus>("ensure_backend_running")'):]
+    assert "checkInFlightRef.current" in source
+    assert "const request = runHealthCheck();" in source
+    assert "if (existing)" in source
+    assert "clearTimeout(timeoutId);" in source
+    assert "TAURI_ACCESS_TIMEOUT_MS" in source
+    assert "TAURI_SUPERVISOR_TIMEOUT_MS" in source
+    assert "withDeadline(" in source
+
+
+def test_app_initial_tauri_lookup_has_deadline_and_fallback() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "withPromiseTimeout(" in source
+    assert '"Initial Tauri backend lookup"' in source
+    assert "continuing with health fallback" in source
+    assert "setBackendBaseReady(true)" in source
+
+    backend_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "backend.ts"
+    ).read_text(encoding="utf-8")
+    assert '"Tauri backend access"' in backend_source
+    assert '"Tauri backend URL fallback"' in backend_source
+    assert "backendAccessRetryAfterMs" in backend_source
+
+
+def test_settings_bootstrap_cache_rejects_stale_inflight_results() -> None:
+    source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "settings-bootstrap.ts"
+    ).read_text(encoding="utf-8")
+
+    assert "bootstrapGeneration += 1" in source
+    assert "requestGeneration === bootstrapGeneration" in source
+    assert "inflightBootstrap === request" in source
+
+
+def test_history_and_command_requests_are_abortable_and_deadlined() -> None:
+    history_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-transcript-history-query.ts"
+    ).read_text(encoding="utf-8")
+    command_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "CommandPalette.tsx"
+    ).read_text(encoding="utf-8")
+    tray_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "TrayPanel.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "fetchWithTimeout(" in history_source
+    assert "queryFn: async ({ pageParam, signal })" in history_source
+    assert "signal?: AbortSignal" in history_source
+    assert command_source.count("fetchWithTimeout(") >= 3
+    assert "queryFn: async ({ signal })" in command_source
+    assert "fetchWithTimeout(" in tray_source
+
+
+def test_desktop_shell_commands_have_deadlines() -> None:
+    source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "backend.ts"
+    ).read_text(encoding="utf-8")
+
+    for label in (
+        "Global hotkey refresh",
+        "Global hotkey capture update",
+        "Global hotkey status",
+        "Tray status",
+        "Tray update status",
+        "Tray recording state",
+        "Tray action",
+        "Hide tray panel",
+    ):
+        assert f'"{label}"' in source
+
+
+def test_processing_timer_formats_long_jobs_with_hours() -> None:
+    source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "Math.floor(seconds / 3600)" in source
+    assert "Math.floor((seconds % 3600) / 60)" in source
+    assert "if (hours > 0)" in source
 
 
 def test_startup_screen_handles_managed_backend_starting_state() -> None:
@@ -99,7 +181,8 @@ def test_settings_microphones_use_shared_api_types() -> None:
     assert "(await res.json()) as MicrophonesResponse" in source
     assert "let microphonePayload = mics;" in source
     assert "if (!Array.isArray(microphonePayload.devices))" in source
-    assert 'fetch(apiUrl("/api/microphones"), { credentials: "include" })' in source
+    assert "fetchWithTimeout(" in source
+    assert 'apiUrl("/api/microphones")' in source
     assert 'aria-label="Select input device"' in source
     assert 'aria-label={`Select microphone ${deviceLabel}`}' in source
     assert "Loading devices..." in source
@@ -110,6 +193,9 @@ def test_settings_microphones_use_shared_api_types() -> None:
     assert "favoriteMicRestored && typeof msg.restoredDeviceId === \"string\"" in source
     assert "import type { MicrophoneDevice }" in websocket_source
     assert "devices: MicrophoneDevice[]" in websocket_source
+    assert "const closeCurrentSocket = useCallback" in websocket_source
+    assert "if (wsRef.current !== ws)" in websocket_source
+    assert "clearReconnectTimeout();\n        if (!enabled)" in websocket_source
     assert "import type { MicrophonesRefreshResponse }" in device_refresh_source
     assert "Promise<MicrophonesRefreshResponse | null>" in device_refresh_source
     assert "as { deviceId: string" not in source
@@ -206,8 +292,8 @@ def test_navigation_and_command_palette_use_bounded_internal_routes() -> None:
     assert "onClick={onNavigate}" in layout_source
     assert "{renderNav(() => setMobileNavOpen(false))}" in layout_source
 
-    assert 'fetch(apiUrl("/api/settings"), {' in palette_source
-    assert 'fetch(apiUrl("/api/transcripts?limit=50"), {' in palette_source
+    assert 'fetchWithTimeout(apiUrl("/api/settings"), {' in palette_source
+    assert 'fetchWithTimeout(apiUrl("/api/transcripts?limit=50"), {' in palette_source
     assert 'queryKey: ["/api/transcripts", { limit: 50 }],' in palette_source
     assert 'credentials: "include",' in palette_source
     assert "enabled: open" in palette_source
@@ -338,9 +424,31 @@ def test_history_updates_are_invalidated_globally_for_background_jobs() -> None:
 
     assert "function TranscriptHistoryInvalidationBridge()" in source
     assert 'msg.type !== "history_updated"' in source
-    assert 'queryClient.invalidateQueries({ queryKey: ["/api/transcripts", msg.transcriptId], exact: true });' in source
+    assert 'queryClient.invalidateQueries({ queryKey: ["/api/transcripts", transcriptId], exact: true });' in source
+    assert "pendingTranscriptTypesRef.current.add" in source
+    assert "window.setTimeout(flushInvalidations, 250)" in source
     assert "msg.transcriptType" in source
     assert "<TranscriptHistoryInvalidationBridge />" in source
+
+
+def test_page_refresh_hook_does_not_duplicate_global_history_refetches() -> None:
+    source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-transcript-auto-refresh.ts"
+    ).read_text(encoding="utf-8")
+
+    assert 'msg.type === "history_updated"' not in source
+    assert "refetchQueries" not in source
+    assert "queryClient.invalidateQueries" in source
+
+
+def test_virtual_history_releases_load_guard_for_void_and_failed_loaders() -> None:
+    source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "virtual-transcript-history.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert '"then" in result' in source
+    assert ".catch((error) =>" in source
+    assert "else {\n        loadInFlightRef.current = false;" in source
 
 
 def test_live_mic_interim_and_final_transcript_render_distinctly() -> None:
@@ -397,7 +505,8 @@ def test_visualizer_bar_count_flows_to_live_mic_and_native_overlay() -> None:
     assert "Math.round(numeric)" in helper_source
     assert "MIN_VISUALIZER_BAR_COUNT" in helper_source
     assert "MAX_VISUALIZER_BAR_COUNT" in helper_source
-    assert "fetch(apiUrl(\"/api/settings\"), { credentials: \"include\", signal })" in helper_source
+    assert "fetchWithTimeout(" in helper_source
+    assert '{ credentials: "include", signal }' in helper_source
 
     assert "DEFAULT_VISUALIZER_BAR_COUNT," in settings_source
     assert "MAX_VISUALIZER_BAR_COUNT," in settings_source
@@ -446,12 +555,13 @@ def test_settings_and_youtube_mutations_use_authenticated_backend_access() -> No
     assert "await updateSettings({ hotkey });" in settings_source
     assert 'await updateSettings({ mode: mode === "press_hold" ? "push_to_talk" : "toggle" });' in settings_source
     assert "await updateSettings({ visualizerBarCount: count });" in settings_source
-    assert 'fetch(apiUrl("/api/settings"), { credentials: "include", signal })' in visualizer_helper_source
+    assert "fetchWithTimeout(" in visualizer_helper_source
+    assert '{ credentials: "include", signal }' in visualizer_helper_source
 
-    assert 'fetch(url, { credentials: "include" })' in youtube_source
-    assert 'fetch(apiUrl("/api/youtube/transcribe"), {' in youtube_source
+    assert 'fetchWithTimeout(url, { credentials: "include" }, 30_000)' in youtube_source
+    assert 'fetchWithTimeout(apiUrl("/api/youtube/transcribe"), {' in youtube_source
     assert 'credentials: "include",' in youtube_source
-    assert 'fetch(apiUrl("/api/youtube/transcribe"), {' in detail_source
+    assert 'fetchWithTimeout(apiUrl("/api/youtube/transcribe"), {' in detail_source
     assert 'credentials: "include",' in detail_source
 
 
@@ -463,6 +573,10 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
         encoding="utf-8"
     )
     css = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
+
+    assert "--action-size: 44px;" in css
+    assert "min-width: 44px;" in css
+    assert "min-height: 44px;" in css
 
     assert "debug-console-actions" in debug_source
     assert "debug-console-action-button" in debug_source
@@ -603,6 +717,11 @@ def test_desktop_update_status_filters_same_version_updates() -> None:
         update_source.index("export function publishDesktopUpdateStatusToTray") :
     ]
     assert "if (!isVersionNewerThanCurrent(update.version, currentVersion))" in update_source
+    assert "let updateCheckInFlight: Promise<DesktopUpdateStatus> | null = null;" in update_source
+    assert "let updateInstallInFlight: Promise<DesktopUpdateStatus> | null = null;" in update_source
+    assert "function sharedDesktopUpdateCheck" in update_source
+    assert '"Desktop update check"' in update_source
+    assert '"App version lookup"' in update_source
     assert "const staleAvailable = Boolean(rawAvailable && !available);" in update_source
     assert 'phase: staleAvailable ? "current" : cache.phase || "idle"' in update_source
     assert "maybeNotify(cached);" in app_source
@@ -700,7 +819,10 @@ def test_settings_custom_vocabulary_autosaves_without_manual_button() -> None:
 
     assert "Save vocabulary" not in settings_source
     assert "const savedCustomVocabularyRef = useRef(\"\");" in settings_source
-    assert "const saveCustomVocabulary = useCallback(async (nextValue: string)" in settings_source
+    assert "const saveCustomVocabulary = useCallback((nextValue: string): Promise<void>" in settings_source
+    assert "pendingCustomVocabularyRef" in settings_source
+    assert "customVocabularySaveInFlightRef" in settings_source
+    assert "while (pendingCustomVocabularyRef.current !== null)" in settings_source
     assert "window.setTimeout(() => {" in settings_source
     assert "void saveCustomVocabulary(customVocabulary);" in settings_source
     assert "await saveCustomVocabulary(customVocabulary);" in settings_source

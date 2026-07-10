@@ -253,6 +253,99 @@ def test_rust_prototype_frame_source_honors_selection_device_preference(monkeypa
     assert snapshot["endpointSelection"]["usedDefaultEndpoint"] is True
 
 
+@pytest.mark.parametrize(
+    ("response_override", "error_match"),
+    [
+        ({"sampleRate": 48000}, "sample rate"),
+        ({"sampleFormat": "float32"}, "sample format"),
+        ({"framePipe": ""}, "frame pipe"),
+    ],
+)
+def test_rust_frame_source_stops_started_sidecar_on_contract_mismatch(
+    monkeypatch,
+    response_override,
+    error_match,
+):
+    commands: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioCaptureStart":
+            response_payload = {
+                "streamId": "stream-contract-mismatch",
+                "framePipe": "memory-pipe",
+                "sampleRate": 16000,
+                "channels": 1,
+                "captureChannels": 1,
+                "sampleFormat": "pcm_i16_le",
+                **response_override,
+            }
+            return {"success": True, "payload": response_payload}
+        if command == "audioCaptureStop":
+            return {"success": True, "payload": {"stopped": True}}
+        raise AssertionError(command)
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=512,
+        device="default",
+        shell_call=shell_call,
+    )
+
+    with pytest.raises(RuntimeError, match=error_match):
+        source.open(lambda *_args: None)
+
+    assert [command for command, _payload in commands] == [
+        "audioCaptureStart",
+        "audioCaptureStop",
+    ]
+    assert commands[-1][1] == {"streamId": "stream-contract-mismatch"}
+    assert source.stream_id == ""
+    assert source.diagnostic_snapshot()["framePipeHash"] is None
+
+
+def test_rust_frame_source_rejects_success_without_stream_id(monkeypatch):
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=512,
+        device="default",
+        shell_call=lambda *_args, **_kwargs: {
+            "success": True,
+            "payload": {
+                "framePipe": "memory-pipe",
+                "sampleRate": 16000,
+                "channels": 1,
+                "sampleFormat": "pcm_i16_le",
+            },
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="stream ID"):
+        source.open(lambda *_args: None)
+
+    assert source.fallback_reason == "rustStreamIdMissing"
+
+
 def test_rust_prototype_frame_source_passes_shell_inventory_hash(monkeypatch):
     audio = np.full((512, 1), 321, dtype=np.int16)
     frame = encode_audio_frame(
@@ -435,6 +528,8 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
     assert calls[0][1] == 512
     np.testing.assert_array_equal(calls[0][0], audio)
     assert active_snapshot["framePipeHash"]
+    assert active_snapshot["streamIdHash"]
+    assert "streamId" not in active_snapshot
     snapshot = source.diagnostic_snapshot()
     assert snapshot["requestedPrebufferMs"] == 400
     assert snapshot["requestedPrewarmIdHash"]
@@ -1115,3 +1210,13 @@ async def test_rust_prototype_adopts_rust_prewarm_id_when_always_on(monkeypatch)
     assert snapshot["rustPrewarmAdoption"]["adopted"] is True
     assert snapshot["rustPrewarmAdoption"]["prewarmIdHash"]
     assert "prewarm-rust-1" not in str(snapshot)
+def test_rust_audio_timeout_configuration_is_finite_and_bounded(monkeypatch):
+    monkeypatch.setenv("SCRIBER_RUST_AUDIO_FIRST_FRAME_TIMEOUT_SEC", "inf")
+    monkeypatch.setenv("SCRIBER_RUST_AUDIO_FAILURE_COOLDOWN_SEC", "inf")
+    assert microphone._rust_first_frame_timeout_seconds() == 0.5
+    assert microphone._rust_audio_failure_cooldown_seconds() == 60.0
+
+    monkeypatch.setenv("SCRIBER_RUST_AUDIO_FIRST_FRAME_TIMEOUT_SEC", "999")
+    monkeypatch.setenv("SCRIBER_RUST_AUDIO_FAILURE_COOLDOWN_SEC", "99999")
+    assert microphone._rust_first_frame_timeout_seconds() == 10.0
+    assert microphone._rust_audio_failure_cooldown_seconds() == 3600.0

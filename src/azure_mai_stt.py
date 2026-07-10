@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import asyncio
+import io
 import json
 import tempfile
 from pathlib import Path
@@ -31,8 +32,13 @@ from pipecat.utils.time import time_now_iso8601
 
 from src.config import Config
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, mp3_encode_pcm_pipe_args, mp3_transcode_args
+from src.runtime.http_response import read_response_text_limited
 from src.runtime.media_tools import require_media_tool
-from src.runtime.subprocess_utils import hidden_subprocess_kwargs
+from src.runtime.subprocess_utils import (
+    communicate_or_kill_on_cancel,
+    hidden_subprocess_kwargs,
+    read_stream_limited,
+)
 
 _AZURE_MAI_DEFAULT_MODEL = "mai-transcribe-1.5"
 _AZURE_MAI_API_VERSION = "2025-10-15"
@@ -152,7 +158,11 @@ async def _transcode_to_mp3(source_path: Path, target_path: Path) -> Path:
         stderr=asyncio.subprocess.PIPE,
         **hidden_subprocess_kwargs(),
     )
-    _, stderr = await proc.communicate()
+    _, stderr = await communicate_or_kill_on_cancel(
+        proc,
+        max_stdout_bytes=64 * 1024,
+        max_stderr_bytes=1024 * 1024,
+    )
     if proc.returncode != 0:
         err = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
         friendly = classify_ffmpeg_stderr(err)
@@ -163,6 +173,23 @@ async def _transcode_to_mp3(source_path: Path, target_path: Path) -> Path:
 
 
 async def _pcm_to_mp3(audio_bytes: bytes, sample_rate: int, channels: int) -> bytes:
+    mp3_source = await _pcm_stream_to_mp3(
+        io.BytesIO(audio_bytes),
+        sample_rate=sample_rate,
+        channels=channels,
+    )
+    try:
+        return mp3_source.read()
+    finally:
+        mp3_source.close()
+
+
+async def _pcm_stream_to_mp3(
+    audio_source: BinaryIO,
+    *,
+    sample_rate: int,
+    channels: int,
+) -> BinaryIO:
     ffmpeg = require_media_tool("ffmpeg")
     proc = await asyncio.create_subprocess_exec(
         *mp3_encode_pcm_pipe_args(
@@ -176,14 +203,61 @@ async def _pcm_to_mp3(audio_bytes: bytes, sample_rate: int, channels: int) -> by
         stderr=asyncio.subprocess.PIPE,
         **hidden_subprocess_kwargs(),
     )
-    stdout, stderr = await proc.communicate(audio_bytes)
-    if proc.returncode != 0:
-        err = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
-        friendly = classify_ffmpeg_stderr(err)
-        raise RuntimeError(f"ffmpeg MAI PCM encode failed: {friendly or proc.returncode}")
-    if not stdout:
-        raise RuntimeError("ffmpeg MAI PCM encode completed but output audio is empty.")
-    return stdout
+    if proc.stdin is None or proc.stdout is None or proc.stderr is None:
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            await proc.wait()
+        raise RuntimeError("ffmpeg MAI PCM encode pipes were not created.")
+
+    mp3_file = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024, mode="w+b")
+
+    async def feed_pcm() -> None:
+        audio_source.seek(0)
+        try:
+            while chunk := await asyncio.to_thread(audio_source.read, 1024 * 1024):
+                proc.stdin.write(chunk)
+                await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            proc.stdin.close()
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                await proc.stdin.wait_closed()
+
+    async def capture_mp3() -> None:
+        while chunk := await proc.stdout.read(64 * 1024):
+            mp3_file.write(chunk)
+
+    feed_task = asyncio.create_task(feed_pcm(), name="azure-mai-ffmpeg-feed")
+    capture_task = asyncio.create_task(capture_mp3(), name="azure-mai-ffmpeg-capture")
+    stderr_task = asyncio.create_task(
+        read_stream_limited(proc.stderr),
+        name="azure-mai-ffmpeg-stderr",
+    )
+    try:
+        await asyncio.gather(feed_task, capture_task)
+        stderr = await stderr_task
+        return_code = await proc.wait()
+        if return_code != 0:
+            err = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
+            friendly = classify_ffmpeg_stderr(err)
+            raise RuntimeError(f"ffmpeg MAI PCM encode failed: {friendly or return_code}")
+        if mp3_file.tell() <= 0:
+            raise RuntimeError("ffmpeg MAI PCM encode completed but output audio is empty.")
+        mp3_file.seek(0)
+        return mp3_file
+    except BaseException:
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+        for task in (feed_task, capture_task, stderr_task):
+            task.cancel()
+        await asyncio.gather(feed_task, capture_task, stderr_task, return_exceptions=True)
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        mp3_file.close()
+        raise
 
 
 @contextlib.asynccontextmanager
@@ -242,7 +316,7 @@ async def transcribe_with_azure_mai(
         headers={"Ocp-Apim-Subscription-Key": speech_key},
         timeout=aiohttp.ClientTimeout(total=timeout_secs),
     ) as resp:
-        raw = await resp.text()
+        raw = await read_response_text_limited(resp, 64 * 1024 * 1024)
         if resp.status >= 400:
             raise RuntimeError(f"Azure MAI transcription failed ({resp.status}): {raw[:500]}")
 
@@ -305,17 +379,20 @@ class AzureMaiTranscribeSTTService(STTService):
 
     async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
         mp3_bytes = await _pcm_to_mp3(
-            audio_bytes=audio_bytes,
+            audio_bytes,
             sample_rate=self._sample_rate,
             channels=self._channels,
         )
+        return await self._transcribe_mp3(mp3_bytes)
+
+    async def _transcribe_mp3(self, mp3_source: bytes | BinaryIO) -> str:
 
         async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
             return await transcribe_with_azure_mai(
                 session=session,
                 speech_key=self._speech_key,
                 region=self._region,
-                audio_source=mp3_bytes,
+                audio_source=mp3_source,
                 filename="audio.mp3",
                 content_type="audio/mpeg",
                 language=self._language,
@@ -364,8 +441,15 @@ class AzureMaiTranscribeSTTService(STTService):
             return
 
         _report_progress(self._on_progress, "Transcribing...")
-        self._buffer.seek(0)
-        text = (await self._transcribe_bytes(self._buffer.read())).strip()
+        mp3_source = await _pcm_stream_to_mp3(
+            self._buffer,
+            sample_rate=self._sample_rate,
+            channels=self._channels,
+        )
+        try:
+            text = (await self._transcribe_mp3(mp3_source)).strip()
+        finally:
+            mp3_source.close()
         if text:
             await self.push_frame(self._transcription_frame(text), direction)
 

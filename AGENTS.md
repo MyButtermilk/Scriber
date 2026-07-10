@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-06-11
+Last verified: 2026-07-10
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they

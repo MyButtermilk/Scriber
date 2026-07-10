@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import io
 import json
 import re
 import tempfile
-import wave
 from typing import Any, BinaryIO, Callable
 from urllib.parse import urlencode
 
@@ -30,6 +28,9 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
+
+from src.runtime.audio_spool import pcm_stream_to_wav
+from src.runtime.http_response import read_response_text_limited
 
 
 _SMALLEST_PULSE_HTTP_URL = "https://api.smallest.ai/waves/v1/pulse/get_text"
@@ -72,16 +73,6 @@ def _keywords_from_vocab(custom_vocab: str) -> str:
         if len(out) >= _MAX_KEYWORDS:
             break
     return ",".join(out)
-
-
-def _pcm_to_wav(audio_bytes: bytes, sample_rate: int, channels: int) -> bytes:
-    buf = io.BytesIO()
-    with contextlib.closing(wave.open(buf, "wb")) as wf:
-        wf.setnchannels(max(1, int(channels or 1)))
-        wf.setsampwidth(2)
-        wf.setframerate(max(1, int(sample_rate or 16000)))
-        wf.writeframes(audio_bytes)
-    return buf.getvalue()
 
 
 def _report_progress(on_progress: Callable[[str], None] | None, message: str) -> None:
@@ -185,7 +176,7 @@ async def transcribe_with_smallest_pre_recorded(
         headers=headers,
         timeout=aiohttp.ClientTimeout(total=timeout_secs),
     ) as resp:
-        raw = await resp.text()
+        raw = await read_response_text_limited(resp, 64 * 1024 * 1024)
         if resp.status >= 400:
             raise RuntimeError(f"Smallest AI transcription failed ({resp.status}): {raw[:500]}")
 
@@ -237,18 +228,12 @@ class SmallestAsyncProcessor(FrameProcessor):
         self._buffer = self._create_buffer()
         self._buffer_size = 0
 
-    async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
-        wav_bytes = _pcm_to_wav(
-            audio_bytes=audio_bytes,
-            sample_rate=self._sample_rate,
-            channels=self._channels,
-        )
-
+    async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
         async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
             return await transcribe_with_smallest_pre_recorded(
                 session=session,
                 api_key=self._api_key,
-                audio_source=wav_bytes,
+                audio_source=wav_source,
                 language=self._language,
                 word_timestamps=self._diarize,
                 diarize=self._diarize,
@@ -266,6 +251,18 @@ class SmallestAsyncProcessor(FrameProcessor):
             payload,
             prefer_speaker_labels=self._diarize,
         )
+
+    async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
+        wav_source = await asyncio.to_thread(
+            pcm_stream_to_wav,
+            io.BytesIO(audio_bytes),
+            self._sample_rate,
+            self._channels,
+        )
+        try:
+            return await self._transcribe_wav(wav_source)
+        finally:
+            wav_source.close()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -290,8 +287,16 @@ class SmallestAsyncProcessor(FrameProcessor):
                     return
                 if self._buffer_size:
                     _report_progress(self._on_progress, "Transcribing...")
-                    self._buffer.seek(0)
-                    text = (await self._transcribe_bytes(self._buffer.read())).strip()
+                    wav_source = await asyncio.to_thread(
+                        pcm_stream_to_wav,
+                        self._buffer,
+                        self._sample_rate,
+                        self._channels,
+                    )
+                    try:
+                        text = (await self._transcribe_wav(wav_source)).strip()
+                    finally:
+                        wav_source.close()
                     if text:
                         await self.push_frame(
                             TranscriptionFrame(

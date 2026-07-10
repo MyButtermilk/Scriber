@@ -32,6 +32,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/backend";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { cn } from "@/lib/utils";
 import type {
   PostProcessingDiagnostic,
@@ -220,7 +221,11 @@ export default function DebugConsole() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(apiUrl("/api/runtime/logs?limit=1200"), { credentials: "include" });
+      const res = await fetchWithTimeout(
+        apiUrl("/api/runtime/logs?limit=1200"),
+        { credentials: "include" },
+        8_000,
+      );
       if (!res.ok) {
         throw new Error((await res.text()) || res.statusText);
       }
@@ -229,7 +234,11 @@ export default function DebugConsole() {
       setLogs(payload.items || []);
       setSources(payload.sources || []);
       setTruncated(payload.truncated === true);
-      void fetch(apiUrl("/api/runtime/post-processing-diagnostics?limit=8"), { credentials: "include" })
+      void fetchWithTimeout(
+        apiUrl("/api/runtime/post-processing-diagnostics?limit=8"),
+        { credentials: "include" },
+        5_000,
+      )
         .then(async (diagnosticsRes) => {
           if (!diagnosticsRes.ok) return null;
           return (await diagnosticsRes.json()) as PostProcessingDiagnosticsResponse;
@@ -355,10 +364,10 @@ export default function DebugConsole() {
     setError("");
     setActionStatus("");
     try {
-      const res = await fetch(apiUrl("/api/runtime/logs"), {
+      const res = await fetchWithTimeout(apiUrl("/api/runtime/logs"), {
         method: "DELETE",
         credentials: "include",
-      });
+      }, 30_000);
       const bodyText = await res.text();
       let payload: RuntimeLogsClearResponse | null = null;
       try {
@@ -410,10 +419,10 @@ export default function DebugConsole() {
     setSupportBundleLoading(true);
     setError("");
     try {
-      const res = await fetch(apiUrl("/api/runtime/support-bundle"), {
+      const res = await fetchWithTimeout(apiUrl("/api/runtime/support-bundle"), {
         method: "POST",
         credentials: "include",
-      });
+      }, 120_000);
       if (!res.ok) {
         throw new Error((await res.text()) || res.statusText);
       }

@@ -21,7 +21,8 @@ _DB_PATH = database_path()
 _thread_local = threading.local()
 _all_connections: list[sqlite3.Connection] = []
 _connections_lock = threading.Lock()
-_FTS_TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
+_connection_generation = 0
+_FTS_TOKEN_RE = re.compile(r"\w+(?:-\w+)*", re.UNICODE)
 
 
 def _compute_preview(text: str, max_words: int = 5) -> str:
@@ -45,7 +46,9 @@ def _build_fts_query(query: str) -> str:
     tokens = _FTS_TOKEN_RE.findall((query or "").lower())
     if not tokens:
         return ""
-    terms = [f"{t}*" if len(t) >= 2 else t for t in tokens[:8]]
+    # Quote every token so hyphens and other FTS operators are treated as
+    # searchable text. The regex excludes quotes, keeping this expression safe.
+    terms = [f'"{token}"*' if len(token) >= 2 else f'"{token}"' for token in tokens[:8]]
     return " AND ".join(terms)
 
 
@@ -69,7 +72,11 @@ def _get_connection() -> sqlite3.Connection:
     per thread. This avoids the overhead of opening a new connection for
     every database operation (~10-50ms savings per call).
     """
-    if not hasattr(_thread_local, 'conn') or _thread_local.conn is None:
+    if (
+        not hasattr(_thread_local, "conn")
+        or _thread_local.conn is None
+        or getattr(_thread_local, "connection_generation", -1) != _connection_generation
+    ):
         _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(_DB_PATH, check_same_thread=False, timeout=30.0)
         conn.row_factory = sqlite3.Row
@@ -80,12 +87,14 @@ def _get_connection() -> sqlite3.Connection:
         # Track all connections for cleanup on exit
         with _connections_lock:
             _all_connections.append(conn)
+            _thread_local.connection_generation = _connection_generation
         logger.debug(f"Created new database connection for thread {threading.current_thread().name}")
     return _thread_local.conn
 
 
 def _close_all_connections():
     """Close all database connections on application exit."""
+    global _connection_generation
     with _connections_lock:
         for conn in _all_connections:
             try:
@@ -93,6 +102,11 @@ def _close_all_connections():
             except Exception:
                 pass
         _all_connections.clear()
+        _connection_generation += 1
+    # Allow the current thread to lazily open a fresh connection after an
+    # explicit cleanup (for example an embedded backend restart).
+    _thread_local.conn = None
+    _thread_local.connection_generation = _connection_generation
     # Avoid logging during interpreter shutdown; sinks may already be closed.
 
 
@@ -156,6 +170,10 @@ def init_database() -> None:
             CREATE INDEX IF NOT EXISTS idx_transcripts_created_at
             ON transcripts(created_at DESC)
         """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_transcripts_type_created_at
+            ON transcripts(type, created_at DESC)
+        """)
         # Full-text index for fast transcript search.
         conn.execute(
             """
@@ -171,7 +189,25 @@ def init_database() -> None:
         # Keep FTS in sync if needed.
         total_rows = conn.execute("SELECT COUNT(*) AS c FROM transcripts").fetchone()["c"]
         total_fts = conn.execute("SELECT COUNT(*) AS c FROM transcripts_fts").fetchone()["c"]
-        if total_rows != total_fts:
+        fts_missing_row = conn.execute(
+            """
+            SELECT 1
+            FROM transcripts t
+            LEFT JOIN transcripts_fts f ON f.rowid = t.rowid AND f.id = t.id
+            WHERE f.rowid IS NULL
+            LIMIT 1
+            """
+        ).fetchone()
+        fts_orphan_row = conn.execute(
+            """
+            SELECT 1
+            FROM transcripts_fts f
+            LEFT JOIN transcripts t ON t.rowid = f.rowid AND t.id = f.id
+            WHERE t.rowid IS NULL
+            LIMIT 1
+            """
+        ).fetchone()
+        if total_rows != total_fts or fts_missing_row is not None or fts_orphan_row is not None:
             conn.execute("DELETE FROM transcripts_fts")
             conn.execute(
                 """
@@ -192,11 +228,30 @@ def save_transcript(record: Any) -> None:
         # Map camelCase to snake_case for database
         with _get_connection() as conn:
             conn.execute("""
-                INSERT OR REPLACE INTO transcripts 
+                INSERT INTO transcripts
                 (id, title, date, duration, status, type, language, step, 
                  source_url, channel, thumbnail_url, content, preview, created_at, updated_at,
                  summary, summary_status, summary_error, summary_updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    date = excluded.date,
+                    duration = excluded.duration,
+                    status = excluded.status,
+                    type = excluded.type,
+                    language = excluded.language,
+                    step = excluded.step,
+                    source_url = excluded.source_url,
+                    channel = excluded.channel,
+                    thumbnail_url = excluded.thumbnail_url,
+                    content = excluded.content,
+                    preview = excluded.preview,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at,
+                    summary = excluded.summary,
+                    summary_status = excluded.summary_status,
+                    summary_error = excluded.summary_error,
+                    summary_updated_at = excluded.summary_updated_at
             """, (
                 data.get("id"),
                 data.get("title", ""),
@@ -315,6 +370,85 @@ def load_transcript_metadata() -> List[dict]:
         return []
 
 
+def load_transcript_metadata_page(
+    *,
+    transcript_type: str = "",
+    offset: int = 0,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Load one metadata page without materializing the complete history."""
+    offset = max(0, int(offset))
+    limit = max(0, min(100, int(limit)))
+    try:
+        with _get_connection() as conn:
+            type_clause = " AND type = ?" if transcript_type else ""
+            params: list[Any] = ["processing", "recording"]
+            if transcript_type:
+                params.append(transcript_type)
+
+            total = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM transcripts "
+                    "WHERE status NOT IN (?, ?)" + type_clause,
+                    params,
+                ).fetchone()["c"]
+            )
+            rows = (
+                conn.execute(
+                    "SELECT id, title, date, duration, status, type, language, step, "
+                    "source_url, channel, thumbnail_url, created_at, updated_at, preview, "
+                    "summary_status, summary_error, summary_updated_at "
+                    "FROM transcripts WHERE status NOT IN (?, ?)" + type_clause +
+                    " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                    [*params, limit, offset],
+                ).fetchall()
+                if limit > 0
+                else []
+            )
+
+        items = [
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "date": row["date"],
+                "duration": row["duration"],
+                "status": row["status"],
+                "type": row["type"],
+                "language": row["language"],
+                "step": row["step"],
+                "sourceUrl": row["source_url"],
+                "channel": row["channel"],
+                "thumbnailUrl": row["thumbnail_url"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+                "summaryStatus": row["summary_status"] or "idle",
+                "summaryError": row["summary_error"] or "",
+                "summaryUpdatedAt": row["summary_updated_at"] or "",
+                "content": "",
+                "summary": "",
+                "_previewText": row["preview"] or "",
+                "preview": row["preview"] or row["title"],
+            }
+            for row in rows
+        ]
+        return {
+            "items": items,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "hasMore": offset + len(items) < total,
+        }
+    except Exception as exc:
+        logger.error(f"Failed to load transcript metadata page: {exc}")
+        return {
+            "items": [],
+            "total": 0,
+            "offset": offset,
+            "limit": limit,
+            "hasMore": False,
+        }
+
+
 def get_transcript(transcript_id: str) -> Optional[dict]:
     """Get a single transcript by ID."""
     try:
@@ -371,13 +505,17 @@ def existing_transcript_ids(transcript_ids: list[str]) -> set[str]:
     if not ids:
         return set()
     try:
-        placeholders = ", ".join("?" for _ in ids)
+        existing: set[str] = set()
         with _get_connection() as conn:
-            rows = conn.execute(
-                f"SELECT id FROM transcripts WHERE id IN ({placeholders})",
-                ids,
-            ).fetchall()
-            return {str(row["id"]) for row in rows}
+            for start in range(0, len(ids), 500):
+                chunk = ids[start : start + 500]
+                placeholders = ", ".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"SELECT id FROM transcripts WHERE id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                existing.update(str(row["id"]) for row in rows)
+        return existing
     except Exception as e:
         logger.error(f"Failed to check transcript IDs: {e}")
         return set()
@@ -388,9 +526,9 @@ def delete_transcript(transcript_id: str) -> bool:
     try:
         with _get_connection() as conn:
             conn.execute("DELETE FROM transcripts_fts WHERE id = ?", (transcript_id,))
-            conn.execute("DELETE FROM transcripts WHERE id = ?", (transcript_id,))
+            cursor = conn.execute("DELETE FROM transcripts WHERE id = ?", (transcript_id,))
             conn.commit()
-            return True
+            return int(cursor.rowcount or 0) > 0
     except Exception as e:
         logger.error(f"Failed to delete transcript: {e}")
         return False
@@ -401,7 +539,7 @@ def update_transcript_summary(transcript_id: str, summary: str) -> bool:
     try:
         updated_at = datetime.now().isoformat()
         with _get_connection() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 UPDATE transcripts
                 SET summary = ?,
@@ -415,7 +553,7 @@ def update_transcript_summary(transcript_id: str, summary: str) -> bool:
             )
             _sync_fts_row(conn, transcript_id)
             conn.commit()
-            return True
+            return int(cursor.rowcount or 0) > 0
     except Exception as e:
         logger.error(f"Failed to update transcript summary: {e}")
         return False
@@ -427,40 +565,35 @@ def update_transcript_summary_state(
     status: str,
     error: str = "",
     summary: Optional[str] = None,
+    step: Optional[str] = None,
 ) -> bool:
     """Update persisted summary lifecycle state without changing transcription status."""
     try:
         updated_at = datetime.now().isoformat()
         status = status if status in {"idle", "pending", "completed", "failed"} else "idle"
         with _get_connection() as conn:
-            if summary is None:
-                conn.execute(
-                    """
-                    UPDATE transcripts
-                    SET summary_status = ?,
-                        summary_error = ?,
-                        summary_updated_at = ?,
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (status, error, updated_at, updated_at, transcript_id),
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE transcripts
-                    SET summary = ?,
-                        summary_status = ?,
-                        summary_error = ?,
-                        summary_updated_at = ?,
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (summary, status, error, updated_at, updated_at, transcript_id),
-                )
+            set_parts = [
+                "summary_status = ?",
+                "summary_error = ?",
+                "summary_updated_at = ?",
+                "updated_at = ?",
+            ]
+            params: list[Any] = [status, error, updated_at, updated_at]
+            if summary is not None:
+                set_parts.insert(0, "summary = ?")
+                params.insert(0, summary)
+            if step is not None:
+                set_parts.append("step = ?")
+                params.append(step)
+            params.append(transcript_id)
+            cursor = conn.execute(
+                f"UPDATE transcripts SET {', '.join(set_parts)} WHERE id = ?",
+                params,
+            )
+            if summary is not None:
                 _sync_fts_row(conn, transcript_id)
             conn.commit()
-            return True
+            return int(cursor.rowcount or 0) > 0
     except Exception as e:
         logger.error(f"Failed to update transcript summary state: {e}")
         return False
@@ -475,7 +608,7 @@ def search_transcript_metadata(
 ) -> dict[str, Any]:
     """Search transcript metadata using SQLite FTS5 with pagination."""
     offset = max(0, int(offset))
-    limit = max(1, min(100, int(limit)))
+    limit = max(0, min(100, int(limit)))
     q = (query or "").strip()
     if not q:
         return {"items": [], "total": 0, "offset": offset, "limit": limit, "hasMore": False}
@@ -497,14 +630,19 @@ def search_transcript_metadata(
                 )
                 rows_sql = (
                     "SELECT t.id, t.title, t.date, t.duration, t.status, t.type, t.language, t.step, "
-                    "t.source_url, t.channel, t.thumbnail_url, t.created_at, t.updated_at, t.preview "
+                    "t.source_url, t.channel, t.thumbnail_url, t.created_at, t.updated_at, t.preview, "
+                    "t.summary_status, t.summary_error, t.summary_updated_at "
                     "FROM transcripts_fts f "
                     "JOIN transcripts t ON t.rowid = f.rowid "
                     "WHERE transcripts_fts MATCH ? " + type_clause +
-                    "ORDER BY bm25(transcripts_fts), t.created_at DESC LIMIT ? OFFSET ?"
+                    "ORDER BY bm25(transcripts_fts), t.created_at DESC, t.id DESC LIMIT ? OFFSET ?"
                 )
                 total = conn.execute(total_sql, [fts_q, *params]).fetchone()["c"]
-                rows = conn.execute(rows_sql, [fts_q, *params, limit, offset]).fetchall()
+                rows = (
+                    conn.execute(rows_sql, [fts_q, *params, limit, offset]).fetchall()
+                    if limit > 0
+                    else []
+                )
             else:
                 like = f"%{q.lower()}%"
                 total_sql = (
@@ -514,17 +652,22 @@ def search_transcript_metadata(
                 )
                 rows_sql = (
                     "SELECT t.id, t.title, t.date, t.duration, t.status, t.type, t.language, t.step, "
-                    "t.source_url, t.channel, t.thumbnail_url, t.created_at, t.updated_at, t.preview "
+                    "t.source_url, t.channel, t.thumbnail_url, t.created_at, t.updated_at, t.preview, "
+                    "t.summary_status, t.summary_error, t.summary_updated_at "
                     "FROM transcripts t "
                     "WHERE (LOWER(t.title) LIKE ? OR LOWER(t.content) LIKE ? OR LOWER(t.summary) LIKE ? OR LOWER(t.channel) LIKE ?) "
                     + ("AND t.type = ? " if transcript_type else "") +
-                    "ORDER BY t.created_at DESC LIMIT ? OFFSET ?"
+                    "ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?"
                 )
                 args = [like, like, like, like]
                 if transcript_type:
                     args.append(transcript_type)
                 total = conn.execute(total_sql, args).fetchone()["c"]
-                rows = conn.execute(rows_sql, [*args, limit, offset]).fetchall()
+                rows = (
+                    conn.execute(rows_sql, [*args, limit, offset]).fetchall()
+                    if limit > 0
+                    else []
+                )
 
             items = [{
                 "id": row["id"],
@@ -540,6 +683,9 @@ def search_transcript_metadata(
                 "thumbnailUrl": row["thumbnail_url"],
                 "createdAt": row["created_at"],
                 "updatedAt": row["updated_at"],
+                "summaryStatus": row["summary_status"] or "idle",
+                "summaryError": row["summary_error"] or "",
+                "summaryUpdatedAt": row["summary_updated_at"] or "",
                 "content": "",
                 "summary": "",
                 "_previewText": row["preview"] or "",

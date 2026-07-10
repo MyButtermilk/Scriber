@@ -4,12 +4,14 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Any
+from uuid import uuid4
 
 from src.core.rest_contracts import REST_API_VERSION
 from src.runtime.paths import logs_dir
 
 
 CLEAR_STATE_FILENAME = "debug-log-clear-state.json"
+_MAX_CLEAR_STATE_BYTES = 1024 * 1024
 
 
 def clear_state_path() -> Path:
@@ -19,6 +21,8 @@ def clear_state_path() -> Path:
 def load_clear_offsets() -> dict[str, int]:
     path = clear_state_path()
     try:
+        if path.stat().st_size > _MAX_CLEAR_STATE_BYTES:
+            return {}
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
@@ -79,14 +83,16 @@ def record_clear_state(paths: Iterable[Path]) -> tuple[list[str], list[dict[str,
         "clearedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "files": files,
     }
+    target = clear_state_path()
+    tmp = target.with_suffix(f"{target.suffix}.{uuid4().hex}.tmp")
     try:
-        target = clear_state_path()
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(f"{target.suffix}.tmp")
         tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
         tmp.replace(target)
     except OSError as exc:
         failed.append({"source": CLEAR_STATE_FILENAME, "error": f"{type(exc).__name__}: {exc}"})
+    finally:
+        tmp.unlink(missing_ok=True)
 
     return sorted(set(cleared)), failed
 

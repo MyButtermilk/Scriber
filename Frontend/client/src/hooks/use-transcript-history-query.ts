@@ -1,5 +1,6 @@
 import { useInfiniteQuery, type InfiniteData } from "@tanstack/react-query";
 import { apiUrl } from "@/lib/backend";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { responseErrorMessage } from "@/lib/request-errors";
 
 export type TranscriptHistoryType = "mic" | "file" | "youtube";
@@ -23,11 +24,13 @@ export async function fetchTranscriptHistoryPage<TItem>({
   q,
   offset,
   pageSize = TRANSCRIPT_HISTORY_PAGE_SIZE,
+  signal,
 }: {
   type: TranscriptHistoryType;
   q: string;
   offset: number;
   pageSize?: number;
+  signal?: AbortSignal;
 }): Promise<TranscriptHistoryPage<TItem>> {
   const params = new URLSearchParams();
   if (q) params.set("q", q);
@@ -35,7 +38,11 @@ export async function fetchTranscriptHistoryPage<TItem>({
   params.set("offset", String(offset));
   params.set("limit", String(pageSize));
 
-  const res = await fetch(apiUrl(`/api/transcripts?${params}`), { credentials: "include" });
+  const res = await fetchWithTimeout(
+    apiUrl(`/api/transcripts?${params}`),
+    { credentials: "include", signal },
+    10_000,
+  );
   if (!res.ok) {
     throw new Error(await responseErrorMessage(res));
   }
@@ -56,9 +63,9 @@ export function useTranscriptHistoryQuery<TItem>({
 }: UseTranscriptHistoryQueryOptions) {
   const query = useInfiniteQuery<TranscriptHistoryPage<TItem>, Error>({
     queryKey: transcriptHistoryQueryKey(type, q),
-    queryFn: async ({ pageParam }) => {
+    queryFn: async ({ pageParam, signal }) => {
       const offset = typeof pageParam === "number" ? pageParam : 0;
-      return fetchTranscriptHistoryPage<TItem>({ type, q, offset, pageSize });
+      return fetchTranscriptHistoryPage<TItem>({ type, q, offset, pageSize, signal });
     },
     initialPageParam: 0,
     getNextPageParam: (lastPage) => {
@@ -109,13 +116,30 @@ export function prependTranscriptHistoryItem<TItem extends { id?: string }>(
     return previous;
   }
 
+  const nextTotal = Math.max(
+    (previous.pages[0]?.total ?? 0) + 1,
+    previous.pages.reduce((count, page) => count + page.items.length, 0) + 1,
+  );
+  const loadedItems = [item, ...previous.pages.flatMap((page) => page.items)];
+  let loadedOffset = 0;
+  const pages = previous.pages.map((page) => {
+    const limit = Math.max(1, page.limit || TRANSCRIPT_HISTORY_PAGE_SIZE);
+    const pageItems = loadedItems.slice(loadedOffset, loadedOffset + limit);
+    const offset = loadedOffset;
+    loadedOffset += pageItems.length;
+    return {
+      ...page,
+      items: pageItems,
+      total: nextTotal,
+      offset,
+      limit,
+      hasMore: loadedOffset < nextTotal,
+    };
+  });
+
   return {
     ...previous,
-    pages: previous.pages.map((page, index) => ({
-      ...page,
-      total: page.total + 1,
-      items: index === 0 ? [item, ...page.items] : page.items,
-      hasMore: index === 0 ? page.hasMore || page.items.length >= page.limit : page.hasMore,
-    })),
+    pages,
+    pageParams: pages.map((page) => page.offset),
   };
 }

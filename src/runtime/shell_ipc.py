@@ -16,6 +16,7 @@ SHELL_IPC_TOKEN_ENV = "SCRIBER_SHELL_IPC_TOKEN"
 SHELL_IPC_API_VERSION_ENV = "SCRIBER_SHELL_IPC_API_VERSION"
 DEFAULT_API_VERSION = "1"
 DEFAULT_TIMEOUT_SECONDS = 0.75
+MAX_RESPONSE_BYTES = 512 * 1024
 _PIPE_NAME_PATTERN = re.compile(
     r"(?:\\\\){1,2}\.(?:\\){1,2}pipe(?:\\){1,2}scriber-shell-[A-Za-z0-9_.-]+",
     re.IGNORECASE,
@@ -391,10 +392,39 @@ def _call_shell_ipc_windows(pipe_name: str, request_line: str, timeout_seconds: 
     try:
         ok, result = result_queue.get(timeout=timeout_seconds + 0.05)
     except queue.Empty as exc:
+        _cancel_synchronous_io(thread)
+        thread.join(timeout=0.1)
         raise TimeoutError(f"shell IPC timed out after {timeout_seconds:.3f}s") from exc
     if not ok:
         raise RuntimeError(result)
     return result
+
+
+def _cancel_synchronous_io(thread: threading.Thread) -> bool:
+    """Best-effort cancellation for a timed-out Windows transport worker."""
+    native_id = thread.native_id
+    if os.name != "nt" or native_id is None:
+        return False
+
+    import ctypes
+    from ctypes import wintypes
+
+    thread_terminate = 0x0001
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.CancelSynchronousIo.restype = wintypes.BOOL
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenThread(
+        wintypes.DWORD(thread_terminate),
+        wintypes.BOOL(False),
+        wintypes.DWORD(native_id),
+    )
+    if not handle:
+        return False
+    try:
+        return bool(kernel32.CancelSynchronousIo(wintypes.HANDLE(handle)))
+    finally:
+        kernel32.CloseHandle(wintypes.HANDLE(handle))
 
 
 def _send_request_over_pipe(
@@ -443,6 +473,7 @@ def _send_request_over_pipe_windows(
     kernel32.WaitNamedPipeW.restype = wintypes.BOOL
     kernel32.CreateFileW.restype = wintypes.HANDLE
     kernel32.WriteFile.restype = wintypes.BOOL
+    kernel32.PeekNamedPipe.restype = wintypes.BOOL
     kernel32.ReadFile.restype = wintypes.BOOL
     kernel32.CloseHandle.restype = wintypes.BOOL
 
@@ -475,24 +506,53 @@ def _send_request_over_pipe_windows(
             raise OSError(ctypes.get_last_error(), "WriteFile failed")
 
         chunks: list[bytes] = []
+        response_size = 0
+        deadline = time.monotonic() + max(0.05, timeout_seconds)
         while True:
+            available = wintypes.DWORD(0)
+            peek_ok = kernel32.PeekNamedPipe(
+                wintypes.HANDLE(handle),
+                None,
+                wintypes.DWORD(0),
+                None,
+                ctypes.byref(available),
+                None,
+            )
+            if not peek_ok:
+                error = ctypes.get_last_error()
+                if error == error_broken_pipe:
+                    break
+                raise OSError(error, "PeekNamedPipe failed")
+            if not available.value:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"shell IPC response timed out after {timeout_seconds:.3f}s"
+                    )
+                time.sleep(min(0.005, max(0.0, deadline - time.monotonic())))
+                continue
+
             buffer = ctypes.create_string_buffer(buffer_size)
             bytes_read = wintypes.DWORD(0)
+            read_size = min(buffer_size, int(available.value))
             ok = kernel32.ReadFile(
                 wintypes.HANDLE(handle),
                 buffer,
-                wintypes.DWORD(buffer_size),
+                wintypes.DWORD(read_size),
                 ctypes.byref(bytes_read),
                 None,
             )
             error = 0 if ok else ctypes.get_last_error()
             if ok or error == error_more_data:
                 if bytes_read.value:
-                    chunks.append(buffer.raw[: bytes_read.value])
-                    combined = b"".join(chunks)
-                    newline_at = combined.find(b"\n")
+                    chunk = buffer.raw[: bytes_read.value]
+                    response_size += len(chunk)
+                    if response_size > MAX_RESPONSE_BYTES:
+                        raise ValueError("shell IPC response exceeded maximum size")
+                    chunks.append(chunk)
+                    newline_at = chunk.find(b"\n")
                     if newline_at >= 0:
-                        return combined[:newline_at].decode("utf-8", errors="replace")
+                        chunks[-1] = chunk[:newline_at]
+                        return b"".join(chunks).decode("utf-8", errors="replace")
                 if ok and not bytes_read.value:
                     break
                 continue

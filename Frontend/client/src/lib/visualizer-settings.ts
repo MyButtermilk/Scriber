@@ -1,5 +1,6 @@
 import type { SettingsResponse } from "@/lib/api-types";
 import { apiUrl } from "@/lib/backend";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 
 export const DEFAULT_VISUALIZER_BAR_COUNT = 45;
 export const MIN_VISUALIZER_BAR_COUNT = 16;
@@ -20,7 +21,11 @@ export function normalizeVisualizerBarCount(
 }
 
 export async function loadVisualizerBarCount(signal?: AbortSignal): Promise<number> {
-  const res = await fetch(apiUrl("/api/settings"), { credentials: "include", signal });
+  const res = await fetchWithTimeout(
+    apiUrl("/api/settings"),
+    { credentials: "include", signal },
+    10_000,
+  );
   if (!res.ok) {
     throw new Error(res.statusText || "Failed to load visualizer settings");
   }

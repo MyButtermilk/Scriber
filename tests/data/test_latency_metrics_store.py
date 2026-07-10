@@ -62,3 +62,45 @@ def test_latency_metrics_store_summary_percentiles(tmp_path):
     assert summary["p50Ms"] == 150.0
     assert summary["p95Ms"] == 300.0
     assert summary["maxMs"] == 300.0
+
+
+def test_latency_metrics_store_prunes_to_configured_retention(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_HOT_PATH_METRICS_RETENTION", "3")
+    store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
+    for index in range(5):
+        store.record(
+            f"session-{index}",
+            {"hotkey_received_to_first_paste_ms": float(index)},
+        )
+
+    assert [item.session_id for item in store.latest(limit=10)] == [
+        "session-4",
+        "session-3",
+        "session-2",
+    ]
+    count = store._connect().execute("SELECT COUNT(*) FROM hot_path_metrics").fetchone()[0]
+    assert count == 3
+
+
+def test_latency_metrics_store_ignores_non_finite_or_corrupt_values(tmp_path):
+    store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
+    metric = store.record(
+        "session-safe",
+        {
+            "valid": 12.5,
+            "nan": float("nan"),
+            "invalid": "not-a-number",  # type: ignore[dict-item]
+        },
+    )
+    assert metric.segments == {"valid": 12.5}
+
+    conn = store._connect()
+    conn.execute(
+        "UPDATE hot_path_metrics SET total_ms = ?, segments_json = ?",
+        ("broken", '{"valid": 1, "bad": "nope", "infinite": Infinity}'),
+    )
+    conn.commit()
+
+    loaded = store.latest(limit=1)[0]
+    assert loaded.total_ms == 0.0
+    assert loaded.segments == {"valid": 1.0}

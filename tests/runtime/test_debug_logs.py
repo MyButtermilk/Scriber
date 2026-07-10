@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from src.runtime import debug_logs
 from src.runtime import log_clear_state
+import pytest
 
 
 def test_collect_debug_logs_strips_nul_padding_and_clear_marker_hides_old_entries(monkeypatch, tmp_path):
@@ -40,3 +41,37 @@ def test_collect_debug_logs_strips_nul_padding_and_clear_marker_hides_old_entrie
     after_payload = debug_logs.collect_debug_logs(limit=20)
     after_messages = [item["message"] for item in after_payload["items"] if item["source"] == "latest.log"]
     assert after_messages == ["[web_api    ] [------] [web_api        ] after clear"]
+
+
+def test_debug_logs_do_not_follow_symlink_outside_log_roots(monkeypatch, tmp_path):
+    logs_dir = tmp_path / "logs"
+    data_dir = tmp_path / "data"
+    repo_dir = tmp_path / "repo"
+    logs_dir.mkdir()
+    data_dir.mkdir()
+    repo_dir.mkdir()
+    outside = tmp_path / "private.log"
+    outside.write_text("must not be exposed\n", encoding="utf-8")
+    try:
+        (logs_dir / "linked.log").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    monkeypatch.setattr(debug_logs, "data_dir", lambda: data_dir)
+    monkeypatch.setattr(debug_logs, "logs_dir", lambda: logs_dir)
+    monkeypatch.setattr(debug_logs, "repo_root", lambda: repo_dir)
+    payload = debug_logs.collect_debug_logs(limit=20)
+
+    assert "linked.log" not in payload["sources"]
+    assert not any("must not be exposed" in item["message"] for item in payload["items"])
+
+
+def test_clear_state_ignores_oversized_file(monkeypatch, tmp_path):
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    monkeypatch.setattr(log_clear_state, "logs_dir", lambda: logs_dir)
+    log_clear_state.clear_state_path().write_bytes(
+        b"x" * (log_clear_state._MAX_CLEAR_STATE_BYTES + 1)
+    )
+
+    assert log_clear_state.load_clear_offsets() == {}

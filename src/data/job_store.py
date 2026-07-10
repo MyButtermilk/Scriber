@@ -28,9 +28,6 @@ class JobStatus(str, Enum):
     CANCELED = "canceled"
 
 
-_PENDING_STATUSES = (JobStatus.QUEUED.value, JobStatus.RUNNING.value)
-
-
 def _now_iso() -> str:
     return datetime.now().isoformat()
 
@@ -40,9 +37,19 @@ def _parse_iso(value: str) -> datetime | None:
     if not text:
         return None
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if parsed.tzinfo is not None:
+        # Retry timestamps are persisted as local, timezone-naive ISO strings.
+        # Normalize offset-aware inputs before comparing them with datetime.now().
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+def _normalize_retry_iso(value: str) -> str:
+    parsed = _parse_iso(value)
+    return parsed.isoformat() if parsed is not None else ""
 
 
 @dataclass(frozen=True)
@@ -88,11 +95,15 @@ class JobStore:
         self._thread_local = threading.local()
         self._connections: list[sqlite3.Connection] = []
         self._connections_lock = threading.Lock()
+        self._connection_generation = 0
         self.init_schema()
 
     def _connect(self) -> sqlite3.Connection:
         conn = getattr(self._thread_local, "conn", None)
-        if conn is None:
+        if (
+            conn is None
+            or getattr(self._thread_local, "connection_generation", -1) != self._connection_generation
+        ):
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(self._db_path, timeout=30.0, check_same_thread=False)
             conn.row_factory = sqlite3.Row
@@ -101,18 +112,21 @@ class JobStore:
             self._thread_local.conn = conn
             with self._connections_lock:
                 self._connections.append(conn)
+                self._thread_local.connection_generation = self._connection_generation
         return conn
 
     def close(self) -> None:
         with self._connections_lock:
             connections = list(self._connections)
             self._connections.clear()
+            self._connection_generation += 1
         for conn in connections:
             try:
                 conn.close()
             except Exception:
                 pass
         self._thread_local.conn = None
+        self._thread_local.connection_generation = self._connection_generation
 
     def init_schema(self) -> None:
         with self._lock:
@@ -145,6 +159,28 @@ class JobStore:
                     ON jobs(transcript_id)
                     """
                 )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_jobs_status_next_retry_at
+                    ON jobs(status, next_retry_at)
+                    """
+                )
+                # Older builds could persist offset-aware retry timestamps. Normalize
+                # them once at startup so due-job queries stay indexable in SQLite.
+                retry_rows = conn.execute(
+                    "SELECT id, next_retry_at FROM jobs WHERE next_retry_at != ''"
+                ).fetchall()
+                retry_updates = []
+                for row in retry_rows:
+                    raw_retry_at = str(row["next_retry_at"] or "")
+                    normalized_retry_at = _normalize_retry_iso(raw_retry_at)
+                    if normalized_retry_at != raw_retry_at:
+                        retry_updates.append((normalized_retry_at, row["id"]))
+                if retry_updates:
+                    conn.executemany(
+                        "UPDATE jobs SET next_retry_at = ? WHERE id = ?",
+                        retry_updates,
+                    )
                 conn.commit()
 
     def enqueue(
@@ -194,63 +230,69 @@ class JobStore:
         return record
 
     def get(self, job_id: str) -> Optional[JobRecord]:
-        with self._lock:
-            with self._connect() as conn:
-                row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         if not row:
             return None
         return JobRecord.from_row(row)
 
     def get_by_transcript_id(self, transcript_id: str) -> Optional[JobRecord]:
-        with self._lock:
-            with self._connect() as conn:
-                row = conn.execute(
-                    "SELECT * FROM jobs WHERE transcript_id = ? ORDER BY created_at DESC LIMIT 1",
-                    (transcript_id,),
-                ).fetchone()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM jobs WHERE transcript_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+                (transcript_id,),
+            ).fetchone()
         if not row:
             return None
         return JobRecord.from_row(row)
 
+    def delete_by_transcript_id(self, transcript_id: str) -> int:
+        """Remove all lifecycle rows owned by a deleted transcript."""
+        with self._lock:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    "DELETE FROM jobs WHERE transcript_id = ?",
+                    (transcript_id,),
+                )
+                conn.commit()
+                return max(0, int(cursor.rowcount or 0))
+
     def list_pending(self, *, limit: int = 100) -> list[JobRecord]:
         now = _now_iso()
         query_limit = max(1, int(limit))
-        with self._lock:
-            with self._connect() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT * FROM jobs
-                    WHERE status IN (?, ?)
-                      AND (next_retry_at = '' OR next_retry_at IS NULL OR next_retry_at <= ?)
-                    ORDER BY created_at ASC
-                    LIMIT ?
-                    """,
-                    (*_PENDING_STATUSES, now, query_limit),
-                ).fetchall()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM jobs
+                WHERE status = ?
+                  AND (next_retry_at = '' OR next_retry_at IS NULL OR next_retry_at <= ?)
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                """,
+                (JobStatus.QUEUED.value, now, query_limit),
+            ).fetchall()
         return [JobRecord.from_row(row) for row in rows]
 
     def seconds_until_next_retry(self) -> float | None:
         now = datetime.now()
-        with self._lock:
-            with self._connect() as conn:
-                row = conn.execute(
-                    """
-                    SELECT next_retry_at
-                    FROM jobs
-                    WHERE status = ?
-                      AND next_retry_at != ''
-                    ORDER BY next_retry_at ASC
-                    LIMIT 1
-                    """,
-                    (JobStatus.QUEUED.value,),
-                ).fetchone()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT next_retry_at
+                FROM jobs
+                WHERE status = ?
+                  AND next_retry_at != ''
+                ORDER BY next_retry_at ASC, id ASC
+                LIMIT 1
+                """,
+                (JobStatus.QUEUED.value,),
+            ).fetchone()
         if not row:
             return None
         retry_at = _parse_iso(row["next_retry_at"] or "")
         if retry_at is None:
             return None
-        delay = (retry_at - now).total_seconds()
-        return max(0.0, delay)
+        return max(0.0, (retry_at - now).total_seconds())
 
     def reset_running_to_queued(self) -> int:
         now = _now_iso()
@@ -298,11 +340,12 @@ class JobStore:
         )
 
     def set_retry(self, job_id: str, *, retry_at: str, last_error: str = "") -> bool:
+        normalized_retry_at = _normalize_retry_iso(retry_at)
         return self._update_status(
             job_id,
             JobStatus.QUEUED,
             updated_at=_now_iso(),
-            next_retry_at=retry_at,
+            next_retry_at=normalized_retry_at,
             last_error=last_error,
         )
 

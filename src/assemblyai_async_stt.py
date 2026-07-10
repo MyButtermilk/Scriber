@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import io
+import json
 import re
 import tempfile
-import wave
 from typing import Any, BinaryIO, Callable
 
 import aiohttp
@@ -24,6 +23,9 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.time import time_now_iso8601
+
+from src.runtime.audio_spool import pcm_stream_to_wav
+from src.runtime.http_response import read_response_text_limited
 
 _ASSEMBLYAI_BASE_URL = "https://api.assemblyai.com/v2"
 DEFAULT_ASSEMBLYAI_UNIVERSAL_35_PRO_MODEL = "universal-3-5-pro"
@@ -51,16 +53,6 @@ _VOCAB_SPLIT_RE = re.compile(r"[,\n;]+")
 _MULTISPACE_RE = re.compile(r"\s+")
 _MAX_KEYTERMS = 1000
 _MAX_KEYTERM_WORDS = 6
-
-
-def _pcm_to_wav(audio_bytes: bytes, sample_rate: int, channels: int) -> bytes:
-    buf = io.BytesIO()
-    with contextlib.closing(wave.open(buf, "wb")) as wf:
-        wf.setnchannels(max(1, int(channels or 1)))
-        wf.setsampwidth(2)  # PCM int16
-        wf.setframerate(max(1, int(sample_rate or 16000)))
-        wf.writeframes(audio_bytes)
-    return buf.getvalue()
 
 
 def _report_progress(on_progress: Callable[[str], None] | None, message: str) -> None:
@@ -198,10 +190,10 @@ async def transcribe_with_assemblyai_pre_recorded(
         headers=headers,
         timeout=aiohttp.ClientTimeout(total=upload_timeout),
     ) as upload_resp:
+        raw = await read_response_text_limited(upload_resp, 64 * 1024 * 1024)
         if upload_resp.status not in (200, 201):
-            raw = await upload_resp.text()
             raise RuntimeError(f"AssemblyAI upload failed ({upload_resp.status}): {raw[:500]}")
-        upload_payload = await upload_resp.json()
+        upload_payload = json.loads(raw) if raw else {}
 
     upload_url = str(upload_payload.get("upload_url") or "").strip()
     if not upload_url:
@@ -228,10 +220,10 @@ async def transcribe_with_assemblyai_pre_recorded(
         headers=headers,
         timeout=aiohttp.ClientTimeout(total=60),
     ) as submit_resp:
+        raw = await read_response_text_limited(submit_resp, 64 * 1024 * 1024)
         if submit_resp.status not in (200, 201):
-            raw = await submit_resp.text()
             raise RuntimeError(f"AssemblyAI transcript submit failed ({submit_resp.status}): {raw[:500]}")
-        submit_data = await submit_resp.json()
+        submit_data = json.loads(raw) if raw else {}
 
     transcript_id = str(submit_data.get("id") or "").strip()
     if not transcript_id:
@@ -242,39 +234,66 @@ async def transcribe_with_assemblyai_pre_recorded(
     poll_start = asyncio.get_running_loop().time()
     poll_delay = 0.75
 
-    while True:
-        elapsed = asyncio.get_running_loop().time() - poll_start
-        if elapsed > timeout_secs:
-            raise TimeoutError("AssemblyAI transcription timed out")
+    try:
+        while True:
+            elapsed = asyncio.get_running_loop().time() - poll_start
+            if elapsed > timeout_secs:
+                raise TimeoutError("AssemblyAI transcription timed out")
 
-        async with session.get(
+            async with session.get(
+                f"{_ASSEMBLYAI_BASE_URL}/transcript/{transcript_id}",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as poll_resp:
+                raw = await read_response_text_limited(poll_resp, 64 * 1024 * 1024)
+                if poll_resp.status not in (200, 201):
+                    raise RuntimeError(
+                        f"AssemblyAI transcript polling failed ({poll_resp.status}): {raw[:500]}"
+                    )
+                poll_payload = json.loads(raw) if raw else {}
+
+            status = str(poll_payload.get("status") or "").lower()
+            if status in done_statuses:
+                _report_progress(on_progress, "Retrieving transcript...")
+                return poll_payload if isinstance(poll_payload, dict) else {}
+            if status in error_statuses:
+                raise RuntimeError(
+                    f"AssemblyAI transcription failed: {poll_payload.get('error') or 'unknown error'}"
+                )
+
+            if elapsed >= 120:
+                poll_delay = 5.0
+            elif elapsed >= 30:
+                poll_delay = 2.0
+            else:
+                poll_delay = 0.75
+            await asyncio.sleep(poll_delay)
+    finally:
+        await _delete_assemblyai_transcript(session, headers, transcript_id)
+
+
+async def _delete_assemblyai_transcript(
+    session: aiohttp.ClientSession,
+    headers: dict[str, str],
+    transcript_id: str,
+) -> None:
+    """Best-effort cleanup of provider-side transcript data."""
+    try:
+        async with session.delete(
             f"{_ASSEMBLYAI_BASE_URL}/transcript/{transcript_id}",
             headers=headers,
-            timeout=aiohttp.ClientTimeout(total=20),
-        ) as poll_resp:
-            if poll_resp.status not in (200, 201):
-                raw = await poll_resp.text()
-                raise RuntimeError(
-                    f"AssemblyAI transcript polling failed ({poll_resp.status}): {raw[:500]}"
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as response:
+            if response.status not in (200, 202, 204, 404):
+                logger.warning(
+                    "AssemblyAI transcript cleanup failed for status {}",
+                    response.status,
                 )
-            poll_payload = await poll_resp.json()
-
-        status = str(poll_payload.get("status") or "").lower()
-        if status in done_statuses:
-            _report_progress(on_progress, "Retrieving transcript...")
-            return poll_payload if isinstance(poll_payload, dict) else {}
-        if status in error_statuses:
-            raise RuntimeError(
-                f"AssemblyAI transcription failed: {poll_payload.get('error') or 'unknown error'}"
-            )
-
-        if elapsed >= 120:
-            poll_delay = 5.0
-        elif elapsed >= 30:
-            poll_delay = 2.0
-        else:
-            poll_delay = 0.75
-        await asyncio.sleep(poll_delay)
+    except asyncio.CancelledError:
+        # Cleanup must not turn task cancellation into a successful result.
+        raise
+    except Exception as exc:
+        logger.warning("AssemblyAI transcript cleanup failed: {}", type(exc).__name__)
 
 
 class AssemblyAIUniversal35ProAsyncProcessor(FrameProcessor):
@@ -315,18 +334,12 @@ class AssemblyAIUniversal35ProAsyncProcessor(FrameProcessor):
         self._buffer = self._create_buffer()
         self._buffer_size = 0
 
-    async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
-        wav_bytes = _pcm_to_wav(
-            audio_bytes=audio_bytes,
-            sample_rate=self._sample_rate,
-            channels=self._channels,
-        )
-
+    async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
         async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
             return await transcribe_with_assemblyai_pre_recorded(
                 session=session,
                 api_key=self._api_key,
-                audio_source=wav_bytes,
+                audio_source=wav_source,
                 language=self._language,
                 custom_vocab=self._custom_vocab,
                 speaker_labels=self._speaker_labels,
@@ -345,6 +358,18 @@ class AssemblyAIUniversal35ProAsyncProcessor(FrameProcessor):
             payload,
             prefer_speaker_labels=self._speaker_labels,
         )
+
+    async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
+        wav_source = await asyncio.to_thread(
+            pcm_stream_to_wav,
+            io.BytesIO(audio_bytes),
+            self._sample_rate,
+            self._channels,
+        )
+        try:
+            return await self._transcribe_wav(wav_source)
+        finally:
+            wav_source.close()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -369,8 +394,16 @@ class AssemblyAIUniversal35ProAsyncProcessor(FrameProcessor):
                     return
                 if self._buffer_size:
                     _report_progress(self._on_progress, "Transcribing...")
-                    self._buffer.seek(0)
-                    text = (await self._transcribe_bytes(self._buffer.read())).strip()
+                    wav_source = await asyncio.to_thread(
+                        pcm_stream_to_wav,
+                        self._buffer,
+                        self._sample_rate,
+                        self._channels,
+                    )
+                    try:
+                        text = (await self._transcribe_wav(wav_source)).strip()
+                    finally:
+                        wav_source.close()
                     if text:
                         await self.push_frame(
                             TranscriptionFrame(

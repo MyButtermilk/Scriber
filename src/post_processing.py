@@ -9,6 +9,7 @@ from loguru import logger
 
 from src.config import Config
 from src.summarization import generate_text_with_model
+from src.runtime.env_values import env_float, env_int
 
 _OUTPUT_PLACEHOLDER = "${output}"
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
@@ -33,10 +34,30 @@ def clean_post_processing_output(text: str) -> str:
 
 def post_processing_output_token_budget(raw_text: str) -> int:
     words = max(1, len((raw_text or "").split()))
-    multiplier = float(os.getenv("SCRIBER_POST_PROCESSING_TOKEN_MULTIPLIER", "2.2") or "2.2")
-    overhead = int(os.getenv("SCRIBER_POST_PROCESSING_TOKEN_OVERHEAD", "256") or "256")
-    minimum = int(os.getenv("SCRIBER_POST_PROCESSING_MIN_OUTPUT_TOKENS", "512") or "512")
-    maximum = int(os.getenv("SCRIBER_POST_PROCESSING_MAX_OUTPUT_TOKENS", "4096") or "4096")
+    multiplier = env_float(
+        "SCRIBER_POST_PROCESSING_TOKEN_MULTIPLIER",
+        2.2,
+        minimum=0.1,
+        maximum=20.0,
+    )
+    overhead = env_int(
+        "SCRIBER_POST_PROCESSING_TOKEN_OVERHEAD",
+        256,
+        minimum=0,
+        maximum=65536,
+    )
+    minimum = env_int(
+        "SCRIBER_POST_PROCESSING_MIN_OUTPUT_TOKENS",
+        512,
+        minimum=1,
+        maximum=65536,
+    )
+    maximum = env_int(
+        "SCRIBER_POST_PROCESSING_MAX_OUTPUT_TOKENS",
+        4096,
+        minimum=minimum,
+        maximum=65536,
+    )
     estimated = int(words * multiplier) + overhead
     return max(minimum, min(maximum, estimated))
 

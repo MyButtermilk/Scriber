@@ -10,6 +10,7 @@ import {
   setTrayRecordingState,
   wsUrl,
 } from "@/lib/backend";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import {
   DEFAULT_VISUALIZER_BAR_COUNT,
   loadVisualizerBarCount,
@@ -418,10 +419,10 @@ export default function NativeRecordingOverlay() {
 
   const handleStop = useCallback(async () => {
     try {
-      await fetch(apiUrl("/api/live-mic/stop"), {
+      await fetchWithTimeout(apiUrl("/api/live-mic/stop"), {
         method: "POST",
         credentials: "include",
-      });
+      }, 15_000);
     } catch {
       // The backend state stream will hide the overlay if stop already won.
     }

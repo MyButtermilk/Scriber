@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -28,7 +29,7 @@ class _FakeResponse:
         return self._payload
 
     async def text(self):
-        return self._text
+        return self._text or json.dumps(self._payload)
 
 
 class _FakeSession:

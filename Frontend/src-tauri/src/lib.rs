@@ -63,6 +63,10 @@ const FALLBACK_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BACKEND_START_TIMEOUT: Duration = Duration::from_secs(30);
 const BACKEND_START_TIMEOUT_ENV: &str = "SCRIBER_BACKEND_START_TIMEOUT_MS";
 const BACKEND_SUPERVISOR_INTERVAL: Duration = Duration::from_secs(2);
+const BACKEND_TERMINATE_TIMEOUT: Duration = Duration::from_secs(2);
+const BACKEND_TERMINATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const BACKEND_HEALTH_MAX_RESPONSE_BYTES: u64 = 64 * 1024;
+const BACKEND_JSON_MAX_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
 const FORCE_MANAGED_BACKEND_ENV: &str = "SCRIBER_FORCE_MANAGED_BACKEND";
 const SESSION_TOKEN_ENV: &str = "SCRIBER_SESSION_TOKEN";
 const SHELL_IPC_PIPE_ENV: &str = "SCRIBER_SHELL_IPC_PIPE";
@@ -579,7 +583,9 @@ impl NativeDeviceObserveOnlyLogState {
     ) -> Option<String> {
         self.observed_count = self.observed_count.saturating_add(1);
         let count_due = self.observed_count == 1
-            || self.observed_count % NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS == 0;
+            || self
+                .observed_count
+                .is_multiple_of(NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS);
         let time_due = self
             .last_logged_at
             .map(|last| now.duration_since(last) >= NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL)
@@ -1521,6 +1527,9 @@ fn ensure_main_window_visible<R: Runtime>(window: &WebviewWindow<R>) -> Result<(
     Ok(())
 }
 
+// Raw physical rectangles are intentionally passed without allocating wrapper
+// structs because this helper also backs compact monitor-layout tests.
+#[allow(clippy::too_many_arguments)]
 fn physical_rect_has_min_visible_area(
     window_x: i32,
     window_y: i32,
@@ -2482,12 +2491,41 @@ fn refresh_child_state(state: &mut BackendState) {
 fn terminate_managed_child(state: &mut BackendState) {
     if let Some(mut child) = state.child.take() {
         write_shell_log(&format!("terminating managed backend pid={}", child.id()));
-        let _ = child.kill();
-        let _ = child.wait();
+        if let Err(err) = child.kill() {
+            write_shell_log(&format!(
+                "managed backend primary kill failed pid={} error={err}",
+                child.id()
+            ));
+            // Closing the Windows job handle is a second kill mechanism.
+            state.job = None;
+        }
+        if !wait_for_child_exit(&mut child, BACKEND_TERMINATE_TIMEOUT) {
+            state.job = None;
+            let _ = child.kill();
+            if !wait_for_child_exit(&mut child, Duration::from_millis(500)) {
+                write_shell_log(&format!(
+                    "managed backend did not exit before termination deadline pid={}",
+                    child.id()
+                ));
+            }
+        }
     }
     state.job = None;
     state.started_at = None;
     state.launch_kind = "none".to_string();
+}
+
+fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(BACKEND_TERMINATE_POLL_INTERVAL.min(timeout));
+            }
+            Ok(None) | Err(_) => return false,
+        }
+    }
 }
 
 fn select_backend_port(current_port: u16) -> u16 {
@@ -2715,10 +2753,7 @@ fn set_desktop_autostart_enabled(_enabled: bool) -> Result<(), String> {
 
 #[cfg(windows)]
 fn read_autostart_value(subkey: &str, value_name: &str) -> Result<Option<String>, String> {
-    let key = match open_registry_key(subkey, KEY_READ | KEY_QUERY_VALUE) {
-        Ok(key) => key,
-        Err(err) => return Err(err),
-    };
+    let key = open_registry_key(subkey, KEY_READ | KEY_QUERY_VALUE)?;
     let value_name = wide_null(value_name);
     unsafe {
         let mut value_type = 0;
@@ -3143,16 +3178,29 @@ fn request_backend_json_with_body(
     stream
         .write_all(request.as_bytes())
         .map_err(|err| format!("could not write backend request: {err}"))?;
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|err| format!("could not read backend response: {err}"))?;
+    let response = read_backend_response_limited(&mut stream, BACKEND_JSON_MAX_RESPONSE_BYTES)?;
     let (status, body) = split_http_response(&response)?;
     if !status.starts_with("HTTP/1.1 2") && !status.starts_with("HTTP/1.0 2") {
         return Err(format!("backend returned {status}"));
     }
     serde_json::from_str::<Value>(body)
         .map_err(|err| format!("backend returned invalid JSON: {err}"))
+}
+
+fn read_backend_response_limited<R: Read>(
+    reader: R,
+    max_response_bytes: u64,
+) -> Result<String, String> {
+    let limit = max_response_bytes.max(1);
+    let mut response = String::new();
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_string(&mut response)
+        .map_err(|err| format!("could not read backend response: {err}"))?;
+    if response.len() as u64 > limit {
+        return Err(format!("backend response exceeded {limit} bytes"));
+    }
+    Ok(response)
 }
 
 fn build_backend_http_request(
@@ -3174,7 +3222,7 @@ fn build_backend_http_request(
     };
     format!(
         "{method} {path} HTTP/1.1\r\nHost: {DEFAULT_HOST}:{port}\r\n{token_header}{content_type_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.as_bytes().len()
+        body.len()
     )
 }
 
@@ -3662,7 +3710,11 @@ fn health_ready(port: u16) -> bool {
         return false;
     }
     let mut response = String::new();
-    if stream.read_to_string(&mut response).is_err() {
+    if stream
+        .take(BACKEND_HEALTH_MAX_RESPONSE_BYTES)
+        .read_to_string(&mut response)
+        .is_err()
+    {
         return false;
     }
     health_response_ready(&response)
@@ -3692,14 +3744,14 @@ mod tests {
         find_backend_executable, find_backend_executable_in_dirs, health_response_ready,
         is_safe_transcript_id, is_shell_menu_item, managed_backend_start_timed_out,
         normalize_global_shortcut, normalize_hotkey_mode, parse_loopback_backend_url,
-        parse_shell_menu_smoke_actions, recent_transcript_label, recent_transcripts_from_value,
-        resolve_session_token, sanitize_menu_label, shell_ipc, shell_ipc_env_pairs,
-        shortcut_id_for_hotkey, should_refresh_hotkey_after_backend_ready,
-        should_show_window_for_tray_click, split_http_response, DesktopHotkeyState,
-        NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry, ShellMenuSmokeAction,
-        AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV,
-        HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
-        MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        parse_shell_menu_smoke_actions, read_backend_response_limited, recent_transcript_label,
+        recent_transcripts_from_value, resolve_session_token, sanitize_menu_label, shell_ipc,
+        shell_ipc_env_pairs, shortcut_id_for_hotkey, should_refresh_hotkey_after_backend_ready,
+        should_show_window_for_tray_click, split_http_response, wait_for_child_exit,
+        DesktopHotkeyState, NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry,
+        ShellMenuSmokeAction, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
+        BACKEND_START_TIMEOUT_ENV, HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX,
+        MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
         SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
         TRAY_RECENT_TRANSCRIPT_LIMIT,
@@ -3722,6 +3774,22 @@ mod tests {
         );
 
         assert!(health_response_ready(response));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn child_exit_wait_respects_deadline() {
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "ping -n 30 127.0.0.1 >NUL"])
+            .spawn()
+            .expect("spawn long-running child");
+        let started = Instant::now();
+
+        assert!(!wait_for_child_exit(&mut child, Duration::from_millis(20)));
+        assert!(started.elapsed() < Duration::from_millis(500));
+
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]
@@ -3924,7 +3992,8 @@ mod tests {
         let sidecar = dir.join(backend_executable_names()[0]);
         fs::write(&sidecar, b"test").unwrap();
 
-        let found = find_backend_executable_in_dirs(&[dir.clone()], backend_executable_names());
+        let found =
+            find_backend_executable_in_dirs(std::slice::from_ref(&dir), backend_executable_names());
 
         assert_eq!(found, Some(sidecar));
         let _ = fs::remove_dir_all(dir);
@@ -4314,6 +4383,16 @@ mod tests {
     }
 
     #[test]
+    fn backend_response_reader_enforces_byte_limit() {
+        let exact = std::io::Cursor::new(b"12345".to_vec());
+        assert_eq!(read_backend_response_limited(exact, 5).unwrap(), "12345");
+
+        let oversized = std::io::Cursor::new(b"123456".to_vec());
+        let error = read_backend_response_limited(oversized, 5).unwrap_err();
+        assert!(error.contains("exceeded 5 bytes"));
+    }
+
+    #[test]
     fn backend_http_request_without_body_uses_zero_content_length() {
         let request = build_backend_http_request("POST", "/api/live-mic/toggle", 8765, "", "");
 
@@ -4332,7 +4411,7 @@ mod tests {
 
         assert!(request.contains("X-Scriber-Token: secret\r\n"));
         assert!(request.contains("Content-Type: application/json\r\n"));
-        assert!(request.contains(&format!("Content-Length: {}\r\n", body.as_bytes().len())));
+        assert!(request.contains(&format!("Content-Length: {}\r\n", body.len())));
         assert!(request.ends_with(body));
     }
 

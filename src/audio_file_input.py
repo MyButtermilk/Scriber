@@ -9,7 +9,7 @@ from pipecat.transports.base_transport import TransportParams
 
 from src.runtime.ffmpeg_commands import pcm_pipe_decode_args
 from src.runtime.media_tools import require_media_tool
-from src.runtime.subprocess_utils import hidden_subprocess_kwargs
+from src.runtime.subprocess_utils import hidden_subprocess_kwargs, read_stream_limited
 
 try:
     from pipecat.transports.base_input import BaseInputTransport
@@ -63,11 +63,11 @@ class FfmpegAudioFileInput(BaseInputTransport):
         self._feed_task = asyncio.create_task(self._feed_audio(), name="ffmpeg_audio_file_feed")
 
     async def stop(self, frame: EndFrame):
-        await self._stop_ffmpeg()
         task, self._feed_task = self._feed_task, None
         if task:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        await self._stop_ffmpeg()
         await super().stop(frame)
 
     async def _stop_ffmpeg(self) -> None:
@@ -93,6 +93,7 @@ class FfmpegAudioFileInput(BaseInputTransport):
                 pass
 
     async def _feed_audio(self) -> None:
+        stderr_task: asyncio.Task[bytes] | None = None
         try:
             ffmpeg = require_media_tool("ffmpeg")
 
@@ -104,17 +105,22 @@ class FfmpegAudioFileInput(BaseInputTransport):
                 channels=int(self._params.audio_in_channels),
             )
 
-            self._ffmpeg = await asyncio.create_subprocess_exec(
+            proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 **hidden_subprocess_kwargs(),
             )
-            assert self._ffmpeg.stdout is not None
-            assert self._ffmpeg.stderr is not None
+            self._ffmpeg = proc
+            assert proc.stdout is not None
+            assert proc.stderr is not None
+            stderr_task = asyncio.create_task(
+                read_stream_limited(proc.stderr),
+                name="ffmpeg_audio_file_stderr",
+            )
 
             while True:
-                chunk = await self._ffmpeg.stdout.read(bytes_per_frame)
+                chunk = await proc.stdout.read(bytes_per_frame)
                 if not chunk:
                     break
                 frame = InputAudioRawFrame(
@@ -125,8 +131,8 @@ class FfmpegAudioFileInput(BaseInputTransport):
                 await self.push_audio_frame(frame)
                 await asyncio.sleep(0)
 
-            stderr_b = await self._ffmpeg.stderr.read()
-            rc = await self._ffmpeg.wait()
+            stderr_b = await stderr_task
+            rc = await proc.wait()
             if rc != 0:
                 err = (stderr_b or b"").decode("utf-8", errors="replace").strip()
                 raise RuntimeError(err or f"ffmpeg exited with code {rc}")
@@ -148,4 +154,8 @@ class FfmpegAudioFileInput(BaseInputTransport):
                 await self._stop_ffmpeg()
             except Exception:
                 pass
+            if stderr_task is not None and not stderr_task.done():
+                stderr_task.cancel()
+            if stderr_task is not None:
+                await asyncio.gather(stderr_task, return_exceptions=True)
 

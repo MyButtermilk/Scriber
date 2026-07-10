@@ -104,3 +104,35 @@ def test_primeline_archive_download_status_requires_extracted_files(monkeypatch,
         (extract_dir / filename).write_text("test", encoding="utf-8")
 
     assert onnx_stt.is_model_downloaded("parakeet-primeline", quantization="fp32") is True
+
+
+@pytest.mark.asyncio
+async def test_download_rechecks_cache_after_acquiring_worker_lock(monkeypatch):
+    cache_checks = iter([False, True])
+    progress = []
+    monkeypatch.setattr(
+        onnx_stt,
+        "is_model_downloaded",
+        lambda *_args, **_kwargs: next(cache_checks),
+    )
+    monkeypatch.setattr(onnx_stt, "is_model_downloading", lambda _model: False)
+
+    result = await onnx_stt.download_model(
+        "parakeet-primeline",
+        quantization="int8",
+        on_progress=lambda value, message: progress.append((value, message)),
+    )
+
+    assert result is True
+    assert progress == [(100.0, "Already downloaded")]
+
+
+def test_delete_model_refuses_active_download(monkeypatch):
+    monkeypatch.setattr(onnx_stt, "is_model_downloading", lambda _model: True)
+    monkeypatch.setattr(
+        onnx_stt,
+        "unload_model",
+        lambda *_args, **_kwargs: pytest.fail("active model was unloaded"),
+    )
+
+    assert onnx_stt.delete_model("parakeet-primeline", quantization="int8") is False

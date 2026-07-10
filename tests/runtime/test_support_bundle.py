@@ -1,5 +1,6 @@
 import json
 import zipfile
+import pytest
 
 from src.runtime import support_bundle
 from src.runtime.log_clear_state import record_clear_state
@@ -13,15 +14,19 @@ def test_redaction_helpers_hide_sensitive_values():
     endpoint_id = r"SWD\MMDEVAPI\{0.0.1.00000000}.{secret-capture-device}"
     escaped_endpoint_id = endpoint_id.replace("\\", "\\\\")
     groq_key = "gsk_" + "a" * 32
+    google_key = "AIza" + "b" * 32
     redacted = redact_text(
         f"OPENAI_API_KEY=sk-abcdefghijklmnop Authorization: Bearer token-value "
         f"rawGroq={groq_key} "
+        f"url=https://example.test/v1?key={google_key}&access_token=query-token "
         f"pipe={pipe_name} escaped={escaped_pipe_name} "
         f"endpoint={endpoint_id} escapedEndpoint={escaped_endpoint_id}"
     )
 
     assert "sk-abcdefghijklmnop" not in redacted
     assert groq_key not in redacted
+    assert google_key not in redacted
+    assert "query-token" not in redacted
     assert "token-value" not in redacted
     assert pipe_name not in redacted
     assert escaped_pipe_name not in redacted
@@ -44,6 +49,33 @@ def test_redaction_helpers_hide_sensitive_values():
     assert mapping["language"] == "en"
     assert mapping["openaiApiKey"] == "[REDACTED]"
     assert mapping["nested"]["sessionToken"] == "[REDACTED]"
+
+
+def test_redaction_handles_very_long_non_secret_token():
+    raw = "x" * (support_bundle._MAX_SETTINGS_BYTES + 1)
+
+    assert redact_text(raw) == raw
+
+
+def test_support_bundle_limits_log_file_count(monkeypatch, tmp_path):
+    data = tmp_path / "data"
+    logs = data / "logs"
+    repo = tmp_path / "repo"
+    logs.mkdir(parents=True)
+    repo.mkdir()
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(data))
+    monkeypatch.setattr(support_bundle, "repo_root", lambda: repo)
+    for index in range(support_bundle._MAX_LOG_FILES + 5):
+        (logs / f"log-{index:03d}.log").write_text("entry\n", encoding="utf-8")
+
+    bundle = create_support_bundle(
+        runtime_info={"apiVersion": "1", "runtimeMode": "test"},
+        app_state={"listening": False},
+    )
+
+    with zipfile.ZipFile(bundle) as zf:
+        log_names = [name for name in zf.namelist() if name.startswith("logs/")]
+    assert len(log_names) == support_bundle._MAX_LOG_FILES
 
 
 def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path):
@@ -125,6 +157,25 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     assert "[REDACTED]" in combined
     assert "[REDACTED_PIPE]" in combined
     assert "[REDACTED_ENDPOINT_ID]" in combined
+
+
+def test_support_bundle_does_not_load_oversized_settings_as_json(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    repo_dir = tmp_path / "repo"
+    data_dir.mkdir()
+    repo_dir.mkdir()
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(data_dir))
+    monkeypatch.setattr(support_bundle, "repo_root", lambda: repo_dir)
+    (data_dir / "settings.json").write_text(
+        "x" * (support_bundle._MAX_SETTINGS_BYTES + 1),
+        encoding="utf-8",
+    )
+
+    bundle = create_support_bundle(runtime_info={}, app_state={})
+
+    with zipfile.ZipFile(bundle) as zf:
+        assert "config/settings.redacted.txt" in zf.namelist()
+        assert len(zf.read("config/settings.redacted.txt")) < support_bundle._MAX_SETTINGS_BYTES
 
 
 def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_path):
@@ -375,3 +426,45 @@ def test_support_bundle_respects_runtime_log_clear_marker(monkeypatch, tmp_path)
 
     assert "before-clear" not in log_text
     assert "after-clear" in log_text
+
+
+def test_support_bundle_names_are_unique_and_retention_is_bounded(monkeypatch, tmp_path):
+    output_dir = tmp_path / "bundles"
+    monkeypatch.setattr(support_bundle, "_MAX_SUPPORT_BUNDLES", 3)
+    bundles = [
+        create_support_bundle(
+            runtime_info={"apiVersion": "1"},
+            app_state={"recordingState": "idle"},
+            output_dir=output_dir,
+        )
+        for _ in range(5)
+    ]
+
+    assert len({path.name for path in bundles}) == 5
+    assert bundles[-1].is_file()
+    assert len(list(output_dir.glob("scriber-support-*.zip"))) == 3
+    assert list(output_dir.glob("*.tmp")) == []
+
+
+def test_support_bundle_does_not_follow_log_symlink_outside_root(monkeypatch, tmp_path):
+    data = tmp_path / "data"
+    logs = data / "logs"
+    repo = tmp_path / "repo"
+    logs.mkdir(parents=True)
+    repo.mkdir()
+    outside = tmp_path / "outside-secret.log"
+    outside.write_text("outside secret\n", encoding="utf-8")
+    try:
+        (logs / "linked.log").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(data))
+    monkeypatch.setattr(support_bundle, "repo_root", lambda: repo)
+    bundle = create_support_bundle(
+        runtime_info={"apiVersion": "1"},
+        app_state={"recordingState": "idle"},
+    )
+
+    with zipfile.ZipFile(bundle) as zf:
+        assert "logs/linked.log" not in zf.namelist()

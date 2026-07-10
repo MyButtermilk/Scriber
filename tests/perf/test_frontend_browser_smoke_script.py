@@ -66,9 +66,7 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
         {"name": "youtube-start-transcription", "ok": True},
     ]
     debug = next(item for item in payload["scenarios"] if item["route"] == "/debug")
-    assert "Copy visible" in debug["expectedText"]
     assert "Clear logs" in debug["expectedText"]
-    assert "Support bundle" in debug["expectedText"]
     assert debug["interactionChecks"] == [{"name": "debug-console-actions", "ok": True}]
     settings = next(item for item in payload["scenarios"] if item["route"] == "/settings")
     assert settings["expectedText"] == ["Settings", "Speech-to-text provider", "API keys"]
@@ -188,7 +186,7 @@ def test_frontend_browser_smoke_exercises_debug_console_actions() -> None:
     assert "Refresh logs" in script
     assert "Toggle auto refresh" in script
     assert "Toggle auto scroll" in script
-    assert "Reset filters" in script
+    assert "textContent || '').trim() === 'Reset'" in script
     assert "Debug console sample warning" in script
     assert "Copy visible logs" in script
     assert "Download support bundle" in script

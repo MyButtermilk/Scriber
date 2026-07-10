@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import math
 import os
 import queue as _queue
 import threading
@@ -116,7 +117,10 @@ _RUST_AUDIO_FALLBACK_REASON = ""
 def _rust_audio_failure_cooldown_seconds() -> float:
     raw = os.getenv("SCRIBER_RUST_AUDIO_FAILURE_COOLDOWN_SEC", "60")
     try:
-        return max(0.0, float(raw))
+        value = float(raw)
+        if not math.isfinite(value):
+            return 60.0
+        return max(0.0, min(3600.0, value))
     except (TypeError, ValueError):
         return 60.0
 
@@ -352,6 +356,9 @@ class RustPrototypeFrameSource(AudioFrameSource):
             },
         }
         response = self._shell_call("audioCaptureStart", payload, timeout_seconds=2.0)
+        if not isinstance(response, dict):
+            self.fallback_reason = "rustCaptureInvalidResponse"
+            raise RuntimeError("Rust audio capture start returned an invalid response")
         response_payload = response.get("payload") if isinstance(response, dict) else None
         if not isinstance(response_payload, dict):
             response_payload = {}
@@ -373,29 +380,55 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.sidecar_pid = response_payload.get("sidecarPid")
         if self.stream_id:
             self.sidecar_start_count += 1
-        self.capture_channels = max(
-            1,
-            int(response_payload.get("captureChannels") or self.target_channels),
-        )
-        self.target_channels = max(
-            1,
-            int(response_payload.get("channels") or self.target_channels),
-        )
-        returned_rate = int(response_payload.get("sampleRate") or self.sample_rate)
-        sample_format = str(response_payload.get("sampleFormat") or "pcm_i16_le")
-        if returned_rate != self.sample_rate:
-            self.fallback_reason = "rustSampleRateMismatch"
-            raise RuntimeError(
-                f"Rust audio capture returned sample rate {returned_rate}, expected {self.sample_rate}"
+        try:
+            if not self.stream_id:
+                self.fallback_reason = "rustStreamIdMissing"
+                raise RuntimeError("Rust audio capture did not return a stream ID")
+            self.capture_channels = max(
+                1,
+                int(response_payload.get("captureChannels") or self.target_channels),
             )
-        if sample_format != "pcm_i16_le":
-            self.fallback_reason = "rustSampleFormatMismatch"
-            raise RuntimeError(
-                f"Rust audio capture returned unsupported sample format {sample_format}"
+            self.target_channels = max(
+                1,
+                int(response_payload.get("channels") or self.target_channels),
             )
-        if not self._frame_pipe:
-            self.fallback_reason = "rustFramePipeMissing"
-            raise RuntimeError("Rust audio capture did not return a frame pipe")
+            returned_rate = int(response_payload.get("sampleRate") or self.sample_rate)
+            sample_format = str(response_payload.get("sampleFormat") or "pcm_i16_le")
+            if returned_rate != self.sample_rate:
+                self.fallback_reason = "rustSampleRateMismatch"
+                raise RuntimeError(
+                    f"Rust audio capture returned sample rate {returned_rate}, expected {self.sample_rate}"
+                )
+            if sample_format != "pcm_i16_le":
+                self.fallback_reason = "rustSampleFormatMismatch"
+                raise RuntimeError(
+                    f"Rust audio capture returned unsupported sample format {sample_format}"
+                )
+            if not self._frame_pipe:
+                self.fallback_reason = "rustFramePipeMissing"
+                raise RuntimeError("Rust audio capture did not return a frame pipe")
+        except Exception:
+            if self.stream_id:
+                try:
+                    stop_response = self._shell_call(
+                        "audioCaptureStop",
+                        {"streamId": self.stream_id},
+                        timeout_seconds=0.75,
+                    )
+                    stop_payload = (
+                        stop_response.get("payload")
+                        if isinstance(stop_response, dict)
+                        else None
+                    )
+                    if isinstance(stop_payload, dict):
+                        self._record_sidecar_stop(stop_payload)
+                except Exception as stop_exc:
+                    self._last_error = str(stop_exc)
+            self.stream_id = ""
+            self._frame_pipe = ""
+            self._frame_pipe_hash = None
+            self.sidecar_pid = None
+            raise
         return self
 
     def start(self) -> None:
@@ -483,7 +516,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "requestedPrebufferMs": self.requested_prebuffer_ms,
             "requestedPrewarmIdHash": _hash_private_hint(self.requested_prewarm_id),
             "adoptedPrewarm": self._redacted_adopted_prewarm(),
-            "streamId": self.stream_id or None,
+            "streamIdHash": _hash_private_hint(self.stream_id),
             "framePipeHash": self._frame_pipe_hash,
             "nativeEndpointIdHash": self.native_endpoint_id_hash,
             "endpointSelection": self.endpoint_selection,
@@ -669,7 +702,10 @@ class RustPrototypeFrameSource(AudioFrameSource):
 def _rust_first_frame_timeout_seconds() -> float:
     raw = os.getenv("SCRIBER_RUST_AUDIO_FIRST_FRAME_TIMEOUT_SEC", "0.5")
     try:
-        return max(0.05, float(raw))
+        value = float(raw)
+        if not math.isfinite(value):
+            return 0.5
+        return max(0.05, min(10.0, value))
     except (TypeError, ValueError):
         return 0.5
 
@@ -873,6 +909,8 @@ class MicrophoneInput(BaseInputTransport):
         self._consumer_loop: asyncio.AbstractEventLoop | None = None
         self._queue_wakeup: asyncio.Event | None = None
         self._consumer_task = None
+        self._consumer_restart_pending = False
+        self._consumer_restart_count = 0
         # Serializes _audio_callback against itself. The prewarm path can invoke
         # this callback from the PortAudio thread (live frames) and the event loop
         # thread (prebuffer replay) concurrently; reentrant so the replay can hold
@@ -1014,6 +1052,8 @@ class MicrophoneInput(BaseInputTransport):
         self._last_drop_log_at = 0.0
         self._consumer_error = ""
         self._consumer_last_state = "not_started"
+        self._consumer_restart_pending = False
+        self._consumer_restart_count = 0
         self._running = True
         self._active_capture_channel = None
         self._channel_selection_counter = 0
@@ -1284,6 +1324,8 @@ class MicrophoneInput(BaseInputTransport):
             "audioQueueMaxDepth": int(self._max_queue_depth),
             "consumerTaskState": self._consumer_task_state(),
             "consumerError": self._consumer_error,
+            "consumerRestartPending": bool(self._consumer_restart_pending),
+            "consumerRestartCount": int(self._consumer_restart_count),
             "lastObservedRms": float(self._last_observed_rms),
             "maxObservedRms": float(self._max_observed_rms),
             "audioLevelSampleCount": int(self._audio_level_sample_count),
@@ -1341,6 +1383,15 @@ class MicrophoneInput(BaseInputTransport):
         if not self._running:
             return True
         self._last_health_check_reason = str(reason or "watchdog")
+
+        if self._consumer_task_state() == "failed":
+            self._last_health_failure_reason = "consumerFailed"
+            self._schedule_consumer_restart()
+            logger.warning(
+                "Mic watchdog scheduled audio queue consumer recovery ({})",
+                reason,
+            )
+            return False
 
         stream = self.stream
         active = bool(stream and getattr(stream, "active", False))
@@ -1500,6 +1551,36 @@ class MicrophoneInput(BaseInputTransport):
         self._consumer_last_state = "failed"
         self._consumer_error = f"{type(error).__name__}: {error}"
         logger.error("Microphone audio queue consumer failed: {}", self._consumer_error)
+
+    def _schedule_consumer_restart(self) -> None:
+        loop = self._consumer_loop
+        if loop is None or loop.is_closed() or not self._running:
+            return
+        with self._callback_lock:
+            if self._consumer_restart_pending:
+                return
+            self._consumer_restart_pending = True
+
+        def restart() -> None:
+            with self._callback_lock:
+                self._consumer_restart_pending = False
+                current = self._consumer_task
+                if not self._running or (current is not None and not current.done()):
+                    return
+                task = loop.create_task(
+                    self._drain_queue(),
+                    name="microphone_drain_recovery",
+                )
+                self._consumer_task = task
+                self._consumer_last_state = "running"
+                self._consumer_restart_count += 1
+                task.add_done_callback(self._on_consumer_task_done)
+
+        try:
+            loop.call_soon_threadsafe(restart)
+        except RuntimeError:
+            with self._callback_lock:
+                self._consumer_restart_pending = False
 
     async def _next_queued_audio(self):
         while True:

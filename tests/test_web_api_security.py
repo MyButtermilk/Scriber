@@ -3,7 +3,7 @@ import sys
 import types
 
 import pytest
-from aiohttp import WSServerHandshakeError
+from aiohttp import FormData, WSServerHandshakeError
 from aiohttp.test_utils import TestClient, TestServer
 
 from src import web_api
@@ -19,6 +19,13 @@ def test_safe_upload_filename_sanitizes_invalid_chars():
     out = web_api._safe_upload_filename("bad<name>.mp3")
     assert "<" not in out
     assert ">" not in out
+
+
+def test_safe_upload_filename_bounds_length_and_preserves_extension():
+    out = web_api._safe_upload_filename(f"{'a' * 400}.mp3")
+
+    assert len(out) == web_api._MAX_UPLOAD_FILENAME_CHARS
+    assert out.endswith(".mp3")
 
 
 def test_origin_allowed_defaults(monkeypatch):
@@ -62,6 +69,34 @@ def test_safe_youtube_thumbnail_url_allows_only_youtube_thumbnail_hosts():
     assert web_api._safe_youtube_thumbnail_url("http://i.ytimg.com/vi/abc123/hqdefault.jpg") is None
     assert web_api._safe_youtube_thumbnail_url("https://evil.example/vi/abc123/hqdefault.jpg") is None
     assert web_api._safe_youtube_thumbnail_url("https://user:pass@i.ytimg.com/vi/abc123/hqdefault.jpg") is None
+    assert web_api._safe_youtube_thumbnail_url("https://i.ytimg.com:8443/vi/abc123/hqdefault.jpg") is None
+
+
+def test_work_directory_component_cannot_escape_parent():
+    component = web_api._safe_work_directory_component("../../outside")
+    assert "/" not in component
+    assert "\\" not in component
+    assert len(component) == 32
+    assert web_api._safe_work_directory_component("safe-id_123") == "safe-id_123"
+
+
+@pytest.mark.asyncio
+async def test_file_upload_rejects_empty_file_before_scheduling(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    client = TestClient(TestServer(web_api.create_app(ctl)))
+    await client.start_server()
+    try:
+        form = FormData()
+        form.add_field("file", b"", filename="empty.wav", content_type="audio/wav")
+        response = await client.post("/api/file/transcribe", data=form)
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 400
+    assert payload == {"message": "Uploaded file is empty"}
+    assert ctl._running_tasks == {}
 
 
 @pytest.mark.asyncio
@@ -316,9 +351,15 @@ class _FakeThumbnailResponse:
         content_type: str = "image/jpeg",
         body: bytes = b"jpg",
         chunk_size: int | None = None,
+        location: str | None = None,
+        content_length: int | None = None,
     ):
         self.status = status
         self.headers = {"Content-Type": content_type}
+        if location is not None:
+            self.headers["Location"] = location
+        if content_length is not None:
+            self.headers["Content-Length"] = str(content_length)
         self.content = _FakeThumbnailContent(body, chunk_size=chunk_size)
 
     async def __aenter__(self):
@@ -329,14 +370,15 @@ class _FakeThumbnailResponse:
 
 
 class _FakeThumbnailSession:
-    def __init__(self, response: _FakeThumbnailResponse):
-        self.response = response
+    def __init__(self, response: _FakeThumbnailResponse | list[_FakeThumbnailResponse]):
+        self.responses = list(response) if isinstance(response, list) else [response]
         self.urls: list[str] = []
         self.closed = False
 
-    def get(self, url: str, *, timeout=None):
+    def get(self, url: str, *, timeout=None, allow_redirects=True):
+        assert allow_redirects is False
         self.urls.append(url)
-        return self.response
+        return self.responses.pop(0)
 
     async def close(self):
         self.closed = True
@@ -359,6 +401,33 @@ def test_session_token_accepts_header_authorization_and_query():
         _FakeRequest(headers={"X-Scriber-Token": "wrong"}),
         "secret",
     )
+
+
+@pytest.mark.asyncio
+async def test_backend_autostart_routes_do_not_mutate_legacy_registry(monkeypatch, tmp_path):
+    monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        status_response = await client.get("/api/autostart")
+        update_response = await client.post("/api/autostart", json={"enabled": True})
+
+        assert status_response.status == 200
+        assert await status_response.json() == {
+            "enabled": False,
+            "available": False,
+            "message": "Desktop autostart is managed by the Tauri shell",
+        }
+        assert update_response.status == 409
+        assert (await update_response.json())["available"] is False
+    finally:
+        await client.close()
+        ctl.shutdown()
 
 
 def test_request_microphone_refresh_schedules_device_monitor(monkeypatch, tmp_path):
@@ -804,6 +873,35 @@ async def test_youtube_thumbnail_proxy_rejects_unsafe_or_non_image(monkeypatch, 
         await client.close()
         ctl.shutdown()
         assert fake_session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_youtube_thumbnail_proxy_rejects_redirect_outside_allowlist(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    fake_session = _FakeThumbnailSession(
+        _FakeThumbnailResponse(
+            status=302,
+            location="http://127.0.0.1/private",
+        )
+    )
+    monkeypatch.setattr(web_api, "ClientSession", lambda *, timeout: fake_session)
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    app = web_api.create_app(ctl)
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        response = await client.get(
+            "/api/youtube/thumbnail",
+            params={"url": "https://i.ytimg.com/vi/abc123/hqdefault.jpg"},
+        )
+        assert response.status == 502
+        assert fake_session.urls == ["https://i.ytimg.com/vi/abc123/hqdefault.jpg"]
+    finally:
+        await client.close()
+        ctl.shutdown()
 
 
 @pytest.mark.asyncio

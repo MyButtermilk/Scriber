@@ -1,5 +1,9 @@
 import os
 import json
+import math
+import threading
+from pathlib import Path
+from uuid import uuid4
 from dotenv import dotenv_values, load_dotenv
 
 from src.runtime.paths import env_path, migrate_legacy_runtime_data, repo_root, settings_path
@@ -28,24 +32,62 @@ load_dotenv(env_path())
 
 # JSON settings file for complex values (multi-line prompts, etc.)
 _JSON_SETTINGS_PATH = settings_path()
+_SETTINGS_FILE_LOCK = threading.Lock()
+_MAX_JSON_SETTINGS_BYTES = 1024 * 1024
+
+
+def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    if not math.isfinite(value):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _atomic_write_text(path: str | Path, content: str) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.{uuid4().hex}.tmp")
+    try:
+        with open(temporary, "w", encoding="utf-8", newline="\n") as file_obj:
+            file_obj.write(content)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.replace(temporary, target)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 def _load_json_settings() -> dict:
     """Load settings from JSON file."""
     if _JSON_SETTINGS_PATH.exists():
         try:
+            if _JSON_SETTINGS_PATH.stat().st_size > _MAX_JSON_SETTINGS_BYTES:
+                return {}
             with open(_JSON_SETTINGS_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                payload = json.load(f)
+                return payload if isinstance(payload, dict) else {}
         except Exception:
             pass
     return {}
 
 def _save_json_settings(settings: dict) -> None:
     """Save settings to JSON file."""
-    try:
-        with open(_JSON_SETTINGS_PATH, "w", encoding="utf-8") as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    payload = json.dumps(settings, ensure_ascii=False, indent=2) + "\n"
+    with _SETTINGS_FILE_LOCK:
+        _atomic_write_text(_JSON_SETTINGS_PATH, payload)
 
 _json_settings = _load_json_settings()
 
@@ -97,12 +139,14 @@ class Config:
         .lower()
         in {"1", "true", "yes", "on"}
     )
-    MIC_POST_RECORDING_PREWARM_SECONDS = max(
-        0.0,
-        min(600.0, float(os.getenv("SCRIBER_MIC_POST_RECORDING_PREWARM_SECONDS", "120") or 120)),
+    MIC_POST_RECORDING_PREWARM_SECONDS = _env_float(
+        "SCRIBER_MIC_POST_RECORDING_PREWARM_SECONDS",
+        120.0,
+        minimum=0.0,
+        maximum=600.0,
     )
-    MIC_BLOCK_SIZE = max(128, min(4096, int(os.getenv("SCRIBER_MIC_BLOCK_SIZE", "512"))))
-    MIC_PREBUFFER_MS = max(0, min(2000, int(os.getenv("SCRIBER_MIC_PREBUFFER_MS", "400"))))
+    MIC_BLOCK_SIZE = _env_int("SCRIBER_MIC_BLOCK_SIZE", 512, minimum=128, maximum=4096)
+    MIC_PREBUFFER_MS = _env_int("SCRIBER_MIC_PREBUFFER_MS", 400, minimum=0, maximum=2000)
     # Text injection method:
     #   "sendinput" - Windows SendInput API, instant batch injection (~10ms for any length)
     #   "paste" - Clipboard + Ctrl+V, fast and reliable
@@ -113,8 +157,10 @@ class Config:
     DISABLE_TEXT_INJECTION = os.getenv("SCRIBER_DISABLE_TEXT_INJECTION", "0") in ("1", "true", "True")
     INJECT_TARGET_TITLE = os.getenv("SCRIBER_INJECT_TARGET_TITLE", "").strip()
     # Clipboard paste tuning (Windows). Some apps (Word/Outlook) process paste asynchronously.
-    PASTE_PRE_DELAY_MS = int(os.getenv("SCRIBER_PASTE_PRE_DELAY_MS", "80"))
-    PASTE_RESTORE_DELAY_MS = int(os.getenv("SCRIBER_PASTE_RESTORE_DELAY_MS", "1500"))
+    PASTE_PRE_DELAY_MS = _env_int("SCRIBER_PASTE_PRE_DELAY_MS", 80, minimum=0, maximum=5000)
+    PASTE_RESTORE_DELAY_MS = _env_int(
+        "SCRIBER_PASTE_RESTORE_DELAY_MS", 1500, minimum=0, maximum=60_000
+    )
 
     SERVICE_API_KEY_MAP = {
         "soniox": "SONIOX_API_KEY",
@@ -296,7 +342,9 @@ ${output}"""
     CHANNELS = 1
     
     # Visualizer settings (default 60 bars)
-    VISUALIZER_BAR_COUNT = int(os.getenv("SCRIBER_VISUALIZER_BAR_COUNT", "60"))
+    VISUALIZER_BAR_COUNT = _env_int(
+        "SCRIBER_VISUALIZER_BAR_COUNT", 60, minimum=16, maximum=128
+    )
 
     @classmethod
     def get_api_key(cls, service_name: str) -> str:
@@ -323,7 +371,6 @@ ${output}"""
         os.environ["SCRIBER_POST_PROCESSING_HOTKEY"] = cls.POST_PROCESSING_HOTKEY
         global _json_settings
         _json_settings["postProcessingHotkey"] = cls.POST_PROCESSING_HOTKEY
-        _save_json_settings(_json_settings)
 
     @classmethod
     def set_mode(cls, mode: str) -> None:
@@ -399,7 +446,6 @@ ${output}"""
         os.environ["SCRIBER_SEGMENT_SPEECH_WITH_VAD"] = "1" if cls.SEGMENT_SPEECH_WITH_VAD else "0"
         global _json_settings
         _json_settings["segmentSpeechWithVad"] = cls.SEGMENT_SPEECH_WITH_VAD
-        _save_json_settings(_json_settings)
 
     @classmethod
     def set_mic_post_recording_prewarm_seconds(cls, seconds: float) -> None:
@@ -414,12 +460,10 @@ ${output}"""
 
     @classmethod
     def set_summarization_prompt(cls, prompt: str) -> None:
-        """Set and persist summarization prompt to JSON settings file."""
+        """Update the summarization prompt; persistence is batched by the controller."""
         cls.SUMMARIZATION_PROMPT = prompt.strip() if prompt else cls._DEFAULT_SUMMARIZATION_PROMPT
-        # Save to JSON settings file (handles multi-line properly)
         global _json_settings
         _json_settings["summarizationPrompt"] = cls.SUMMARIZATION_PROMPT
-        _save_json_settings(_json_settings)
 
     @classmethod
     def set_post_processing_enabled(cls, enabled: bool) -> None:
@@ -427,14 +471,12 @@ ${output}"""
         os.environ["SCRIBER_POST_PROCESSING_ENABLED"] = "1" if cls.POST_PROCESSING_ENABLED else "0"
         global _json_settings
         _json_settings["postProcessingEnabled"] = cls.POST_PROCESSING_ENABLED
-        _save_json_settings(_json_settings)
 
     @classmethod
     def set_post_processing_prompt(cls, prompt: str) -> None:
         cls.POST_PROCESSING_PROMPT = prompt.strip() if prompt else cls._DEFAULT_POST_PROCESSING_PROMPT
         global _json_settings
         _json_settings["postProcessingPrompt"] = cls.POST_PROCESSING_PROMPT
-        _save_json_settings(_json_settings)
 
     @classmethod
     def set_post_processing_model(cls, model: str) -> None:
@@ -442,7 +484,15 @@ ${output}"""
         os.environ["SCRIBER_POST_PROCESSING_MODEL"] = cls.POST_PROCESSING_MODEL
         global _json_settings
         _json_settings["postProcessingModel"] = cls.POST_PROCESSING_MODEL
-        _save_json_settings(_json_settings)
+
+    @classmethod
+    def persist_json_settings(cls) -> None:
+        _save_json_settings(dict(_json_settings))
+
+    @classmethod
+    def persist_settings_files(cls) -> None:
+        cls.persist_to_env_file()
+        cls.persist_json_settings()
 
     @classmethod
     def persist_to_env_file(cls, path: str | None = None) -> None:
@@ -526,5 +576,5 @@ ${output}"""
         add("SCRIBER_PASTE_RESTORE_DELAY_MS", str(cls.PASTE_RESTORE_DELAY_MS))
         add("SCRIBER_VISUALIZER_BAR_COUNT", str(cls.VISUALIZER_BAR_COUNT))
 
-        with open(target_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
+        with _SETTINGS_FILE_LOCK:
+            _atomic_write_text(target_path, "\n".join(lines) + "\n")

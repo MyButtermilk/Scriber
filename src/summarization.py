@@ -15,6 +15,7 @@ import aiohttp
 from loguru import logger
 
 from src.config import Config
+from src.runtime.http_response import read_response_text_limited
 
 SummarizationModel = Literal[
     "gemini-flash-latest",
@@ -233,6 +234,8 @@ def _env_float(name: str, default: float, *, min_value: float | None = None, max
         value = float(raw)
     except ValueError:
         value = default
+    if not math.isfinite(value):
+        value = default
     if min_value is not None:
         value = max(min_value, value)
     if max_value is not None:
@@ -267,10 +270,10 @@ def _summary_budget_for_text(
     else:
         ratio = 0.10
 
-    min_words = max(80, int(os.getenv("SCRIBER_SUMMARY_MIN_WORDS", "180")))
-    max_words = max(min_words, int(os.getenv("SCRIBER_SUMMARY_MAX_WORDS", "3200")))
-    short_input_max_words = max(1, int(os.getenv("SCRIBER_SUMMARY_SHORT_INPUT_MAX_WORDS", "2500")))
-    short_min_words = max(min_words, int(os.getenv("SCRIBER_SUMMARY_SHORT_MIN_WORDS", "450")))
+    min_words = _env_int("SCRIBER_SUMMARY_MIN_WORDS", 180, min_value=80, max_value=100_000)
+    max_words = _env_int("SCRIBER_SUMMARY_MAX_WORDS", 3200, min_value=min_words, max_value=100_000)
+    short_input_max_words = _env_int("SCRIBER_SUMMARY_SHORT_INPUT_MAX_WORDS", 2500, min_value=1, max_value=1_000_000)
+    short_min_words = _env_int("SCRIBER_SUMMARY_SHORT_MIN_WORDS", 450, min_value=min_words, max_value=max_words)
     target_words = int(round(input_words * ratio))
     target_words = max(min_words, min(max_words, target_words))
     if input_words <= short_input_max_words:
@@ -278,11 +281,11 @@ def _summary_budget_for_text(
 
     # Approximate model tokens needed for the requested output length.
     # Defaults are intentionally generous to avoid clipping long summaries.
-    token_multiplier = max(1.0, float(os.getenv("SCRIBER_SUMMARY_TOKEN_MULTIPLIER", "2.2")))
-    token_overhead = max(0, int(os.getenv("SCRIBER_SUMMARY_TOKEN_OVERHEAD", "320")))
-    min_tokens = max(256, int(os.getenv("SCRIBER_SUMMARY_MIN_OUTPUT_TOKENS", "1024")))
-    max_tokens = max(min_tokens, int(os.getenv("SCRIBER_SUMMARY_MAX_OUTPUT_TOKENS", "8192")))
-    short_min_tokens = max(min_tokens, int(os.getenv("SCRIBER_SUMMARY_SHORT_MIN_OUTPUT_TOKENS", "1600")))
+    token_multiplier = _env_float("SCRIBER_SUMMARY_TOKEN_MULTIPLIER", 2.2, min_value=1.0, max_value=20.0)
+    token_overhead = _env_int("SCRIBER_SUMMARY_TOKEN_OVERHEAD", 320, min_value=0, max_value=100_000)
+    min_tokens = _env_int("SCRIBER_SUMMARY_MIN_OUTPUT_TOKENS", 1024, min_value=256, max_value=1_000_000)
+    max_tokens = _env_int("SCRIBER_SUMMARY_MAX_OUTPUT_TOKENS", 8192, min_value=min_tokens, max_value=1_000_000)
+    short_min_tokens = _env_int("SCRIBER_SUMMARY_SHORT_MIN_OUTPUT_TOKENS", 1600, min_value=min_tokens, max_value=max_tokens)
 
     model_key = _openrouter_nitro_model(model) if _is_openrouter_model(model) else model
     model_cap = _MODEL_OUTPUT_TOKEN_CAPS.get(model_key, max_tokens)
@@ -294,15 +297,15 @@ def _summary_budget_for_text(
     output_tokens = max(min_tokens, min(budget_cap, requested_tokens))
 
     # For very long recordings (e.g. >30 min), allow a larger first-pass output.
-    long_video_min_seconds = max(1, int(os.getenv("SCRIBER_SUMMARY_LONG_VIDEO_MIN_SECONDS", "1800")))
-    long_video_token_bonus = max(0, int(os.getenv("SCRIBER_SUMMARY_LONG_VIDEO_TOKEN_BONUS", "1500")))
+    long_video_min_seconds = _env_int("SCRIBER_SUMMARY_LONG_VIDEO_MIN_SECONDS", 1800, min_value=1, max_value=31_536_000)
+    long_video_token_bonus = _env_int("SCRIBER_SUMMARY_LONG_VIDEO_TOKEN_BONUS", 1500, min_value=0, max_value=1_000_000)
     if duration_seconds and duration_seconds >= long_video_min_seconds and long_video_token_bonus > 0:
         output_tokens = min(budget_cap, output_tokens + long_video_token_bonus)
 
     # Gemini 3 uses hidden "thinking" budget within max_output_tokens.
     # Reserve additional tokens so visible output is not cut to 1-2 lines.
     if _is_gemini_thinking_model(model):
-        thinking_reserve = max(0, int(os.getenv("SCRIBER_SUMMARY_GEMINI_THINKING_RESERVE_TOKENS", "2400")))
+        thinking_reserve = _env_int("SCRIBER_SUMMARY_GEMINI_THINKING_RESERVE_TOKENS", 2400, min_value=0, max_value=1_000_000)
         if thinking_reserve > 0:
             output_tokens = min(budget_cap, output_tokens + thinking_reserve)
 
@@ -876,19 +879,18 @@ def _openrouter_should_retry_with_more_tokens(data: dict[str, Any]) -> bool:
 async def _post_openrouter_chat_completion(
     payload: dict[str, Any],
     headers: dict[str, str],
-    timeout: aiohttp.ClientTimeout,
+    session: aiohttp.ClientSession,
 ) -> dict[str, Any]:
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            json=payload,
-            headers=headers,
-        ) as resp:
-            raw = await resp.text()
-            if resp.status >= 400:
-                detail = _openrouter_error_detail(resp.status, raw)
-                raise RuntimeError(f"OpenRouter API error {resp.status}: {detail}")
-            return json.loads(raw)
+    async with session.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        json=payload,
+        headers=headers,
+    ) as resp:
+        raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
+        if resp.status >= 400:
+            detail = _openrouter_error_detail(resp.status, raw)
+            raise RuntimeError(f"OpenRouter API error {resp.status}: {detail}")
+        return json.loads(raw)
 
 
 def _openrouter_used_model(data: dict[str, Any], fallback: str) -> str:
@@ -988,13 +990,14 @@ async def _summarize_openrouter(
     last_empty_detail = ""
     retry_cap = _openrouter_retry_output_cap(initial_models, max_output_tokens)
 
+    session = aiohttp.ClientSession(timeout=timeout)
     try:
         attempt_index = 0
         while attempt_index < len(attempts):
             attempt_models = attempts[attempt_index]
             attempt_max_tokens = attempt_budgets[attempt_index]
             payload = _build_openrouter_payload(prompt, attempt_models, attempt_max_tokens)
-            data = await _post_openrouter_chat_completion(payload, headers, timeout)
+            data = await _post_openrouter_chat_completion(payload, headers, session)
 
             content = _extract_openrouter_response_text(data).strip()
             used_model = _openrouter_used_model(data, attempt_models[0])
@@ -1060,6 +1063,8 @@ async def _summarize_openrouter(
     except json.JSONDecodeError as e:
         logger.exception("OpenRouter summarization parse error")
         raise RuntimeError(f"OpenRouter response parse failed: {e}")
+    finally:
+        await session.close()
 
 
 async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int) -> str:
@@ -1088,7 +1093,7 @@ async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int) -
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post("https://api.cerebras.ai/v1/chat/completions", headers=headers, json=payload) as resp:
-                raw = await resp.text()
+                raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
                 if resp.status >= 400:
                     detail = raw[:600]
                     raise RuntimeError(f"Cerebras API error {resp.status}: {detail}")
@@ -1142,7 +1147,7 @@ async def _post_gemini_generate_content(
 
     for attempt in range(retries + 1):
         async with session.post(url, json=payload) as resp:
-            raw = await resp.text()
+            raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
             if resp.status >= 400:
                 detail = raw[:600]
                 err = RuntimeError(f"Gemini API error {resp.status}: {detail}")

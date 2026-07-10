@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from src.runtime import subprocess_utils
 
 
@@ -27,3 +29,26 @@ def test_hidden_subprocess_kwargs_hides_windows_console(monkeypatch) -> None:
     assert kwargs["creationflags"] == 0x08000002
     assert kwargs["startupinfo"].dwFlags & 0x1
     assert kwargs["startupinfo"].wShowWindow == 0
+
+
+@pytest.mark.asyncio
+async def test_read_stream_limited_drains_beyond_retained_prefix() -> None:
+    class Stream:
+        def __init__(self) -> None:
+            self.chunks = [b"abcd", b"efgh", b""]
+            self.read_calls = 0
+
+        async def read(self, _size: int) -> bytes:
+            self.read_calls += 1
+            return self.chunks.pop(0)
+
+    stream = Stream()
+
+    retained = await subprocess_utils.read_stream_limited(
+        stream,
+        max_bytes=5,
+        chunk_size=4,
+    )
+
+    assert retained == b"abcde"
+    assert stream.read_calls == 3

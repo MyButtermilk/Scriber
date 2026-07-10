@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, BinaryIO, Callable
 
 import aiohttp
 
 from pipecat.transcriptions.language import Language
+from src.runtime.http_response import read_response_text_limited
 
 
 _GLADIA_BASE_URL = "https://api.gladia.io/v2"
@@ -149,10 +151,10 @@ async def transcribe_with_gladia_pre_recorded(
         headers=headers,
         timeout=aiohttp.ClientTimeout(total=min(timeout_secs, 300.0)),
     ) as response:
-        raw = await response.text()
+        raw = await read_response_text_limited(response, 64 * 1024 * 1024)
         if response.status >= 400:
             raise RuntimeError(f"Gladia upload failed ({response.status}): {raw[:500]}")
-        upload_payload = await response.json()
+        upload_payload = json.loads(raw) if raw else {}
 
     audio_url = str(upload_payload.get("audio_url") or "").strip()
     if not audio_url:
@@ -171,10 +173,10 @@ async def transcribe_with_gladia_pre_recorded(
         headers=headers,
         timeout=aiohttp.ClientTimeout(total=60),
     ) as response:
-        raw = await response.text()
+        raw = await read_response_text_limited(response, 64 * 1024 * 1024)
         if response.status >= 400:
             raise RuntimeError(f"Gladia transcription start failed ({response.status}): {raw[:500]}")
-        start_payload = await response.json()
+        start_payload = json.loads(raw) if raw else {}
 
     job_id = str(start_payload.get("id") or "").strip()
     if not job_id:
@@ -193,10 +195,10 @@ async def transcribe_with_gladia_pre_recorded(
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as response:
-                raw = await response.text()
+                raw = await read_response_text_limited(response, 64 * 1024 * 1024)
                 if response.status >= 400:
                     raise RuntimeError(f"Gladia transcription status failed ({response.status}): {raw[:500]}")
-                status_payload = await response.json()
+                status_payload = json.loads(raw) if raw else {}
 
             if not isinstance(status_payload, dict):
                 raise RuntimeError("Gladia transcription status response was not an object")
@@ -219,6 +221,9 @@ async def transcribe_with_gladia_pre_recorded(
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as response:
                 if response.status not in (200, 202, 204, 404):
-                    await response.text()
+                    logger.debug(
+                        "Gladia provider-side cleanup returned status {}",
+                        response.status,
+                    )
         except Exception:
             pass

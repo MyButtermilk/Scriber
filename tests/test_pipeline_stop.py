@@ -1,4 +1,5 @@
 import asyncio
+import io
 
 import pytest
 from pipecat.frames.frames import (
@@ -124,6 +125,59 @@ async def test_soniox_async_webm_upload_does_not_retry_as_wav_on_api_error():
     assert session.post_calls[0][0] == "https://api.soniox.com/v1/files"
 
 
+@pytest.mark.asyncio
+async def test_soniox_async_terminal_frame_streams_spooled_audio():
+    processor = SonioxAsyncProcessor(api_key="test-key", session=object())
+    captured = []
+
+    async def _capture_push(frame, direction):
+        captured.append((frame, direction))
+
+    async def _transcribe(audio_bytes=None, *, audio_stream=None, audio_size=None):
+        assert audio_bytes is None
+        assert audio_stream is processor._buffer
+        assert audio_size == 640
+        return "streamed transcript"
+
+    processor.push_frame = _capture_push
+    processor._transcribe_async = _transcribe
+
+    await processor.process_frame(
+        InputAudioRawFrame(audio=b"\0" * 640, sample_rate=16000, num_channels=1),
+        FrameDirection.DOWNSTREAM,
+    )
+    await processor.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
+
+    assert any(
+        isinstance(frame, TranscriptionFrame) and frame.text == "streamed transcript"
+        for frame, _direction in captured
+    )
+    assert processor._buffer_size == 0
+
+
+@pytest.mark.asyncio
+async def test_soniox_wav_stream_fallback_never_uses_unbounded_read():
+    class BoundedReadStream(io.BytesIO):
+        def read(self, size=-1):
+            assert size >= 0
+            return super().read(size)
+
+    processor = SonioxAsyncProcessor(api_key="test-key", session=object())
+    source = BoundedReadStream(b"\0\0" * 320)
+
+    encoded, content_type, filename, cleanup_paths = await processor._encode_audio_stream(
+        source,
+        prefer_webm=False,
+    )
+    try:
+        assert encoded.read(4) == b"RIFF"
+        assert content_type == "audio/wav"
+        assert filename == "audio.wav"
+        assert cleanup_paths == ()
+    finally:
+        encoded.close()
+
+
 class _DummyAudioInput:
     def __init__(self, events: list[str] | None = None) -> None:
         self.close_stream = None
@@ -133,6 +187,15 @@ class _DummyAudioInput:
         self.close_stream = close_stream
         if self._events is not None:
             self._events.append("audio_stop")
+
+
+class _DummyFileInput:
+    def __init__(self) -> None:
+        self.stop_called = False
+
+    async def stop(self, frame):
+        assert isinstance(frame, EndFrame)
+        self.stop_called = True
 
 
 class _SegmentedFinalizationAudioInput:
@@ -174,6 +237,23 @@ class _DummyPrewarmManager:
         if self._events is not None:
             self._events.append("prewarm_resume")
         return self._resume_result
+
+
+@pytest.mark.asyncio
+async def test_aborted_file_pipeline_cancels_runner_task_and_input():
+    pipe = ScriberPipeline(service_name="soniox")
+    done = asyncio.Event()
+    pipe.task = _DummyTask(done, set_done_on_stop=False)
+    pipe.runner = _DummyRunner()
+    file_input = _DummyFileInput()
+    run_task = asyncio.create_task(asyncio.Event().wait())
+
+    await pipe._cleanup_aborted_file_pipeline(run_task, file_input)
+
+    assert pipe.task.cancel_called is True
+    assert pipe.runner.cancel_called is True
+    assert run_task.done() is True
+    assert file_input.stop_called is True
 
 
 def test_buffered_provider_factories_disable_diarization_for_live_by_default(monkeypatch):

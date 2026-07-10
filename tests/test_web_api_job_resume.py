@@ -1,10 +1,59 @@
 import asyncio
+import threading
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from src.data.job_store import JobStatus, JobStore, JobType
 from src.web_api import ScriberWebController
+
+
+@pytest.mark.asyncio
+async def test_concurrent_retry_scans_are_serialized(monkeypatch, tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    state_lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def slow_list_pending(*, limit):
+        nonlocal active, max_active
+        with state_lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.05)
+        with state_lock:
+            active -= 1
+        return []
+
+    monkeypatch.setattr(store, "list_pending", slow_list_pending)
+    await asyncio.gather(
+        ctl.resume_pending_jobs(limit=10),
+        ctl.resume_pending_jobs(limit=10),
+    )
+
+    assert max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_retry_scan_does_not_reset_active_running_jobs(tmp_path):
+    loop = asyncio.get_running_loop()
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    job = store.enqueue(
+        transcript_id="tx-active",
+        job_type=JobType.FILE,
+        payload={"path": str(tmp_path / "active.wav")},
+    )
+    assert store.mark_running(job.id)
+    ctl = ScriberWebController(loop, job_store=store)
+
+    resumed = await ctl.resume_pending_jobs(limit=10, recover_running=False)
+
+    persisted = store.get(job.id)
+    assert resumed == 0
+    assert persisted is not None
+    assert persisted.status == JobStatus.RUNNING
 
 
 @pytest.mark.asyncio

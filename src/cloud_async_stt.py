@@ -8,12 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
-import io
 import json
 import os
 import tempfile
-import wave
 from typing import Any, BinaryIO, Callable
 
 import aiohttp
@@ -36,6 +33,9 @@ from src.gladia_stt import (
     gladia_transcript_payload_to_text,
     transcribe_with_gladia_pre_recorded,
 )
+from src.runtime.audio_spool import pcm_stream_to_wav as _pcm_stream_to_wav
+from src.runtime.http_response import read_response_text_limited
+from src.runtime.env_values import env_float, env_int
 
 
 def provider_language_code(language: Language | str | None) -> str:
@@ -45,16 +45,6 @@ def provider_language_code(language: Language | str | None) -> str:
     if not raw or raw == "auto":
         return ""
     return raw.replace("_", "-").split("-", 1)[0]
-
-
-def _pcm_to_wav(audio_bytes: bytes, sample_rate: int, channels: int) -> bytes:
-    buf = io.BytesIO()
-    with contextlib.closing(wave.open(buf, "wb")) as wf:
-        wf.setnchannels(max(1, int(channels or 1)))
-        wf.setsampwidth(2)
-        wf.setframerate(max(1, int(sample_rate or 16000)))
-        wf.writeframes(audio_bytes)
-    return buf.getvalue()
 
 
 def _report_progress(on_progress: Callable[[str], None] | None, message: str) -> None:
@@ -196,7 +186,7 @@ async def transcribe_with_deepgram_pre_recorded(
         headers=headers,
         timeout=aiohttp.ClientTimeout(total=timeout_secs),
     ) as response:
-        raw = await response.text()
+        raw = await read_response_text_limited(response, 64 * 1024 * 1024)
         if response.status >= 400:
             raise RuntimeError(f"Deepgram transcription failed ({response.status}): {raw[:500]}")
         if not raw:
@@ -258,7 +248,8 @@ async def _upload_gemini_file(
     *,
     session: aiohttp.ClientSession,
     api_key: str,
-    audio_bytes: bytes,
+    audio_source: bytes | BinaryIO,
+    audio_size: int,
     filename: str,
     content_type: str,
 ) -> dict[str, Any]:
@@ -266,7 +257,7 @@ async def _upload_gemini_file(
         "Content-Type": "application/json",
         "X-Goog-Upload-Protocol": "resumable",
         "X-Goog-Upload-Command": "start",
-        "X-Goog-Upload-Header-Content-Length": str(len(audio_bytes)),
+        "X-Goog-Upload-Header-Content-Length": str(audio_size),
         "X-Goog-Upload-Header-Content-Type": content_type,
     }
     start_payload = {"file": {"displayName": filename or "scriber-audio"}}
@@ -277,7 +268,7 @@ async def _upload_gemini_file(
         headers=headers,
         timeout=aiohttp.ClientTimeout(total=60),
     ) as response:
-        raw = await response.text()
+        raw = await read_response_text_limited(response, 64 * 1024 * 1024)
         if response.status >= 400:
             raise RuntimeError(f"Gemini file upload start failed ({response.status}): {raw[:500]}")
         upload_url = response.headers.get("X-Goog-Upload-URL", "")
@@ -286,15 +277,15 @@ async def _upload_gemini_file(
 
     async with session.post(
         upload_url,
-        data=audio_bytes,
+        data=audio_source,
         headers={
-            "Content-Length": str(len(audio_bytes)),
+            "Content-Length": str(audio_size),
             "X-Goog-Upload-Offset": "0",
             "X-Goog-Upload-Command": "upload, finalize",
         },
         timeout=aiohttp.ClientTimeout(total=900),
     ) as response:
-        raw = await response.text()
+        raw = await read_response_text_limited(response, 64 * 1024 * 1024)
         if response.status >= 400:
             raise RuntimeError(f"Gemini file upload failed ({response.status}): {raw[:500]}")
         payload = json.loads(raw) if raw else {}
@@ -303,6 +294,18 @@ async def _upload_gemini_file(
     if not file_info.get("uri"):
         raise RuntimeError(f"Gemini file upload response did not include a file URI: {payload}")
     return file_info
+
+
+def _gemini_audio_source_size(audio_source: bytes | BinaryIO) -> int:
+    if isinstance(audio_source, bytes):
+        return len(audio_source)
+    try:
+        audio_source.seek(0, os.SEEK_END)
+        size = int(audio_source.tell())
+        audio_source.seek(0)
+        return max(0, size)
+    except (AttributeError, OSError):
+        return -1
 
 
 async def transcribe_with_gemini_audio(
@@ -318,12 +321,17 @@ async def transcribe_with_gemini_audio(
     on_progress: Callable[[str], None] | None = None,
     timeout_secs: float = 900.0,
 ) -> dict[str, Any]:
-    audio_bytes = audio_source if isinstance(audio_source, bytes) else audio_source.read()
-    if not audio_bytes:
+    audio_size = _gemini_audio_source_size(audio_source)
+    if audio_size == 0:
         return {}
 
     model = os.getenv("SCRIBER_GEMINI_STT_MODEL", "gemini-2.5-flash")
-    inline_limit_mb = float(os.getenv("SCRIBER_GEMINI_STT_INLINE_LIMIT_MB", "18") or 18)
+    inline_limit_mb = env_float(
+        "SCRIBER_GEMINI_STT_INLINE_LIMIT_MB",
+        18.0,
+        minimum=0.000001,
+        maximum=20.0,
+    )
     inline_limit_bytes = max(1, int(inline_limit_mb * 1024 * 1024))
     mime_type = content_type or "audio/wav"
     terms = _terms_from_vocab(custom_vocab)[:100]
@@ -343,15 +351,22 @@ async def transcribe_with_gemini_audio(
     )
     generation_config = {
         "temperature": 0,
-        "maxOutputTokens": int(os.getenv("SCRIBER_GEMINI_STT_MAX_OUTPUT_TOKENS", "16384") or 16384),
+        "maxOutputTokens": env_int(
+            "SCRIBER_GEMINI_STT_MAX_OUTPUT_TOKENS",
+            16384,
+            minimum=256,
+            maximum=65536,
+        ),
     }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     params = {"key": api_key}
 
     file_name = ""
+    spooled_source: BinaryIO | None = None
     try:
         _report_progress(on_progress, "Uploading audio...")
-        if len(audio_bytes) <= inline_limit_bytes:
+        if 0 <= audio_size <= inline_limit_bytes:
+            audio_bytes = audio_source if isinstance(audio_source, bytes) else audio_source.read()
             audio_part = {
                 "inlineData": {
                     "mimeType": mime_type,
@@ -359,10 +374,22 @@ async def transcribe_with_gemini_audio(
                 }
             }
         else:
+            if audio_size < 0:
+                # Direct callers may provide a non-seekable source. Spool it so
+                # the resumable upload still has a trustworthy content length.
+                spooled_source = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
+                while chunk := audio_source.read(1024 * 1024):
+                    spooled_source.write(chunk)
+                audio_size = spooled_source.tell()
+                spooled_source.seek(0)
+                audio_source = spooled_source
+                if not audio_size:
+                    return {}
             file_info = await _upload_gemini_file(
                 session=session,
                 api_key=api_key,
-                audio_bytes=audio_bytes,
+                audio_source=audio_source,
+                audio_size=audio_size,
                 filename=filename,
                 content_type=mime_type,
             )
@@ -385,7 +412,7 @@ async def transcribe_with_gemini_audio(
             json=payload,
             timeout=aiohttp.ClientTimeout(total=timeout_secs),
         ) as response:
-            raw = await response.text()
+            raw = await read_response_text_limited(response, 64 * 1024 * 1024)
             if response.status >= 400:
                 raise RuntimeError(f"Gemini transcription failed ({response.status}): {raw[:500]}")
             parsed = json.loads(raw) if raw else {}
@@ -393,6 +420,8 @@ async def transcribe_with_gemini_audio(
     finally:
         if file_name:
             await _delete_gemini_file(session=session, api_key=api_key, file_name=file_name)
+        if spooled_source is not None:
+            spooled_source.close()
 
 
 async def transcribe_with_openai_audio_transcription(
@@ -430,7 +459,7 @@ async def transcribe_with_openai_audio_transcription(
         headers={"Authorization": f"Bearer {api_key}"},
         timeout=aiohttp.ClientTimeout(total=timeout_secs),
     ) as response:
-        raw = await response.text()
+        raw = await read_response_text_limited(response, 64 * 1024 * 1024)
         if response.status >= 400:
             raise RuntimeError(f"OpenAI transcription failed ({response.status}): {raw[:500]}")
         if not raw:
@@ -490,6 +519,30 @@ def speechmatics_transcript_payload_to_text(
     return " ".join(words).strip()
 
 
+async def _delete_speechmatics_job(
+    *,
+    session: aiohttp.ClientSession,
+    base_url: str,
+    api_key: str,
+    job_id: str,
+) -> None:
+    if not job_id:
+        return
+    try:
+        async with session.delete(
+            f"{base_url}/jobs/{job_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as response:
+            if response.status >= 400 and response.status != 404:
+                logger.debug(
+                    "Speechmatics job cleanup returned status {}",
+                    response.status,
+                )
+    except Exception as exc:
+        logger.debug("Speechmatics job cleanup failed: {}", exc)
+
+
 async def transcribe_with_speechmatics_batch(
     *,
     session: aiohttp.ClientSession,
@@ -528,7 +581,7 @@ async def transcribe_with_speechmatics_batch(
         headers={"Authorization": f"Bearer {api_key}"},
         timeout=aiohttp.ClientTimeout(total=min(timeout_secs, 300.0)),
     ) as response:
-        raw = await response.text()
+        raw = await read_response_text_limited(response, 64 * 1024 * 1024)
         if response.status >= 400:
             raise RuntimeError(f"Speechmatics batch job start failed ({response.status}): {raw[:500]}")
         start_payload = json.loads(raw) if raw else {}
@@ -541,40 +594,48 @@ async def transcribe_with_speechmatics_batch(
     if not job_id:
         raise RuntimeError(f"Speechmatics batch response did not include a job id: {start_payload}")
 
-    _report_progress(on_progress, "Processing transcription...")
-    started_at = asyncio.get_running_loop().time()
-    while True:
-        if asyncio.get_running_loop().time() - started_at > timeout_secs:
-            raise TimeoutError("Speechmatics batch transcription timed out")
-        async with session.get(
-            f"{base_url}/jobs/{job_id}",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as response:
-            raw = await response.text()
-            if response.status >= 400:
-                raise RuntimeError(f"Speechmatics batch status failed ({response.status}): {raw[:500]}")
-            status_payload = json.loads(raw) if raw else {}
-        job_payload = status_payload.get("job") if isinstance(status_payload.get("job"), dict) else status_payload
-        status = str(job_payload.get("status") or "").strip().lower()
-        if status in {"done", "completed", "success", "succeeded"}:
-            break
-        if status in {"rejected", "failed", "error"}:
-            raise RuntimeError(f"Speechmatics batch transcription failed: {status_payload}")
-        await asyncio.sleep(max(0.25, poll_interval_secs))
+    try:
+        _report_progress(on_progress, "Processing transcription...")
+        started_at = asyncio.get_running_loop().time()
+        while True:
+            if asyncio.get_running_loop().time() - started_at > timeout_secs:
+                raise TimeoutError("Speechmatics batch transcription timed out")
+            async with session.get(
+                f"{base_url}/jobs/{job_id}",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                raw = await read_response_text_limited(response, 64 * 1024 * 1024)
+                if response.status >= 400:
+                    raise RuntimeError(f"Speechmatics batch status failed ({response.status}): {raw[:500]}")
+                status_payload = json.loads(raw) if raw else {}
+            job_payload = status_payload.get("job") if isinstance(status_payload.get("job"), dict) else status_payload
+            status = str(job_payload.get("status") or "").strip().lower()
+            if status in {"done", "completed", "success", "succeeded"}:
+                break
+            if status in {"rejected", "failed", "error"}:
+                raise RuntimeError(f"Speechmatics batch transcription failed: {status_payload}")
+            await asyncio.sleep(max(0.25, poll_interval_secs))
 
-    _report_progress(on_progress, "Retrieving transcript...")
-    async with session.get(
-        f"{base_url}/jobs/{job_id}/transcript",
-        params={"format": "json-v2"},
-        headers={"Authorization": f"Bearer {api_key}"},
-        timeout=aiohttp.ClientTimeout(total=60),
-    ) as response:
-        raw = await response.text()
-        if response.status >= 400:
-            raise RuntimeError(f"Speechmatics batch transcript failed ({response.status}): {raw[:500]}")
-        parsed = json.loads(raw) if raw else {}
-        return parsed if isinstance(parsed, dict) else {}
+        _report_progress(on_progress, "Retrieving transcript...")
+        async with session.get(
+            f"{base_url}/jobs/{job_id}/transcript",
+            params={"format": "json-v2"},
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=aiohttp.ClientTimeout(total=60),
+        ) as response:
+            raw = await read_response_text_limited(response, 64 * 1024 * 1024)
+            if response.status >= 400:
+                raise RuntimeError(f"Speechmatics batch transcript failed ({response.status}): {raw[:500]}")
+            parsed = json.loads(raw) if raw else {}
+            return parsed if isinstance(parsed, dict) else {}
+    finally:
+        await _delete_speechmatics_job(
+            session=session,
+            base_url=base_url,
+            api_key=api_key,
+            job_id=job_id,
+        )
 
 
 class _BufferedAsyncProcessor(FrameProcessor):
@@ -607,7 +668,7 @@ class _BufferedAsyncProcessor(FrameProcessor):
         self._buffer = self._create_buffer()
         self._buffer_size = 0
 
-    async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
+    async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
         raise NotImplementedError
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -633,8 +694,16 @@ class _BufferedAsyncProcessor(FrameProcessor):
                     return
                 if self._buffer_size:
                     _report_progress(self._on_progress, "Transcribing...")
-                    self._buffer.seek(0)
-                    text = (await self._transcribe_bytes(self._buffer.read())).strip()
+                    wav_source = await asyncio.to_thread(
+                        _pcm_stream_to_wav,
+                        self._buffer,
+                        self._sample_rate,
+                        self._channels,
+                    )
+                    try:
+                        text = (await self._transcribe_wav(wav_source)).strip()
+                    finally:
+                        wav_source.close()
                     if text:
                         await self.push_frame(
                             TranscriptionFrame(
@@ -674,14 +743,12 @@ class DeepgramAsyncProcessor(_BufferedAsyncProcessor):
         self._language = language
         self._custom_vocab = custom_vocab
 
-    async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
-        wav_bytes = _pcm_to_wav(audio_bytes, self._sample_rate, self._channels)
-
+    async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
         async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
             return await transcribe_with_deepgram_pre_recorded(
                 session=session,
                 api_key=self._api_key,
-                audio_source=wav_bytes,
+                audio_source=wav_source,
                 filename="audio.wav",
                 content_type="audio/wav",
                 language=self._language,
@@ -717,14 +784,12 @@ class OpenAIAsyncProcessor(_BufferedAsyncProcessor):
         self._language = language
         self._custom_vocab = custom_vocab
 
-    async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
-        wav_bytes = _pcm_to_wav(audio_bytes, self._sample_rate, self._channels)
-
+    async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
         async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
             return await transcribe_with_openai_audio_transcription(
                 session=session,
                 api_key=self._api_key,
-                audio_source=wav_bytes,
+                audio_source=wav_source,
                 filename="audio.wav",
                 content_type="audio/wav",
                 model=self._model,
@@ -759,14 +824,12 @@ class GeminiAsyncProcessor(_BufferedAsyncProcessor):
         self._language = language
         self._custom_vocab = custom_vocab
 
-    async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
-        wav_bytes = _pcm_to_wav(audio_bytes, self._sample_rate, self._channels)
-
+    async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
         async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
             return await transcribe_with_gemini_audio(
                 session=session,
                 api_key=self._api_key,
-                audio_source=wav_bytes,
+                audio_source=wav_source,
                 filename="audio.wav",
                 content_type="audio/wav",
                 language=self._language,
@@ -800,14 +863,12 @@ class GladiaAsyncProcessor(_BufferedAsyncProcessor):
         self._language = language
         self._custom_vocab = custom_vocab
 
-    async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
-        wav_bytes = _pcm_to_wav(audio_bytes, self._sample_rate, self._channels)
-
+    async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
         async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
             return await transcribe_with_gladia_pre_recorded(
                 session=session,
                 api_key=self._api_key,
-                audio_source=wav_bytes,
+                audio_source=wav_source,
                 filename="audio.wav",
                 content_type="audio/wav",
                 language=self._language,
@@ -841,14 +902,12 @@ class SpeechmaticsAsyncProcessor(_BufferedAsyncProcessor):
         self._language = language
         self._custom_vocab = custom_vocab
 
-    async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
-        wav_bytes = _pcm_to_wav(audio_bytes, self._sample_rate, self._channels)
-
+    async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
         async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
             return await transcribe_with_speechmatics_batch(
                 session=session,
                 api_key=self._api_key,
-                audio_source=wav_bytes,
+                audio_source=wav_source,
                 filename="audio.wav",
                 content_type="audio/wav",
                 language=self._language,

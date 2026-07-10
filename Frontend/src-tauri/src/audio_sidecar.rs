@@ -11,7 +11,7 @@ use std::collections::{HashMap, VecDeque};
 use std::{
     env,
     ffi::c_void,
-    io::{self, BufRead, Write},
+    io::{self, BufRead, Read, Write},
     process::ExitCode,
     sync::{
         mpsc::{self, Sender, TryRecvError},
@@ -56,6 +56,7 @@ use windows::{
 
 const SIDECAR_PROTOCOL_VERSION: &str = "1";
 const SIDECAR_NAME: &str = "scriber-audio-sidecar";
+const SIDECAR_JSON_LINE_MAX_BYTES: usize = 1024 * 1024;
 const SYNTHETIC_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE";
 const WASAPI_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_WASAPI_CAPTURE";
 const DISABLE_WASAPI_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE";
@@ -91,10 +92,15 @@ fn main() -> ExitCode {
 
 fn run_stdio_loop() -> Result<(), ()> {
     let stdin = io::stdin();
+    let mut stdin = stdin.lock();
     let mut stdout = io::stdout().lock();
     let mut state = AudioSidecarState::new();
-    for line in stdin.lock().lines() {
-        let line = line.map_err(|_| ())?;
+    loop {
+        let mut line = String::new();
+        let bytes_read = read_json_line_limited(&mut stdin, &mut line).map_err(|_| ())?;
+        if bytes_read == 0 {
+            break;
+        }
         let response = state.handle_sidecar_request(&line);
         writeln!(stdout, "{response}").map_err(|_| ())?;
         stdout.flush().map_err(|_| ())?;
@@ -108,6 +114,20 @@ fn run_stdio_loop() -> Result<(), ()> {
         }
     }
     Ok(())
+}
+
+fn read_json_line_limited<R: BufRead>(reader: &mut R, line: &mut String) -> io::Result<usize> {
+    line.clear();
+    let bytes_read = reader
+        .take((SIDECAR_JSON_LINE_MAX_BYTES + 1) as u64)
+        .read_line(line)?;
+    if bytes_read > SIDECAR_JSON_LINE_MAX_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "audio sidecar request line exceeded limit",
+        ));
+    }
+    Ok(bytes_read)
 }
 
 fn write_json_line(payload: &Value) -> Result<(), ()> {
@@ -402,8 +422,8 @@ impl AudioSidecarState {
     }
 
     fn start_capture(&mut self, request: CaptureRequest) -> Result<Value, String> {
-        let mut delayed_prewarm_stop = if request.prewarm_id.trim().is_empty() {
-            None
+        let (mut delayed_prewarm_stop, adopted_prewarm) = if request.prewarm_id.trim().is_empty() {
+            (None, None)
         } else {
             let prewarm_id = request.prewarm_id.clone();
             let Some(prewarm_session) = self.prewarm_sessions.remove(&prewarm_id) else {
@@ -417,20 +437,15 @@ impl AudioSidecarState {
                 "reason": "pendingCaptureReady",
                 "source": adopted.source,
             });
-            Some((prewarm_session, adopted, pending_stop_payload))
+            (Some(prewarm_session), Some((adopted, pending_stop_payload)))
         };
-        let adopted_prewarm = delayed_prewarm_stop
-            .as_ref()
-            .map(|(_, adopted, stop_payload)| (adopted.clone(), stop_payload.clone()));
         let use_wasapi_capture = wasapi_capture_enabled();
         let defer_prewarm_stop_to_capture = use_wasapi_capture
             && adopted_prewarm
                 .as_ref()
                 .is_some_and(|(adopted, _)| !adopted.blocks.is_empty());
         let deferred_prewarm_session = if defer_prewarm_stop_to_capture {
-            delayed_prewarm_stop
-                .take()
-                .map(|(prewarm_session, _, _)| prewarm_session)
+            delayed_prewarm_stop.take()
         } else {
             None
         };
@@ -441,7 +456,7 @@ impl AudioSidecarState {
         };
         match result {
             Ok((session, mut payload)) => {
-                if let Some((mut prewarm_session, _, _)) = delayed_prewarm_stop {
+                if let Some(mut prewarm_session) = delayed_prewarm_stop {
                     let stop_payload = prewarm_session.stop("adoptedIntoCapture");
                     patch_adopted_prewarm_stop_payload(
                         &mut payload,
@@ -457,7 +472,7 @@ impl AudioSidecarState {
                 Ok(payload)
             }
             Err(err) => {
-                if let Some((mut prewarm_session, _, _)) = delayed_prewarm_stop {
+                if let Some(mut prewarm_session) = delayed_prewarm_stop {
                     let _ = prewarm_session.stop("captureStartFailed");
                 }
                 Err(err)
@@ -781,7 +796,7 @@ fn stop_deferred_prewarm_session(
         .map(|mut prewarm_session| prewarm_session.stop(reason))
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 struct AdoptedPrewarm {
     prewarm_id: String,
     source: &'static str,
@@ -850,7 +865,7 @@ fn env_flag_enabled(raw: Option<&str>) -> bool {
 #[cfg(windows)]
 fn start_synthetic_capture_impl(
     request: CaptureRequest,
-    adopted_prewarm: Option<(AdoptedPrewarm, Value)>,
+    mut adopted_prewarm: Option<(AdoptedPrewarm, Value)>,
 ) -> Result<(CaptureSession, Value), String> {
     let stream_id = Uuid::new_v4().simple().to_string();
     let pipe_path = format!(r"\\.\pipe\scriber-audio-{stream_id}");
@@ -860,8 +875,8 @@ fn start_synthetic_capture_impl(
     let writer_pipe_path = pipe_path.clone();
     let pipe_handle_value = pipe_handle as isize;
     let adopted_blocks = adopted_prewarm
-        .as_ref()
-        .map(|(adopted, _)| adopted.blocks.clone())
+        .as_mut()
+        .map(|(adopted, _)| std::mem::take(&mut adopted.blocks))
         .unwrap_or_default();
     let join_handle = thread::Builder::new()
         .name("scriber-audio-synthetic-frame-pipe".to_string())
@@ -924,7 +939,7 @@ fn start_synthetic_capture_impl(
 #[cfg(windows)]
 fn start_wasapi_capture_impl(
     request: CaptureRequest,
-    adopted_prewarm: Option<(AdoptedPrewarm, Value)>,
+    mut adopted_prewarm: Option<(AdoptedPrewarm, Value)>,
     mut deferred_prewarm_session: Option<PrewarmSession>,
 ) -> Result<(CaptureSession, Value), String> {
     let stream_id = Uuid::new_v4().simple().to_string();
@@ -943,8 +958,8 @@ fn start_wasapi_capture_impl(
     let writer_pipe_path = pipe_path.clone();
     let pipe_handle_value = pipe_handle as isize;
     let adopted_blocks = adopted_prewarm
-        .as_ref()
-        .map(|(adopted, _)| adopted.blocks.clone())
+        .as_mut()
+        .map(|(adopted, _)| std::mem::take(&mut adopted.blocks))
         .unwrap_or_default();
     let defer_wasapi_ready = !adopted_blocks.is_empty();
     let writer_deferred_prewarm_session = if defer_wasapi_ready {
@@ -1209,7 +1224,7 @@ impl WasapiPcmConverter {
         }
         if silent {
             self.mono_buffer
-                .extend(std::iter::repeat(0.0).take(frame_count as usize));
+                .extend(std::iter::repeat_n(0.0, frame_count as usize));
         } else {
             let byte_len = frame_count as usize * usize::from(self.source.block_align);
             let bytes = unsafe { std::slice::from_raw_parts(data, byte_len) };
@@ -1659,6 +1674,9 @@ fn requested_prebuffer_frame_count(request: &CaptureRequest) -> u32 {
 }
 
 #[cfg(windows)]
+// Capture handoff state is kept explicit because these values cross the
+// prewarm/pipe/readiness ownership boundary and are audited independently.
+#[allow(clippy::too_many_arguments)]
 fn run_wasapi_capture_writer(
     pipe_handle: HANDLE,
     _pipe_path: String,
@@ -1823,6 +1841,7 @@ fn endpoint_selection_payload(
 }
 
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
 fn run_wasapi_capture_writer_inner(
     pipe_handle: HANDLE,
     request: &CaptureRequest,
@@ -2017,6 +2036,7 @@ fn run_wasapi_prewarm_worker_inner(
 }
 
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
 fn pump_wasapi_capture(
     pipe_handle: HANDLE,
     request: &CaptureRequest,
@@ -2458,6 +2478,16 @@ mod tests {
             env::set_var(key, value);
         }
         EnvVarGuard { key, old_value }
+    }
+
+    #[test]
+    fn stdio_request_reader_rejects_oversized_lines() {
+        let mut input = io::Cursor::new(vec![b'x'; SIDECAR_JSON_LINE_MAX_BYTES + 1]);
+        let mut line = String::new();
+
+        let error = read_json_line_limited(&mut input, &mut line).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

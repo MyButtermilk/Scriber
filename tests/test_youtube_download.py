@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+import threading
+import time
+import types
 import builtins
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -244,3 +248,48 @@ async def test_download_youtube_audio_subprocess_kills_yt_dlp_on_cancel(tmp_path
 
     assert proc.killed is True
     assert proc.waited is True
+
+
+@pytest.mark.asyncio
+async def test_download_youtube_audio_library_stops_worker_on_cancel(monkeypatch, tmp_path: Path):
+    started = threading.Event()
+    stopped = threading.Event()
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self._hook = options["progress_hooks"][0]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, _url, *, download):
+            assert download is True
+            started.set()
+            try:
+                while True:
+                    self._hook(
+                        {
+                            "status": "downloading",
+                            "downloaded_bytes": 1,
+                            "total_bytes": 10,
+                        }
+                    )
+                    time.sleep(0.01)
+            finally:
+                stopped.set()
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+    with patch("src.youtube_download._require_ffmpeg"):
+        task = asyncio.create_task(
+            download_youtube_audio("https://example.com", output_dir=tmp_path)
+        )
+        assert await asyncio.to_thread(started.wait, 1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert await asyncio.to_thread(stopped.wait, 1.0)
+    assert not list(tmp_path.glob(".yt-dlp-*"))

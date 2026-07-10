@@ -1,4 +1,5 @@
 import types
+import threading
 
 from src.config import Config
 from src.mic_prewarm import RustAudioPrewarmManager
@@ -284,6 +285,132 @@ def test_rust_audio_prewarm_discards_late_start_after_disable(monkeypatch):
     assert snapshot["lastStopSuccess"] is True
     assert snapshot["active"] is False
     assert "prewarm-race" not in str(snapshot)
+
+
+def test_rust_audio_prewarm_coalesces_concurrent_start_attempts(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    entered = threading.Event()
+    release = threading.Event()
+    commands: list[str] = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioPrewarmStart":
+            entered.set()
+            assert release.wait(timeout=2.0)
+            return {"success": True, "payload": {"prewarmId": "prewarm-one"}}
+        if command == "audioPrewarmStop":
+            return {"success": True, "payload": {"stopped": True}}
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_build_start_payload",
+        lambda: {
+            "sampleRate": 16000,
+            "channels": 1,
+            "blockSize": 160,
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+    result: list[bool] = []
+    thread = threading.Thread(target=lambda: result.append(manager.start_if_enabled()))
+    thread.start()
+    assert entered.wait(timeout=1.0)
+
+    assert manager.start_if_enabled() is False
+    release.set()
+    thread.join(timeout=2.0)
+
+    assert result == [True]
+    assert commands == ["audioPrewarmStart"]
+    assert manager.diagnostic_snapshot()["startInProgress"] is False
+    manager.stop()
+
+
+def test_rust_audio_prewarm_stop_invalidates_late_start_response(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    entered = threading.Event()
+    release = threading.Event()
+    commands: list[tuple[str, dict]] = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioPrewarmStart":
+            entered.set()
+            assert release.wait(timeout=2.0)
+            return {"success": True, "payload": {"prewarmId": "prewarm-late"}}
+        if command == "audioPrewarmStop":
+            return {"success": True, "payload": {"stopped": True}}
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_build_start_payload",
+        lambda: {
+            "sampleRate": 16000,
+            "channels": 1,
+            "blockSize": 160,
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+    result: list[bool] = []
+    thread = threading.Thread(target=lambda: result.append(manager.start_if_enabled()))
+    thread.start()
+    assert entered.wait(timeout=1.0)
+
+    manager.stop(reason="shutdown")
+    release.set()
+    thread.join(timeout=2.0)
+
+    assert result == [False]
+    assert manager.is_active is False
+    assert [command for command, _payload in commands] == [
+        "audioPrewarmStart",
+        "audioPrewarmStop",
+    ]
+    assert commands[-1][1] == {"prewarmId": "prewarm-late"}
+    assert manager.diagnostic_snapshot()["startInProgress"] is False
+
+
+def test_rust_audio_prewarm_closes_sidecar_if_post_start_commit_fails(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    commands: list[tuple[str, dict]] = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": "prewarm-malformed"}}
+        if command == "audioPrewarmStop":
+            return {"success": True, "payload": {"stopped": True}}
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_build_start_payload",
+        lambda: {
+            # Deliberately omit sampleRate so commit validation raises after
+            # the sidecar already returned a live prewarm session.
+            "channels": 1,
+            "blockSize": 160,
+            "devicePreference": "default",
+        },
+    )
+
+    assert manager.start_if_enabled() is False
+    assert manager.is_active is False
+    assert [command for command, _payload in commands] == [
+        "audioPrewarmStart",
+        "audioPrewarmStop",
+    ]
+    assert commands[-1][1] == {"prewarmId": "prewarm-malformed"}
 
 
 def test_rust_audio_prewarm_manager_records_resume_gap_after_capture(monkeypatch):

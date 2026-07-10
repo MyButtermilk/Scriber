@@ -127,11 +127,22 @@ export function VirtualTranscriptHistory<TItem>({
   const loadNextPage = useCallback(() => {
     if (!hasMore || isLoadingMore || loadInFlightRef.current) return;
     loadInFlightRef.current = true;
-    const result = onLoadMore?.();
-    if (result && typeof result === "object" && "finally" in result) {
-      void (result as Promise<unknown>).finally(() => {
+    try {
+      const result = onLoadMore?.();
+      if (result && typeof result === "object" && "then" in result) {
+        void Promise.resolve(result)
+          .catch((error) => {
+            console.debug("Loading the next transcript page failed.", error);
+          })
+          .finally(() => {
+            loadInFlightRef.current = false;
+          });
+      } else {
         loadInFlightRef.current = false;
-      });
+      }
+    } catch (error) {
+      loadInFlightRef.current = false;
+      console.debug("Loading the next transcript page failed.", error);
     }
   }, [hasMore, isLoadingMore, onLoadMore]);
 

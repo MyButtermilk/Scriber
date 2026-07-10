@@ -45,6 +45,7 @@ import {
   setAutostartEnabled as setDesktopAutostartEnabled,
 } from "@/lib/backend";
 import { invalidateSettingsBootstrap, loadSettingsBootstrap } from "@/lib/settings-bootstrap";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import type {
   ApiMessageResponse,
   LocalModelActionResponse,
@@ -1026,6 +1027,8 @@ export default function Settings() {
 
   const [customVocabulary, setCustomVocabulary] = useState("");
   const savedCustomVocabularyRef = useRef("");
+  const pendingCustomVocabularyRef = useRef<string | null>(null);
+  const customVocabularySaveInFlightRef = useRef<Promise<void> | null>(null);
   const [summarizationPrompt, setSummarizationPrompt] = useState("");
   const [postProcessingPrompt, setPostProcessingPrompt] = useState(DEFAULT_POST_PROCESSING_PROMPT);
 
@@ -1328,7 +1331,11 @@ export default function Settings() {
 
   const loadOnnxModels = useCallback(async () => {
     try {
-      const res = await fetch(apiUrl("/api/onnx/models"), { credentials: "include" });
+      const res = await fetchWithTimeout(
+        apiUrl("/api/onnx/models"),
+        { credentials: "include" },
+        30_000,
+      );
       if (!res.ok) {
         throw new Error(await res.text());
       }
@@ -1459,7 +1466,12 @@ export default function Settings() {
 
         let microphonePayload = mics;
         if (!Array.isArray(microphonePayload.devices)) {
-          const micsRes = await fetch(apiUrl("/api/microphones"), { credentials: "include" });
+          const micsRes = await fetchWithTimeout(
+            apiUrl("/api/microphones"),
+            { credentials: "include" },
+            10_000,
+          );
+          if (cancelled) return;
           if (micsRes.ok) {
             microphonePayload = (await micsRes.json()) as MicrophonesResponse;
           }
@@ -1492,12 +1504,12 @@ export default function Settings() {
   }, [settingsLoaded, onnxAvailable, loadOnnxModels]);
 
   const updateSettings = async (patch: SettingsUpdatePayload): Promise<SettingsResponse> => {
-    const res = await fetch(apiUrl("/api/settings"), {
+    const res = await fetchWithTimeout(apiUrl("/api/settings"), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
       credentials: "include",
-    });
+    }, 15_000);
     if (!res.ok) {
       const text = await res.text();
       throw new Error(text || res.statusText);
@@ -1506,21 +1518,38 @@ export default function Settings() {
     return (await res.json()) as SettingsResponse;
   };
 
-  const saveCustomVocabulary = useCallback(async (nextValue: string) => {
-    if (nextValue === savedCustomVocabularyRef.current) {
-      return;
+  const saveCustomVocabulary = useCallback((nextValue: string): Promise<void> => {
+    pendingCustomVocabularyRef.current = nextValue;
+    if (customVocabularySaveInFlightRef.current) {
+      return customVocabularySaveInFlightRef.current;
     }
 
-    try {
-      await updateSettings({ customVocab: nextValue });
-      savedCustomVocabularyRef.current = nextValue;
-    } catch (e: any) {
-      toast({
-        title: "Save failed",
-        description: String(e?.message || e),
-        duration: 4000,
-      });
-    }
+    const request = (async () => {
+      while (pendingCustomVocabularyRef.current !== null) {
+        const valueToSave = pendingCustomVocabularyRef.current;
+        pendingCustomVocabularyRef.current = null;
+        if (valueToSave === savedCustomVocabularyRef.current) {
+          continue;
+        }
+        try {
+          await updateSettings({ customVocab: valueToSave });
+          savedCustomVocabularyRef.current = valueToSave;
+        } catch (e: any) {
+          toast({
+            title: "Save failed",
+            description: String(e?.message || e),
+            duration: 4000,
+          });
+        }
+      }
+    })();
+    customVocabularySaveInFlightRef.current = request;
+    void request.finally(() => {
+      if (customVocabularySaveInFlightRef.current === request) {
+        customVocabularySaveInFlightRef.current = null;
+      }
+    });
+    return request;
   }, [toast]);
 
   useEffect(() => {
@@ -1539,7 +1568,11 @@ export default function Settings() {
 
   const refreshMicrophones = useCallback(async () => {
     try {
-      const res = await fetch(apiUrl("/api/microphones"), { credentials: "include" });
+      const res = await fetchWithTimeout(
+        apiUrl("/api/microphones"),
+        { credentials: "include" },
+        10_000,
+      );
       if (!res.ok) {
         return;
       }
@@ -1893,12 +1926,12 @@ export default function Settings() {
       )
     );
     try {
-      const res = await fetch(apiUrl("/api/onnx/download"), {
+      const res = await fetchWithTimeout(apiUrl("/api/onnx/download"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ modelId, quantization: onnxQuantization }),
         credentials: "include",
-      });
+      }, 2 * 60 * 60_000);
       const data = (await res.json().catch(() => ({}))) as LocalModelActionResponse;
       if (!res.ok || data?.success === false) {
         throw new Error(data?.message || "Download failed");
@@ -1922,12 +1955,13 @@ export default function Settings() {
   const handleOnnxDelete = async (modelId: string) => {
     if (!modelId) return;
     try {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         apiUrl(`/api/onnx/models/${encodeURIComponent(modelId)}?quantization=${encodeURIComponent(onnxQuantization)}`),
         {
           method: "DELETE",
           credentials: "include",
-        }
+        },
+        30_000,
       );
       const data = (await res.json().catch(() => ({}))) as LocalModelActionResponse;
       if (!res.ok || data?.success === false) {

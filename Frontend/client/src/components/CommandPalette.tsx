@@ -21,6 +21,7 @@ import {
   Terminal,
 } from "lucide-react";
 import { apiUrl } from "@/lib/backend";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
 import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
@@ -67,10 +68,11 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   // Load settings to get the configured hotkey
   const { data: settings } = useQuery<SettingsResponse>({
     queryKey: ["/api/settings"],
-    queryFn: async () => {
-      const res = await fetch(apiUrl("/api/settings"), {
+    queryFn: async ({ signal }) => {
+      const res = await fetchWithTimeout(apiUrl("/api/settings"), {
         credentials: "include",
-      });
+        signal,
+      }, 10_000);
       if (!res.ok) throw new Error("Failed to load settings");
       return (await res.json()) as SettingsResponse;
     },
@@ -83,10 +85,11 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   // Load transcripts for search (more items for better search)
   const { data: transcriptsData } = useQuery<{ items: Transcript[] }>({
     queryKey: ["/api/transcripts", { limit: 50 }],
-    queryFn: async () => {
-      const res = await fetch(apiUrl("/api/transcripts?limit=50"), {
+    queryFn: async ({ signal }) => {
+      const res = await fetchWithTimeout(apiUrl("/api/transcripts?limit=50"), {
         credentials: "include",
-      });
+        signal,
+      }, 10_000);
       if (!res.ok) throw new Error("Failed to load transcripts");
       return res.json();
     },
@@ -106,10 +109,10 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const handleToggleRecording = async () => {
     try {
       const endpoint = isRecording ? "/api/live-mic/stop" : "/api/live-mic/start";
-      const res = await fetch(apiUrl(endpoint), {
+      const res = await fetchWithTimeout(apiUrl(endpoint), {
         method: "POST",
         credentials: "include",
-      });
+      }, 15_000);
       if (!res.ok) {
         const text = await res.text();
         let payload: unknown = null;

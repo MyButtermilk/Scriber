@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiUrl } from "@/lib/backend";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useToast } from "@/hooks/use-toast";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonList } from "@/components/ui/skeleton-card";
@@ -303,8 +304,12 @@ export default function FileTranscribe() {
   const recentFromBackend = transcriptsQuery.items;
   const settingsQuery = useQuery<SettingsResponse>({
     queryKey: ["/api/settings"],
-    queryFn: async () => {
-      const res = await fetch(apiUrl("/api/settings"), { credentials: "include" });
+    queryFn: async ({ signal }) => {
+      const res = await fetchWithTimeout(
+        apiUrl("/api/settings"),
+        { credentials: "include", signal },
+        10_000,
+      );
       if (!res.ok) throw new Error("Failed to load settings");
       return (await res.json()) as SettingsResponse;
     },
@@ -402,10 +407,10 @@ export default function FileTranscribe() {
     deletingRef.current = id;
     setDeletingId(id);
     try {
-      const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
+      const res = await fetchWithTimeout(apiUrl(`/api/transcripts/${id}`), {
         method: "DELETE",
         credentials: "include",
-      });
+      }, 15_000);
       if (!res.ok) {
         const errData = (await res.json().catch(() => ({}))) as ApiMessageResponse;
         throw new Error(errData.message || res.statusText);
@@ -443,9 +448,9 @@ export default function FileTranscribe() {
     setCopyingId(id);
     try {
       // Fetch the full transcript content
-      const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
+      const res = await fetchWithTimeout(apiUrl(`/api/transcripts/${id}`), {
         credentials: "include",
-      });
+      }, 15_000);
       if (!res.ok) {
         throw new Error(res.statusText);
       }

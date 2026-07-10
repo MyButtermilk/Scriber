@@ -53,6 +53,44 @@ async def test_audio_callback_throttles_visualizer_work_to_sixty_hz(monkeypatch)
 
 
 @pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
+@pytest.mark.asyncio
+async def test_microphone_watchdog_recovers_failed_queue_consumer(monkeypatch):
+    mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
+    mic._running = True
+    mic.stream = _FakeStream(active=True)
+    mic._last_callback_at = microphone.time.monotonic()
+    mic._consumer_loop = asyncio.get_running_loop()
+
+    async def failed_consumer():
+        raise RuntimeError("consumer failed")
+
+    failed_task = asyncio.create_task(failed_consumer())
+    await asyncio.gather(failed_task, return_exceptions=True)
+    mic._consumer_task = failed_task
+    recovered_started = asyncio.Event()
+    keep_recovered_running = asyncio.Event()
+
+    async def recovered_consumer():
+        recovered_started.set()
+        await keep_recovered_running.wait()
+
+    monkeypatch.setattr(mic, "_drain_queue", recovered_consumer)
+
+    assert mic.ensure_stream_health(reason="test", max_callback_gap_seconds=10.0) is False
+    await asyncio.wait_for(recovered_started.wait(), timeout=1)
+    snapshot = mic.diagnostic_snapshot()
+    assert snapshot["consumerTaskState"] == "running"
+    assert snapshot["consumerRestartCount"] == 1
+    assert snapshot["lastHealthFailureReason"] == "consumerFailed"
+
+    mic._running = False
+    recovered_task = mic._consumer_task
+    assert recovered_task is not None
+    recovered_task.cancel()
+    await asyncio.gather(recovered_task, return_exceptions=True)
+
+
+@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
 def test_microphone_watchdog_restarts_inactive_direct_stream():
     mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
     stream = _FakeStream(active=False)

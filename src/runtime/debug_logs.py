@@ -109,8 +109,18 @@ def _candidate_log_files() -> list[Path]:
     for directory in (logs_dir(), data_dir() / "logs", repo_root()):
         if not directory.exists():
             continue
+        try:
+            directory_root = directory.resolve()
+        except OSError:
+            continue
         for pattern in _LOG_PATTERNS:
-            candidates.extend(directory.glob(pattern))
+            for candidate in directory.glob(pattern):
+                try:
+                    resolved = candidate.resolve()
+                except OSError:
+                    continue
+                if resolved.is_file() and resolved.is_relative_to(directory_root):
+                    candidates.append(resolved)
 
     resolved: list[Path] = []
     seen: set[Path] = set()
@@ -139,8 +149,7 @@ def _read_tail(path: Path, *, start_offset: int = 0) -> tuple[str, bool]:
         elif start_offset:
             handle.seek(start_offset)
         raw = handle.read(_MAX_BYTES_PER_FILE if truncated else readable_size)
-    text = raw.decode("utf-8", errors="replace")
-    return redact_text(text), truncated
+    return raw.decode("utf-8", errors="replace"), truncated
 
 
 def _parse_log_line(line: str, *, source: str, line_number: int) -> DebugLogEntry | None:
@@ -210,7 +219,7 @@ def _parse_json_log_line(message: str, *, source: str, line_number: int) -> Debu
             level=_normalize_level(level_name or _infer_level(text)),
             timestamp=timestamp,
             component=component or None,
-            message=redact_text(text or message),
+            message=text or message,
         )
 
     text = str(payload.get("message") or payload.get("event") or message).strip()
@@ -221,7 +230,7 @@ def _parse_json_log_line(message: str, *, source: str, line_number: int) -> Debu
         timestamp=str(payload.get("timestamp") or "") or None,
         timestamp_ms=_safe_int(payload.get("timestampMs")),
         component=str(payload.get("component") or "") or None,
-        message=redact_text(text),
+        message=text,
     )
 
 

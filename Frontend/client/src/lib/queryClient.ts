@@ -1,5 +1,6 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import { apiUrl } from "./backend";
+import { fetchWithTimeout } from "./fetch-with-timeout";
 import { friendlyError, responseErrorMessage } from "./request-errors";
 
 async function throwIfResNotOk(res: Response) {
@@ -14,12 +15,12 @@ export async function apiRequest(
   data?: unknown | undefined,
 ): Promise<Response> {
   try {
-    const res = await fetch(apiUrl(url), {
+    const res = await fetchWithTimeout(apiUrl(url), {
       method,
       headers: data ? { "Content-Type": "application/json" } : {},
       body: data ? JSON.stringify(data) : undefined,
       credentials: "include",
-    });
+    }, 30_000);
 
     await throwIfResNotOk(res);
     return res;
@@ -34,12 +35,13 @@ export const getQueryFn = <T,>({
   on401: unauthorizedBehavior,
 }: {
   on401: UnauthorizedBehavior;
-}): QueryFunction<T> => async ({ queryKey }) => {
+}): QueryFunction<T> => async ({ queryKey, signal }) => {
   try {
-    const res = await fetch(apiUrl(queryKey.join("/") as string), {
+    const res = await fetchWithTimeout(apiUrl(queryKey.join("/") as string), {
       credentials: "include",
       cache: "no-store",
-    });
+      signal,
+    }, 15_000);
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null as T;

@@ -2,10 +2,13 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::{
     env,
-    io::{BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
-    sync::{Mutex, OnceLock},
+    process::{Child, ChildStdin, Command, ExitStatus, Stdio},
+    sync::{
+        mpsc::{self, Receiver, RecvTimeoutError},
+        Mutex, OnceLock,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -31,18 +34,27 @@ use windows_sys::Win32::{
 const AUDIO_SIDECAR_EXE_ENV: &str = "SCRIBER_AUDIO_SIDECAR_EXE";
 const AUDIO_SIDECAR_PROTOCOL_VERSION: &str = "1";
 const AUDIO_SIDECAR_NAME: &str = "scriber-audio-sidecar";
+const SIDECAR_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+const SIDECAR_STATUS_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_500);
 const SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1_500);
 const SIDECAR_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const SIDECAR_JSON_LINE_MAX_BYTES: usize = 1024 * 1024;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 struct ActiveAudioSidecar {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    response_rx: Receiver<SidecarOutput>,
     path_hash: Option<String>,
     pid: u32,
     started_at: Instant,
+}
+
+enum SidecarOutput {
+    Line(String),
+    Eof,
+    ReadError(String),
 }
 
 #[derive(Debug, Clone)]
@@ -209,7 +221,7 @@ fn start_audio_sidecar_capture_with_sidecar(
         );
     }
 
-    let response = match read_sidecar_response_line(&mut sidecar.stdout) {
+    let response = match read_sidecar_response_line(&sidecar.response_rx) {
         Ok(line) => {
             parse_sidecar_response(&line, &request_id, path_hash.clone(), Some(sidecar.pid))
         }
@@ -300,7 +312,7 @@ fn start_audio_sidecar_prewarm_at(program: &Path, payload: Value) -> AudioSideca
         );
     }
 
-    let response = match read_sidecar_response_line(&mut sidecar.stdout) {
+    let response = match read_sidecar_response_line(&sidecar.response_rx) {
         Ok(line) => {
             parse_sidecar_response(&line, &request_id, path_hash.clone(), Some(sidecar.pid))
         }
@@ -429,7 +441,7 @@ fn stop_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
         );
     }
 
-    let mut result = match read_sidecar_response_line(&mut sidecar.stdout) {
+    let mut result = match read_sidecar_response_line(&sidecar.response_rx) {
         Ok(line) => parse_sidecar_response(&line, &request_id, path_hash.clone(), pid),
         Err(result) => with_process_identity(result, path_hash.clone(), pid),
     };
@@ -533,7 +545,7 @@ fn stop_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
         );
     }
 
-    let mut result = match read_sidecar_response_line(&mut sidecar.stdout) {
+    let mut result = match read_sidecar_response_line(&sidecar.response_rx) {
         Ok(line) => parse_sidecar_response(&line, &request_id, path_hash.clone(), pid),
         Err(result) => with_process_identity(result, path_hash.clone(), pid),
     };
@@ -681,7 +693,10 @@ fn status_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
                 pid,
             )
         } else {
-            match read_sidecar_response_line(&mut sidecar.stdout) {
+            match read_sidecar_response_line_with_timeout(
+                &sidecar.response_rx,
+                SIDECAR_STATUS_RESPONSE_TIMEOUT,
+            ) {
                 Ok(line) => parse_sidecar_response(&line, &request_id, path_hash.clone(), pid),
                 Err(result) => {
                     let _ = sidecar.child.kill();
@@ -746,7 +761,7 @@ fn call_audio_sidecar_command_once(
         );
     }
 
-    let response = match read_sidecar_response_line(&mut sidecar.stdout) {
+    let response = match read_sidecar_response_line(&sidecar.response_rx) {
         Ok(line) => {
             parse_sidecar_response(&line, &request_id, path_hash.clone(), Some(sidecar.pid))
         }
@@ -812,14 +827,71 @@ fn spawn_audio_sidecar_process(
             Some(pid),
         ));
     };
+    let (response_tx, response_rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("scriber-audio-sidecar-stdout".to_string())
+        .spawn(move || {
+            let mut stdout = BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match read_json_line_limited(&mut stdout, &mut line) {
+                    Ok(0) => {
+                        let _ = response_tx.send(SidecarOutput::Eof);
+                        break;
+                    }
+                    Ok(_) if line.trim().is_empty() => continue,
+                    Ok(_) => {
+                        if response_tx
+                            .send(SidecarOutput::Line(std::mem::take(&mut line)))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        let _ = response_tx.send(SidecarOutput::ReadError(err.to_string()));
+                        break;
+                    }
+                }
+            }
+        })
+        .map_err(|err| {
+            let _ = child.kill();
+            let _ = child.wait();
+            unavailable_result(
+                "audioSidecarReaderSpawnFailed",
+                format!("Rust audio sidecar stdout reader failed to start: {err}"),
+                json!({
+                    "sidecar": AUDIO_SIDECAR_NAME,
+                    "sidecarExecutableAvailable": true,
+                }),
+                path_hash.clone(),
+                Some(pid),
+            )
+        })?;
     Ok(ActiveAudioSidecar {
         child,
         stdin,
-        stdout: BufReader::new(stdout),
+        response_rx,
         path_hash,
         pid,
         started_at: Instant::now(),
     })
+}
+
+fn read_json_line_limited<R: BufRead>(reader: &mut R, line: &mut String) -> io::Result<usize> {
+    line.clear();
+    let bytes_read = reader
+        .take((SIDECAR_JSON_LINE_MAX_BYTES + 1) as u64)
+        .read_line(line)?;
+    if bytes_read > SIDECAR_JSON_LINE_MAX_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "audio sidecar response line exceeded limit",
+        ));
+    }
+    Ok(bytes_read)
 }
 
 fn sidecar_request(request_id: &str, command: &str, payload: Value) -> Value {
@@ -843,38 +915,48 @@ fn write_sidecar_json_line(stdin: &mut ChildStdin, value: &Value) -> Result<(), 
 }
 
 fn read_sidecar_response_line(
-    stdout: &mut BufReader<ChildStdout>,
+    response_rx: &Receiver<SidecarOutput>,
 ) -> Result<String, AudioSidecarCallResult> {
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let bytes = stdout.read_line(&mut line).map_err(|err| {
-            unavailable_result(
-                "audioSidecarReadFailed",
-                format!("Rust audio sidecar read failed: {err}"),
-                json!({
-                    "sidecar": AUDIO_SIDECAR_NAME,
-                    "sidecarExecutableAvailable": true,
-                }),
-                None,
-                None,
-            )
-        })?;
-        if bytes == 0 {
-            return Err(unavailable_result(
-                "audioSidecarEmptyResponse",
-                "Rust audio sidecar returned no response",
-                json!({
-                    "sidecar": AUDIO_SIDECAR_NAME,
-                    "sidecarExecutableAvailable": true,
-                }),
-                None,
-                None,
-            ));
-        }
-        if !line.trim().is_empty() {
-            return Ok(line);
-        }
+    read_sidecar_response_line_with_timeout(response_rx, SIDECAR_RESPONSE_TIMEOUT)
+}
+
+fn read_sidecar_response_line_with_timeout(
+    response_rx: &Receiver<SidecarOutput>,
+    timeout: Duration,
+) -> Result<String, AudioSidecarCallResult> {
+    match response_rx.recv_timeout(timeout) {
+        Ok(SidecarOutput::Line(line)) => Ok(line),
+        Ok(SidecarOutput::Eof) | Err(RecvTimeoutError::Disconnected) => Err(unavailable_result(
+            "audioSidecarEmptyResponse",
+            "Rust audio sidecar returned no response",
+            json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "sidecarExecutableAvailable": true,
+            }),
+            None,
+            None,
+        )),
+        Ok(SidecarOutput::ReadError(err)) => Err(unavailable_result(
+            "audioSidecarReadFailed",
+            format!("Rust audio sidecar read failed: {err}"),
+            json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "sidecarExecutableAvailable": true,
+            }),
+            None,
+            None,
+        )),
+        Err(RecvTimeoutError::Timeout) => Err(unavailable_result(
+            "audioSidecarResponseTimeout",
+            "Rust audio sidecar response timed out",
+            json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "sidecarExecutableAvailable": true,
+                "responseTimeoutMs": timeout.as_millis().min(u128::from(u64::MAX)) as u64,
+            }),
+            None,
+            None,
+        )),
     }
 }
 
@@ -1308,6 +1390,16 @@ mod tests {
         dir
     }
 
+    #[test]
+    fn sidecar_response_reader_rejects_oversized_lines() {
+        let mut input = io::Cursor::new(vec![b'x'; SIDECAR_JSON_LINE_MAX_BYTES + 1]);
+        let mut line = String::new();
+
+        let error = read_json_line_limited(&mut input, &mut line).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
     #[cfg(windows)]
     fn long_running_test_process() -> Command {
         let mut command = Command::new("cmd");
@@ -1353,8 +1445,10 @@ mod tests {
         let rejected = dir.join("cmd.exe");
         fs::write(rejected, b"test").unwrap();
 
-        let found =
-            find_audio_sidecar_executable_in_dirs(&[dir.clone()], audio_sidecar_executable_names());
+        let found = find_audio_sidecar_executable_in_dirs(
+            std::slice::from_ref(&dir),
+            audio_sidecar_executable_names(),
+        );
 
         assert_eq!(found, Some(executable));
     }
@@ -1398,7 +1492,7 @@ mod tests {
         );
 
         assert!(!format!("{result:?}").contains(r"C:\secret"));
-        assert_eq!(result.executable_available, true);
+        assert!(result.executable_available);
         assert_eq!(result.pid, Some(123));
     }
 
@@ -1498,5 +1592,19 @@ mod tests {
             result.error_code.as_deref(),
             Some("audioSidecarRequestMismatch")
         );
+    }
+
+    #[test]
+    fn sidecar_response_read_is_bounded_by_timeout() {
+        let (_tx, rx) = mpsc::channel();
+
+        let result = read_sidecar_response_line_with_timeout(&rx, Duration::from_millis(1))
+            .expect_err("an unresponsive sidecar must time out");
+
+        assert_eq!(
+            result.error_code.as_deref(),
+            Some("audioSidecarResponseTimeout")
+        );
+        assert_eq!(result.payload["responseTimeoutMs"], 1);
     }
 }

@@ -12,6 +12,7 @@ import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "
 import { useToast } from "@/hooks/use-toast";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { isTauriRuntime, loadBackendBaseUrlFromTauri, setTrayRecordingState } from "@/lib/backend";
+import { withPromiseTimeout } from "@/lib/fetch-with-timeout";
 import { preloadPrimaryTabData } from "@/lib/tab-data-preload";
 import { ToastAction } from "@/components/ui/toast";
 import { Download } from "lucide-react";
@@ -115,14 +116,22 @@ function RecordingErrorToastBridge() {
 
 function TranscriptHistoryInvalidationBridge() {
   const queryClient = useQueryClient();
+  const pendingTranscriptIdsRef = useRef<Set<string>>(new Set());
+  const pendingTranscriptTypesRef = useRef<Set<string>>(new Set());
+  const invalidateAllHistoryRef = useRef(false);
+  const invalidationTimerRef = useRef<number | null>(null);
 
-  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
-    if (!msg || msg.type !== "history_updated") {
-      return;
-    }
+  const flushInvalidations = useCallback(() => {
+    invalidationTimerRef.current = null;
+    const transcriptIds = Array.from(pendingTranscriptIdsRef.current);
+    const transcriptTypes = new Set(pendingTranscriptTypesRef.current);
+    const invalidateAllHistory = invalidateAllHistoryRef.current;
+    pendingTranscriptIdsRef.current.clear();
+    pendingTranscriptTypesRef.current.clear();
+    invalidateAllHistoryRef.current = false;
 
-    if (msg.transcriptId) {
-      queryClient.invalidateQueries({ queryKey: ["/api/transcripts", msg.transcriptId], exact: true });
+    for (const transcriptId of transcriptIds) {
+      queryClient.invalidateQueries({ queryKey: ["/api/transcripts", transcriptId], exact: true });
     }
 
     queryClient.invalidateQueries({
@@ -130,19 +139,39 @@ function TranscriptHistoryInvalidationBridge() {
         if (query.queryKey[0] !== "/api/transcripts") {
           return false;
         }
-
-        if (!msg.transcriptType) {
-          return true;
-        }
-
         const scope = query.queryKey[1];
         if (typeof scope !== "object" || scope === null) {
           return false;
         }
-        return (scope as { type?: string }).type === msg.transcriptType;
+        return invalidateAllHistory || transcriptTypes.has(String((scope as { type?: string }).type || ""));
       },
     });
   }, [queryClient]);
+
+  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
+    if (!msg || msg.type !== "history_updated") {
+      return;
+    }
+
+    if (msg.transcriptId) {
+      pendingTranscriptIdsRef.current.add(msg.transcriptId);
+    }
+    if (msg.transcriptType) {
+      pendingTranscriptTypesRef.current.add(msg.transcriptType);
+    } else {
+      invalidateAllHistoryRef.current = true;
+    }
+    if (invalidationTimerRef.current === null) {
+      invalidationTimerRef.current = window.setTimeout(flushInvalidations, 250);
+    }
+  }, [flushInvalidations]);
+
+  useEffect(() => () => {
+    if (invalidationTimerRef.current !== null) {
+      window.clearTimeout(invalidationTimerRef.current);
+      invalidationTimerRef.current = null;
+    }
+  }, []);
 
   useSharedWebSocket(handleWsMessage);
   return null;
@@ -427,11 +456,19 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
-    void loadBackendBaseUrlFromTauri().finally(() => {
-      if (!cancelled) {
-        setBackendBaseReady(true);
-      }
-    });
+    void withPromiseTimeout(
+      loadBackendBaseUrlFromTauri(),
+      5_000,
+      "Initial Tauri backend lookup",
+    )
+      .catch((error) => {
+        console.debug("Initial Tauri backend lookup failed; continuing with health fallback.", error);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setBackendBaseReady(true);
+        }
+      });
     return () => {
       cancelled = true;
     };

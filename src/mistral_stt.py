@@ -3,12 +3,11 @@ Mistral STT services for realtime and async transcription.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
-import contextlib
 import io
 import tempfile
-import wave
 from typing import Any, AsyncGenerator, BinaryIO, Callable, Optional
 
 import aiohttp
@@ -28,6 +27,9 @@ from pipecat.services.settings import STTSettings
 from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
+
+from src.runtime.audio_spool import pcm_stream_to_wav
+from src.runtime.http_response import read_response_text_limited
 
 
 _MISTRAL_TRANSCRIPTIONS_URL = "https://api.mistral.ai/v1/audio/transcriptions"
@@ -83,16 +85,6 @@ def _normalize_context_bias_terms(context_bias: str | list[str] | None) -> list[
 
 def _custom_vocab_to_context_bias(custom_vocab: str) -> list[str]:
     return _normalize_context_bias_terms(custom_vocab)
-
-
-def _pcm_to_wav(audio_bytes: bytes, sample_rate: int, channels: int) -> bytes:
-    buf = io.BytesIO()
-    with contextlib.closing(wave.open(buf, "wb")) as wf:
-        wf.setnchannels(max(1, int(channels or 1)))
-        wf.setsampwidth(2)  # int16 PCM
-        wf.setframerate(max(1, int(sample_rate or 16000)))
-        wf.writeframes(audio_bytes)
-    return buf.getvalue()
 
 
 def _extract_text(payload: dict[str, Any]) -> str:
@@ -184,7 +176,7 @@ async def transcribe_with_mistral(
         headers=headers,
         timeout=aiohttp.ClientTimeout(total=timeout_secs),
     ) as resp:
-        raw = await resp.text()
+        raw = await read_response_text_limited(resp, 64 * 1024 * 1024)
         if resp.status >= 400:
             lower = raw.lower()
             if (
@@ -356,12 +348,7 @@ class MistralAsyncProcessor(FrameProcessor):
         except Exception:
             pass
 
-    async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
-        wav_bytes = _pcm_to_wav(
-            audio_bytes=audio_bytes,
-            sample_rate=self._sample_rate,
-            channels=self._channels,
-        )
+    async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
         language = self._language if self._language != "auto" else None
 
         async def _transcribe(session: aiohttp.ClientSession) -> dict[str, Any]:
@@ -369,7 +356,7 @@ class MistralAsyncProcessor(FrameProcessor):
                 session=session,
                 api_key=self._api_key,
                 model=self._model,
-                file_content=wav_bytes,
+                file_content=wav_source,
                 filename="audio.wav",
                 content_type="audio/wav",
                 language=language,
@@ -395,6 +382,18 @@ class MistralAsyncProcessor(FrameProcessor):
                     return diarized
         return _extract_text(payload)
 
+    async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
+        wav_source = await asyncio.to_thread(
+            pcm_stream_to_wav,
+            io.BytesIO(audio_bytes),
+            self._sample_rate,
+            self._channels,
+        )
+        try:
+            return await self._transcribe_wav(wav_source)
+        finally:
+            wav_source.close()
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
@@ -418,9 +417,16 @@ class MistralAsyncProcessor(FrameProcessor):
                     return
                 if self._buffer_size:
                     self._report_progress("Transcribing...")
-                    self._buffer.seek(0)
-                    audio_bytes = self._buffer.read()
-                    text = (await self._transcribe_bytes(audio_bytes)).strip()
+                    wav_source = await asyncio.to_thread(
+                        pcm_stream_to_wav,
+                        self._buffer,
+                        self._sample_rate,
+                        self._channels,
+                    )
+                    try:
+                        text = (await self._transcribe_wav(wav_source)).strip()
+                    finally:
+                        wav_source.close()
                     if text:
                         await self.push_frame(
                             TranscriptionFrame(

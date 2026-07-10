@@ -4,6 +4,8 @@ import json
 import threading
 import time
 
+import pytest
+
 from src.runtime import shell_ipc
 
 
@@ -298,6 +300,33 @@ def test_shell_ipc_windows_transport_serializes_requests(monkeypatch):
     assert max_active == 1
 
 
+def test_shell_ipc_windows_transport_cancels_timed_out_worker(monkeypatch):
+    release = threading.Event()
+    worker_finished = threading.Event()
+
+    def blocked_send(_pipe_name: str, _request_line: str, _timeout_seconds: float) -> str:
+        try:
+            release.wait(timeout=1.0)
+            raise OSError("cancelled")
+        finally:
+            worker_finished.set()
+
+    def fake_cancel(thread: threading.Thread) -> bool:
+        assert thread.native_id is not None
+        release.set()
+        return True
+
+    monkeypatch.setattr(shell_ipc, "_send_request_over_pipe", blocked_send)
+    monkeypatch.setattr(shell_ipc, "_cancel_synchronous_io", fake_cancel)
+
+    with pytest.raises(TimeoutError, match="shell IPC timed out"):
+        shell_ipc._call_shell_ipc_windows("pipe", "request\n", 0.05)
+
+    assert worker_finished.wait(timeout=0.2)
+    assert shell_ipc._transport_lock.acquire(timeout=0.2)
+    shell_ipc._transport_lock.release()
+
+
 def test_shell_ipc_windows_transport_reads_response_past_first_buffer(monkeypatch):
     import ctypes
     from ctypes import wintypes
@@ -317,6 +346,7 @@ def test_shell_ipc_windows_transport_reads_response_past_first_buffer(monkeypatc
             self.WaitNamedPipeW = FakeCall(lambda *_args: True)
             self.CreateFileW = FakeCall(lambda *_args: 123)
             self.WriteFile = FakeCall(self._write_file)
+            self.PeekNamedPipe = FakeCall(self._peek_named_pipe)
             self.ReadFile = FakeCall(self._read_file)
             self.CloseHandle = FakeCall(lambda *_args: True)
 
@@ -324,6 +354,19 @@ def test_shell_ipc_windows_transport_reads_response_past_first_buffer(monkeypatc
             length_value = int(getattr(length, "value", length))
             self.written = ctypes.string_at(data, length_value)
             ctypes.cast(written_ptr, ctypes.POINTER(wintypes.DWORD)).contents.value = length_value
+            return True
+
+        def _peek_named_pipe(
+            self,
+            _handle,
+            _buffer,
+            _buffer_len,
+            _bytes_read,
+            available_ptr,
+            _bytes_left,
+        ):
+            available = len(self.response_chunks[0]) if self.response_chunks else 0
+            ctypes.cast(available_ptr, ctypes.POINTER(wintypes.DWORD)).contents.value = available
             return True
 
         def _read_file(self, _handle, buffer, _buffer_len, bytes_read_ptr, _overlapped):
@@ -363,3 +406,57 @@ def test_shell_ipc_windows_transport_reads_response_past_first_buffer(monkeypatc
     assert fake_kernel32.written == b"{}\n"
     assert response == response_line.rstrip("\n")
     assert json.loads(response)["payload"]["diagnostics"] == "x" * 5000
+
+
+def test_shell_ipc_windows_transport_response_read_has_deadline(monkeypatch):
+    import ctypes
+    from ctypes import wintypes
+
+    class FakeCall:
+        def __init__(self, func):
+            self.func = func
+            self.restype = None
+
+        def __call__(self, *args):
+            return self.func(*args)
+
+    class FakeKernel32:
+        def __init__(self):
+            self.WaitNamedPipeW = FakeCall(lambda *_args: True)
+            self.CreateFileW = FakeCall(lambda *_args: 123)
+            self.WriteFile = FakeCall(self._write_file)
+            self.PeekNamedPipe = FakeCall(self._peek_named_pipe)
+            self.ReadFile = FakeCall(lambda *_args: pytest.fail("ReadFile must not block"))
+            self.CloseHandle = FakeCall(lambda *_args: True)
+
+        @staticmethod
+        def _write_file(_handle, _data, length, written_ptr, _overlapped):
+            length_value = int(getattr(length, "value", length))
+            ctypes.cast(written_ptr, ctypes.POINTER(wintypes.DWORD)).contents.value = length_value
+            return True
+
+        @staticmethod
+        def _peek_named_pipe(
+            _handle,
+            _buffer,
+            _buffer_len,
+            _bytes_read,
+            available_ptr,
+            _bytes_left,
+        ):
+            ctypes.cast(available_ptr, ctypes.POINTER(wintypes.DWORD)).contents.value = 0
+            return True
+
+    fake_kernel32 = FakeKernel32()
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: fake_kernel32, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 0, raising=False)
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="response timed out"):
+        shell_ipc._send_request_over_pipe_windows(
+            r"\\.\pipe\scriber-shell-test",
+            "{}\n",
+            0.05,
+        )
+
+    assert time.monotonic() - started < 0.25

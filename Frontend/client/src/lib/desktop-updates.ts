@@ -1,4 +1,5 @@
 import { isTauriRuntime, setTrayUpdateStatus } from "@/lib/backend";
+import { withPromiseTimeout } from "@/lib/fetch-with-timeout";
 
 declare const __SCRIBER_APP_VERSION__: string | undefined;
 
@@ -80,6 +81,11 @@ const STATUS_EVENT = "scriber:desktop-update-status";
 const DEFAULT_CHECK_INTERVAL_HOURS = 24 * 7;
 const MIN_CHECK_INTERVAL_HOURS = 24;
 const REMIND_LATER_HOURS = 24;
+const UPDATE_CHECK_TIMEOUT_MS = 30_000;
+const APP_VERSION_TIMEOUT_MS = 5_000;
+
+let updateCheckInFlight: Promise<DesktopUpdateStatus> | null = null;
+let updateInstallInFlight: Promise<DesktopUpdateStatus> | null = null;
 
 export const DESKTOP_UPDATE_RELEASE_NOTES_URL = "https://github.com/MyButtermilk/Scriber/releases/latest";
 
@@ -135,7 +141,7 @@ export function subscribeDesktopUpdateStatus(listener: (status: DesktopUpdateSta
 }
 
 export async function checkDesktopUpdate(): Promise<DesktopUpdateStatus> {
-  const status = await performDesktopUpdateCheck();
+  const status = await sharedDesktopUpdateCheck();
   emitStatus(status);
   return status;
 }
@@ -162,7 +168,7 @@ export async function checkDesktopUpdateIfDue(
     return { checked: false, reason: "not-due", status: cached };
   }
 
-  const status = await performDesktopUpdateCheck();
+  const status = await sharedDesktopUpdateCheck();
   emitStatus(status);
   return { checked: true, reason: "checked", status };
 }
@@ -248,9 +254,31 @@ export async function openDesktopUpdateReleaseNotes(): Promise<void> {
   window.open(DESKTOP_UPDATE_RELEASE_NOTES_URL, "_blank", "noopener,noreferrer");
 }
 
-export async function installDesktopUpdate(
+export function installDesktopUpdate(
   onProgress?: (progress: DesktopUpdateProgress) => void,
 ): Promise<DesktopUpdateStatus> {
+  if (updateInstallInFlight) {
+    return updateInstallInFlight;
+  }
+  const request = performDesktopUpdateInstall(onProgress);
+  updateInstallInFlight = request;
+  request.then(
+    () => {
+      if (updateInstallInFlight === request) updateInstallInFlight = null;
+    },
+    () => {
+      if (updateInstallInFlight === request) updateInstallInFlight = null;
+    },
+  );
+  return request;
+}
+
+async function performDesktopUpdateInstall(
+  onProgress?: (progress: DesktopUpdateProgress) => void,
+): Promise<DesktopUpdateStatus> {
+  if (updateCheckInFlight) {
+    await updateCheckInFlight;
+  }
   const currentVersion = await getCurrentVersion();
   if (!isTauriRuntime()) {
     throw new Error("Desktop updates are available in the installed Windows app.");
@@ -258,7 +286,11 @@ export async function installDesktopUpdate(
 
   const { check } = await import("@tauri-apps/plugin-updater");
   const { relaunch } = await import("@tauri-apps/plugin-process");
-  const update = await check();
+  const update = await withPromiseTimeout(
+    check(),
+    UPDATE_CHECK_TIMEOUT_MS,
+    "Desktop update check",
+  );
   if (!update) {
     const status = cacheAndBuildStatus({
       phase: "current",
@@ -334,6 +366,26 @@ export async function installDesktopUpdate(
   return status;
 }
 
+function sharedDesktopUpdateCheck(): Promise<DesktopUpdateStatus> {
+  if (updateInstallInFlight) {
+    return updateInstallInFlight;
+  }
+  if (updateCheckInFlight) {
+    return updateCheckInFlight;
+  }
+  const request = performDesktopUpdateCheck();
+  updateCheckInFlight = request;
+  request.then(
+    () => {
+      if (updateCheckInFlight === request) updateCheckInFlight = null;
+    },
+    () => {
+      if (updateCheckInFlight === request) updateCheckInFlight = null;
+    },
+  );
+  return request;
+}
+
 async function performDesktopUpdateCheck(): Promise<DesktopUpdateStatus> {
   const currentVersion = await getCurrentVersion();
   if (!isTauriRuntime()) {
@@ -348,7 +400,11 @@ async function performDesktopUpdateCheck(): Promise<DesktopUpdateStatus> {
 
   try {
     const { check } = await import("@tauri-apps/plugin-updater");
-    const update = await check();
+    const update = await withPromiseTimeout(
+      check(),
+      UPDATE_CHECK_TIMEOUT_MS,
+      "Desktop update check",
+    );
     if (!update) {
       return cacheAndBuildStatus({
         phase: "current",
@@ -396,7 +452,13 @@ async function getCurrentVersion(): Promise<string> {
   }
   try {
     const { getVersion } = await import("@tauri-apps/api/app");
-    return (await getVersion()) || buildVersion();
+    return (
+      await withPromiseTimeout(
+        getVersion(),
+        APP_VERSION_TIMEOUT_MS,
+        "App version lookup",
+      )
+    ) || buildVersion();
   } catch {
     return buildVersion();
   }

@@ -639,6 +639,14 @@ async def download_model(
     def _download():
         with _download_lock:
             try:
+                # A second request may have passed the optimistic checks while
+                # another worker owned the lock. Re-check after serialization.
+                if is_model_downloaded(model_name, quantization=q_label):
+                    _set_download_state(model_name, "ready", 100.0, "Already downloaded")
+                    if on_progress:
+                        on_progress(100.0, "Already downloaded")
+                    return True
+
                 import importlib
                 from huggingface_hub import hf_hub_download, snapshot_download
                 from huggingface_hub.utils import LocalEntryNotFoundError
@@ -1057,6 +1065,9 @@ def delete_model(model_name: str, quantization: Optional[str] = None) -> bool:
         True if deleted, False otherwise
     """
     if model_name not in ONNX_MODELS:
+        return False
+    if is_model_downloading(model_name):
+        logger.warning(f"Refusing to delete model while download is active: {model_name}")
         return False
     
     # Unload from memory first

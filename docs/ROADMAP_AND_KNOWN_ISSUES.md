@@ -1,6 +1,6 @@
 # Roadmap And Known Issues
 
-Last verified: 2026-06-17
+Last verified: 2026-07-10
 
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
@@ -48,6 +48,17 @@ YouTube/file:
 - YouTube job progress now advances beyond download completion through upload,
   transcription, summary, and done states.
 - Azure MAI file/live preparation uses MP3 for latency rather than WAV.
+- YouTube input is restricted to validated YouTube URLs, API/thumbnail responses
+  are bounded, redirect targets are revalidated, and canceled library downloads
+  use isolated attempt directories so late workers cannot corrupt retries.
+
+Reliability and data:
+
+- Job resume/retry scheduling is single-flight, transcript/job deletion is
+  coordinated with persistence, and runtime caches/stores have bounded retention.
+- Settings updates validate persisted text sizes before mutation; invalid numeric
+  tuning values fall back safely instead of crashing provider or runtime paths.
+- Unicode export filenames use a safe ASCII fallback plus RFC 5987 UTF-8 metadata.
 
 Debug/support:
 

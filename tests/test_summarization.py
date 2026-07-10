@@ -36,6 +36,20 @@ def test_summary_budget_short_floor_is_configurable(monkeypatch: pytest.MonkeyPa
     assert output_tokens >= 1300
 
 
+def test_summary_budget_tolerates_invalid_and_non_finite_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SCRIBER_SUMMARY_MIN_WORDS", "invalid")
+    monkeypatch.setenv("SCRIBER_SUMMARY_TOKEN_MULTIPLIER", "nan")
+    monkeypatch.setenv("SCRIBER_SUMMARY_MAX_OUTPUT_TOKENS", "invalid")
+
+    _, target_words, output_tokens = summarization._summary_budget_for_text(
+        _words(1000),
+        "gpt-5-mini",
+    )
+
+    assert target_words >= 180
+    assert output_tokens >= 1024
+
+
 def test_summary_budget_long_video_gets_token_bonus(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SCRIBER_SUMMARY_LONG_VIDEO_MIN_SECONDS", "1800")
     monkeypatch.setenv("SCRIBER_SUMMARY_LONG_VIDEO_TOKEN_BONUS", "700")
@@ -339,10 +353,12 @@ async def test_summarize_openrouter_retries_empty_selected_model_with_default_fa
     monkeypatch: pytest.MonkeyPatch,
 ):
     calls: list[dict[str, object]] = []
+    sessions: list[object] = []
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
 
-    async def _fake_post(payload, _headers, _timeout):
+    async def _fake_post(payload, _headers, session):
         calls.append(payload)
+        sessions.append(session)
         if len(calls) == 1:
             return {
                 "model": "minimax/minimax-m3:nitro",
@@ -375,6 +391,7 @@ async def test_summarize_openrouter_retries_empty_selected_model_with_default_fa
     assert calls[0]["max_tokens"] == 900
     assert calls[0]["reasoning"] == {"exclude": True, "effort": "medium"}
     assert calls[1]["model"] == "z-ai/glm-5.2:nitro"
+    assert sessions[0] is sessions[1]
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-07-09
+Last verified: 2026-07-10
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -29,6 +29,11 @@ Rust:
 cd Frontend\src-tauri
 cargo test
 ```
+
+The 2026-07-10 reliability/performance sweep passed `1094` Python tests with
+`2` expected skips, the frontend type check and production build, `110` Rust
+library tests, `27` Rust audio-sidecar tests, `cargo fmt --check`, and Clippy
+with warnings denied.
 
 Frontend browser smoke:
 

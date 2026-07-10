@@ -57,6 +57,14 @@ def test_post_processing_output_token_budget_is_bounded():
     assert post_processing_output_token_budget("word " * 5000) <= 4096
 
 
+def test_post_processing_output_token_budget_tolerates_invalid_env(monkeypatch):
+    monkeypatch.setenv("SCRIBER_POST_PROCESSING_TOKEN_MULTIPLIER", "nan")
+    monkeypatch.setenv("SCRIBER_POST_PROCESSING_MIN_OUTPUT_TOKENS", "invalid")
+    monkeypatch.setenv("SCRIBER_POST_PROCESSING_MAX_OUTPUT_TOKENS", "-1")
+
+    assert post_processing_output_token_budget("hello world") == 512
+
+
 @pytest.mark.asyncio
 async def test_post_process_live_transcript_uses_cerebras_gemma_default(monkeypatch):
     captured = {}

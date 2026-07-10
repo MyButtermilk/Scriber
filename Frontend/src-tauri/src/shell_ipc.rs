@@ -112,12 +112,12 @@ impl Drop for ShellIpcServerHandle {
 
 pub fn start_shell_ipc_server<L>(
     config: ShellIpcConfig,
-    mut log: L,
+    log: L,
 ) -> Result<Option<ShellIpcServerHandle>, String>
 where
     L: FnMut(String) + Send + 'static,
 {
-    start_shell_ipc_server_impl(config, move |message| log(message))
+    start_shell_ipc_server_impl(config, log)
 }
 
 #[cfg(windows)]
@@ -772,7 +772,7 @@ fn parse_inject_text_options(payload: &Value) -> Result<InjectTextOptions, Shell
         .and_then(Value::as_str)
         .ok_or_else(|| ShellCommandError::new("invalidPayload", "injectText requires text"))?
         .to_string();
-    if text.as_bytes().len() > MAX_INJECT_TEXT_BYTES {
+    if text.len() > MAX_INJECT_TEXT_BYTES {
         return Err(ShellCommandError::new(
             "payloadTooLarge",
             "injectText text exceeded size limit",
@@ -1120,6 +1120,9 @@ fn elapsed_ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
+// The response mirrors distinct measured injection phases; keeping the named
+// scalar arguments makes accidental timing swaps visible at each call site.
+#[allow(clippy::too_many_arguments)]
 fn inject_response_payload(
     options: &InjectTextOptions,
     markers: &[&'static str],
@@ -2988,7 +2991,9 @@ mod tests {
 
     #[test]
     fn inject_text_byte_budget_fits_inside_request_budget_with_overhead() {
-        assert!(super::MAX_INJECT_TEXT_BYTES + 8192 < super::MAX_REQUEST_BYTES);
+        let inject_budget = super::MAX_INJECT_TEXT_BYTES;
+        let request_budget = super::MAX_REQUEST_BYTES;
+        assert!(inject_budget + 8192 < request_budget);
     }
 
     #[cfg(windows)]

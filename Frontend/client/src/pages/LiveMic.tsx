@@ -430,6 +430,7 @@ const GlossyMicButton = memo(function GlossyMicButton({
 });
 import { useQueryClient } from "@tanstack/react-query";
 import { apiUrl } from "@/lib/backend";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useToast } from "@/hooks/use-toast";
 import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -718,15 +719,25 @@ export default function LiveMic() {
     }
 
     let cancelled = false;
+    let requestInFlight = false;
+    const controller = new AbortController();
     const reconcileBackendState = async () => {
+      if (requestInFlight) return;
+      requestInFlight = true;
       try {
-        const res = await fetch(apiUrl("/api/state"), { credentials: "include" });
+        const res = await fetchWithTimeout(
+          apiUrl("/api/state"),
+          { credentials: "include", signal: controller.signal },
+          5_000,
+        );
         if (!res.ok) return;
         const state = (await res.json()) as BackendStateResponse;
         if (cancelled) return;
         applyBackendStateSnapshot(state);
       } catch {
         // WebSocket remains authoritative; this repairs missed terminal states and reconnect gaps.
+      } finally {
+        requestInFlight = false;
       }
     };
 
@@ -734,6 +745,7 @@ export default function LiveMic() {
     const interval = hasActiveSession ? window.setInterval(reconcileBackendState, 2000) : undefined;
     return () => {
       cancelled = true;
+      controller.abort();
       window.clearTimeout(firstCheck);
       if (interval !== undefined) {
         window.clearInterval(interval);
@@ -750,7 +762,11 @@ export default function LiveMic() {
   const handleToggle = async () => {
     try {
       const endpoint = hasActiveSession ? "/api/live-mic/stop" : "/api/live-mic/start";
-      const res = await fetch(apiUrl(endpoint), { method: "POST", credentials: "include" });
+      const res = await fetchWithTimeout(
+        apiUrl(endpoint),
+        { method: "POST", credentials: "include" },
+        15_000,
+      );
       if (!res.ok) {
         const text = await res.text();
         let payload: unknown = null;
@@ -781,10 +797,10 @@ export default function LiveMic() {
 
     setDeletingId(id);
     try {
-      const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
+      const res = await fetchWithTimeout(apiUrl(`/api/transcripts/${id}`), {
         method: "DELETE",
         credentials: "include",
-      });
+      }, 15_000);
       if (!res.ok) {
         throw new Error(res.statusText);
       }
@@ -812,9 +828,9 @@ export default function LiveMic() {
     setCopyingId(id);
     try {
       // Fetch the full transcript content
-      const res = await fetch(apiUrl(`/api/transcripts/${id}`), {
+      const res = await fetchWithTimeout(apiUrl(`/api/transcripts/${id}`), {
         credentials: "include",
-      });
+      }, 15_000);
       if (!res.ok) {
         throw new Error(res.statusText);
       }

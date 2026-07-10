@@ -169,11 +169,17 @@ export function WebSocketProvider({
         }
     }, []);
 
+    const closeCurrentSocket = useCallback(() => {
+        const socket = wsRef.current;
+        wsRef.current = null;
+        socket?.close();
+    }, []);
+
     const connect = useCallback(() => {
+        clearReconnectTimeout();
         if (!enabled) {
             setIsConnected(false);
-            wsRef.current = null;
-            clearReconnectTimeout();
+            closeCurrentSocket();
             return;
         }
 
@@ -185,15 +191,16 @@ export function WebSocketProvider({
         }
 
         // Clean up existing connection
-        if (wsRef.current) {
-            wsRef.current.close();
-            wsRef.current = null;
-        }
+        closeCurrentSocket();
 
         try {
             const ws = new WebSocket(wsUrl(path));
 
             ws.onopen = () => {
+                if (wsRef.current !== ws) {
+                    ws.close();
+                    return;
+                }
                 setIsConnected(true);
                 reconnectCountRef.current = 0;
                 setReconnectCount(0);
@@ -203,6 +210,9 @@ export function WebSocketProvider({
             };
 
             ws.onmessage = (event) => {
+                if (wsRef.current !== ws) {
+                    return;
+                }
                 try {
                     const data = JSON.parse(event.data) as unknown;
                     if (!isScriberWebSocketMessage(data)) {
@@ -222,6 +232,9 @@ export function WebSocketProvider({
             };
 
             ws.onclose = () => {
+                if (wsRef.current !== ws) {
+                    return;
+                }
                 setIsConnected(false);
                 wsRef.current = null;
 
@@ -248,7 +261,7 @@ export function WebSocketProvider({
         } catch (error) {
             console.error("WebSocket connection error:", error);
         }
-    }, [path, enabled, reconnectDelay, maxReconnectAttempts, clearReconnectTimeout]);
+    }, [path, enabled, reconnectDelay, maxReconnectAttempts, clearReconnectTimeout, closeCurrentSocket]);
 
     const send = useCallback((data: unknown) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -268,10 +281,7 @@ export function WebSocketProvider({
         shouldReconnectRef.current = autoReconnect && enabled;
         if (!enabled) {
             clearReconnectTimeout();
-            if (wsRef.current) {
-                wsRef.current.close();
-                wsRef.current = null;
-            }
+            closeCurrentSocket();
             setIsConnected(false);
             return;
         }
@@ -281,12 +291,9 @@ export function WebSocketProvider({
         return () => {
             shouldReconnectRef.current = false;
             clearReconnectTimeout();
-            if (wsRef.current) {
-                wsRef.current.close();
-                wsRef.current = null;
-            }
+            closeCurrentSocket();
         };
-    }, [connect, enabled, autoReconnect, clearReconnectTimeout]);
+    }, [connect, enabled, autoReconnect, clearReconnectTimeout, closeCurrentSocket]);
 
     useEffect(() => {
         const handleAuthStateChange = () => {
@@ -296,10 +303,7 @@ export function WebSocketProvider({
             if (isBackendSessionTokenRequired() && !backendSessionToken) {
                 shouldReconnectRef.current = false;
                 clearReconnectTimeout();
-                if (wsRef.current) {
-                    wsRef.current.close();
-                    wsRef.current = null;
-                }
+                closeCurrentSocket();
                 setIsConnected(false);
                 shouldReconnectRef.current = autoReconnect;
                 return;
@@ -309,7 +313,7 @@ export function WebSocketProvider({
         };
         window.addEventListener(BACKEND_SESSION_TOKEN_REQUIRED_EVENT, handleAuthStateChange);
         return () => window.removeEventListener(BACKEND_SESSION_TOKEN_REQUIRED_EVENT, handleAuthStateChange);
-    }, [enabled, autoReconnect, clearReconnectTimeout, connect]);
+    }, [enabled, autoReconnect, clearReconnectTimeout, closeCurrentSocket, connect]);
 
     const value: WebSocketContextValue = useMemo(() => ({
         isConnected,

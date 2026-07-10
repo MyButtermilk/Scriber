@@ -1,6 +1,51 @@
 import types
+import threading
+import time
 
 import src.device_monitor as device_monitor
+
+
+def test_concurrent_monitor_start_creates_only_one_thread(monkeypatch):
+    monitor = device_monitor.DeviceMonitor(poll_seconds=60)
+    real_thread = threading.Thread
+    factory_entered = threading.Event()
+    release_factory = threading.Event()
+    factory_calls = 0
+
+    class FakeMonitorThread:
+        def __init__(self):
+            self.alive = False
+
+        def start(self):
+            self.alive = True
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, *, timeout):
+            self.alive = False
+
+    def thread_factory(**_kwargs):
+        nonlocal factory_calls
+        factory_calls += 1
+        factory_entered.set()
+        release_factory.wait(timeout=1)
+        return FakeMonitorThread()
+
+    monkeypatch.setattr(device_monitor.threading, "Thread", thread_factory)
+    first = real_thread(target=monitor.start)
+    second = real_thread(target=monitor.start)
+    first.start()
+    assert factory_entered.wait(timeout=1)
+    second.start()
+    time.sleep(0.03)
+    assert factory_calls == 1
+    release_factory.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert factory_calls == 1
+    monitor.stop()
 
 
 class _RecordingLock:
@@ -94,6 +139,46 @@ def test_device_state_changed_burst_uses_trailing_debounce(monkeypatch):
     ]
     expected_due_at = 101.1 + device_monitor._DEVICE_STATE_CHANGED_DEBOUNCE_SECONDS
     assert abs(monitor._pending_refresh_at - expected_due_at) < 0.001
+
+
+def test_due_refresh_take_preserves_newer_trailing_deadline():
+    monitor = device_monitor.DeviceMonitor()
+    monitor._pending_refresh_at = 101.0
+    monitor._pending_refresh_reason = "device_state_changed"
+    monitor._pending_refresh_requires_portaudio = True
+
+    assert monitor._take_due_refresh(100.9) is None
+    assert monitor._pending_refresh_at == 101.0
+    assert monitor._take_due_refresh(101.0) == ("device_state_changed", True)
+    assert monitor._pending_refresh_at == 0.0
+
+
+def test_stop_retains_reference_when_monitor_thread_does_not_exit(monkeypatch):
+    monitor = device_monitor.DeviceMonitor()
+    warnings: list[str] = []
+
+    class StuckThread:
+        def is_alive(self):
+            return True
+
+        def join(self, *, timeout):
+            assert timeout == 2.0
+
+    thread = StuckThread()
+    monitor._thread = thread  # type: ignore[assignment]
+    monkeypatch.setattr(
+        device_monitor,
+        "logger",
+        types.SimpleNamespace(
+            warning=lambda message: warnings.append(message),
+            info=lambda _message: None,
+        ),
+    )
+
+    monitor.stop()
+
+    assert monitor._thread is thread
+    assert warnings == ["[DeviceMonitor] stop timed out; monitor thread is still running"]
 
 
 def test_refresh_deferred_while_stream_active_is_not_rescheduled(monkeypatch):

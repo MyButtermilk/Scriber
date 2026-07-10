@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -29,15 +30,23 @@ class _FakeResponse:
         return self._payload
 
     async def text(self):
-        return self._text
+        return self._text or json.dumps(self._payload)
 
 
 class _FakeSession:
-    def __init__(self, *, post_responses: list[_FakeResponse], get_responses: list[_FakeResponse]):
+    def __init__(
+        self,
+        *,
+        post_responses: list[_FakeResponse],
+        get_responses: list[_FakeResponse],
+        delete_responses: list[_FakeResponse] | None = None,
+    ):
         self._post_responses = list(post_responses)
         self._get_responses = list(get_responses)
+        self._delete_responses = list(delete_responses or [_FakeResponse(status=204)])
         self.post_calls: list[tuple[str, dict]] = []
         self.get_calls: list[tuple[str, dict]] = []
+        self.delete_calls: list[tuple[str, dict]] = []
 
     def post(self, url: str, **kwargs):
         self.post_calls.append((url, kwargs))
@@ -50,6 +59,12 @@ class _FakeSession:
         if not self._get_responses:
             raise AssertionError("Unexpected GET call")
         return self._get_responses.pop(0)
+
+    def delete(self, url: str, **kwargs):
+        self.delete_calls.append((url, kwargs))
+        if not self._delete_responses:
+            raise AssertionError("Unexpected DELETE call")
+        return self._delete_responses.pop(0)
 
 
 def test_build_keyterms_from_vocab_sanitizes_and_limits():
@@ -136,6 +151,7 @@ async def test_transcribe_with_assemblyai_pre_recorded_happy_path(monkeypatch):
     assert submit_json["speaker_labels"] is True
     assert submit_json["language_code"] == "nl"
     assert submit_json["keyterms_prompt"] == ["Alpha"]
+    assert session.delete_calls[0][0].endswith("/transcript/tr_123")
 
 
 @pytest.mark.asyncio
@@ -159,6 +175,7 @@ async def test_transcribe_with_assemblyai_pre_recorded_raises_on_error_status():
             custom_vocab="",
             speaker_labels=True,
         )
+    assert session.delete_calls[0][0].endswith("/transcript/tr_123")
 
 
 @pytest.mark.asyncio

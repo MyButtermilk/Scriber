@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import hashlib
 import hmac
 import importlib
 import ipaddress
@@ -9,12 +10,13 @@ import re
 import signal
 import time
 import threading
+import weakref
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urljoin, urlparse
 from uuid import uuid4
 
 from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
@@ -31,7 +33,7 @@ from src.audio_devices import (
     rank_hostapi,
 )
 from src.config import Config
-from src.device_monitor import DeviceMonitor, devices_contain_name
+from src.device_monitor import DeviceMonitor, devices_contain_name, get_device_guard_lock
 from src.core.provider_capabilities import supports_direct_file_upload
 from src.core.error_taxonomy import ErrorCategory, classify_error_message, is_retryable
 from src.core.hot_path_tracer import HotPathTracer
@@ -57,6 +59,7 @@ from src.core.ws_contracts import (
 from src.data.job_store import JobRecord, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
 from src.runtime.paths import app_root, data_dir, downloads_dir, is_frozen, logs_dir, repo_root
+from src.runtime.env_values import env_float as _safe_env_float, env_int as _safe_env_int
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_duration_args, webm_opus_transcode_args
 from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.runtime.provider_dependencies import import_provider_runtime_module
@@ -65,7 +68,7 @@ from src.runtime.shell_ipc import (
     call_shell_ipc,
     diagnostic_snapshot as shell_ipc_diagnostic_snapshot,
 )
-from src.runtime.subprocess_utils import hidden_subprocess_kwargs
+from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
 from src.mic_prewarm import RustAudioPrewarmManager
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
@@ -87,6 +90,7 @@ from src import database as db
 TranscriptStatus = Literal["completed", "processing", "failed", "recording", "stopped"]
 TranscriptType = Literal["mic", "youtube", "file"]
 SummaryStatus = Literal["idle", "pending", "completed", "failed"]
+TranscriptDeleteStatus = Literal["deleted", "not_found", "busy", "persistence_error"]
 
 ScriberPipeline: Any | None = None
 _invalidate_mic_device_resolution_cache_impl: Callable[[], None] | None = None
@@ -120,6 +124,7 @@ _UPLOAD_MAX_MB_ENV = "SCRIBER_UPLOAD_MAX_MB"
 _DEFAULT_UPLOAD_MAX_MB = 200
 _DEFAULT_AUDIO_INGEST_MAX_MB = 2048
 _DEFAULT_VIDEO_MAX_MB = 2048  # 2GB limit for raw video uploads (audio extracted)
+_MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES = 1024 * 1024
 _UPLOAD_COMPRESSION_THRESHOLD_BYTES = 50 * 1024 * 1024
 _EXTRACTED_AUDIO_BITRATE = "64k"
 _COMPRESSED_AUDIO_BITRATE = "32k"
@@ -163,8 +168,63 @@ _AUDIO_DIAGNOSTIC_IMPORTS = (
 _AUDIO_DIAGNOSTIC_IMPORT_CACHE: dict[str, dict[str, Any]] | None = None
 _SESSION_TOKEN_HEADER = "X-Scriber-Token"
 _SESSION_TOKEN_QUERY = "scriberToken"
+_WS_SEND_TIMEOUT_SECONDS = 1.0
 _NATIVE_DEVICE_EVENT_VALUES = {"auto", "0", "1"}
 _NATIVE_REFRESH_STRING_LIMIT = 128
+_TRANSCRIPT_SEARCH_MAX_CHARS = 500
+_TRANSCRIPT_OFFSET_MAX = 1_000_000
+_TRANSCRIPT_TYPES = {"", "mic", "file", "youtube"}
+_SETTINGS_PROMPT_MAX_BYTES = 64 * 1024
+_SETTINGS_TEXT_MAX_BYTES = 4 * 1024
+_SETTINGS_SECRET_MAX_BYTES = 16 * 1024
+
+
+def _validate_settings_text_lengths(payload: dict[str, Any]) -> None:
+    """Reject oversized persisted settings before any runtime value is mutated."""
+    prompt_fields = {"customVocab", "summarizationPrompt", "postProcessingPrompt"}
+    for field, value in payload.items():
+        if field == "apiKeys" or not isinstance(value, str):
+            continue
+        limit = _SETTINGS_PROMPT_MAX_BYTES if field in prompt_fields else _SETTINGS_TEXT_MAX_BYTES
+        if len(value.encode("utf-8")) > limit:
+            raise ValueError(f"{field} exceeds the {limit}-byte settings limit")
+
+    api_keys = payload.get("apiKeys")
+    if not isinstance(api_keys, dict):
+        return
+    for field, value in api_keys.items():
+        if isinstance(value, str) and len(value.encode("utf-8")) > _SETTINGS_SECRET_MAX_BYTES:
+            raise ValueError(
+                f"apiKeys.{field} exceeds the {_SETTINGS_SECRET_MAX_BYTES}-byte settings limit"
+            )
+
+
+def _attachment_content_disposition(filename: str) -> str:
+    """Build an injection-safe attachment header with a UTF-8 filename."""
+    cleaned = "".join(
+        character
+        for character in str(filename or "")
+        if ord(character) >= 32 and character not in {'"', "\\", "/", "\x7f"}
+    ).strip()
+    if not cleaned:
+        cleaned = "download"
+    raw_suffix = Path(cleaned).suffix
+    ascii_suffix = "".join(
+        character
+        for character in raw_suffix
+        if character.isascii() and (character.isalnum() or character in ".-_")
+    )
+    raw_stem = cleaned[: -len(raw_suffix)] if raw_suffix else cleaned
+    ascii_stem = "".join(
+        character if character.isascii() and (character.isalnum() or character in " .-_") else "_"
+        for character in raw_stem
+    ).strip(" ._")
+    ascii_fallback = f"{ascii_stem or 'download'}{ascii_suffix}"
+    encoded = quote(cleaned, safe="")
+    return (
+        f'attachment; filename="{ascii_fallback}"; '
+        f"filename*=UTF-8''{encoded}"
+    )
 
 # Video file extensions that require audio extraction
 _VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".flv", ".wmv", ".m4v"}
@@ -222,6 +282,8 @@ _PROVIDER_AUDIO_UPLOAD_LIMITS: dict[str, dict[str, Any]] = {
 }
 
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_MAX_UPLOAD_FILENAME_CHARS = 180
+_MAX_DELETED_TRANSCRIPT_TOMBSTONES = 4096
 _WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -281,10 +343,22 @@ def _safe_upload_filename(name: str) -> str:
     base = _INVALID_FILENAME_CHARS.sub("_", base).rstrip(" .")
     if not base or base in {".", ".."}:
         return "uploaded_file"
+    if len(base) > _MAX_UPLOAD_FILENAME_CHARS:
+        path = Path(base)
+        suffix = path.suffix
+        stem_limit = max(1, _MAX_UPLOAD_FILENAME_CHARS - len(suffix))
+        base = f"{path.stem[:stem_limit]}{suffix}"
     stem = Path(base).stem
     if stem.upper() in _WINDOWS_RESERVED_NAMES:
         base = f"_{base}"
     return base
+
+
+def _safe_work_directory_component(value: str) -> str:
+    candidate = str(value or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", candidate):
+        return candidate
+    return hashlib.sha256(candidate.encode("utf-8", errors="replace")).hexdigest()[:32]
 
 
 def _configured_session_token() -> str:
@@ -674,11 +748,16 @@ def _safe_youtube_thumbnail_url(raw_url: str) -> str | None:
         return None
     if host not in _YOUTUBE_THUMBNAIL_ALLOWED_HOSTS:
         return None
+    try:
+        if parsed.port not in (None, 443):
+            return None
+    except ValueError:
+        return None
     return parsed.geturl()
 
 
 async def _read_limited_response_body(content: Any, max_bytes: int) -> bytes:
-    chunks: list[bytes] = []
+    body = bytearray()
     total = 0
     chunk_size = 64 * 1024
 
@@ -691,12 +770,12 @@ async def _read_limited_response_body(content: Any, max_bytes: int) -> bytes:
         if not chunk:
             break
 
-        chunks.append(chunk)
+        body.extend(chunk)
         total += len(chunk)
         if total > max_bytes:
             raise ValueError("response too large")
 
-    return b"".join(chunks)
+    return bytes(body)
 
 
 def _validate_mode(raw_mode: str) -> str:
@@ -870,6 +949,17 @@ def _format_upload_limit(limit_bytes: int) -> str:
     return f"{limit_bytes / (1024 * 1024):.0f}MB"
 
 
+def _multipart_request_is_definitely_oversized(
+    content_length: int | None,
+    *,
+    file_limit: int,
+) -> bool:
+    """Pre-reject only when multipart framing cannot explain the excess bytes."""
+    if content_length is None:
+        return False
+    return content_length > file_limit + _MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES
+
+
 def _get_video_max_bytes() -> int:
     """Get maximum bytes allowed for video file uploads (audio will be extracted)."""
     return _DEFAULT_VIDEO_MAX_MB * 1024 * 1024
@@ -938,7 +1028,11 @@ async def _transcode_media_to_webm_audio(
         **hidden_subprocess_kwargs(),
     )
 
-    _, stderr = await proc.communicate()
+    _, stderr = await communicate_or_kill_on_cancel(
+        proc,
+        max_stdout_bytes=64 * 1024,
+        max_stderr_bytes=1024 * 1024,
+    )
 
     if proc.returncode != 0:
         err_msg = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
@@ -1031,9 +1125,12 @@ async def _write_upload_stream_to_disk(
     *,
     max_bytes: int,
     chunk_size: int = 1024 * 1024,
+    write_batch_size: int = 8 * 1024 * 1024,
 ) -> tuple[int, bool]:
     bytes_read = 0
     too_large = False
+    pending = bytearray()
+    effective_batch_size = max(chunk_size, int(write_batch_size))
     file_obj = await asyncio.to_thread(open, save_path, "wb")
     try:
         while True:
@@ -1044,9 +1141,19 @@ async def _write_upload_stream_to_disk(
             if bytes_read > max_bytes:
                 too_large = True
                 break
-            await asyncio.to_thread(file_obj.write, chunk)
+            pending.extend(chunk)
+            if len(pending) >= effective_batch_size:
+                batch = bytes(pending)
+                pending.clear()
+                await asyncio.to_thread(file_obj.write, batch)
     finally:
-        await asyncio.to_thread(file_obj.close)
+        try:
+            if pending:
+                batch = bytes(pending)
+                pending.clear()
+                await asyncio.to_thread(file_obj.write, batch)
+        finally:
+            await asyncio.to_thread(file_obj.close)
     return bytes_read, too_large
 
 
@@ -1197,15 +1304,11 @@ def _preview_from_words(words: list[str], max_words: int = 5, *, has_more: bool 
 
 
 def _env_float(name: str, default: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
-    try:
-        value = float(os.getenv(name, str(default)) or default)
-    except Exception:
-        value = default
-    if minimum is not None:
-        value = max(minimum, value)
-    if maximum is not None:
-        value = min(maximum, value)
-    return value
+    return _safe_env_float(name, default, minimum=minimum, maximum=maximum)
+
+
+def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    return _safe_env_int(name, default, minimum=minimum, maximum=maximum)
 
 
 def _live_pipeline_uses_async_finalization(pipeline: Any | None) -> bool:
@@ -1518,6 +1621,14 @@ class ScriberWebController:
         self._clients_snapshot: tuple[web.WebSocketResponse, ...] = ()
         self._clients_dirty = False
         self._client_count = 0
+        self._client_send_locks: dict[web.WebSocketResponse, asyncio.Lock] = {}
+        self._audio_broadcast_task: asyncio.Task | None = None
+        self._pending_audio_payload: dict[str, Any] | None = None
+        self._transcript_broadcast_task: asyncio.Task | None = None
+        self._pending_transcript_partial: dict[str, Any] | None = None
+        self._pending_transcript_finals: deque[dict[str, Any]] = deque()
+        self._control_broadcast_task: asyncio.Task | None = None
+        self._pending_control_payloads: dict[str, dict[str, Any]] = {}
 
         self._pipeline: Optional[Any] = None
         self._pipeline_task: Optional[asyncio.Task] = None
@@ -1526,14 +1637,28 @@ class ScriberWebController:
         self._active_provider: str | None = None
         # Track running file/YouTube transcription tasks by transcript ID
         self._running_tasks: dict[str, asyncio.Task] = {}
+        self._summary_tasks: dict[str, asyncio.Task] = {}
+        self._resume_jobs_lock = asyncio.Lock()
+        self._shutting_down = False
         self._job_store = job_store or JobStore()
         self._job_ids_by_transcript: dict[str, str] = {}
+        self._job_id_cache_limit = _env_int(
+            "SCRIBER_JOB_ID_CACHE_LIMIT",
+            1000,
+            minimum=25,
+            maximum=10_000,
+        )
         self._latency_metrics_store = latency_metrics_store or LatencyMetricsStore()
-        self._job_max_attempts = max(1, int(os.getenv("SCRIBER_JOB_MAX_ATTEMPTS", "3")))
-        self._job_retry_base_seconds = max(0.1, float(os.getenv("SCRIBER_JOB_RETRY_BASE_SEC", "5")))
-        self._job_retry_max_seconds = max(
-            self._job_retry_base_seconds,
-            float(os.getenv("SCRIBER_JOB_RETRY_MAX_SEC", "120")),
+        self._metrics_persist_tasks: set[asyncio.Task] = set()
+        self._job_max_attempts = _env_int("SCRIBER_JOB_MAX_ATTEMPTS", 3, minimum=1, maximum=20)
+        self._job_retry_base_seconds = _env_float(
+            "SCRIBER_JOB_RETRY_BASE_SEC", 5.0, minimum=0.1, maximum=3600.0
+        )
+        self._job_retry_max_seconds = _env_float(
+            "SCRIBER_JOB_RETRY_MAX_SEC",
+            120.0,
+            minimum=self._job_retry_base_seconds,
+            maximum=86_400.0,
         )
         provider_fallbacks = [
             p.strip()
@@ -1541,8 +1666,12 @@ class ScriberWebController:
             if p.strip()
         ]
         breaker = ProviderCircuitBreaker(
-            failure_threshold=max(1, int(os.getenv("SCRIBER_BREAKER_FAILURE_THRESHOLD", "3"))),
-            cooldown_seconds=max(1.0, float(os.getenv("SCRIBER_BREAKER_COOLDOWN_SEC", "30"))),
+            failure_threshold=_env_int(
+                "SCRIBER_BREAKER_FAILURE_THRESHOLD", 3, minimum=1, maximum=100
+            ),
+            cooldown_seconds=_env_float(
+                "SCRIBER_BREAKER_COOLDOWN_SEC", 30.0, minimum=1.0, maximum=86_400.0
+            ),
         )
         self._provider_breaker = breaker
         self._provider_router = ProviderRouter(
@@ -1552,7 +1681,7 @@ class ScriberWebController:
         )
         self._retry_scheduler = RetryScheduler(
             loop=self._loop,
-            trigger=lambda: self.resume_pending_jobs(limit=25),
+            trigger=lambda: self.resume_pending_jobs(limit=25, recover_running=False),
         )
         self._validate_ws_contracts = os.getenv("SCRIBER_VALIDATE_WS_CONTRACTS", "0").strip() in {
             "1",
@@ -1629,6 +1758,14 @@ class ScriberWebController:
         self._current_lock = threading.Lock()
         self._history: list[TranscriptRecord] = []
         self._history_by_id: dict[str, TranscriptRecord] = {}
+        self._history_cache_limit = max(
+            25,
+            _env_int("SCRIBER_HISTORY_CACHE_LIMIT", 250, minimum=25, maximum=1000),
+        )
+        self._transcript_persistence_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
+        self._deleted_transcript_ids: dict[str, None] = {}
         self._last_audio_broadcast = 0.0
         self._overlay_audio_enabled = False
         self._mic_low_level_since: float | None = None
@@ -1664,6 +1801,7 @@ class ScriberWebController:
         self._settings_persist_task: asyncio.Task | None = None
         self._settings_persist_pending = False
         self._settings_persist_lock = asyncio.Lock()
+        self._settings_update_lock = asyncio.Lock()
         try:
             self._settings_persist_debounce_seconds = max(
                 0.0,
@@ -1745,7 +1883,8 @@ class ScriberWebController:
             return
         self._settings_persist_pending = False
         async with self._settings_persist_lock:
-            await asyncio.to_thread(Config.persist_to_env_file)
+            async with self._settings_update_lock:
+                await asyncio.to_thread(Config.persist_settings_files)
 
     def _flush_settings_persist_sync(self) -> None:
         self._cancel_settings_persist_timer()
@@ -1753,7 +1892,7 @@ class ScriberWebController:
         if not self._settings_persist_pending and not persist_in_flight:
             return
         self._settings_persist_pending = False
-        Config.persist_to_env_file()
+        Config.persist_settings_files()
 
     def _on_mic_prewarm_done(self, task: asyncio.Task) -> None:
         if self._mic_prewarm_task is task:
@@ -1977,13 +2116,14 @@ class ScriberWebController:
                 native_endpoints = collect_native_capture_endpoint_inventory()
                 if native_endpoints:
                     inventory_source = "pycaw"
-            diagnostics = input_endpoint_mapping_diagnostics(
-                sd,
-                favorite_name=str(getattr(Config, "FAVORITE_MIC", "") or ""),
-                native_endpoints=native_endpoints,
-                sample_rate=sample_rate,
-                channels=channels,
-            )
+            with get_device_guard_lock():
+                diagnostics = input_endpoint_mapping_diagnostics(
+                    sd,
+                    favorite_name=str(getattr(Config, "FAVORITE_MIC", "") or ""),
+                    native_endpoints=native_endpoints,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                )
             diagnostics["source"] = inventory_source
             diagnostics["rustInventoryAvailable"] = bool(
                 isinstance(rust_inventory, dict) and rust_inventory.get("available")
@@ -2080,13 +2220,14 @@ class ScriberWebController:
                 native_endpoints = collect_native_capture_endpoint_inventory()
                 if native_endpoints:
                     inventory_source = "pycaw"
-            mappings = build_input_endpoint_mappings(
-                sd,
-                favorite_name=str(getattr(Config, "FAVORITE_MIC", "") or ""),
-                native_endpoints=native_endpoints,
-                sample_rate=sample_rate,
-                channels=channels,
-            )
+            with get_device_guard_lock():
+                mappings = build_input_endpoint_mappings(
+                    sd,
+                    favorite_name=str(getattr(Config, "FAVORITE_MIC", "") or ""),
+                    native_endpoints=native_endpoints,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                )
             raw_device = device_preference
             match = None
             if raw_device and raw_device not in {"default", "None"}:
@@ -2352,14 +2493,58 @@ class ScriberWebController:
     
     def _register_task(self, transcript_id: str, task: asyncio.Task) -> None:
         """Register a background task for a transcript."""
-        # Use call_soon_threadsafe to ensure thread safety if called from callbacks
         self._running_tasks[transcript_id] = task
-        task.add_done_callback(lambda _: self._loop.call_soon_threadsafe(lambda: self._unregister_task(transcript_id)))
+        task.add_done_callback(
+            lambda completed: self._unregister_task(transcript_id, completed)
+        )
 
-    def _unregister_task(self, transcript_id: str) -> None:
+    def _unregister_task(self, transcript_id: str, task: asyncio.Task) -> None:
         """Unregister a background task."""
-        if transcript_id in self._running_tasks:
-            del self._running_tasks[transcript_id]
+        if self._running_tasks.get(transcript_id) is task:
+            self._running_tasks.pop(transcript_id, None)
+
+    def _remember_job_id(self, transcript_id: str, job_id: str) -> None:
+        if not transcript_id or not job_id:
+            return
+        self._job_ids_by_transcript.pop(transcript_id, None)
+        self._job_ids_by_transcript[transcript_id] = job_id
+        while len(self._job_ids_by_transcript) > self._job_id_cache_limit:
+            evict_id = next(
+                (
+                    candidate
+                    for candidate in self._job_ids_by_transcript
+                    if candidate != transcript_id and candidate not in self._running_tasks
+                ),
+                None,
+            )
+            if evict_id is None:
+                break
+            self._job_ids_by_transcript.pop(evict_id, None)
+
+    def _register_summary_task(self, transcript_id: str, task: asyncio.Task) -> bool:
+        """Register one in-flight summary request per transcript."""
+        existing = self._summary_tasks.get(transcript_id)
+        if existing is not None and not existing.done():
+            return False
+        self._summary_tasks[transcript_id] = task
+        task.add_done_callback(
+            lambda completed: self._unregister_summary_task(transcript_id, completed)
+        )
+        return True
+
+    def _unregister_summary_task(self, transcript_id: str, task: asyncio.Task) -> None:
+        if self._summary_tasks.get(transcript_id) is task:
+            self._summary_tasks.pop(transcript_id, None)
+
+    def _mark_transcript_deleted(self, transcript_id: str) -> None:
+        self._deleted_transcript_ids.pop(transcript_id, None)
+        self._deleted_transcript_ids[transcript_id] = None
+        while len(self._deleted_transcript_ids) > _MAX_DELETED_TRANSCRIPT_TOMBSTONES:
+            oldest = next(iter(self._deleted_transcript_ids))
+            self._deleted_transcript_ids.pop(oldest, None)
+
+    def _unmark_transcript_deleted(self, transcript_id: str) -> None:
+        self._deleted_transcript_ids.pop(transcript_id, None)
 
     def _enqueue_background_job(
         self,
@@ -2367,16 +2552,33 @@ class ScriberWebController:
         *,
         job_type: JobType,
         payload: dict[str, Any],
-    ) -> None:
+    ) -> str | None:
         try:
             job = self._job_store.enqueue(
                 transcript_id=rec.id,
                 job_type=job_type,
                 payload=payload,
             )
-            self._job_ids_by_transcript[rec.id] = job.id
+            return job.id
         except Exception as exc:  # pragma: no cover - best effort persistence
             logger.warning(f"Failed to persist queued job for transcript {rec.id}: {exc}")
+            return None
+
+    async def _enqueue_background_job_async(
+        self,
+        rec: TranscriptRecord,
+        *,
+        job_type: JobType,
+        payload: dict[str, Any],
+    ) -> None:
+        job_id = await asyncio.to_thread(
+            self._enqueue_background_job,
+            rec,
+            job_type=job_type,
+            payload=payload,
+        )
+        if job_id:
+            self._remember_job_id(rec.id, job_id)
 
     def _set_job_running(self, transcript_id: str) -> None:
         job_id = self._job_ids_by_transcript.get(transcript_id)
@@ -2413,9 +2615,9 @@ class ScriberWebController:
     def _schedule_retry_scan(self, delay_seconds: float) -> None:
         self._retry_scheduler.schedule_in(delay_seconds)
 
-    def _schedule_next_retry_scan_from_store(self) -> None:
+    async def _schedule_next_retry_scan_from_store(self) -> None:
         try:
-            delay = self._job_store.seconds_until_next_retry()
+            delay = await asyncio.to_thread(self._job_store.seconds_until_next_retry)
         except Exception as exc:  # pragma: no cover - best effort
             logger.warning(f"Failed to query next retry delay: {exc}")
             return
@@ -2424,11 +2626,11 @@ class ScriberWebController:
             return
         self._schedule_retry_scan(delay)
 
-    def _schedule_retry_if_allowed(self, rec: TranscriptRecord, error: Exception | str) -> bool:
+    async def _schedule_retry_if_allowed(self, rec: TranscriptRecord, error: Exception | str) -> bool:
         job_id = self._job_ids_by_transcript.get(rec.id)
         if not job_id:
             return False
-        job = self._job_store.get(job_id)
+        job = await asyncio.to_thread(self._job_store.get, job_id)
         if not job:
             return False
         category = classify_error_message(str(error))
@@ -2445,7 +2647,12 @@ class ScriberWebController:
         rec.step = f"Retrying in {retry_label}s ({attempts}/{self._job_max_attempts})"
         rec.updated_at = datetime.now().isoformat()
         try:
-            self._job_store.set_retry(job_id, retry_at=retry_at, last_error=str(error))
+            await asyncio.to_thread(
+                self._job_store.set_retry,
+                job_id,
+                retry_at=retry_at,
+                last_error=str(error),
+            )
         except Exception as exc:  # pragma: no cover - best effort persistence
             logger.warning(f"Failed to persist retry state for transcript {rec.id}: {exc}")
             return False
@@ -2473,6 +2680,15 @@ class ScriberWebController:
     async def _sync_job_status_async(self, rec: TranscriptRecord) -> None:
         await asyncio.to_thread(self._sync_job_status, rec)
 
+    async def _finalize_canceled_background_job(self, rec: TranscriptRecord) -> None:
+        """Persist and publish the terminal state reached after task cancellation."""
+        rec.status = "stopped"
+        rec.step = "Stopped by user"
+        rec.updated_at = datetime.now().isoformat()
+        await self._sync_job_status_async(rec)
+        await self._save_transcript_to_db_async(rec)
+        await self._broadcast_history_updated(record=rec, reason="canceled")
+
     def _schedule_youtube_job(self, rec: TranscriptRecord, *, resumed: bool = False) -> None:
         async def _runner() -> None:
             try:
@@ -2480,14 +2696,12 @@ class ScriberWebController:
                 provider = self._select_available_provider()
                 _validate_provider_ready(provider)
             except asyncio.CancelledError:
-                if rec.status == "processing":
-                    rec.status = "stopped"
-                    rec.step = "Stopped by user"
-                await self._sync_job_status_async(rec)
+                if not self._shutting_down:
+                    await self._finalize_canceled_background_job(rec)
                 raise
             except Exception as exc:
                 try:
-                    if not self._schedule_retry_if_allowed(rec, exc):
+                    if not await self._schedule_retry_if_allowed(rec, exc):
                         rec.status = "failed"
                         rec.step = "Failed"
                         rec.append_final_text(f"[Error] {exc}")
@@ -2504,12 +2718,12 @@ class ScriberWebController:
                 elif rec.status == "failed":
                     self._record_provider_failure(provider, rec.step)
             except asyncio.CancelledError:
-                if rec.status == "processing":
-                    rec.status = "stopped"
-                    rec.step = "Stopped by user"
+                if not self._shutting_down:
+                    await self._finalize_canceled_background_job(rec)
                 raise
             finally:
-                await self._sync_job_status_async(rec)
+                if rec.status != "stopped":
+                    await self._sync_job_status_async(rec)
 
         task_name = f"youtube_transcribe_{rec.id}" if not resumed else f"youtube_resume_{rec.id}"
         task = asyncio.create_task(_runner(), name=task_name)
@@ -2522,14 +2736,12 @@ class ScriberWebController:
                 provider = self._select_available_provider()
                 _validate_provider_ready(provider)
             except asyncio.CancelledError:
-                if rec.status == "processing":
-                    rec.status = "stopped"
-                    rec.step = "Stopped by user"
-                await self._sync_job_status_async(rec)
+                if not self._shutting_down:
+                    await self._finalize_canceled_background_job(rec)
                 raise
             except Exception as exc:
                 try:
-                    if not self._schedule_retry_if_allowed(rec, exc):
+                    if not await self._schedule_retry_if_allowed(rec, exc):
                         rec.status = "failed"
                         rec.step = "Failed"
                         rec.append_final_text(f"[Error] {exc}")
@@ -2546,12 +2758,12 @@ class ScriberWebController:
                 elif rec.status == "failed":
                     self._record_provider_failure(provider, rec.step)
             except asyncio.CancelledError:
-                if rec.status == "processing":
-                    rec.status = "stopped"
-                    rec.step = "Stopped by user"
+                if not self._shutting_down:
+                    await self._finalize_canceled_background_job(rec)
                 raise
             finally:
-                await self._sync_job_status_async(rec)
+                if rec.status != "stopped":
+                    await self._sync_job_status_async(rec)
 
         task_name = f"file_transcribe_{rec.id}" if not resumed else f"file_resume_{rec.id}"
         task = asyncio.create_task(_runner(), name=task_name)
@@ -2625,9 +2837,30 @@ class ScriberWebController:
         except asyncio.TimeoutError as exc:
             raise TimeoutError(f"{timeout_label} timed out after {timeout_seconds:.1f}s") from exc
 
-    async def resume_pending_jobs(self, *, limit: int = 25) -> int:
-        reset_count = self._job_store.reset_running_to_queued()
-        pending_jobs = self._job_store.list_pending(limit=limit)
+    async def resume_pending_jobs(
+        self,
+        *,
+        limit: int = 25,
+        recover_running: bool = False,
+    ) -> int:
+        async with self._resume_jobs_lock:
+            return await self._resume_pending_jobs_unlocked(
+                limit=limit,
+                recover_running=recover_running,
+            )
+
+    async def _resume_pending_jobs_unlocked(
+        self,
+        *,
+        limit: int,
+        recover_running: bool,
+    ) -> int:
+        reset_count = (
+            await asyncio.to_thread(self._job_store.reset_running_to_queued)
+            if recover_running
+            else 0
+        )
+        pending_jobs = await asyncio.to_thread(self._job_store.list_pending, limit=limit)
         resumed_count = 0
 
         for job in pending_jobs:
@@ -2635,14 +2868,21 @@ class ScriberWebController:
                 continue
 
             rec = self._get_history_record(job.transcript_id)
+            if rec is None:
+                persisted = await asyncio.to_thread(db.get_transcript, job.transcript_id)
+                if persisted and persisted.get("status") in ("completed", "failed", "stopped"):
+                    rec = self._record_from_persisted_data(persisted)
+                    self._remember_job_id(rec.id, job.id)
+                    await self._sync_job_status_async(rec)
+                    continue
             if rec and rec.status in ("completed", "failed", "stopped"):
-                self._sync_job_status(rec)
+                await self._sync_job_status_async(rec)
                 continue
             if rec is None:
                 rec = self._build_processing_record_from_job(job)
                 self._add_to_history(rec)
 
-            self._job_ids_by_transcript[rec.id] = job.id
+            self._remember_job_id(rec.id, job.id)
 
             if job.job_type == JobType.YOUTUBE:
                 if not rec.source_url:
@@ -2673,7 +2913,7 @@ class ScriberWebController:
             logger.info(
                 f"Job resume startup scan: reset_running={reset_count}, resumed={resumed_count}, pending={len(pending_jobs)}"
             )
-        self._schedule_next_retry_scan_from_store()
+        await self._schedule_next_retry_scan_from_store()
         return resumed_count
 
     def _set_recording_state(self, target: RecordingState, *, context: str = "") -> None:
@@ -2693,10 +2933,13 @@ class ScriberWebController:
             return
         try:
             self._loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self.broadcast(state_event(self.get_state())))
+                self._enqueue_state_snapshot_broadcast,
             )
         except RuntimeError:
             return
+
+    def _enqueue_state_snapshot_broadcast(self) -> None:
+        self._enqueue_control_broadcast(state_event(self.get_state()))
 
     def _start_hot_path_tracer(self, session_id: str) -> None:
         tracer = HotPathTracer(session_id)
@@ -2759,12 +3002,56 @@ class ScriberWebController:
                 duration_ms=report.get("hotkey_received_to_first_paste_ms") or max(report.values(), default=0.0),
                 meta=report,
             )
-            try:
-                self._latency_metrics_store.record(session_id, report)
-            except Exception as exc:  # pragma: no cover - best effort persistence
-                logger.warning(f"Failed to persist hot path timing for {session_id[:8]}: {exc}")
+            self._schedule_hot_path_metric_persist(session_id, report)
             return True
         return False
+
+    def _schedule_hot_path_metric_persist(
+        self,
+        session_id: str,
+        report: dict[str, float],
+    ) -> None:
+        report_snapshot = dict(report)
+
+        async def persist() -> None:
+            try:
+                await asyncio.to_thread(
+                    self._latency_metrics_store.record,
+                    session_id,
+                    report_snapshot,
+                )
+            except Exception as exc:  # pragma: no cover - best effort persistence
+                logger.warning(f"Failed to persist hot path timing for {session_id[:8]}: {exc}")
+
+        def start() -> None:
+            if self._loop.is_closed():
+                return
+            task = self._loop.create_task(
+                persist(),
+                name=f"hot_path_metric_{session_id[:8]}",
+            )
+            self._metrics_persist_tasks.add(task)
+            task.add_done_callback(self._metrics_persist_tasks.discard)
+
+        try:
+            if asyncio.get_running_loop() is self._loop:
+                start()
+            else:
+                self._loop.call_soon_threadsafe(start)
+        except (RuntimeError, ValueError):
+            return
+
+    async def _wait_for_pending_metric_writes(self, timeout_seconds: float = 2.0) -> int:
+        tasks = {task for task in self._metrics_persist_tasks if not task.done()}
+        if not tasks:
+            return 0
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=max(0.0, float(timeout_seconds)),
+        )
+        if done:
+            await asyncio.gather(*done, return_exceptions=True)
+        return len(pending)
 
     def _clear_hot_path_tracer(self, session_id: str | None) -> None:
         if not session_id:
@@ -2886,64 +3173,88 @@ class ScriberWebController:
         self._schedule_overlay_command("hide", hide_recording_overlay, session_id=session_id)
     
     def _load_transcripts_from_db(self) -> None:
-        """Load transcript metadata from database on startup.
+        """Initialize database-backed history without loading all metadata into RAM."""
+        logger.info("Transcript history ready (database-backed pagination enabled)")
 
-        PERFORMANCE OPTIMIZATION: Uses lazy content loading - only metadata is
-        loaded into memory. Content is loaded on-demand via get_transcript().
-        This reduces memory usage by 80-90% for large transcript lists.
-        """
-        try:
-            # Use metadata-only loader for reduced memory footprint
-            saved = db.load_transcript_metadata()
-            for data in saved:
-                # Skip processing/recording transcripts (incomplete)
-                if data.get("status") in ("processing", "recording"):
-                    continue
-                rec = TranscriptRecord(
-                    id=data.get("id", ""),
-                    title=data.get("title", ""),
-                    date=data.get("date", ""),
-                    duration=data.get("duration", ""),
-                    status=data.get("status", "completed"),
-                    type=data.get("type", "mic"),
-                    language=data.get("language", ""),
-                    step=data.get("step", ""),
-                    source_url=data.get("sourceUrl", ""),
-                    channel=data.get("channel", ""),
-                    thumbnail_url=data.get("thumbnailUrl", ""),
-                    # Content is NOT loaded - lazy loaded on demand
-                    content="",
-                    created_at=data.get("createdAt", ""),
-                    updated_at=data.get("updatedAt", ""),
-                    summary="",  # Summary also lazy loaded
-                    summary_status=data.get("summaryStatus", "idle"),
-                    summary_error=data.get("summaryError", ""),
-                    summary_updated_at=data.get("summaryUpdatedAt", ""),
-                    _preview=data.get("_previewText", "") or "",
-                    _content_loaded=False,
-                    _summary_loaded=False,
-                )
-                self._history.append(rec)
-                if rec.id:
-                    self._history_by_id[rec.id] = rec
-            logger.info(f"Loaded {len(self._history)} transcript metadata (lazy content loading enabled)")
-        except Exception as e:
-            logger.error(f"Failed to load transcripts from database: {e}")
+    @staticmethod
+    def _record_from_persisted_data(data: dict[str, Any]) -> TranscriptRecord:
+        return TranscriptRecord(
+            id=str(data.get("id", "") or ""),
+            title=str(data.get("title", "") or ""),
+            date=str(data.get("date", "") or ""),
+            duration=str(data.get("duration", "") or ""),
+            status=data.get("status", "completed"),
+            type=data.get("type", "mic"),
+            language=str(data.get("language", "") or ""),
+            step=str(data.get("step", "") or ""),
+            source_url=str(data.get("sourceUrl", "") or ""),
+            channel=str(data.get("channel", "") or ""),
+            thumbnail_url=str(data.get("thumbnailUrl", "") or ""),
+            content=str(data.get("content", "") or ""),
+            created_at=str(data.get("createdAt", "") or ""),
+            updated_at=str(data.get("updatedAt", "") or ""),
+            summary=str(data.get("summary", "") or ""),
+            summary_status=data.get("summaryStatus", "idle"),
+            summary_error=str(data.get("summaryError", "") or ""),
+            summary_updated_at=str(data.get("summaryUpdatedAt", "") or ""),
+            _preview=str(data.get("preview", "") or data.get("_previewText", "") or ""),
+            _content_loaded=True,
+            _summary_loaded=True,
+        )
     
     def _save_transcript_to_db(self, record: TranscriptRecord) -> None:
         """Save a transcript to the database."""
+        if record.id in self._deleted_transcript_ids:
+            logger.debug(f"Skipping persistence for deleted transcript: {record.id}")
+            return
         try:
             db.save_transcript(record)
         except Exception as e:
             logger.error(f"Failed to save transcript to database: {e}")
 
+    def _transcript_persistence_lock(self, transcript_id: str) -> asyncio.Lock:
+        lock = self._transcript_persistence_locks.get(transcript_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._transcript_persistence_locks[transcript_id] = lock
+        return lock
+
     async def _save_transcript_to_db_async(self, record: TranscriptRecord) -> None:
         """Persist a transcript without blocking the aiohttp event loop."""
         try:
-            snapshot = record.to_public(include_content=True)
-            await asyncio.to_thread(db.save_transcript, snapshot)
+            async with self._transcript_persistence_lock(record.id):
+                if record.id in self._deleted_transcript_ids:
+                    logger.debug(f"Skipping persistence for deleted transcript: {record.id}")
+                    return
+                snapshot = record.to_public(include_content=True)
+                await asyncio.to_thread(db.save_transcript, snapshot)
         except Exception as e:
             logger.error(f"Failed to save transcript to database: {e}")
+
+    async def _save_transcript_summary_state_async(
+        self,
+        record: TranscriptRecord,
+        *,
+        include_summary: bool = False,
+    ) -> None:
+        """Persist summary lifecycle fields without rewriting transcript content."""
+        try:
+            async with self._transcript_persistence_lock(record.id):
+                if record.id in self._deleted_transcript_ids:
+                    return
+                updated = await asyncio.to_thread(
+                    db.update_transcript_summary_state,
+                    record.id,
+                    status=record.summary_status,
+                    error=record.summary_error,
+                    summary=record.summary if include_summary else None,
+                    step=record.step,
+                )
+                if not updated:
+                    snapshot = record.to_public(include_content=True)
+                    await asyncio.to_thread(db.save_transcript, snapshot)
+        except Exception as exc:
+            logger.error(f"Failed to save transcript summary state: {exc}")
 
     def _schedule_transcript_save(self, record: TranscriptRecord) -> None:
         if self._loop.is_closed():
@@ -2957,10 +3268,28 @@ class ScriberWebController:
             self._save_transcript_to_db(record)
 
     def _add_to_history(self, record: TranscriptRecord) -> None:
-        """Insert a transcript into history and index it by ID."""
+        """Insert a transcript into the bounded runtime cache and index it by ID."""
+        if record.id:
+            self._history = [item for item in self._history if item.id != record.id]
         self._history.insert(0, record)
         if record.id:
             self._history_by_id[record.id] = record
+
+        while len(self._history) > self._history_cache_limit:
+            evict_index = next(
+                (
+                    index
+                    for index in range(len(self._history) - 1, -1, -1)
+                    if self._history[index].id not in self._running_tasks
+                    and self._history[index].status not in ("processing", "recording")
+                ),
+                None,
+            )
+            if evict_index is None:
+                break
+            evicted = self._history.pop(evict_index)
+            if self._history_by_id.get(evicted.id) is evicted:
+                self._history_by_id.pop(evicted.id, None)
 
     def _remove_from_history(self, transcript_id: str) -> Optional[TranscriptRecord]:
         """Remove a transcript from history and index; return removed record."""
@@ -3001,10 +3330,7 @@ class ScriberWebController:
     def get_runtime_info(self) -> dict[str, Any]:
         recording_state = self._recording_state_machine.state
         host = os.getenv(_WEB_HOST_ENV, "127.0.0.1")
-        try:
-            port = int(os.getenv(_WEB_PORT_ENV, "8765"))
-        except ValueError:
-            port = 8765
+        port = _env_int(_WEB_PORT_ENV, 8765, minimum=1, maximum=65535)
         return {
             "version": app_version(),
             "apiVersion": _API_VERSION,
@@ -3159,8 +3485,7 @@ class ScriberWebController:
 
     def get_hot_path_metrics(self, *, limit: int = 50, include_active: bool = False) -> dict[str, Any]:
         query_limit = max(1, min(500, int(limit)))
-        summary = self._latency_metrics_store.summarize(limit=query_limit)
-        latest = self._latency_metrics_store.latest(limit=query_limit)
+        summary, latest = self._latency_metrics_store.snapshot(limit=query_limit)
         items = [
             {
                 "sessionId": metric.session_id,
@@ -3241,17 +3566,36 @@ class ScriberWebController:
     async def add_client(self, ws: web.WebSocketResponse) -> None:
         async with self._clients_lock:
             self._clients.add(ws)
+            self._client_send_locks.setdefault(ws, asyncio.Lock())
             self._client_count = len(self._clients)
             self._clients_dirty = True
 
     async def remove_client(self, ws: web.WebSocketResponse) -> None:
         async with self._clients_lock:
             self._clients.discard(ws)
+            self._client_send_locks.pop(ws, None)
             self._client_count = len(self._clients)
             self._clients_dirty = True
 
     def _has_ws_clients(self) -> bool:
         return self._client_count > 0
+
+    async def send_client_text(self, ws: web.WebSocketResponse, message: str) -> bool:
+        """Serialize all writes to one WebSocket and enforce a send deadline."""
+        if ws.closed:
+            return False
+        send_lock = self._client_send_locks.get(ws)
+        if send_lock is None:
+            return False
+        try:
+            async with send_lock:
+                await asyncio.wait_for(
+                    ws.send_str(message),
+                    timeout=_WS_SEND_TIMEOUT_SECONDS,
+                )
+            return True
+        except (asyncio.TimeoutError, ConnectionError, RuntimeError):
+            return False
 
     async def broadcast(self, payload: dict[str, Any]) -> None:
         payload_to_send = payload
@@ -3275,11 +3619,8 @@ class ScriberWebController:
         
         async def send_safe(ws: web.WebSocketResponse):
             """Send message to client, return ws if failed or closed."""
-            if ws.closed:
-                return ws
             try:
-                await ws.send_str(msg)
-                return None
+                return None if await self.send_client_text(ws, msg) else ws
             except Exception:
                 return ws
         
@@ -3290,8 +3631,67 @@ class ScriberWebController:
             async with self._clients_lock:
                 for ws in dead:
                     self._clients.discard(ws)
+                    self._client_send_locks.pop(ws, None)
                 self._client_count = len(self._clients)
                 self._clients_dirty = True
+
+    async def _drain_audio_broadcasts(self) -> None:
+        while self._pending_audio_payload is not None and not self._shutting_down:
+            payload = self._pending_audio_payload
+            self._pending_audio_payload = None
+            await self.broadcast(payload)
+
+    def _on_audio_broadcast_done(self, task: asyncio.Task) -> None:
+        if self._audio_broadcast_task is task:
+            self._audio_broadcast_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.debug(f"Audio-level broadcast warning: {exc}")
+        if self._pending_audio_payload is not None and not self._shutting_down:
+            self._enqueue_audio_broadcast(self._pending_audio_payload)
+
+    def _enqueue_audio_broadcast(self, payload: dict[str, Any]) -> None:
+        self._pending_audio_payload = payload
+        if self._audio_broadcast_task is not None and not self._audio_broadcast_task.done():
+            return
+        task = self._loop.create_task(self._drain_audio_broadcasts(), name="audio_level_broadcast")
+        self._audio_broadcast_task = task
+        task.add_done_callback(self._on_audio_broadcast_done)
+
+    def _enqueue_control_broadcast(self, payload: dict[str, Any]) -> None:
+        """Coalesce state-like events by type while a client send is pending."""
+        if self._shutting_down or self._loop.is_closed():
+            return
+        event_type = str(payload.get("type") or "state")
+        self._pending_control_payloads[event_type] = payload
+        if self._control_broadcast_task is not None and not self._control_broadcast_task.done():
+            return
+        task = self._loop.create_task(
+            self._drain_control_broadcasts(),
+            name="control_broadcast",
+        )
+        self._control_broadcast_task = task
+        task.add_done_callback(self._on_control_broadcast_done)
+
+    async def _drain_control_broadcasts(self) -> None:
+        while self._pending_control_payloads and not self._shutting_down:
+            _, payload = self._pending_control_payloads.popitem()
+            await self.broadcast(payload)
+
+    def _on_control_broadcast_done(self, task: asyncio.Task) -> None:
+        if self._control_broadcast_task is task:
+            self._control_broadcast_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.debug(f"Control broadcast warning: {exc}")
+        if self._pending_control_payloads and not self._shutting_down:
+            self._enqueue_control_broadcast(next(iter(self._pending_control_payloads.values())))
 
     def _set_status(self, status: str, *, session_id: str | None = None) -> None:
         if session_id is not None and session_id != self._session_id:
@@ -3307,7 +3707,8 @@ class ScriberWebController:
         payload["inputWarningActions"] = [dict(item) for item in self._mic_input_warning_actions]
         # status changes can happen from non-async callbacks; schedule the broadcast.
         self._loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(self.broadcast(payload))
+            self._enqueue_control_broadcast,
+            payload,
         )
 
     def _set_live_pipeline_status(self, status: str, *, session_id: str | None = None) -> None:
@@ -3351,7 +3752,8 @@ class ScriberWebController:
             session_id=session_id,
         )
         self._loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(self.broadcast(payload))
+            self._enqueue_control_broadcast,
+            payload,
         )
 
     def _clear_input_warning_state(self, *, session_id: str | None = None, broadcast: bool = True) -> None:
@@ -3427,7 +3829,8 @@ class ScriberWebController:
             session_id = self._session_id
         payload = audio_level_event(level, session_id=session_id)
         self._loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(self.broadcast(payload))
+            self._enqueue_audio_broadcast,
+            payload,
         )
 
     def _on_transcription(self, text: str, is_final: bool, *, session_id: str | None = None) -> None:
@@ -3455,7 +3858,56 @@ class ScriberWebController:
         if session_id is None:
             session_id = self._session_id
         payload = transcript_event(text, bool(is_final), session_id=session_id)
-        self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self.broadcast(payload)))
+        try:
+            self._loop.call_soon_threadsafe(
+                self._queue_transcript_broadcast,
+                payload,
+                bool(is_final),
+            )
+        except RuntimeError:
+            return
+
+    def _queue_transcript_broadcast(self, payload: dict[str, Any], is_final: bool) -> None:
+        """Coalesce interim transcript events without dropping final chunks."""
+        if self._shutting_down or self._loop.is_closed():
+            return
+        if is_final:
+            # A final event supersedes any not-yet-sent interim text for the
+            # same single active live session.
+            self._pending_transcript_partial = None
+            self._pending_transcript_finals.append(payload)
+        else:
+            self._pending_transcript_partial = payload
+
+        if self._transcript_broadcast_task is not None and not self._transcript_broadcast_task.done():
+            return
+        task = self._loop.create_task(
+            self._drain_transcript_broadcasts(),
+            name="transcript_broadcast",
+        )
+        self._transcript_broadcast_task = task
+        task.add_done_callback(self._on_transcript_broadcast_done)
+
+    async def _drain_transcript_broadcasts(self) -> None:
+        while True:
+            if self._pending_transcript_finals:
+                payload = self._pending_transcript_finals.popleft()
+            elif self._pending_transcript_partial is not None:
+                payload = self._pending_transcript_partial
+                self._pending_transcript_partial = None
+            else:
+                return
+            await self.broadcast(payload)
+
+    def _on_transcript_broadcast_done(self, task: asyncio.Task) -> None:
+        if self._transcript_broadcast_task is task:
+            self._transcript_broadcast_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.debug(f"Transcript broadcast failed: {exc}")
 
     def _provider_user_error(self, error: Exception | str, *, provider: str | None = None) -> ProviderUserError:
         return provider_user_error(provider or self._active_provider, error)
@@ -3836,11 +4288,15 @@ class ScriberWebController:
         url = url.strip()
         if not url:
             raise ValueError("Missing video URL")
+        if len(url) > 2048:
+            raise ValueError("Video URL is too long")
+        if not is_youtube_url_like(url):
+            raise ValueError(UNSUPPORTED_YOUTUBE_URL_MESSAGE)
 
-        title = (payload.get("title") if isinstance(payload.get("title"), str) else "").strip() or "YouTube"
-        channel = (payload.get("channelTitle") if isinstance(payload.get("channelTitle"), str) else "").strip()
-        thumbnail = (payload.get("thumbnailUrl") if isinstance(payload.get("thumbnailUrl"), str) else "").strip()
-        duration = (payload.get("duration") if isinstance(payload.get("duration"), str) else "").strip() or "00:00"
+        title = ((payload.get("title") if isinstance(payload.get("title"), str) else "").strip()[:500] or "YouTube")
+        channel = (payload.get("channelTitle") if isinstance(payload.get("channelTitle"), str) else "").strip()[:300]
+        thumbnail = (payload.get("thumbnailUrl") if isinstance(payload.get("thumbnailUrl"), str) else "").strip()[:2048]
+        duration = ((payload.get("duration") if isinstance(payload.get("duration"), str) else "").strip()[:32] or "00:00")
 
         started_at = datetime.now()
         rec = TranscriptRecord(
@@ -3867,7 +4323,7 @@ class ScriberWebController:
         )
         self._add_to_history(rec)
         await self._broadcast_history_updated(record=rec, reason="job_created")
-        self._enqueue_background_job(
+        await self._enqueue_background_job_async(
             rec,
             job_type=JobType.YOUTUBE,
             payload={
@@ -3884,7 +4340,7 @@ class ScriberWebController:
 
     async def _run_youtube_transcription(self, rec: TranscriptRecord, *, provider: str) -> None:
         workflow_started = time.monotonic()
-        out_dir = self._downloads_dir / "youtube" / rec.id
+        out_dir = self._downloads_dir / "youtube" / _safe_work_directory_component(rec.id)
         workflow_phase = {"value": "downloading"}
         rec.step = "Downloading audio..."
         rec.updated_at = datetime.now().isoformat()
@@ -3907,10 +4363,9 @@ class ScriberWebController:
             last_broadcast_time = [0.0]  # Use list to allow mutation in closure
             
             def on_download_progress(progress) -> None:
-                import time
                 if workflow_phase["value"] != "downloading" or rec.status != "processing":
                     return
-                now = time.time()
+                now = time.monotonic()
                 # Throttle broadcasts to max 4 per second to avoid flooding
                 # BUT always allow "finished" status through to show 100%
                 if progress.status != "finished" and now - last_broadcast_time[0] < 0.25:
@@ -3919,19 +4374,24 @@ class ScriberWebController:
                 
                 # Build step message with speed and ETA
                 if progress.status == "finished":
-                    rec.step = "Download complete"
+                    step = "Download complete"
                 elif progress.speed and progress.eta:
-                    rec.step = f"Downloading... {progress.percent:.0f}% • {progress.speed} • ETA {progress.eta}"
+                    step = f"Downloading... {progress.percent:.0f}% • {progress.speed} • ETA {progress.eta}"
                 elif progress.speed:
-                    rec.step = f"Downloading... {progress.percent:.0f}% • {progress.speed}"
+                    step = f"Downloading... {progress.percent:.0f}% • {progress.speed}"
                 elif progress.percent > 0:
-                    rec.step = f"Downloading... {progress.percent:.0f}%"
+                    step = f"Downloading... {progress.percent:.0f}%"
                 else:
-                    rec.step = "Downloading audio..."
-                rec.updated_at = datetime.now().isoformat()
-                self._loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(self._broadcast_history_updated(record=rec, reason="progress"))
-                )
+                    step = "Downloading audio..."
+
+                def apply_progress() -> None:
+                    if workflow_phase["value"] != "downloading" or rec.status != "processing":
+                        return
+                    rec.step = step
+                    rec.updated_at = datetime.now().isoformat()
+                    asyncio.create_task(self._broadcast_history_updated(record=rec, reason="progress"))
+
+                self._loop.call_soon_threadsafe(apply_progress)
             
             download_timeout = self._timeout_seconds("SCRIBER_TIMEOUT_YOUTUBE_DOWNLOAD_SEC", 300.0)
             audio_path = await self._await_with_timeout(
@@ -4050,7 +4510,7 @@ class ScriberWebController:
                 try:
                     from src.summarization import summarize_text
                     rec.mark_summary_pending()
-                    await self._save_transcript_to_db_async(rec)
+                    await self._save_transcript_summary_state_async(rec)
                     await self._broadcast_history_updated(record=rec, reason="summary_pending")
                     summarize_started = time.monotonic()
                     self._emit_workflow_event(
@@ -4070,7 +4530,7 @@ class ScriberWebController:
                         duration=rec.duration,
                     )
                     rec.mark_summary_completed(summary)
-                    await self._save_transcript_to_db_async(rec)
+                    await self._save_transcript_summary_state_async(rec, include_summary=True)
                     await self._broadcast_history_updated(record=rec, reason="summary_completed")
                     logger.info(f"YouTube auto-summarization completed: {len(rec.summary)} chars")
                     self._emit_workflow_event(
@@ -4086,10 +4546,19 @@ class ScriberWebController:
                         outcome="success",
                         meta={"chars": len(rec.summary)},
                     )
+                except asyncio.CancelledError:
+                    logger.info("YouTube auto-summarization canceled after transcription completed")
+                    if rec.summary_status == "completed":
+                        await self._save_transcript_summary_state_async(rec, include_summary=True)
+                        await self._broadcast_history_updated(record=rec, reason="summary_completed")
+                    else:
+                        rec.mark_summary_failed("Summary canceled")
+                        await self._save_transcript_summary_state_async(rec)
+                        await self._broadcast_history_updated(record=rec, reason="summary_canceled")
                 except Exception as sum_err:
                     logger.warning(f"Auto-summarization failed: {sum_err}")
                     rec.mark_summary_failed(sum_err)
-                    await self._save_transcript_to_db_async(rec)
+                    await self._save_transcript_summary_state_async(rec)
                     await self._broadcast_history_updated(record=rec, reason="summary_failed")
                     self._emit_workflow_event(
                         message="Summary generation failed",
@@ -4106,7 +4575,7 @@ class ScriberWebController:
                     )
         except (ValueError, ImportError) as exc:
             self._record_provider_failure(provider, exc)
-            if self._schedule_retry_if_allowed(rec, exc):
+            if await self._schedule_retry_if_allowed(rec, exc):
                 return
             rec.status = "failed"
             rec.step = "Failed"
@@ -4126,7 +4595,7 @@ class ScriberWebController:
             )
         except TimeoutError as exc:
             self._record_provider_failure(provider, exc)
-            if self._schedule_retry_if_allowed(rec, exc):
+            if await self._schedule_retry_if_allowed(rec, exc):
                 return
             rec.status = "failed"
             rec.step = "Failed"
@@ -4146,7 +4615,7 @@ class ScriberWebController:
             )
         except YouTubeDownloadError as exc:
             self._record_provider_failure(provider, exc)
-            if self._schedule_retry_if_allowed(rec, exc):
+            if await self._schedule_retry_if_allowed(rec, exc):
                 return
             rec.status = "failed"
             rec.step = "Failed"
@@ -4168,7 +4637,7 @@ class ScriberWebController:
         except Exception as exc:
             logger.exception("YouTube transcription failed")
             self._record_provider_failure(provider, exc)
-            if self._schedule_retry_if_allowed(rec, exc):
+            if await self._schedule_retry_if_allowed(rec, exc):
                 return
             rec.status = "failed"
             rec.step = "Failed"
@@ -4200,7 +4669,8 @@ class ScriberWebController:
                     outcome="success",
             )
             rec.updated_at = datetime.now().isoformat()
-            await self._save_transcript_to_db_async(rec)
+            if rec.status != "completed":
+                await self._save_transcript_to_db_async(rec)
             await self._broadcast_history_updated(record=rec, reason="job_done")
             # Cleanup: delete the downloaded audio file and directory
             try:
@@ -4258,7 +4728,7 @@ class ScriberWebController:
             rec.channel = file_size  # Reuse channel field for file size display
         self._add_to_history(rec)
         await self._broadcast_history_updated(record=rec, reason="job_created")
-        self._enqueue_background_job(
+        await self._enqueue_background_job_async(
             rec,
             job_type=JobType.FILE,
             payload={
@@ -4364,7 +4834,7 @@ class ScriberWebController:
                 try:
                     from src.summarization import summarize_text
                     rec.mark_summary_pending()
-                    await self._save_transcript_to_db_async(rec)
+                    await self._save_transcript_summary_state_async(rec)
                     await self._broadcast_history_updated(record=rec, reason="summary_pending")
                     summarize_started = time.monotonic()
                     self._emit_workflow_event(
@@ -4384,7 +4854,7 @@ class ScriberWebController:
                         duration=rec.duration,
                     )
                     rec.mark_summary_completed(summary)
-                    await self._save_transcript_to_db_async(rec)
+                    await self._save_transcript_summary_state_async(rec, include_summary=True)
                     await self._broadcast_history_updated(record=rec, reason="summary_completed")
                     logger.info(f"File auto-summarization completed: {len(rec.summary)} chars")
                     self._emit_workflow_event(
@@ -4400,10 +4870,19 @@ class ScriberWebController:
                         outcome="success",
                         meta={"chars": len(rec.summary)},
                     )
+                except asyncio.CancelledError:
+                    logger.info("File auto-summarization canceled after transcription completed")
+                    if rec.summary_status == "completed":
+                        await self._save_transcript_summary_state_async(rec, include_summary=True)
+                        await self._broadcast_history_updated(record=rec, reason="summary_completed")
+                    else:
+                        rec.mark_summary_failed("Summary canceled")
+                        await self._save_transcript_summary_state_async(rec)
+                        await self._broadcast_history_updated(record=rec, reason="summary_canceled")
                 except Exception as sum_err:
                     logger.warning(f"Auto-summarization failed: {sum_err}")
                     rec.mark_summary_failed(sum_err)
-                    await self._save_transcript_to_db_async(rec)
+                    await self._save_transcript_summary_state_async(rec)
                     await self._broadcast_history_updated(record=rec, reason="summary_failed")
                     self._emit_workflow_event(
                         message="Summary generation failed",
@@ -4420,7 +4899,7 @@ class ScriberWebController:
                     )
         except (ValueError, ImportError) as exc:
             self._record_provider_failure(provider, exc)
-            if self._schedule_retry_if_allowed(rec, exc):
+            if await self._schedule_retry_if_allowed(rec, exc):
                 return
             rec.status = "failed"
             rec.step = "Failed"
@@ -4440,7 +4919,7 @@ class ScriberWebController:
             )
         except TimeoutError as exc:
             self._record_provider_failure(provider, exc)
-            if self._schedule_retry_if_allowed(rec, exc):
+            if await self._schedule_retry_if_allowed(rec, exc):
                 return
             rec.status = "failed"
             rec.step = "Failed"
@@ -4461,7 +4940,7 @@ class ScriberWebController:
         except Exception as exc:
             logger.exception("File transcription failed")
             self._record_provider_failure(provider, exc)
-            if self._schedule_retry_if_allowed(rec, exc):
+            if await self._schedule_retry_if_allowed(rec, exc):
                 return
             rec.status = "failed"
             rec.step = "Failed"
@@ -4495,14 +4974,22 @@ class ScriberWebController:
                     outcome="success",
             )
             rec.updated_at = datetime.now().isoformat()
-            await self._save_transcript_to_db_async(rec)
+            if rec.status != "completed":
+                await self._save_transcript_to_db_async(rec)
             await self._broadcast_history_updated(record=rec, reason="job_done")
             # Cleanup: delete the uploaded file and its directory
             try:
-                file_dir = file_path.parent
-                if rec.status != "processing" and file_dir.exists() and file_dir.name != "files":
+                files_root = (self._downloads_dir / "files").resolve()
+                file_dir = file_path.resolve().parent
+                owned_upload_dir = file_dir != files_root and file_dir.parent == files_root
+                if rec.status != "processing" and owned_upload_dir and file_dir.exists():
                     await _remove_tree_if_exists(file_dir)
                     logger.debug(f"Cleaned up uploaded file directory: {file_dir}")
+                elif rec.status != "processing" and file_dir.exists() and not owned_upload_dir:
+                    logger.debug(
+                        "Preserving source outside the Scriber upload workspace: {}",
+                        file_dir,
+                    )
             except Exception as cleanup_err:
                 logger.warning(f"Failed to cleanup uploaded file: {cleanup_err}")
 
@@ -5329,7 +5816,80 @@ class ScriberWebController:
                     logger.warning(f"Push-to-Talk polling error for '{Config.HOTKEY}': {exc}")
             await asyncio.sleep(0.05)
 
+    def begin_shutdown(self) -> None:
+        """Prevent cancellation handlers from turning resumable jobs terminal."""
+        self._shutting_down = True
+        self._retry_scheduler.cancel(cancel_running=True)
+
+    async def drain_background_tasks_for_shutdown(
+        self,
+        *,
+        timeout_seconds: float = 5.0,
+    ) -> int:
+        """Cancel controller-owned work and wait briefly for resource cleanup."""
+        self.begin_shutdown()
+        current = asyncio.current_task()
+        tasks = {
+            task
+            for task in (*self._running_tasks.values(), *self._summary_tasks.values())
+            if task is not current and not task.done()
+        }
+        for task in tasks:
+            task.cancel()
+
+        pending: set[asyncio.Task] = set()
+        if tasks:
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=max(0.0, float(timeout_seconds)),
+            )
+            if done:
+                await asyncio.gather(*done, return_exceptions=True)
+            if pending:
+                logger.warning(
+                    "Timed out waiting for {} background task(s) during shutdown",
+                    len(pending),
+                )
+
+        settings_task = self._settings_persist_task
+        if settings_task is not None and not settings_task.done():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(settings_task),
+                    timeout=max(0.0, min(2.0, float(timeout_seconds))),
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Timed out waiting for settings persistence during shutdown")
+            except Exception as exc:
+                logger.warning(f"Settings persistence failed during shutdown: {exc}")
+        metric_pending = await self._wait_for_pending_metric_writes(
+            max(0.0, min(2.0, float(timeout_seconds)))
+        )
+        if metric_pending:
+            logger.warning(
+                "Timed out waiting for {} metric write(s) during shutdown",
+                metric_pending,
+            )
+        return len(pending)
+
     def shutdown(self) -> None:
+        self.begin_shutdown()
+        for task in (*self._running_tasks.values(), *self._summary_tasks.values()):
+            if not task.done():
+                task.cancel()
+        self._pending_audio_payload = None
+        if self._audio_broadcast_task is not None:
+            self._audio_broadcast_task.cancel()
+            self._audio_broadcast_task = None
+        self._pending_transcript_partial = None
+        self._pending_transcript_finals.clear()
+        if self._transcript_broadcast_task is not None:
+            self._transcript_broadcast_task.cancel()
+            self._transcript_broadcast_task = None
+        self._pending_control_payloads.clear()
+        if self._control_broadcast_task is not None:
+            self._control_broadcast_task.cancel()
+            self._control_broadcast_task = None
         # Cancel pending debounce timers so they don't fire on a tearing-down loop.
         self._cancel_settings_persist_timer()
         if self._history_broadcast_handle is not None:
@@ -5417,7 +5977,8 @@ class ScriberWebController:
                 try:
                     import sounddevice as sd  # type: ignore
 
-                    info = sd.query_devices(device=idx, kind="input")
+                    with get_device_guard_lock():
+                        info = sd.query_devices(device=idx, kind="input")
                     name = info.get("name")
                     if name:
                         if name in available:
@@ -5509,6 +6070,11 @@ class ScriberWebController:
         }
 
     async def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self._settings_update_lock:
+            return await self._update_settings_unlocked(payload)
+
+    async def _update_settings_unlocked(self, payload: dict[str, Any]) -> dict[str, Any]:
+        _validate_settings_text_lengths(payload)
         old_hotkey = Config.HOTKEY
         old_post_processing_hotkey = Config.POST_PROCESSING_HOTKEY
         old_mode = Config.MODE
@@ -5685,7 +6251,7 @@ class ScriberWebController:
             await self._sync_idle_mic_prewarm_after_settings()
 
         await self.broadcast({"type": "settings_updated"})
-        return self.get_settings()
+        return await asyncio.to_thread(self.get_settings)
 
     async def cancel_transcript(self, transcript_id: str) -> bool:
         """Cancel a running transcription task."""
@@ -5704,15 +6270,77 @@ class ScriberWebController:
             
         # Also check if it's stuck in processing but no task running (e.g. restart)
         if rec and rec.status == "processing":
-            rec.status = "stopped"
-            rec.step = "Stopped"
-            rec.updated_at = datetime.now().isoformat()
-            await self._sync_job_status_async(rec)
-            await self._save_transcript_to_db_async(rec)
-            await self._broadcast_history_updated(record=rec, reason="canceled")
+            await self._finalize_canceled_background_job(rec)
             return True
             
         return False
+
+    async def delete_transcript_record(
+        self,
+        transcript_id: str,
+        *,
+        cancellation_timeout_seconds: float = 5.0,
+    ) -> tuple[TranscriptDeleteStatus, TranscriptRecord | None]:
+        """Stop active work, delete persistence, then remove a transcript from memory."""
+        rec = self._get_history_record(transcript_id)
+        if rec is None:
+            persisted = await asyncio.to_thread(db.get_transcript, transcript_id)
+            if persisted is None:
+                return "not_found", None
+            rec = self._record_from_persisted_data(persisted)
+
+        task = self._running_tasks.get(transcript_id)
+        if task is not None and not task.done():
+            await self.cancel_transcript(transcript_id)
+            done, _ = await asyncio.wait(
+                {task},
+                timeout=max(0.0, float(cancellation_timeout_seconds)),
+            )
+            if task not in done:
+                logger.warning(f"Refusing to delete transcript while its task is still running: {transcript_id}")
+                return "busy", rec
+            await asyncio.gather(task, return_exceptions=True)
+        elif rec.status == "processing":
+            await self.cancel_transcript(transcript_id)
+
+        summary_task = self._summary_tasks.get(transcript_id)
+        if summary_task is not None and not summary_task.done():
+            summary_task.cancel()
+            done, _ = await asyncio.wait(
+                {summary_task},
+                timeout=max(0.0, float(cancellation_timeout_seconds)),
+            )
+            if summary_task in done:
+                await asyncio.gather(summary_task, return_exceptions=True)
+            else:
+                logger.warning(
+                    f"Summary task did not stop before transcript deletion: {transcript_id}"
+                )
+
+        persistence_lock = self._transcript_persistence_lock(transcript_id)
+        self._mark_transcript_deleted(transcript_id)
+        async with persistence_lock:
+            deleted = await asyncio.to_thread(db.delete_transcript, transcript_id)
+            if not deleted:
+                self._unmark_transcript_deleted(transcript_id)
+        if not deleted:
+            logger.error(f"Refusing to remove transcript from memory after database deletion failed: {transcript_id}")
+            return "persistence_error", rec
+
+        try:
+            await asyncio.to_thread(
+                self._job_store.delete_by_transcript_id,
+                transcript_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Failed to remove persisted jobs for deleted transcript {transcript_id}: {exc}"
+            )
+
+        removed = self._remove_from_history(transcript_id) or rec
+        self._job_ids_by_transcript.pop(transcript_id, None)
+        await self._broadcast_history_updated(record=removed, reason="deleted")
+        return "deleted", removed
 
     def list_microphones(self) -> list[dict[str, str]]:
         """List available microphone devices.
@@ -5723,12 +6351,13 @@ class ScriberWebController:
         
         Uses a single active host API to avoid cross-host duplicate entries.
         """
-        try:
-            devices = self._device_monitor.get_devices()
-            if devices and len(devices) > 1:
-                return devices
-        except Exception as exc:
-            logger.debug(f"[DeviceMonitor] fallback to direct listing: {exc}")
+        if self._device_monitor_enabled:
+            try:
+                devices = self._device_monitor.get_devices()
+                if devices:
+                    return devices
+            except Exception as exc:
+                logger.debug(f"[DeviceMonitor] fallback to direct listing: {exc}")
 
         try:
             import sounddevice as sd  # type: ignore
@@ -5739,7 +6368,13 @@ class ScriberWebController:
 
         sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
         channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
-        for entry in list_unique_input_microphones(sd, sample_rate=sample_rate, channels=channels):
+        with get_device_guard_lock():
+            entries = list_unique_input_microphones(
+                sd,
+                sample_rate=sample_rate,
+                channels=channels,
+            )
+        for entry in entries:
             label = f"{entry.name} (Default)" if entry.is_default else entry.name
             devices.append({"deviceId": entry.name, "label": label})
 
@@ -5781,14 +6416,6 @@ class ScriberWebController:
             return "default"
         
         try:
-            devices = list(sd.query_devices())
-            host_priorities = get_input_hostapi_priorities(
-                sd,
-                devices,
-                sample_rate=sample_rate,
-                channels=channels,
-            )
-
             target = device_name.strip()
             target_norm = _normalize_device_name(target)
 
@@ -5799,38 +6426,46 @@ class ScriberWebController:
                     return _normalize_device_name(dev_name) == target_norm
                 return False
 
-            matches: list[tuple[int, int, str]] = []
-            for idx, dev in enumerate(devices):
-                if int(dev.get("max_input_channels", 0) or 0) <= 0:
-                    continue
-                name = str(dev.get("name", ""))
-                if not _matches(name):
-                    continue
-                try:
-                    hostapi_idx = int(dev.get("hostapi", -1))
-                except (TypeError, ValueError):
-                    hostapi_idx = None
-                matches.append((rank_hostapi(hostapi_idx, host_priorities), idx, name))
+            with get_device_guard_lock():
+                devices = list(sd.query_devices())
+                host_priorities = get_input_hostapi_priorities(
+                    sd,
+                    devices,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                )
+                matches: list[tuple[int, int, str]] = []
+                for idx, dev in enumerate(devices):
+                    if int(dev.get("max_input_channels", 0) or 0) <= 0:
+                        continue
+                    name = str(dev.get("name", ""))
+                    if not _matches(name):
+                        continue
+                    try:
+                        hostapi_idx = int(dev.get("hostapi", -1))
+                    except (TypeError, ValueError):
+                        hostapi_idx = None
+                    matches.append((rank_hostapi(hostapi_idx, host_priorities), idx, name))
 
-            if matches:
-                matches.sort(key=lambda item: (item[0], item[1]))
-                for _, idx, name in matches:
-                    if is_input_device_compatible(
-                        sd,
-                        device_index=idx,
-                        device_info=devices[idx],
-                        sample_rate=sample_rate,
-                        channels=channels,
-                    ):
-                        logger.info(f"Resolved microphone '{device_name}' to device index {idx}")
-                        return str(idx)
+                if matches:
+                    matches.sort(key=lambda item: (item[0], item[1]))
+                    for _, idx, name in matches:
+                        if is_input_device_compatible(
+                            sd,
+                            device_index=idx,
+                            device_info=devices[idx],
+                            sample_rate=sample_rate,
+                            channels=channels,
+                        ):
+                            logger.info(f"Resolved microphone '{device_name}' to device index {idx}")
+                            return str(idx)
 
-            # Selected device not usable: choose curated compatible fallback.
-            curated = list_unique_input_microphones(
-                sd,
-                sample_rate=sample_rate,
-                channels=channels,
-            )
+                # Selected device not usable: choose curated compatible fallback.
+                curated = list_unique_input_microphones(
+                    sd,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                )
             if curated:
                 preferred = next((entry for entry in curated if entry.is_default), None)
                 chosen = preferred or curated[0]
@@ -5846,7 +6481,7 @@ class ScriberWebController:
             logger.error(f"Error resolving microphone '{device_name}': {e}")
             return "default"
 
-    def list_transcripts(
+    async def list_transcripts(
         self,
         *,
         include_content: bool = False,
@@ -5870,15 +6505,29 @@ class ScriberWebController:
         Returns:
             Dict with items, total count, and pagination info
         """
-        # Clamp limit to reasonable bounds
+        query = str(query or "").strip()
+        transcript_type = str(transcript_type or "").strip().lower()
+        if len(query) > _TRANSCRIPT_SEARCH_MAX_CHARS:
+            raise ValueError(
+                f"Transcript search exceeds {_TRANSCRIPT_SEARCH_MAX_CHARS} characters"
+            )
+        if transcript_type not in _TRANSCRIPT_TYPES:
+            raise ValueError("Invalid transcript type")
+
+        # Clamp pagination to reasonable bounds.
         limit = max(1, min(100, limit))
-        offset = max(0, offset)
+        offset = max(0, min(_TRANSCRIPT_OFFSET_MAX, offset))
 
         query_lower = query.lower().strip() if query else ""
         if query_lower:
             # Use SQLite FTS for scalable search and keep unsaved active sessions visible.
             live_candidates: list[TranscriptRecord] = []
-            for rec in self._history:
+            # Only active task IDs can represent unsaved file/YouTube sessions.
+            # Avoid scanning the full transcript history on every search request.
+            for transcript_id in tuple(self._running_tasks):
+                rec = self._history_by_id.get(transcript_id)
+                if rec is None:
+                    continue
                 if rec.status not in ("processing", "recording"):
                     continue
                 if transcript_type and rec.type != transcript_type:
@@ -5891,7 +6540,10 @@ class ScriberWebController:
                 if query_lower in searchable:
                     live_candidates.append(rec)
 
-            persisted_live_ids = db.existing_transcript_ids([rec.id for rec in live_candidates if rec.id])
+            persisted_live_ids = await asyncio.to_thread(
+                db.existing_transcript_ids,
+                [rec.id for rec in live_candidates if rec.id],
+            )
             live_matches = [
                 rec.to_public(include_content=include_content)
                 for rec in live_candidates
@@ -5907,15 +6559,12 @@ class ScriberWebController:
                 remaining = limit
                 db_offset = offset - live_count
 
-            db_result = (
-                db.search_transcript_metadata(
-                    query_lower,
-                    transcript_type=transcript_type,
-                    offset=db_offset,
-                    limit=remaining,
-                )
-                if remaining > 0
-                else {"items": [], "total": 0}
+            db_result = await asyncio.to_thread(
+                db.search_transcript_metadata,
+                query_lower,
+                transcript_type=transcript_type,
+                offset=db_offset,
+                limit=remaining,
             )
             items = live_slice + db_result.get("items", [])
             total = live_count + int(db_result.get("total", 0))
@@ -5927,27 +6576,34 @@ class ScriberWebController:
                 "hasMore": offset + len(items) < total,
             }
 
-        if not query_lower and not transcript_type:
-            total = len(self._history)
-            paginated = self._history[offset:offset + limit]
-            items = [rec.to_public(include_content=include_content) for rec in paginated]
-            return {
-                "items": items,
-                "total": total,
-                "offset": offset,
-                "limit": limit,
-                "hasMore": offset + len(items) < total,
-            }
+        active_records = [
+            rec
+            for transcript_id in tuple(self._running_tasks)
+            if (rec := self._history_by_id.get(transcript_id)) is not None
+            and rec.status in ("processing", "recording")
+            and (not transcript_type or rec.type == transcript_type)
+        ]
+        active_records.sort(key=lambda rec: rec.created_at, reverse=True)
+        active_items = [rec.to_public(include_content=include_content) for rec in active_records]
+        active_count = len(active_items)
 
-        items: list[dict[str, Any]] = []
-        total = 0
-        for rec in self._history:
-            if transcript_type and rec.type != transcript_type:
-                continue
-            if total >= offset and len(items) < limit:
-                items.append(rec.to_public(include_content=include_content))
-            total += 1
+        if offset < active_count:
+            active_slice = active_items[offset:offset + limit]
+            remaining = limit - len(active_slice)
+            db_offset = 0
+        else:
+            active_slice = []
+            remaining = limit
+            db_offset = offset - active_count
 
+        db_result = await asyncio.to_thread(
+            db.load_transcript_metadata_page,
+            transcript_type=transcript_type,
+            offset=db_offset,
+            limit=remaining,
+        )
+        items = active_slice + list(db_result.get("items", []))
+        total = active_count + int(db_result.get("total", 0))
         return {
             "items": items,
             "total": total,
@@ -5956,7 +6612,7 @@ class ScriberWebController:
             "hasMore": offset + len(items) < total,
         }
 
-    def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
+    async def get_transcript(self, transcript_id: str) -> Optional[dict[str, Any]]:
         """Get a transcript by ID with full content.
 
         PERFORMANCE: Uses lazy content loading. If content was not loaded on
@@ -5965,7 +6621,7 @@ class ScriberWebController:
         rec = self._get_history_record(transcript_id)
         if rec:
             if not rec._content_loaded or not rec._summary_loaded:
-                full_data = db.get_transcript(transcript_id)
+                full_data = await asyncio.to_thread(db.get_transcript, transcript_id)
                 if full_data:
                     rec.content = full_data.get("content", rec.content)
                     rec._pending_content_segments.clear()
@@ -5979,7 +6635,7 @@ class ScriberWebController:
                 rec._summary_loaded = True
             return rec.to_public(include_content=True)
         # Not found in memory - try database directly
-        return db.get_transcript(transcript_id)
+        return await asyncio.to_thread(db.get_transcript, transcript_id)
 
 
 APP_CONTROLLER: web.AppKey[ScriberWebController] = web.AppKey("controller", ScriberWebController)
@@ -6052,14 +6708,20 @@ def create_app(controller: ScriberWebController) -> web.Application:
         await ws.prepare(request)
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         await ctl.add_client(ws)
-        await ws.send_str(json.dumps(state_event(ctl.get_state())))
 
         try:
+            initial_sent = await ctl.send_client_text(
+                ws,
+                json.dumps(state_event(ctl.get_state())),
+            )
+            if not initial_sent:
+                return ws
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
                     # Currently server -> client only. Keep the connection alive.
                     if msg.data == "ping":
-                        await ws.send_str("pong")
+                        if not await ctl.send_client_text(ws, "pong"):
+                            break
                 elif msg.type == WSMsgType.ERROR:
                     break
         finally:
@@ -6094,7 +6756,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def get_audio_diagnostics(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(ctl.get_audio_diagnostics())
+        payload = await asyncio.to_thread(ctl.get_audio_diagnostics)
+        return web.json_response(payload)
 
     async def get_post_processing_diagnostics(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -6144,14 +6807,20 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def create_runtime_support_bundle(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            bundle_path = await asyncio.to_thread(
-                create_support_bundle,
-                runtime_info=ctl.get_runtime_info(),
-                app_state=ctl.get_state(),
+        runtime_info = ctl.get_runtime_info()
+        app_state = ctl.get_state()
+        post_processing_diagnostics = ctl.get_post_processing_diagnostics(limit=30)
+
+        def build_bundle() -> Path:
+            return create_support_bundle(
+                runtime_info=runtime_info,
+                app_state=app_state,
                 audio_diagnostics=ctl.get_audio_diagnostics(),
-                post_processing_diagnostics=ctl.get_post_processing_diagnostics(limit=30),
+                post_processing_diagnostics=post_processing_diagnostics,
             )
+
+        try:
+            bundle_path = await asyncio.to_thread(build_bundle)
         except Exception:
             logger.exception("Failed to create support bundle")
             return web.json_response({"message": "Failed to create support bundle"}, status=500)
@@ -6159,7 +6828,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         return web.FileResponse(
             bundle_path,
             headers={
-                "Content-Disposition": f'attachment; filename="{bundle_path.name}"',
+                "Content-Disposition": _attachment_content_disposition(bundle_path.name),
             },
         )
 
@@ -6175,7 +6844,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
             "yes",
             "on",
         }
-        return web.json_response(ctl.get_hot_path_metrics(limit=limit, include_active=include_active))
+        payload = await asyncio.to_thread(
+            ctl.get_hot_path_metrics,
+            limit=limit,
+            include_active=include_active,
+        )
+        return web.json_response(payload)
 
     async def start_live(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -6245,7 +6919,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def get_settings(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(ctl.get_settings())
+        return web.json_response(await asyncio.to_thread(ctl.get_settings))
 
     async def put_settings(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -6263,71 +6937,30 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": str(exc) or "Failed to update settings"}, status=500)
 
     async def get_autostart(request: web.Request):
-        """Check if autostart is enabled."""
-        import sys
-        if sys.platform != 'win32':
-            return web.json_response({"enabled": False, "available": False})
-
-        try:
-            import winreg
-            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
-            try:
-                winreg.QueryValueEx(key, "Scriber")
-                winreg.CloseKey(key)
-                return web.json_response({"enabled": True, "available": True})
-            except FileNotFoundError:
-                winreg.CloseKey(key)
-                return web.json_response({"enabled": False, "available": True})
-        except Exception:
-            return web.json_response({"enabled": False, "available": True})
+        """Report unavailable outside the Tauri-owned desktop command surface."""
+        return web.json_response(
+            {
+                "enabled": False,
+                "available": False,
+                "message": "Desktop autostart is managed by the Tauri shell",
+            }
+        )
 
     async def set_autostart(request: web.Request):
-        """Enable or disable autostart."""
-        import sys
-        if sys.platform != 'win32':
-            return web.json_response({"message": "Autostart only available on Windows"}, status=400)
-
-        try:
-            payload = await request.json()
-            enabled = payload.get("enabled", False)
-        except Exception:
-            return web.json_response({"message": "Invalid JSON"}, status=400)
-
-        try:
-            import winreg
-            from pathlib import Path
-
-            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
-
-            if enabled:
-                # Enable autostart - find tray.py
-                tray_script = Path(__file__).parent / "tray.py"
-                if not tray_script.exists():
-                    winreg.CloseKey(key)
-                    return web.json_response({"message": "tray.py not found"}, status=500)
-
-                python_exe = sys.executable
-                startup_command = f'"{python_exe}" "{str(tray_script.resolve())}"'
-                winreg.SetValueEx(key, "Scriber", 0, winreg.REG_SZ, startup_command)
-                winreg.CloseKey(key)
-                return web.json_response({"enabled": True, "message": "Autostart enabled"})
-            else:
-                # Disable autostart
-                try:
-                    winreg.DeleteValue(key, "Scriber")
-                except FileNotFoundError:
-                    pass
-                winreg.CloseKey(key)
-                return web.json_response({"enabled": False, "message": "Autostart disabled"})
-
-        except Exception as e:
-            return web.json_response({"message": f"Error: {str(e)}"}, status=500)
+        """Reject legacy backend mutations; the installed shell owns autostart."""
+        return web.json_response(
+            {
+                "enabled": False,
+                "available": False,
+                "message": "Desktop autostart is managed by the Tauri shell",
+            },
+            status=409,
+        )
 
     async def microphones(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response({"devices": ctl.list_microphones()})
+        devices = await asyncio.to_thread(ctl.list_microphones)
+        return web.json_response({"devices": devices})
 
     async def refresh_microphones(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -6365,20 +6998,23 @@ def create_app(controller: ScriberWebController) -> web.Application:
         except ValueError:
             limit = 50
 
-        return web.json_response(
-            ctl.list_transcripts(
-                include_content=False,
-                query=query,
-                transcript_type=transcript_type,
-                offset=offset,
-                limit=limit,
+        try:
+            return web.json_response(
+                await ctl.list_transcripts(
+                    include_content=False,
+                    query=query,
+                    transcript_type=transcript_type,
+                    offset=offset,
+                    limit=limit,
+                )
             )
-        )
+        except ValueError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
 
     async def transcript_detail(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         transcript_id = request.match_info["id"]
-        rec = ctl.get_transcript(transcript_id)
+        rec = await ctl.get_transcript(transcript_id)
         if not rec:
             return web.json_response({"message": "Not found"}, status=404)
         return web.json_response(rec)
@@ -6387,6 +7023,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
         q = (request.query.get("q") or "").strip()
         if not q:
             return web.json_response({"message": "Missing query parameter: q"}, status=400)
+        if len(q) > 500:
+            return web.json_response({"message": "Search query is too long"}, status=400)
 
         api_key = getattr(Config, "YOUTUBE_API_KEY", "") or ""
         if not api_key.strip():
@@ -6401,6 +7039,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
             max_results = 10
 
         page_token = (request.query.get("pageToken") or "").strip() or None
+        if page_token and len(page_token) > 512:
+            return web.json_response({"message": "Page token is too long"}, status=400)
 
         session: ClientSession | None = request.app.get(APP_HTTP_SESSION)
         if not session:
@@ -6524,16 +7164,45 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "HTTP session not initialized"}, status=500)
 
         try:
-            async with session.get(url, timeout=ClientTimeout(total=10)) as resp:
-                if resp.status >= 400:
-                    return web.json_response({"message": "Thumbnail fetch failed"}, status=resp.status)
-                content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-                if not content_type.startswith("image/"):
-                    return web.json_response({"message": "Thumbnail response is not an image"}, status=415)
-                try:
-                    body = await _read_limited_response_body(resp.content, _YOUTUBE_THUMBNAIL_MAX_BYTES)
-                except ValueError:
-                    return web.json_response({"message": "Thumbnail response is too large"}, status=413)
+            current_url = url
+            body: bytes | None = None
+            content_type = ""
+            for _redirect_count in range(4):
+                async with session.get(
+                    current_url,
+                    timeout=ClientTimeout(total=10),
+                    allow_redirects=False,
+                ) as resp:
+                    if 300 <= resp.status < 400:
+                        location = (resp.headers.get("Location") or "").strip()
+                        redirected_url = _safe_youtube_thumbnail_url(
+                            urljoin(current_url, location)
+                        )
+                        if not location or not redirected_url:
+                            return web.json_response(
+                                {"message": "Unsafe thumbnail redirect"},
+                                status=502,
+                            )
+                        current_url = redirected_url
+                        continue
+                    if resp.status >= 400:
+                        return web.json_response({"message": "Thumbnail fetch failed"}, status=resp.status)
+                    content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                    if not content_type.startswith("image/"):
+                        return web.json_response({"message": "Thumbnail response is not an image"}, status=415)
+                    try:
+                        content_length = int(resp.headers.get("Content-Length") or 0)
+                    except (TypeError, ValueError):
+                        content_length = 0
+                    if content_length > _YOUTUBE_THUMBNAIL_MAX_BYTES:
+                        return web.json_response({"message": "Thumbnail response is too large"}, status=413)
+                    try:
+                        body = await _read_limited_response_body(resp.content, _YOUTUBE_THUMBNAIL_MAX_BYTES)
+                    except ValueError:
+                        return web.json_response({"message": "Thumbnail response is too large"}, status=413)
+                    break
+            if body is None:
+                return web.json_response({"message": "Too many thumbnail redirects"}, status=502)
         except asyncio.TimeoutError:
             return web.json_response({"message": "Thumbnail fetch timed out"}, status=504)
         except Exception:
@@ -6565,6 +7234,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def file_transcribe(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        save_dir: Path | None = None
+        transcription_scheduled = False
 
         # Check content type for multipart upload
         if not request.content_type.startswith("multipart/"):
@@ -6623,7 +7294,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
             final_audio_limit_label = _get_audio_upload_limit_label(upload_provider)
             
             # Check content-length header if available
-            if request.content_length is not None and request.content_length > ingest_max_bytes:
+            if _multipart_request_is_definitely_oversized(
+                request.content_length,
+                file_limit=ingest_max_bytes,
+            ):
                 return web.json_response(
                     {"message": f"File too large (max raw upload {ingest_limit_label})."},
                     status=413,
@@ -6640,6 +7314,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 save_path,
                 max_bytes=ingest_max_bytes,
             )
+
+            if bytes_read == 0:
+                await _remove_tree_if_exists(save_dir)
+                return web.json_response({"message": "Uploaded file is empty"}, status=400)
 
             if too_large:
                 try:
@@ -6710,6 +7388,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
             # Start transcription
             rec = await ctl.start_file_transcription(transcribe_path, safe_filename)
+            transcription_scheduled = True
             return web.json_response(rec.to_public(include_content=True))
 
         except ValueError as exc:
@@ -6717,6 +7396,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
         except Exception as exc:
             logger.exception("Failed to process file upload")
             return web.json_response({"message": str(exc) or "Failed to process file upload"}, status=500)
+        finally:
+            if save_dir is not None and not transcription_scheduled:
+                try:
+                    await _remove_tree_if_exists(save_dir)
+                except Exception as cleanup_err:
+                    logger.warning(f"Failed to cleanup incomplete file upload: {cleanup_err}")
 
 
     async def delete_transcript(request: web.Request):
@@ -6725,17 +7410,19 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if not transcript_id:
             return web.json_response({"message": "Missing transcript ID"}, status=400)
 
-        # Find and remove the transcript from history
-        found = ctl._remove_from_history(transcript_id)
-
-        if not found:
+        delete_status, found = await ctl.delete_transcript_record(transcript_id)
+        if delete_status == "not_found" or found is None:
             return web.json_response({"message": "Transcript not found"}, status=404)
-
-        # Delete from database
-        await asyncio.to_thread(db.delete_transcript, transcript_id)
-
-        # Broadcast update to clients
-        await ctl._broadcast_history_updated(record=found, reason="deleted")
+        if delete_status == "busy":
+            return web.json_response(
+                {"message": "Transcript is still stopping; try deleting it again."},
+                status=409,
+            )
+        if delete_status == "persistence_error":
+            return web.json_response(
+                {"message": "Failed to delete transcript from storage"},
+                status=500,
+            )
         logger.info(f"Deleted transcript: {found.title} ({transcript_id})")
 
         return web.json_response({"success": True, "id": transcript_id})
@@ -6750,7 +7437,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Missing transcript ID"}, status=400)
 
         # Ensure full content is loaded (lazy-load safe)
-        full_data = ctl.get_transcript(transcript_id)
+        full_data = await ctl.get_transcript(transcript_id)
         rec = ctl._get_history_record(transcript_id)
 
         if not rec and not full_data:
@@ -6766,29 +7453,59 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if status != "completed":
             return web.json_response({"message": "Transcript is not yet completed"}, status=400)
 
+        summary_task = asyncio.current_task()
+        if summary_task is None or not ctl._register_summary_task(transcript_id, summary_task):
+            return web.json_response(
+                {"message": "A summary is already running for this transcript"},
+                status=409,
+            )
+
         if rec:
             rec.mark_summary_pending()
-            await ctl._save_transcript_to_db_async(rec)
+            await ctl._save_transcript_summary_state_async(rec)
             await ctl._broadcast_history_updated(record=rec, reason="summary_pending")
         else:
-            await asyncio.to_thread(db.update_transcript_summary_state, transcript_id, status="pending")
+            updated = await asyncio.to_thread(
+                db.update_transcript_summary_state,
+                transcript_id,
+                status="pending",
+            )
+            if not updated:
+                return web.json_response({"message": "Transcript not found"}, status=404)
 
         try:
             model = getattr(Config, "SUMMARIZATION_MODEL", "") or Config.DEFAULT_SUMMARIZATION_MODEL
             summary = await summarize_text(content, model, duration=duration)
+            if transcript_id in ctl._deleted_transcript_ids:
+                return web.json_response({"message": "Transcript was deleted while summarization was running"}, status=404)
             if rec:
                 rec.mark_summary_completed(summary)
-                await ctl._save_transcript_to_db_async(rec)
+                await ctl._save_transcript_summary_state_async(rec, include_summary=True)
                 await ctl._broadcast_history_updated(record=rec, reason="summary_completed")
                 logger.info(f"Summarized transcript: {rec.title} ({len(summary)} chars)")
             else:
-                await asyncio.to_thread(db.update_transcript_summary, transcript_id, summary)
+                updated = await asyncio.to_thread(db.update_transcript_summary, transcript_id, summary)
+                if not updated:
+                    return web.json_response({"message": "Transcript not found"}, status=404)
                 logger.info(f"Summarized transcript: {transcript_id} ({len(summary)} chars)")
             return web.json_response({"success": True, "summary": summary})
+        except asyncio.CancelledError:
+            if rec:
+                rec.mark_summary_failed("Summary canceled")
+                await ctl._save_transcript_summary_state_async(rec)
+                await ctl._broadcast_history_updated(record=rec, reason="summary_canceled")
+            else:
+                await asyncio.to_thread(
+                    db.update_transcript_summary_state,
+                    transcript_id,
+                    status="failed",
+                    error="Summary canceled",
+                )
+            raise
         except ValueError as exc:
             if rec:
                 rec.mark_summary_failed(exc)
-                await ctl._save_transcript_to_db_async(rec)
+                await ctl._save_transcript_summary_state_async(rec)
                 await ctl._broadcast_history_updated(record=rec, reason="summary_failed")
             else:
                 await asyncio.to_thread(db.update_transcript_summary_state, transcript_id, status="failed", error=str(exc))
@@ -6797,7 +7514,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             logger.exception("Summarization failed")
             if rec:
                 rec.mark_summary_failed(exc)
-                await ctl._save_transcript_to_db_async(rec)
+                await ctl._save_transcript_summary_state_async(rec)
                 await ctl._broadcast_history_updated(record=rec, reason="summary_failed")
             else:
                 await asyncio.to_thread(db.update_transcript_summary_state, transcript_id, status="failed", error=str(exc))
@@ -6833,7 +7550,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Invalid format. Use 'pdf' or 'docx'"}, status=400)
         
         # Ensure full content is loaded (lazy-load safe)
-        full_data = ctl.get_transcript(transcript_id)
+        full_data = await ctl.get_transcript(transcript_id)
         rec = ctl._get_history_record(transcript_id)
         if not rec and not full_data:
             return web.json_response({"message": "Transcript not found"}, status=404)
@@ -6858,14 +7575,16 @@ def create_app(controller: ScriberWebController) -> web.Application:
             )
 
             # Sanitize filename
-            safe_title = "".join(c for c in (title or "transcript") if c.isalnum() or c in " -_").strip()[:50]
-            filename = f"{safe_title}.{ext}"
+            safe_title = "".join(
+                c for c in (title or "transcript") if c.isalnum() or c in " -_"
+            ).strip()[:50]
+            filename = f"{safe_title or 'transcript'}.{ext}"
             
             return web.Response(
                 body=data,
                 content_type=content_type,
                 headers={
-                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Disposition": _attachment_content_disposition(filename),
                 },
             )
         except ImportError as e:
@@ -6975,16 +7694,21 @@ def create_app(controller: ScriberWebController) -> web.Application:
         model_id = request.match_info.get("model_id", "")
         if not model_id:
             return web.json_response({"message": "Missing model ID"}, status=400)
+        quantization = request.query.get("quantization") or Config.ONNX_QUANTIZATION
         
         try:
-            from src.onnx_stt import get_model_info, get_model_status
-            
-            info = get_model_info(model_id)
+            def load_status() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+                from src.onnx_stt import get_model_info, get_model_status
+
+                info = get_model_info(model_id)
+                if not info:
+                    return None, None
+                return info, get_model_status(model_id, quantization=quantization)
+
+            info, status = await asyncio.to_thread(load_status)
             if not info:
                 return web.json_response({"message": "Unknown model"}, status=404)
-
-            quantization = request.query.get("quantization") or Config.ONNX_QUANTIZATION
-            status = get_model_status(model_id, quantization=quantization)
+            assert status is not None
             
             return web.json_response({
                 "id": model_id,
@@ -7019,18 +7743,22 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Missing modelId"}, status=400)
         
         try:
-            from src.onnx_stt import (
-                download_model,
-                get_model_info,
-                get_model_status,
-                is_model_downloading,
-            )
+            from src.onnx_stt import download_model, get_model_status
 
-            info = get_model_info(model_id)
+            def download_preflight() -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool]:
+                from src.onnx_stt import get_model_info, is_model_downloading
+
+                info = get_model_info(model_id)
+                if not info:
+                    return None, None, False
+                status = get_model_status(model_id, quantization=quantization)
+                return info, status, is_model_downloading(model_id)
+
+            info, status, downloading = await asyncio.to_thread(download_preflight)
             if not info:
                 return web.json_response({"message": "Unknown model"}, status=404)
 
-            status = get_model_status(model_id, quantization=quantization)
+            assert status is not None
             if status.get("downloaded"):
                 return web.json_response({
                     "success": True,
@@ -7038,7 +7766,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     "modelId": model_id,
                 })
 
-            if is_model_downloading(model_id):
+            if downloading:
                 return web.json_response({
                     "success": False,
                     "message": "Download already in progress",
@@ -7069,7 +7797,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
             logger.info(f"Starting ONNX model download: {model_id}")
             success = await download_model(model_id, quantization=quantization, on_progress=on_progress)
 
-            final_status = get_model_status(model_id, quantization=quantization)
+            final_status = await asyncio.to_thread(
+                get_model_status,
+                model_id,
+                quantization=quantization,
+            )
             await ctl.broadcast({
                 "type": "onnx_download_progress",
                 "modelId": model_id,
@@ -7101,16 +7833,27 @@ def create_app(controller: ScriberWebController) -> web.Application:
         model_id = request.match_info.get("model_id", "")
         if not model_id:
             return web.json_response({"message": "Missing model ID"}, status=400)
+        quantization = request.query.get("quantization") or Config.ONNX_QUANTIZATION
         
         try:
-            from src.onnx_stt import delete_model, get_model_info
-            
-            info = get_model_info(model_id)
-            if not info:
+            def delete_local_model() -> tuple[str, bool]:
+                from src.onnx_stt import delete_model, get_model_info, is_model_downloading
+
+                info = get_model_info(model_id)
+                if not info:
+                    return "unknown", False
+                if is_model_downloading(model_id):
+                    return "downloading", False
+                return "deleted", delete_model(model_id, quantization=quantization)
+
+            delete_state, success = await asyncio.to_thread(delete_local_model)
+            if delete_state == "unknown":
                 return web.json_response({"message": "Unknown model"}, status=404)
-            
-            quantization = request.query.get("quantization") or Config.ONNX_QUANTIZATION
-            success = delete_model(model_id, quantization=quantization)
+            if delete_state == "downloading":
+                return web.json_response(
+                    {"message": "Cannot delete a model while it is downloading"},
+                    status=409,
+                )
             
             if success:
                 logger.info(f"Deleted ONNX model: {model_id}")
@@ -7179,6 +7922,7 @@ async def run_server(host: str, port: int) -> None:
     force_exit_timer: threading.Timer | None = None
     await stop_event.wait()
     logger.info("Scriber web API shutdown requested")
+    controller.begin_shutdown()
     if force_process_exit:
         force_exit_timer = _arm_force_process_exit_after_shutdown()
     if not background_init_task.done():
@@ -7187,7 +7931,11 @@ async def run_server(host: str, port: int) -> None:
     try:
         await controller.stop_listening()
     except Exception:
-        pass
+        logger.exception("Scriber live-mic shutdown failed")
+    try:
+        await controller.drain_background_tasks_for_shutdown()
+    except Exception:
+        logger.exception("Scriber background shutdown drain failed")
     finally:
         try:
             controller.shutdown()
@@ -7256,12 +8004,12 @@ async def _background_init(controller: ScriberWebController) -> None:
         try:
             await asyncio.to_thread(controller._load_transcripts_from_db)
             controller._transcripts_loaded = True
-            logger.info(f"Loaded {len(controller._history)} transcripts from database")
+            logger.info("Database-backed transcript history initialized")
         except Exception as e:
             logger.warning(f"Background transcript load failed: {e}")
 
         try:
-            resumed = await controller.resume_pending_jobs(limit=25)
+            resumed = await controller.resume_pending_jobs(limit=25, recover_running=True)
             if resumed:
                 logger.info(f"Resumed {resumed} pending background job(s)")
         except Exception as e:
@@ -7332,7 +8080,7 @@ def main() -> None:
     }
     setup_logging(component="web_api", force=True, add_stderr=add_stderr)
     host = os.getenv("SCRIBER_WEB_HOST", "127.0.0.1")
-    port = int(os.getenv("SCRIBER_WEB_PORT", "8765"))
+    port = _env_int("SCRIBER_WEB_PORT", 8765, minimum=1, maximum=65535)
     asyncio.run(run_server(host, port))
 
 

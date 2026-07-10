@@ -63,6 +63,7 @@ const idleSnapshot: FileUploadSnapshot = {
   currentIndex: -1,
   updatedAt: 0,
 };
+const FILE_UPLOAD_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
 let snapshot: FileUploadSnapshot = idleSnapshot;
 let activeUpload: Promise<FileUploadBatchResult> | null = null;
@@ -194,6 +195,7 @@ function uploadSingleFile(
 
     xhr.open("POST", apiUrl("/api/file/transcribe"));
     xhr.withCredentials = true;
+    xhr.timeout = FILE_UPLOAD_TIMEOUT_MS;
 
     xhr.upload.onprogress = (event) => {
       if (!event.lengthComputable || event.total <= 0) return;
@@ -223,6 +225,14 @@ function uploadSingleFile(
 
     xhr.onerror = () => {
       reject(new Error("Network error during file upload"));
+    };
+
+    xhr.ontimeout = () => {
+      reject(new Error("File upload timed out"));
+    };
+
+    xhr.onabort = () => {
+      reject(new Error("File upload was canceled"));
     };
 
     xhr.onload = () => {

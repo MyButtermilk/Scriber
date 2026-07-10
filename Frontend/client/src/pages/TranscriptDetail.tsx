@@ -15,6 +15,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useState, useEffect, useRef, useLayoutEffect, useCallback, useMemo } from "react";
 import { apiUrl } from "@/lib/backend";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import ReactMarkdown from "react-markdown";
 import { QueryErrorState } from "@/components/ui/query-error-state";
 import { DesktopTitleBar } from "@/components/DesktopTitleBar";
@@ -196,8 +197,12 @@ function DurationText({
   }, [startedAt]);
 
   const formatElapsed = useCallback((seconds: number) => {
-    const mins = Math.floor(seconds / 60);
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
     const secs = seconds % 60;
+    if (hours > 0) {
+      return `${hours.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+    }
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   }, []);
 
@@ -239,10 +244,10 @@ function StopButton({ transcriptId, onStop }: { transcriptId: string; onStop: ()
     if (isStopping) return;
     setIsStopping(true);
     try {
-      const res = await fetch(apiUrl(`/api/transcripts/${transcriptId}/cancel`), {
+      const res = await fetchWithTimeout(apiUrl(`/api/transcripts/${transcriptId}/cancel`), {
         method: "POST",
         credentials: "include",
-      });
+      }, 15_000);
       if (!res.ok) throw new Error("Failed to stop");
 
       toast({ title: "Stopping...", description: "Task cancellation requested." });
@@ -279,10 +284,10 @@ function SummarizeButton({
     if (!transcriptId || isSummarizing || disabled) return;
     setIsSummarizing(true);
     try {
-      const res = await fetch(apiUrl(`/api/transcripts/${transcriptId}/summarize`), {
+      const res = await fetchWithTimeout(apiUrl(`/api/transcripts/${transcriptId}/summarize`), {
         method: "POST",
         credentials: "include",
-      });
+      }, 15 * 60_000);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.message || res.statusText);
@@ -335,11 +340,12 @@ export default function TranscriptDetail() {
   // Fetch settings to check if auto-summarize is enabled
   const settingsQuery = useQuery<SettingsResponse>({
     queryKey: ["/api/settings"],
-    queryFn: async () => {
-      const res = await fetch(apiUrl("/api/settings"), {
+    queryFn: async ({ signal }) => {
+      const res = await fetchWithTimeout(apiUrl("/api/settings"), {
         credentials: "include",
         cache: "no-store",
-      });
+        signal,
+      }, 10_000);
       if (!res.ok) return {};
       return (await res.json()) as SettingsResponse;
     },
@@ -448,7 +454,7 @@ export default function TranscriptDetail() {
 
     setIsRetryingYoutube(true);
     try {
-      const res = await fetch(apiUrl("/api/youtube/transcribe"), {
+      const res = await fetchWithTimeout(apiUrl("/api/youtube/transcribe"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -459,7 +465,7 @@ export default function TranscriptDetail() {
           thumbnailUrl: transcript?.thumbnailUrl,
           duration: transcript?.duration,
         }),
-      });
+      }, 15_000);
       if (!res.ok) {
         throw new Error(await responseErrorMessage(res));
       }

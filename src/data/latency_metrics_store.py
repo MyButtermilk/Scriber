@@ -1,4 +1,6 @@
 import json
+import math
+import os
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -31,11 +33,25 @@ class LatencyMetricsStore:
         self._thread_local = threading.local()
         self._connections: list[sqlite3.Connection] = []
         self._connections_lock = threading.Lock()
+        self._connection_generation = 0
+        try:
+            self._retention_rows = max(
+                1,
+                min(
+                    1_000_000,
+                    int(os.getenv("SCRIBER_HOT_PATH_METRICS_RETENTION", "5000") or 5000),
+                ),
+            )
+        except (TypeError, ValueError):
+            self._retention_rows = 5000
         self.init_schema()
 
     def _connect(self) -> sqlite3.Connection:
         conn = getattr(self._thread_local, "conn", None)
-        if conn is None:
+        if (
+            conn is None
+            or getattr(self._thread_local, "connection_generation", -1) != self._connection_generation
+        ):
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(self._db_path, timeout=30.0, check_same_thread=False)
             conn.row_factory = sqlite3.Row
@@ -44,18 +60,21 @@ class LatencyMetricsStore:
             self._thread_local.conn = conn
             with self._connections_lock:
                 self._connections.append(conn)
+                self._thread_local.connection_generation = self._connection_generation
         return conn
 
     def close(self) -> None:
         with self._connections_lock:
             connections = list(self._connections)
             self._connections.clear()
+            self._connection_generation += 1
         for conn in connections:
             try:
                 conn.close()
             except Exception:
                 pass
         self._thread_local.conn = None
+        self._thread_local.connection_generation = self._connection_generation
 
     def init_schema(self) -> None:
         with self._lock:
@@ -80,7 +99,14 @@ class LatencyMetricsStore:
                 conn.commit()
 
     def record(self, session_id: str, segments: dict[str, float]) -> HotPathMetric:
-        payload = {k: float(v) for k, v in (segments or {}).items()}
+        payload: dict[str, float] = {}
+        for key, value in (segments or {}).items():
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(number):
+                payload[str(key)] = number
         total_ms = payload.get("hotkey_received_to_first_paste_ms")
         if total_ms is None:
             total_ms = max(payload.values(), default=0.0)
@@ -104,22 +130,35 @@ class LatencyMetricsStore:
                         metric.created_at,
                     ),
                 )
+                conn.execute(
+                    """
+                    DELETE FROM hot_path_metrics
+                    WHERE id <= COALESCE(
+                        (
+                            SELECT id FROM hot_path_metrics
+                            ORDER BY id DESC
+                            LIMIT 1 OFFSET ?
+                        ),
+                        -1
+                    )
+                    """,
+                    (self._retention_rows,),
+                )
                 conn.commit()
         return metric
 
     def latest(self, *, limit: int = 50) -> list[HotPathMetric]:
         query_limit = max(1, min(1000, int(limit)))
-        with self._lock:
-            with self._connect() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT session_id, total_ms, segments_json, created_at
-                    FROM hot_path_metrics
-                    ORDER BY created_at DESC
-                    LIMIT ?
-                    """,
-                    (query_limit,),
-                ).fetchall()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT session_id, total_ms, segments_json, created_at
+                FROM hot_path_metrics
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (query_limit,),
+            ).fetchall()
 
         metrics: list[HotPathMetric] = []
         for row in rows:
@@ -129,11 +168,25 @@ class LatencyMetricsStore:
                 segments = parsed if isinstance(parsed, dict) else {}
             except json.JSONDecodeError:
                 segments = {}
+            clean_segments: dict[str, float] = {}
+            for key, value in segments.items():
+                try:
+                    number = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(number):
+                    clean_segments[str(key)] = number
+            try:
+                total_ms = float(row["total_ms"] or 0.0)
+            except (TypeError, ValueError):
+                total_ms = 0.0
+            if not math.isfinite(total_ms):
+                total_ms = 0.0
             metrics.append(
                 HotPathMetric(
                     session_id=row["session_id"],
-                    total_ms=float(row["total_ms"] or 0.0),
-                    segments={str(k): float(v) for k, v in segments.items()},
+                    total_ms=total_ms,
+                    segments=clean_segments,
                     created_at=row["created_at"] or "",
                 )
             )
@@ -141,6 +194,18 @@ class LatencyMetricsStore:
 
     def summarize(self, *, limit: int = 200) -> dict[str, float | int]:
         metrics = self.latest(limit=limit)
+        return self._summarize_metrics(metrics)
+
+    def snapshot(
+        self,
+        *,
+        limit: int = 200,
+    ) -> tuple[dict[str, float | int], list[HotPathMetric]]:
+        metrics = self.latest(limit=limit)
+        return self._summarize_metrics(metrics), metrics
+
+    @staticmethod
+    def _summarize_metrics(metrics: list[HotPathMetric]) -> dict[str, float | int]:
         values = sorted([m.total_ms for m in metrics if m.total_ms >= 0.0])
         if not values:
             return {

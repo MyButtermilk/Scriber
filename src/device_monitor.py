@@ -289,6 +289,7 @@ class DeviceMonitor:
         self._channels = max(1, int(channels or 1))
 
         self._state_lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
         self._callbacks: list[Callable[[list[dict[str, str]]], None]] = []
         self._refresh_quiesce_callbacks: list[Callable[[], None]] = []
         self._refresh_resume_callbacks: list[Callable[[], None]] = []
@@ -360,24 +361,29 @@ class DeviceMonitor:
             self._refresh_resume_callbacks.append(resume_callback)
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._run,
-            name="device-monitor",
-            daemon=True,
-        )
-        self._thread.start()
-        logger.info("[DeviceMonitor] started")
+        with self._lifecycle_lock:
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._run,
+                name="device-monitor",
+                daemon=True,
+            )
+            self._thread.start()
+            logger.info("[DeviceMonitor] started")
 
     def stop(self) -> None:
-        self._stop_event.set()
-        thread = self._thread
-        if thread and thread.is_alive():
-            thread.join(timeout=2.0)
-        self._thread = None
-        logger.info("[DeviceMonitor] stopped")
+        with self._lifecycle_lock:
+            self._stop_event.set()
+            thread = self._thread
+            if thread and thread.is_alive():
+                thread.join(timeout=2.0)
+                if thread.is_alive():
+                    logger.warning("[DeviceMonitor] stop timed out; monitor thread is still running")
+                    return
+            self._thread = None
+            logger.info("[DeviceMonitor] stopped")
 
     def request_refresh(self, *, force_portaudio_refresh: bool = False) -> None:
         self._schedule_refresh(
@@ -570,6 +576,18 @@ class DeviceMonitor:
             self._refresh_deferred_until_idle = False
             self._deferred_refresh_trigger = ""
 
+    def _take_due_refresh(self, now: float) -> tuple[str, bool] | None:
+        """Atomically consume only the refresh that is still due at *now*."""
+        with self._state_lock:
+            if self._pending_refresh_at <= 0.0 or now < self._pending_refresh_at:
+                return None
+            reason = self._pending_refresh_reason or "event"
+            requires_portaudio = self._pending_refresh_requires_portaudio
+            self._pending_refresh_at = 0.0
+            self._pending_refresh_reason = ""
+            self._pending_refresh_requires_portaudio = False
+            return reason, requires_portaudio
+
     def _schedule_endpoint_refresh(self, *, reason: str, device_id, immediate: bool) -> None:
         if self._endpoint_is_capture_or_unknown(device_id):
             self._schedule_refresh(
@@ -684,17 +702,11 @@ class DeviceMonitor:
 
             while not self._stop_event.wait(0.1):
                 now = time.monotonic()
-                pending_due = 0.0
-                with self._state_lock:
-                    pending_due = self._pending_refresh_at
-                if pending_due > 0.0 and now >= pending_due:
-                    with self._state_lock:
-                        self._pending_refresh_at = 0.0
-                        self._pending_refresh_reason = ""
-                        pending_requires_portaudio = self._pending_refresh_requires_portaudio
-                        self._pending_refresh_requires_portaudio = False
+                pending_refresh = self._take_due_refresh(now)
+                if pending_refresh is not None:
+                    pending_reason, pending_requires_portaudio = pending_refresh
                     self._refresh_devices(
-                        trigger="event",
+                        trigger=pending_reason,
                         force=False,
                         refresh_portaudio=pending_requires_portaudio,
                     )

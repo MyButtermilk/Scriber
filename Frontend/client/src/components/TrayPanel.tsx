@@ -40,6 +40,7 @@ import {
   type DesktopUpdateProgress,
 } from "@/lib/desktop-updates";
 import { cn } from "@/lib/utils";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 
 const DEFAULT_TRAY_STATUS: TrayStatus = {
   recordingActive: false,
@@ -391,10 +392,10 @@ export default function TrayPanel() {
     setRecentLoading(true);
     setRecentError("");
     try {
-      const response = await fetch(apiUrl("/api/transcripts?limit=20&offset=0"), {
+      const response = await fetchWithTimeout(apiUrl("/api/transcripts?limit=20&offset=0"), {
         credentials: "include",
         cache: "no-store",
-      });
+      }, 10_000);
       if (!response.ok) {
         throw new Error(`Could not load recent transcripts (${response.status}).`);
       }

@@ -17,6 +17,7 @@ async def test_hot_path_report_persisted_only_once(tmp_path):
     ctl._mark_hot_path(session_id, "first_paste")
     ctl._emit_hot_path_report_once(session_id)
     ctl._emit_hot_path_report_once(session_id)
+    await ctl._wait_for_pending_metric_writes()
 
     rows = metrics_store.latest(limit=10)
     assert len(rows) == 1
@@ -36,6 +37,7 @@ async def test_hot_path_audio_frame_marker_is_persisted(tmp_path):
     ctl._on_audio_level(0.5, session_id=session_id)
     ctl._mark_hot_path(session_id, "first_paste")
     ctl._emit_hot_path_report_once(session_id)
+    await ctl._wait_for_pending_metric_writes()
 
     rows = metrics_store.latest(limit=10)
     assert len(rows) == 1
@@ -56,6 +58,7 @@ async def test_hot_path_silent_audio_frame_does_not_mark_audible_audio(tmp_path)
     ctl._on_audio_level(0.0, session_id=session_id)
     ctl._mark_hot_path(session_id, "first_paste")
     ctl._emit_hot_path_report_once(session_id)
+    await ctl._wait_for_pending_metric_writes()
 
     rows = metrics_store.latest(limit=10)
     assert len(rows) == 1
@@ -77,6 +80,7 @@ async def test_hot_path_partial_report_can_be_persisted_without_text_injection(t
     ctl._mark_hot_path(session_id, "session_finished")
 
     assert ctl._emit_hot_path_report_once(session_id, required_marker=None) is True
+    await ctl._wait_for_pending_metric_writes()
 
     rows = metrics_store.latest(limit=10)
     assert len(rows) == 1
@@ -99,6 +103,7 @@ async def test_hot_path_marks_non_empty_final_transcript_only(tmp_path):
     ctl._on_transcription("", True, session_id=session_id)
     ctl._mark_hot_path(session_id, "session_finished")
     assert ctl._emit_hot_path_report_once(session_id, required_marker=None) is True
+    await ctl._wait_for_pending_metric_writes()
 
     rows = metrics_store.latest(limit=10)
     assert "hotkey_received_to_first_final_token_ms" not in rows[0].segments
@@ -109,6 +114,7 @@ async def test_hot_path_marks_non_empty_final_transcript_only(tmp_path):
     ctl._on_transcription("hello", True, session_id=second_id)
     ctl._mark_hot_path(second_id, "session_finished")
     assert ctl._emit_hot_path_report_once(second_id, required_marker=None) is True
+    await ctl._wait_for_pending_metric_writes()
 
     rows = metrics_store.latest(limit=10)
     latest = next(row for row in rows if row.session_id == second_id)
@@ -132,6 +138,7 @@ async def test_hot_path_persists_stop_to_injection_breakdown(tmp_path):
     ctl._mark_hot_path(session_id, "first_paste")
 
     assert ctl._emit_hot_path_report_once(session_id) is True
+    await ctl._wait_for_pending_metric_writes()
 
     rows = metrics_store.latest(limit=10)
     latest = next(row for row in rows if row.session_id == session_id)
