@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from pathlib import Path
 
 from loguru import logger
@@ -28,6 +29,7 @@ class FfmpegAudioFileInput(BaseInputTransport):
         sample_rate: int = 16000,
         channels: int = 1,
         block_size: int = 1024,
+        max_queued_audio_secs: float = 60.0,
     ):
         params = TransportParams(
             audio_in_enabled=True,
@@ -38,6 +40,16 @@ class FfmpegAudioFileInput(BaseInputTransport):
         super().__init__(params=params)
         self._file_path = str(Path(file_path).expanduser().resolve())
         self._block_size = int(block_size)
+        self._max_queued_frames = max(
+            1,
+            int(
+                math.ceil(
+                    max(1.0, float(max_queued_audio_secs))
+                    * max(1, int(sample_rate))
+                    / max(1, self._block_size)
+                )
+            ),
+        )
         self._done = asyncio.Event()
         self._ffmpeg: asyncio.subprocess.Process | None = None
         self._feed_task: asyncio.Task | None = None
@@ -90,6 +102,19 @@ class FfmpegAudioFileInput(BaseInputTransport):
             except Exception:
                 pass
 
+    async def _wait_for_audio_queue_capacity(self) -> None:
+        """Bound decoded PCM queued ahead of slower provider/model work."""
+        queue = getattr(self, "_audio_in_queue", None)
+        qsize = getattr(queue, "qsize", None)
+        if not callable(qsize):
+            return
+        while qsize() >= self._max_queued_frames:
+            audio_task = getattr(self, "_audio_task", None)
+            if audio_task is not None and audio_task.done():
+                await audio_task
+                raise RuntimeError("Audio input processing stopped before the file was consumed.")
+            await asyncio.sleep(0.01)
+
     async def _feed_audio(self) -> None:
         stderr_task: asyncio.Task[bytes] | None = None
         try:
@@ -127,6 +152,7 @@ class FfmpegAudioFileInput(BaseInputTransport):
                     num_channels=int(self._params.audio_in_channels),
                 )
                 await self.push_audio_frame(frame)
+                await self._wait_for_audio_queue_capacity()
                 await asyncio.sleep(0)
 
             stderr_b = await stderr_task

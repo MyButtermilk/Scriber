@@ -71,3 +71,22 @@ async def test_ffmpeg_file_input_drains_stderr_while_streaming_stdout(monkeypatc
     assert transport.error is None
     transport.push_audio_frame.assert_awaited_once()
     assert fake_process.returncode == 0
+
+
+@pytest.mark.asyncio
+async def test_ffmpeg_file_input_applies_backpressure_to_decoded_pcm(monkeypatch, tmp_path):
+    transport = FfmpegAudioFileInput(
+        tmp_path / "audio.wav",
+        sample_rate=10,
+        block_size=2,
+        max_queued_audio_secs=1,
+    )
+    queue_sizes = iter((5, 5, 4))
+    transport._audio_in_queue = SimpleNamespace(qsize=lambda: next(queue_sizes))
+    sleep = AsyncMock()
+    monkeypatch.setattr("src.audio_file_input.asyncio.sleep", sleep)
+
+    await transport._wait_for_audio_queue_capacity()
+
+    assert transport._max_queued_frames == 5
+    assert sleep.await_count == 2
