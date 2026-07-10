@@ -7,7 +7,6 @@ import asyncio
 import json
 import re
 import io
-import tempfile
 from typing import Any, AsyncGenerator, BinaryIO, Callable, Optional
 
 import aiohttp
@@ -28,7 +27,7 @@ from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
-from src.runtime.audio_spool import pcm_stream_to_wav
+from src.runtime.audio_spool import append_pcm_frame, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.http_response import read_response_text_limited
 
 
@@ -330,7 +329,7 @@ class MistralAsyncProcessor(FrameProcessor):
 
     def _create_buffer(self):
         """Use spooled temp file so long recordings don't keep all audio in RAM."""
-        return tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
+        return create_pcm_spool()
 
     def _reset_buffer(self) -> None:
         try:
@@ -403,8 +402,11 @@ class MistralAsyncProcessor(FrameProcessor):
                     self._sample_rate = int(frame.sample_rate or self._sample_rate)
                 if getattr(frame, "num_channels", None):
                     self._channels = max(1, int(frame.num_channels or self._channels))
-                self._buffer.write(frame.audio)
-                self._buffer_size += len(frame.audio)
+                self._buffer_size = await append_pcm_frame(
+                    self._buffer,
+                    self._buffer_size,
+                    frame.audio,
+                )
             await self.push_frame(frame, direction)
             return
 

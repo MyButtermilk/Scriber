@@ -34,6 +34,7 @@ from src.config import Config
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, mp3_encode_pcm_pipe_args, mp3_transcode_args
 from src.runtime.http_response import read_response_text_limited
 from src.runtime.media_tools import require_media_tool
+from src.runtime.audio_spool import append_pcm_frame, create_pcm_spool
 from src.runtime.subprocess_utils import (
     communicate_or_kill_on_cancel,
     hidden_subprocess_kwargs,
@@ -367,7 +368,7 @@ class AzureMaiTranscribeSTTService(STTService):
         self._channels = 1
 
     def _create_buffer(self):
-        return tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
+        return create_pcm_spool()
 
     def _reset_buffer(self) -> None:
         try:
@@ -433,8 +434,11 @@ class AzureMaiTranscribeSTTService(STTService):
             self._sample_rate = int(frame.sample_rate or self._sample_rate)
         if getattr(frame, "num_channels", None):
             self._channels = max(1, int(frame.num_channels or self._channels))
-        self._buffer.write(frame.audio)
-        self._buffer_size += len(frame.audio)
+        self._buffer_size = await append_pcm_frame(
+            self._buffer,
+            self._buffer_size,
+            frame.audio,
+        )
 
     async def _flush_transcription(self, direction: FrameDirection) -> None:
         if not self._buffer_size:

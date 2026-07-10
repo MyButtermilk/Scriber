@@ -33,7 +33,11 @@ from src.gladia_stt import (
     gladia_transcript_payload_to_text,
     transcribe_with_gladia_pre_recorded,
 )
-from src.runtime.audio_spool import pcm_stream_to_wav as _pcm_stream_to_wav
+from src.runtime.audio_spool import (
+    append_pcm_frame,
+    create_pcm_spool,
+    pcm_stream_to_wav as _pcm_stream_to_wav,
+)
 from src.runtime.http_response import read_response_text_limited
 from src.runtime.env_values import env_float, env_int
 
@@ -742,7 +746,7 @@ class _BufferedAsyncProcessor(FrameProcessor):
         self._channels = 1
 
     def _create_buffer(self):
-        return tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
+        return create_pcm_spool()
 
     def _reset_buffer(self) -> None:
         try:
@@ -764,8 +768,11 @@ class _BufferedAsyncProcessor(FrameProcessor):
                     self._sample_rate = int(frame.sample_rate or self._sample_rate)
                 if getattr(frame, "num_channels", None):
                     self._channels = max(1, int(frame.num_channels or self._channels))
-                self._buffer.write(frame.audio)
-                self._buffer_size += len(frame.audio)
+                self._buffer_size = await append_pcm_frame(
+                    self._buffer,
+                    self._buffer_size,
+                    frame.audio,
+                )
             await self.push_frame(frame, direction)
             return
 

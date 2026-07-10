@@ -6,7 +6,6 @@ import asyncio
 import io
 import json
 import re
-import tempfile
 from typing import Any, BinaryIO, Callable
 
 import aiohttp
@@ -24,7 +23,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.time import time_now_iso8601
 
-from src.runtime.audio_spool import pcm_stream_to_wav
+from src.runtime.audio_spool import append_pcm_frame, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.http_response import read_response_text_limited
 
 _ASSEMBLYAI_BASE_URL = "https://api.assemblyai.com/v2"
@@ -324,7 +323,7 @@ class AssemblyAIUniversal35ProAsyncProcessor(FrameProcessor):
         self._channels = 1
 
     def _create_buffer(self):
-        return tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
+        return create_pcm_spool()
 
     def _reset_buffer(self) -> None:
         try:
@@ -380,8 +379,11 @@ class AssemblyAIUniversal35ProAsyncProcessor(FrameProcessor):
                     self._sample_rate = int(frame.sample_rate or self._sample_rate)
                 if getattr(frame, "num_channels", None):
                     self._channels = max(1, int(frame.num_channels or self._channels))
-                self._buffer.write(frame.audio)
-                self._buffer_size += len(frame.audio)
+                self._buffer_size = await append_pcm_frame(
+                    self._buffer,
+                    self._buffer_size,
+                    frame.audio,
+                )
             await self.push_frame(frame, direction)
             return
 

@@ -38,7 +38,7 @@ from src.runtime.media_tools import find_media_tool
 from src.runtime.provider_dependencies import import_provider_runtime_module
 from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
 from src.runtime.http_response import read_response_json_limited, read_response_text_limited
-from src.runtime.audio_spool import pcm_stream_to_wav
+from src.runtime.audio_spool import append_pcm_frame, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.env_values import env_float as _safe_env_float
 
 try:
@@ -314,7 +314,7 @@ class SonioxAsyncProcessor(FrameProcessor):
 
     def _create_buffer(self):
         """Use spooled temp file to cap RAM usage for long recordings."""
-        return tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
+        return create_pcm_spool()
 
     def _reset_buffer(self) -> None:
         try:
@@ -332,8 +332,11 @@ class SonioxAsyncProcessor(FrameProcessor):
                 self._sample_rate = frame.sample_rate
             if not self._channels:
                 self._channels = frame.num_channels
-            self._buffer.write(frame.audio)
-            self._buffer_size += len(frame.audio)
+            self._buffer_size = await append_pcm_frame(
+                self._buffer,
+                self._buffer_size,
+                frame.audio,
+            )
             await self.push_frame(frame, direction)
         elif isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
             try:
