@@ -163,6 +163,9 @@ wired but are expected to report that release updater configuration is missing.
   public key, and signed artifacts through build-time configuration; Windows
   updater installation runs in Tauri's passive mode.
 - Run worker crash recovery and write crash metadata.
+- Request authenticated graceful worker shutdown before restart or shell exit,
+  wait through the backend's bounded persistence/cleanup window, and use hard
+  process termination only as fallback.
 - Avoid visible console windows for the Python child on Windows.
 - Own the installed frontend asset bundle through Tauri `frontendDist`; the
   backend sidecar remains API-only unless a developer explicitly points

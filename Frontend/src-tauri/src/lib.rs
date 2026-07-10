@@ -63,6 +63,7 @@ const FALLBACK_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BACKEND_START_TIMEOUT: Duration = Duration::from_secs(30);
 const BACKEND_START_TIMEOUT_ENV: &str = "SCRIBER_BACKEND_START_TIMEOUT_MS";
 const BACKEND_SUPERVISOR_INTERVAL: Duration = Duration::from_secs(2);
+const BACKEND_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(6);
 const BACKEND_TERMINATE_TIMEOUT: Duration = Duration::from_secs(2);
 const BACKEND_TERMINATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const BACKEND_HEALTH_MAX_RESPONSE_BYTES: u64 = 64 * 1024;
@@ -2490,11 +2491,37 @@ fn refresh_child_state(state: &mut BackendState) {
 
 fn terminate_managed_child(state: &mut BackendState) {
     if let Some(mut child) = state.child.take() {
-        write_shell_log(&format!("terminating managed backend pid={}", child.id()));
+        let pid = child.id();
+        let access = BackendAccess {
+            base_url: state.base_url.clone(),
+            session_token: state.session_token.clone(),
+        };
+        let graceful_requested = match request_backend_shutdown(&access) {
+            Ok(()) => {
+                write_shell_log(&format!(
+                    "graceful managed backend shutdown requested pid={pid}"
+                ));
+                true
+            }
+            Err(err) => {
+                write_shell_log(&format!(
+                    "graceful managed backend shutdown unavailable pid={pid} error={err}"
+                ));
+                false
+            }
+        };
+        if graceful_requested && wait_for_child_exit(&mut child, BACKEND_GRACEFUL_SHUTDOWN_TIMEOUT)
+        {
+            write_shell_log(&format!("managed backend exited gracefully pid={pid}"));
+            state.job = None;
+            state.started_at = None;
+            state.launch_kind = "none".to_string();
+            return;
+        }
+        write_shell_log(&format!("terminating managed backend pid={pid}"));
         if let Err(err) = child.kill() {
             write_shell_log(&format!(
-                "managed backend primary kill failed pid={} error={err}",
-                child.id()
+                "managed backend primary kill failed pid={pid} error={err}"
             ));
             // Closing the Windows job handle is a second kill mechanism.
             state.job = None;
@@ -3156,6 +3183,31 @@ fn post_backend_path(access: &BackendAccess, path: &str) -> Result<Value, String
     request_backend_json(access, "POST", path)
 }
 
+fn request_backend_shutdown(access: &BackendAccess) -> Result<(), String> {
+    let (host, port) = parse_loopback_backend_url(&access.base_url)?;
+    let addr = SocketAddr::from((host, port));
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500))
+        .map_err(|err| format!("could not connect for backend shutdown: {err}"))?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+    let request = build_backend_http_request(
+        "POST",
+        "/api/runtime/shutdown",
+        port,
+        &access.session_token,
+        "",
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|err| format!("could not write backend shutdown request: {err}"))?;
+    let response = read_backend_response_limited(&mut stream, BACKEND_HEALTH_MAX_RESPONSE_BYTES)?;
+    let (status, _) = split_http_response(&response)?;
+    if !status.starts_with("HTTP/1.1 2") && !status.starts_with("HTTP/1.0 2") {
+        return Err(format!("backend shutdown returned {status}"));
+    }
+    Ok(())
+}
+
 fn request_backend_json(access: &BackendAccess, method: &str, path: &str) -> Result<Value, String> {
     request_backend_json_with_body(access, method, path, None)
 }
@@ -3745,20 +3797,24 @@ mod tests {
         is_safe_transcript_id, is_shell_menu_item, managed_backend_start_timed_out,
         normalize_global_shortcut, normalize_hotkey_mode, parse_loopback_backend_url,
         parse_shell_menu_smoke_actions, read_backend_response_limited, recent_transcript_label,
-        recent_transcripts_from_value, resolve_session_token, sanitize_menu_label, shell_ipc,
-        shell_ipc_env_pairs, shortcut_id_for_hotkey, should_refresh_hotkey_after_backend_ready,
-        should_show_window_for_tray_click, split_http_response, wait_for_child_exit,
-        DesktopHotkeyState, NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry,
-        ShellMenuSmokeAction, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
-        BACKEND_START_TIMEOUT_ENV, HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX,
-        MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        recent_transcripts_from_value, request_backend_shutdown, resolve_session_token,
+        sanitize_menu_label, shell_ipc, shell_ipc_env_pairs, shortcut_id_for_hotkey,
+        should_refresh_hotkey_after_backend_ready, should_show_window_for_tray_click,
+        split_http_response, wait_for_child_exit, BackendAccess, DesktopHotkeyState,
+        NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry, ShellMenuSmokeAction,
+        AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST,
+        HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
+        MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
         SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
         TRAY_RECENT_TRANSCRIPT_LIMIT,
     };
     use std::{
         fs,
+        io::{Read, Write},
+        net::TcpListener,
         path::PathBuf,
+        thread,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
     use tauri::tray::{MouseButton, MouseButtonState};
@@ -4413,6 +4469,46 @@ mod tests {
         assert!(request.contains("Content-Type: application/json\r\n"));
         assert!(request.contains(&format!("Content-Length: {}\r\n", body.len())));
         assert!(request.ends_with(body));
+    }
+
+    #[test]
+    fn backend_shutdown_request_uses_authenticated_runtime_endpoint() {
+        let listener = TcpListener::bind((DEFAULT_HOST, 0)).expect("bind shutdown test server");
+        let port = listener
+            .local_addr()
+            .expect("shutdown server address")
+            .port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept shutdown request");
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer).expect("read shutdown request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+                )
+                .expect("write shutdown response");
+            String::from_utf8(request).expect("shutdown request is utf-8")
+        });
+        let access = BackendAccess {
+            base_url: format!("http://{DEFAULT_HOST}:{port}"),
+            session_token: "shutdown-secret".to_string(),
+        };
+
+        request_backend_shutdown(&access).expect("shutdown request succeeds");
+        let request = server.join().expect("shutdown test server joins");
+
+        assert!(request.starts_with("POST /api/runtime/shutdown HTTP/1.1\r\n"));
+        assert!(request.contains("X-Scriber-Token: shutdown-secret\r\n"));
     }
 
     #[test]

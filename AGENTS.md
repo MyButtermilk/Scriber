@@ -181,6 +181,10 @@ Packaging and scripts:
   work and is the standard live-mic capture path.
 - Backend restart and Tauri exit must call the audio sidecar cleanup path before
   backend process changes or shell exit.
+- Managed backend restart and Tauri exit must request the token-protected
+  `/api/runtime/shutdown` path and allow the backend's bounded cleanup window
+  before escalating to process termination. Do not regress this to an
+  immediate kill that can lose debounced settings or pending transcript writes.
 - Python owns recording state and provider work.
 
 ### REST and WebSocket Contracts
