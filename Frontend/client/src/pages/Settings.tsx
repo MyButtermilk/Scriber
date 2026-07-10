@@ -92,7 +92,12 @@ const LANGUAGE_OPTIONS = [
 
 const SETTINGS_SECTION_REQUEST_KEY = "scriber:open-settings-section";
 const SETTINGS_SECTION_IDS: Record<string, string> = {
+  transcription: "settings-transcription",
+  providers: "settings-providers",
+  apiKeys: "settings-api-keys",
+  summarization: "settings-summaries",
   updates: "settings-updates",
+  language: "settings-language",
 };
 
 type ScrollSnapshot = {
@@ -713,6 +718,9 @@ function revealRequestedSettingsSection(section: string) {
     if (!target) {
       return;
     }
+    const stickyHeader = document.querySelector<HTMLElement>(".settings-page .transcription-intro");
+    const stickyOffset = Math.ceil(stickyHeader?.getBoundingClientRect().height || 0) + 16;
+    target.style.scrollMarginTop = `${stickyOffset}px`;
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     target.scrollIntoView({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
     target.classList.add("settings-section-attention");
@@ -2847,26 +2855,25 @@ export default function Settings() {
         eyebrow="Workspace controls · 04"
         title="Settings"
         description="Configure capture, transcription providers, AI processing, credentials, updates, and language behavior."
-        titleAccessory={(
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[10.5px] font-semibold text-emerald-700 shadow-[inset_0_0_0_1px_rgba(5,150,105,0.12)] dark:bg-emerald-950/35 dark:text-emerald-300">
-            <Check className="h-3 w-3" aria-hidden="true" />
-            Most changes save automatically
-          </span>
-        )}
         bottomContent={(
           <nav aria-label="Settings sections" className="settings-section-nav overflow-x-auto">
             <div className="flex w-max items-center gap-1 rounded-xl bg-slate-100/80 p-1 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.05)] dark:bg-slate-950/45">
               {[
-                { href: "#settings-transcription", label: "Capture", icon: Mic },
-                { href: "#settings-providers", label: "Providers", icon: Cloud },
-                { href: "#settings-api-keys", label: "API keys", icon: Key },
-                { href: "#settings-summaries", label: "Summary", icon: Sparkles },
-                { href: "#settings-updates", label: "Updates", icon: Shield },
-                { href: "#settings-language", label: "Language", icon: Languages },
+                { section: "transcription", href: "#settings-transcription", label: "Transcription", icon: Mic },
+                { section: "providers", href: "#settings-providers", label: "Providers", icon: Cloud },
+                { section: "apiKeys", href: "#settings-api-keys", label: "API keys", icon: Key },
+                { section: "summarization", href: "#settings-summaries", label: "Summarization", icon: Sparkles },
+                { section: "updates", href: "#settings-updates", label: "Updates", icon: Shield },
+                { section: "language", href: "#settings-language", label: "Language", icon: Languages },
               ].map((item) => (
                 <a
                   key={item.href}
                   href={item.href}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    window.history.replaceState(null, "", item.href);
+                    revealRequestedSettingsSection(item.section);
+                  }}
                   className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[10.5px] font-semibold text-slate-500 no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 hover:bg-white hover:text-slate-950 hover:shadow-sm active:translate-y-px focus-visible:ring-2 focus-visible:ring-blue-500/60 dark:hover:bg-slate-800 dark:hover:text-slate-100"
                 >
                   <item.icon className="h-3.5 w-3.5" aria-hidden="true" />

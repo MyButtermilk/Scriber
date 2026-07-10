@@ -394,6 +394,35 @@ def test_primary_page_intros_share_responsive_full_width_layout() -> None:
         assert "<PageIntro" in source
 
 
+def test_settings_section_navigation_accounts_for_sticky_header() -> None:
+    settings_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert 'label: "Transcription"' in settings_source
+    assert 'label: "Summarization"' in settings_source
+    assert 'label: "Capture"' not in settings_source
+    assert 'label: "Summary"' not in settings_source
+    assert "Most changes save automatically" not in settings_source
+    assert 'document.querySelector<HTMLElement>(".settings-page .transcription-intro")' in settings_source
+    assert "target.style.scrollMarginTop = `${stickyOffset}px`" in settings_source
+    assert "event.preventDefault()" in settings_source
+
+
+def test_debug_console_intro_matches_primary_page_typography() -> None:
+    stylesheet = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert ".debug-console-page {" in stylesheet
+    assert 'font-family: "Switzer", ui-sans-serif, system-ui, sans-serif;' in stylesheet
+    assert ".debug-console-title-row h1 {" in stylesheet
+    assert "font-size: 2.8rem;" in stylesheet
+    assert "font-weight: 600 !important;" in stylesheet
+    assert "color: hsl(var(--muted-foreground));" in stylesheet
+    assert ".debug-level-button {" in stylesheet
+
+
 def test_primary_history_search_fields_share_sidebar_inset_design() -> None:
     component_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "transcript-history-search.tsx"

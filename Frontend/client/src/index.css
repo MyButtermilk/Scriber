@@ -3632,6 +3632,7 @@ html:has(body[data-scroll-locked]) {
   gap: 0.75rem;
   overflow: hidden;
   color: var(--foreground);
+  font-family: "Switzer", ui-sans-serif, system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
 }
 
@@ -3666,19 +3667,19 @@ html:has(body[data-scroll-locked]) {
 .debug-console-eyebrow {
   display: flex;
   align-items: center;
-  gap: 0.65rem;
-  margin-bottom: 0.55rem;
-  color: var(--dc-muted);
-  font-size: 0.65rem;
+  gap: 0.625rem;
+  margin-bottom: 0.75rem;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.633rem;
   font-weight: 600;
-  letter-spacing: 0.19em;
+  letter-spacing: 0.22em;
   text-transform: uppercase;
 }
 
 .debug-console-eyebrow-line {
-  width: 1.6rem;
+  width: 1.75rem;
   height: 1px;
-  background: linear-gradient(90deg, var(--dc-accent), transparent);
+  background: hsl(var(--primary) / 0.6);
 }
 
 .debug-console-title-row {
@@ -3701,21 +3702,22 @@ html:has(body[data-scroll-locked]) {
 }
 
 .debug-console-title-row h1 {
-  margin: -0.18rem 0 0;
+  margin: 0;
+  color: hsl(var(--foreground));
   font-family: var(--font-heading);
-  font-size: clamp(2rem, 3vw, 2.65rem);
-  font-weight: 500;
-  line-height: 1;
+  font-size: 2.8rem;
+  font-weight: 600 !important;
+  line-height: 0.96;
   letter-spacing: -0.045em;
   text-wrap: balance;
 }
 
 .debug-console-title-row p {
   max-width: none;
-  margin: 0.5rem 0 0;
-  color: var(--dc-muted);
-  font-size: 0.8rem;
-  line-height: 1.5;
+  margin: 0.75rem 0 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.9rem;
+  line-height: 1.25rem;
   text-wrap: pretty;
 }
 
@@ -3764,7 +3766,7 @@ html:has(body[data-scroll-locked]) {
 
 .debug-console-stat strong {
   min-width: 2.1ch;
-  font-family: var(--font-heading);
+  font-family: inherit;
   font-size: 1.55rem;
   font-weight: 500;
   line-height: 1;
@@ -3909,7 +3911,7 @@ html:has(body[data-scroll-locked]) {
 .debug-search-hint {
   flex: 0 0 auto;
   color: color-mix(in srgb, var(--foreground) 35%, transparent);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: inherit;
   font-size: 0.62rem;
   letter-spacing: 0.04em;
 }
@@ -3984,7 +3986,7 @@ html:has(body[data-scroll-locked]) {
   border-radius: 0.52rem;
   background: transparent;
   color: var(--dc-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: inherit;
   font-size: 0.61rem;
   font-weight: 650;
   letter-spacing: 0.035em;
