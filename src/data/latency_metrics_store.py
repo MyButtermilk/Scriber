@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import json
 import math
 import os
 import sqlite3
 import threading
+import weakref
 from dataclasses import dataclass
 from datetime import datetime
 from math import ceil
@@ -34,6 +37,12 @@ class LatencyMetricsStore:
         self._connections: list[sqlite3.Connection] = []
         self._connections_lock = threading.Lock()
         self._connection_generation = 0
+        self._connection_finalizer = weakref.finalize(
+            self,
+            self._close_connection_list,
+            self._connections,
+            self._connections_lock,
+        )
         try:
             self._retention_rows = max(
                 1,
@@ -45,6 +54,24 @@ class LatencyMetricsStore:
         except (TypeError, ValueError):
             self._retention_rows = 5000
         self.init_schema()
+
+    @staticmethod
+    def _close_connection_list(
+        connections: list[sqlite3.Connection],
+        connections_lock: threading.Lock | None = None,
+    ) -> None:
+        if connections_lock is None:
+            pending = list(connections)
+            connections.clear()
+        else:
+            with connections_lock:
+                pending = list(connections)
+                connections.clear()
+        for conn in pending:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _connect(self) -> sqlite3.Connection:
         conn = getattr(self._thread_local, "conn", None)
@@ -68,11 +95,7 @@ class LatencyMetricsStore:
             connections = list(self._connections)
             self._connections.clear()
             self._connection_generation += 1
-        for conn in connections:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        self._close_connection_list(connections)
         self._thread_local.conn = None
         self._thread_local.connection_generation = self._connection_generation
 

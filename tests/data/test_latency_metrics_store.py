@@ -1,3 +1,9 @@
+import gc
+import sqlite3
+import weakref
+
+import pytest
+
 from src.data.latency_metrics_store import LatencyMetricsStore
 
 
@@ -44,6 +50,19 @@ def test_latency_metrics_store_reuses_thread_local_connection(tmp_path):
     second = store._connect()
 
     assert first is second
+
+
+def test_latency_metrics_store_finalizer_closes_cached_connections(tmp_path):
+    store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
+    conn = store._connect()
+    store_ref = weakref.ref(store)
+
+    del store
+    gc.collect()
+
+    assert store_ref() is None
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        conn.execute("SELECT 1")
 
 
 def test_latency_metrics_store_summary_percentiles(tmp_path):

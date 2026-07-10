@@ -1,5 +1,10 @@
+import gc
+import sqlite3
+import weakref
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
+
+import pytest
 
 from src.data.job_store import JobStatus, JobStore, JobType
 
@@ -44,6 +49,19 @@ def test_job_store_reuses_thread_local_connection(tmp_path):
     second = store._connect()
 
     assert first is second
+
+
+def test_job_store_finalizer_closes_cached_connections(tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    conn = store._connect()
+    store_ref = weakref.ref(store)
+
+    del store
+    gc.collect()
+
+    assert store_ref() is None
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        conn.execute("SELECT 1")
 
 
 def test_job_store_indexes_retry_scheduler_lookup(tmp_path):
