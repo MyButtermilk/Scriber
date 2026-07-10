@@ -279,6 +279,7 @@ def save_transcript(record: Any) -> None:
             conn.commit()
     except Exception as e:
         logger.error(f"Failed to save transcript: {e}")
+        raise
 
 
 def load_all_transcripts() -> List[dict]:
@@ -572,7 +573,7 @@ def update_transcript_summary(transcript_id: str, summary: str) -> bool:
             return int(cursor.rowcount or 0) > 0
     except Exception as e:
         logger.error(f"Failed to update transcript summary: {e}")
-        return False
+        raise
 
 
 def update_transcript_summary_state(
@@ -612,7 +613,7 @@ def update_transcript_summary_state(
             return int(cursor.rowcount or 0) > 0
     except Exception as e:
         logger.error(f"Failed to update transcript summary state: {e}")
-        return False
+        raise
 
 
 def search_transcript_metadata(

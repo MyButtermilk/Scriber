@@ -1,6 +1,8 @@
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 from src import database
 from src.database import _build_fts_query
 
@@ -28,6 +30,23 @@ def test_fts_query_treats_hyphenated_terms_as_search_text():
 def test_fts_query_preserves_unicode_words():
     assert _build_fts_query("München") == '"münchen"*'
     assert _search_count("Grüße aus München", "München") == 1
+
+
+def test_save_transcript_propagates_storage_failure(monkeypatch):
+    class _FailingConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, *_args, **_kwargs):
+            raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(database, "_get_connection", lambda: _FailingConnection())
+
+    with pytest.raises(sqlite3.OperationalError, match="disk full"):
+        database.save_transcript({"id": "must-fail"})
 
 
 def test_search_results_include_summary_lifecycle_metadata(monkeypatch, tmp_path):

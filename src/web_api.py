@@ -96,6 +96,7 @@ TranscriptType = Literal["mic", "youtube", "file"]
 SummaryStatus = Literal["idle", "pending", "completed", "failed"]
 TranscriptDeleteStatus = Literal["deleted", "not_found", "busy", "persistence_error"]
 _TRANSCRIPT_PREVIEW_WORDS = 16
+_TRANSCRIPT_PERSIST_RETRY_DELAYS = (0.0, 0.05, 0.2)
 
 ScriberPipeline: Any | None = None
 _invalidate_mic_device_resolution_cache_impl: Callable[[], None] | None = None
@@ -3418,7 +3419,7 @@ class ScriberWebController:
             if record.id in self._deleted_transcript_ids:
                 logger.debug(f"Skipping persistence for deleted transcript: {record.id}")
                 return False
-            for attempt, delay in enumerate((0.0, 0.05, 0.2), start=1):
+            for attempt, delay in enumerate(_TRANSCRIPT_PERSIST_RETRY_DELAYS, start=1):
                 if delay:
                     await asyncio.sleep(delay)
                 try:
@@ -3428,7 +3429,7 @@ class ScriberWebController:
                     return True
                 except Exception as exc:
                     last_error = exc
-                    if attempt < 3:
+                    if attempt < len(_TRANSCRIPT_PERSIST_RETRY_DELAYS):
                         logger.warning(
                             "Transcript save attempt {} failed for {}: {}",
                             attempt,
@@ -3448,25 +3449,44 @@ class ScriberWebController:
         record: TranscriptRecord,
         *,
         include_summary: bool = False,
-    ) -> None:
+        require_success: bool = False,
+    ) -> bool:
         """Persist summary lifecycle fields without rewriting transcript content."""
-        try:
-            async with self._transcript_persistence_lock(record.id):
-                if record.id in self._deleted_transcript_ids:
-                    return
-                updated = await asyncio.to_thread(
-                    db.update_transcript_summary_state,
-                    record.id,
-                    status=record.summary_status,
-                    error=record.summary_error,
-                    summary=record.summary if include_summary else None,
-                    step=record.step,
-                )
-                if not updated:
-                    snapshot = record.to_public(include_content=True)
-                    await asyncio.to_thread(db.save_transcript, snapshot)
-        except Exception as exc:
-            logger.error(f"Failed to save transcript summary state: {exc}")
+        last_error: Exception | None = None
+        async with self._transcript_persistence_lock(record.id):
+            if record.id in self._deleted_transcript_ids:
+                return False
+            for attempt, delay in enumerate(_TRANSCRIPT_PERSIST_RETRY_DELAYS, start=1):
+                if delay:
+                    await asyncio.sleep(delay)
+                try:
+                    updated = await asyncio.to_thread(
+                        db.update_transcript_summary_state,
+                        record.id,
+                        status=record.summary_status,
+                        error=record.summary_error,
+                        summary=record.summary if include_summary else None,
+                        step=record.step,
+                    )
+                    if not updated:
+                        snapshot = record.to_public(include_content=True)
+                        await asyncio.to_thread(db.save_transcript, snapshot)
+                    return True
+                except Exception as exc:
+                    last_error = exc
+                    if attempt < len(_TRANSCRIPT_PERSIST_RETRY_DELAYS):
+                        logger.warning(
+                            "Summary state save attempt {} failed for {}: {}",
+                            attempt,
+                            record.id,
+                            exc,
+                        )
+
+        message = f"Failed to save transcript summary state: {last_error}"
+        logger.error(message)
+        if require_success:
+            raise TranscriptPersistenceError(message) from last_error
+        return False
 
     def _schedule_transcript_save(self, record: TranscriptRecord) -> None:
         if self._loop.is_closed():
@@ -4649,7 +4669,7 @@ class ScriberWebController:
                 from src.summarization import summarize_text
 
                 rec.mark_summary_pending()
-                await self._save_transcript_summary_state_async(rec)
+                await self._save_transcript_summary_state_async(rec, require_success=True)
                 await self._broadcast_history_updated(record=rec, reason="summary_pending")
                 summarize_started = time.monotonic()
                 self._emit_workflow_event(
@@ -4669,7 +4689,11 @@ class ScriberWebController:
                     duration=rec.duration,
                 )
                 rec.mark_summary_completed(summary)
-                await self._save_transcript_summary_state_async(rec, include_summary=True)
+                await self._save_transcript_summary_state_async(
+                    rec,
+                    include_summary=True,
+                    require_success=True,
+                )
                 await self._broadcast_history_updated(record=rec, reason="summary_completed")
                 logger.info(f"YouTube auto-summarization completed: {len(rec.summary)} chars")
                 self._emit_workflow_event(
@@ -5202,7 +5226,7 @@ class ScriberWebController:
                 try:
                     from src.summarization import summarize_text
                     rec.mark_summary_pending()
-                    await self._save_transcript_summary_state_async(rec)
+                    await self._save_transcript_summary_state_async(rec, require_success=True)
                     await self._broadcast_history_updated(record=rec, reason="summary_pending")
                     summarize_started = time.monotonic()
                     self._emit_workflow_event(
@@ -5222,7 +5246,11 @@ class ScriberWebController:
                         duration=rec.duration,
                     )
                     rec.mark_summary_completed(summary)
-                    await self._save_transcript_summary_state_async(rec, include_summary=True)
+                    await self._save_transcript_summary_state_async(
+                        rec,
+                        include_summary=True,
+                        require_success=True,
+                    )
                     await self._broadcast_history_updated(record=rec, reason="summary_completed")
                     logger.info(f"File auto-summarization completed: {len(rec.summary)} chars")
                     self._emit_workflow_event(
@@ -7889,27 +7917,49 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 status=409,
             )
 
-        if rec:
-            rec.mark_summary_pending()
-            await ctl._save_transcript_summary_state_async(rec)
-            await ctl._broadcast_history_updated(record=rec, reason="summary_pending")
-        else:
-            updated = await asyncio.to_thread(
-                db.update_transcript_summary_state,
-                transcript_id,
-                status="pending",
-            )
-            if not updated:
-                return web.json_response({"message": "Transcript not found"}, status=404)
+        async def persist_detached_summary_failure(error: str) -> None:
+            try:
+                await asyncio.to_thread(
+                    db.update_transcript_summary_state,
+                    transcript_id,
+                    status="failed",
+                    error=error,
+                )
+            except Exception as persist_error:
+                logger.error(
+                    "Failed to persist summary failure state for {}: {}",
+                    transcript_id,
+                    persist_error,
+                )
 
         try:
+            if rec:
+                rec.mark_summary_pending()
+                await ctl._save_transcript_summary_state_async(
+                    rec,
+                    require_success=True,
+                )
+                await ctl._broadcast_history_updated(record=rec, reason="summary_pending")
+            else:
+                updated = await asyncio.to_thread(
+                    db.update_transcript_summary_state,
+                    transcript_id,
+                    status="pending",
+                )
+                if not updated:
+                    return web.json_response({"message": "Transcript not found"}, status=404)
+
             model = getattr(Config, "SUMMARIZATION_MODEL", "") or Config.DEFAULT_SUMMARIZATION_MODEL
             summary = await summarize_text(content, model, duration=duration)
             if transcript_id in ctl._deleted_transcript_ids:
                 return web.json_response({"message": "Transcript was deleted while summarization was running"}, status=404)
             if rec:
                 rec.mark_summary_completed(summary)
-                await ctl._save_transcript_summary_state_async(rec, include_summary=True)
+                await ctl._save_transcript_summary_state_async(
+                    rec,
+                    include_summary=True,
+                    require_success=True,
+                )
                 await ctl._broadcast_history_updated(record=rec, reason="summary_completed")
                 logger.info(f"Summarized transcript: {rec.title} ({len(summary)} chars)")
             else:
@@ -7924,12 +7974,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 await ctl._save_transcript_summary_state_async(rec)
                 await ctl._broadcast_history_updated(record=rec, reason="summary_canceled")
             else:
-                await asyncio.to_thread(
-                    db.update_transcript_summary_state,
-                    transcript_id,
-                    status="failed",
-                    error="Summary canceled",
-                )
+                await persist_detached_summary_failure("Summary canceled")
             raise
         except ValueError as exc:
             if rec:
@@ -7937,7 +7982,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 await ctl._save_transcript_summary_state_async(rec)
                 await ctl._broadcast_history_updated(record=rec, reason="summary_failed")
             else:
-                await asyncio.to_thread(db.update_transcript_summary_state, transcript_id, status="failed", error=str(exc))
+                await persist_detached_summary_failure(str(exc))
             return web.json_response({"message": str(exc)}, status=400)
         except Exception as exc:
             logger.exception("Summarization failed")
@@ -7946,7 +7991,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 await ctl._save_transcript_summary_state_async(rec)
                 await ctl._broadcast_history_updated(record=rec, reason="summary_failed")
             else:
-                await asyncio.to_thread(db.update_transcript_summary_state, transcript_id, status="failed", error=str(exc))
+                await persist_detached_summary_failure(str(exc))
             return web.json_response({"message": str(exc) or "Summarization failed"}, status=500)
 
     async def stop_transcript(request: web.Request):

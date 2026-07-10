@@ -1106,6 +1106,40 @@ async def test_summary_state_update_avoids_full_transcript_rewrite(monkeypatch):
     ]
 
 
+@pytest.mark.asyncio
+async def test_critical_summary_state_save_retries_and_reports_failure(monkeypatch):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    rec = TranscriptRecord(
+        id="critical-summary-save",
+        title="Summary persistence",
+        date="Today",
+        duration="00:10",
+        status="completed",
+        type="file",
+        language="de",
+        content="Transcript",
+        summary="Summary",
+        summary_status="completed",
+    )
+    attempts = 0
+
+    def _fail_update(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise OSError("summary database locked")
+
+    monkeypatch.setattr(web_api.db, "update_transcript_summary_state", _fail_update)
+
+    with pytest.raises(web_api.TranscriptPersistenceError, match="summary database locked"):
+        await ctl._save_transcript_summary_state_async(
+            rec,
+            include_summary=True,
+            require_success=True,
+        )
+
+    assert attempts == 3
+
+
 class _SyntheticPipeline:
     def __init__(self, *, on_transcription):
         self._on_transcription = on_transcription
