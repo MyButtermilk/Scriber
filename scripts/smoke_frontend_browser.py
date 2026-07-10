@@ -106,6 +106,7 @@ class FrontendSmokeBackend:
         self.support_bundle_count = 0
         self.file_uploads: list[dict[str, Any]] = []
         self.runtime_logs_count = 0
+        self.youtube_search_requests: list[str] = []
         self.youtube_transcribe_requests: list[dict[str, Any]] = []
         self.autostart_enabled = False
         self.autostart_available = True
@@ -274,6 +275,7 @@ class FrontendSmokeBackend:
         )
 
     async def youtube_search(self, request: web.Request) -> web.Response:
+        self.youtube_search_requests.append(request.query.get("q", ""))
         return web.json_response(
             {
                 "items": [
@@ -2169,6 +2171,7 @@ async def exercise_youtube_start_transcription(
     backend: FrontendSmokeBackend,
     timeout_sec: float,
 ) -> dict[str, Any]:
+    backend.youtube_search_requests.clear()
     backend.youtube_transcribe_requests.clear()
     await cdp.call("Page.navigate", {"url": f"{frontend_base_url}/youtube"}, timeout=10)
     await wait_for_route_ready(
@@ -2189,6 +2192,7 @@ async def exercise_youtube_start_transcription(
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
   setter?.call(input, 'Scriber queued validation');
   input.dispatchEvent(new Event('input', { bubbles: true }));
+  button.click();
   button.click();
   return { ok: true };
 })()
@@ -2215,12 +2219,18 @@ async def exercise_youtube_start_transcription(
 })()
 """,
     )
+    if len(backend.youtube_search_requests) != 1:
+        raise RuntimeError(
+            "YouTube search double click issued "
+            f"{len(backend.youtube_search_requests)} backend requests instead of one"
+        )
 
     start_clicked = await cdp.evaluate(
         r"""
 (() => {
   const card = document.querySelector('[aria-label="Start transcription for Synthetic YouTube Result"]');
   if (!card) return { ok: false, reason: 'missing result card' };
+  card.click();
   card.click();
   return { ok: true };
 })()
@@ -2235,6 +2245,12 @@ async def exercise_youtube_start_transcription(
         await asyncio.sleep(0.1)
     if not backend.youtube_transcribe_requests:
         raise RuntimeError("YouTube result click did not call the synthetic transcribe endpoint")
+    await asyncio.sleep(0.1)
+    if len(backend.youtube_transcribe_requests) != 1:
+        raise RuntimeError(
+            "YouTube transcription double click issued "
+            f"{len(backend.youtube_transcribe_requests)} backend requests instead of one"
+        )
 
     queued_state = await wait_for_interaction_state(
         cdp,
@@ -2262,6 +2278,7 @@ async def exercise_youtube_start_transcription(
 """,
     )
     queued_state["backendRequestCount"] = len(backend.youtube_transcribe_requests)
+    queued_state["searchRequestCount"] = len(backend.youtube_search_requests)
     queued_state["backendRequest"] = backend.youtube_transcribe_requests[-1]
     return {
         "name": "youtube-start-transcription",

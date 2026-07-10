@@ -300,6 +300,8 @@ export default function Youtube() {
   const [startingVideoId, setStartingVideoId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
+  const searchRequestInFlightRef = useRef(false);
+  const startRequestInFlightRef = useRef<string | null>(null);
   const deletingRef = useRef<string | null>(null);
   const copyingRef = useRef<string | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
@@ -390,8 +392,9 @@ export default function Youtube() {
 
   const runSearch = async () => {
     const q = query.trim();
-    if (!q || isSearching) return;
+    if (!q || searchRequestInFlightRef.current) return;
 
+    searchRequestInFlightRef.current = true;
     setIsSearching(true);
     setSearchError("");
     setStartError("");
@@ -433,15 +436,18 @@ export default function Youtube() {
         duration: 4000,
       });
     } finally {
+      searchRequestInFlightRef.current = false;
       setIsSearching(false);
     }
   };
 
   const startTranscription = async (item: YouTubeSearchItem) => {
-    if (!item?.url || startingVideoId) return;
+    if (!item?.url || startRequestInFlightRef.current) return;
+    const requestKey = item.videoId || item.url;
+    startRequestInFlightRef.current = requestKey;
     setStartError("");
     setLastFailedStartItem(null);
-    setStartingVideoId(item.videoId);
+    setStartingVideoId(requestKey);
 
     try {
       const res = await fetchWithTimeout(apiUrl("/api/youtube/transcribe"), {
@@ -500,6 +506,7 @@ export default function Youtube() {
         duration: 4000,
       });
     } finally {
+      startRequestInFlightRef.current = null;
       setStartingVideoId(null);
     }
   };
@@ -698,7 +705,7 @@ export default function Youtube() {
             <div className="grid gap-4 xl:grid-cols-2">
               {sortedResults.map((item) => {
                 const published = item.publishedAt ? new Date(item.publishedAt).toLocaleDateString() : "";
-                const isStarting = startingVideoId === item.videoId;
+                const isStarting = startingVideoId === (item.videoId || item.url);
                 return (
                   <Card
                     key={item.videoId}

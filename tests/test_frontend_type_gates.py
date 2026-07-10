@@ -409,6 +409,14 @@ def test_history_card_actions_reject_same_render_double_clicks() -> None:
     assert "const toggleRequestInFlightRef = useRef(false);" in live_source
     assert "if (toggleRequestInFlightRef.current) return;" in live_source
 
+    youtube_source = page_sources["Youtube.tsx"]
+    assert "const searchRequestInFlightRef = useRef(false);" in youtube_source
+    assert "if (!q || searchRequestInFlightRef.current) return;" in youtube_source
+    assert "searchRequestInFlightRef.current = true;" in youtube_source
+    assert "const startRequestInFlightRef = useRef<string | null>(null);" in youtube_source
+    assert "if (!item?.url || startRequestInFlightRef.current) return;" in youtube_source
+    assert "startRequestInFlightRef.current = requestKey;" in youtube_source
+
 
 def test_api_key_saved_feedback_replaces_stale_reset_timers() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
