@@ -58,6 +58,60 @@ async def test_runtime_retry_scan_does_not_reset_active_running_jobs(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_due_job_backlog_refills_without_exceeding_concurrency(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_JOB_CONCURRENCY", "2")
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    release_events: dict[str, asyncio.Event] = {}
+    run_suffix = f"{tmp_path.parent.name}-{time.time_ns()}"
+    for index in range(3):
+        file_path = tmp_path / f"queued-{index}.wav"
+        file_path.write_bytes(b"RIFF....WAVEfmt ")
+        transcript_id = f"tx-backlog-{run_suffix}-{index}"
+        release_events[transcript_id] = asyncio.Event()
+        store.enqueue(
+            transcript_id=transcript_id,
+            job_type=JobType.FILE,
+            payload={"path": str(file_path), "title": f"Queued {index}"},
+        )
+
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    started: list[str] = []
+
+    async def _fake_run(rec, _file_path, *, provider):
+        started.append(rec.id)
+        await release_events[rec.id].wait()
+        rec.status = "completed"
+        rec.step = "Completed"
+
+    with (
+        patch.object(ctl, "_run_file_transcription", new=AsyncMock(side_effect=_fake_run)),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        try:
+            assert await ctl.resume_pending_jobs(limit=25) == 2
+            for _ in range(100):
+                if len(started) == 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(started) == 2
+            assert len([task for task in ctl._running_tasks.values() if not task.done()]) == 2
+
+            release_events[started[0]].set()
+            for _ in range(100):
+                if len(started) == 3:
+                    break
+                await asyncio.sleep(0.01)
+
+            assert len(started) == 3
+            assert len([task for task in ctl._running_tasks.values() if not task.done()]) <= 2
+        finally:
+            ctl.begin_shutdown()
+            for event in release_events.values():
+                event.set()
+            await asyncio.gather(*tuple(ctl._running_tasks.values()), return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_resume_pending_youtube_job_restarts_and_completes(tmp_path):
     loop = asyncio.get_running_loop()
     store = JobStore(db_path=tmp_path / "jobs.db")

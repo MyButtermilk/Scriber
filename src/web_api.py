@@ -1697,6 +1697,12 @@ class ScriberWebController:
         self._metrics_persist_tasks: set[asyncio.Task] = set()
         self._transcript_persist_tasks: set[asyncio.Task] = set()
         self._job_max_attempts = _env_int("SCRIBER_JOB_MAX_ATTEMPTS", 3, minimum=1, maximum=20)
+        self._job_concurrency_limit = _env_int(
+            "SCRIBER_JOB_CONCURRENCY",
+            25,
+            minimum=1,
+            maximum=100,
+        )
         self._job_retry_base_seconds = _env_float(
             "SCRIBER_JOB_RETRY_BASE_SEC", 5.0, minimum=0.1, maximum=3600.0
         )
@@ -1727,7 +1733,10 @@ class ScriberWebController:
         )
         self._retry_scheduler = RetryScheduler(
             loop=self._loop,
-            trigger=lambda: self.resume_pending_jobs(limit=25, recover_running=False),
+            trigger=lambda: self.resume_pending_jobs(
+                limit=self._job_concurrency_limit,
+                recover_running=False,
+            ),
         )
         self._validate_ws_contracts = os.getenv("SCRIBER_VALIDATE_WS_CONTRACTS", "0").strip() in {
             "1",
@@ -2605,17 +2614,21 @@ class ScriberWebController:
         """Unregister a background task."""
         if self._running_tasks.get(transcript_id) is task:
             self._running_tasks.pop(transcript_id, None)
-        if task.cancelled():
-            return
         try:
+            if task.cancelled():
+                return
             error = task.exception()
         except asyncio.CancelledError:
             return
-        if error is not None:
-            logger.opt(exception=error).error(
-                "Background transcription task crashed: {}",
-                transcript_id,
-            )
+        else:
+            if error is not None:
+                logger.opt(exception=error).error(
+                    "Background transcription task crashed: {}",
+                    transcript_id,
+                )
+        finally:
+            if not self._shutting_down and not self._loop.is_closed():
+                self._schedule_retry_scan(0.0)
 
     def _remember_job_id(self, transcript_id: str, job_id: str) -> None:
         if not transcript_id or not job_id:
@@ -3060,7 +3073,22 @@ class ScriberWebController:
             if recover_running
             else 0
         )
-        pending_jobs = await asyncio.to_thread(self._job_store.list_pending, limit=limit)
+        active_count = sum(not task.done() for task in self._running_tasks.values())
+        available_slots = max(0, self._job_concurrency_limit - active_count)
+        if available_slots <= 0:
+            return 0
+        query_limit = max(
+            1,
+            min(
+                max(1, int(limit)),
+                available_slots,
+                self._job_concurrency_limit,
+            ),
+        )
+        pending_jobs = await asyncio.to_thread(
+            self._job_store.list_pending,
+            limit=query_limit,
+        )
         resumed_count = 0
 
         for job in pending_jobs:
@@ -3118,7 +3146,12 @@ class ScriberWebController:
             logger.info(
                 f"Job resume startup scan: reset_running={reset_count}, resumed={resumed_count}, pending={len(pending_jobs)}"
             )
-        await self._schedule_next_retry_scan_from_store()
+        if len(pending_jobs) >= query_limit:
+            # The bounded scan may have left immediately due rows behind. Run
+            # another scan after scheduled tasks are visible to the active cap.
+            self._schedule_retry_scan(0.0)
+        else:
+            await self._schedule_next_retry_scan_from_store()
         return resumed_count
 
     def _set_recording_state(self, target: RecordingState, *, context: str = "") -> None:
