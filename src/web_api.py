@@ -2716,11 +2716,14 @@ class ScriberWebController:
     def _set_job_running(self, transcript_id: str) -> None:
         job_id = self._job_ids_by_transcript.get(transcript_id)
         if not job_id:
-            return
+            raise TranscriptPersistenceError("Background job is missing persisted lifecycle state")
         try:
-            self._job_store.mark_running(job_id)
-        except Exception as exc:  # pragma: no cover - best effort persistence
-            logger.warning(f"Failed to mark job running for transcript {transcript_id}: {exc}")
+            updated = self._job_store.mark_running(job_id)
+        except Exception as exc:
+            logger.error(f"Failed to mark job running for transcript {transcript_id}: {exc}")
+            raise TranscriptPersistenceError("Failed to start persisted transcription job") from exc
+        if not updated:
+            raise TranscriptPersistenceError("Background job lifecycle record no longer exists")
 
     async def _set_job_running_async(self, transcript_id: str) -> None:
         await asyncio.to_thread(self._set_job_running, transcript_id)
@@ -2764,7 +2767,11 @@ class ScriberWebController:
         job_id = self._job_ids_by_transcript.get(rec.id)
         if not job_id:
             return False
-        job = await asyncio.to_thread(self._job_store.get, job_id)
+        try:
+            job = await asyncio.to_thread(self._job_store.get, job_id)
+        except Exception as exc:
+            logger.warning(f"Failed to load retry state for transcript {rec.id}: {exc}")
+            return False
         if not job:
             return False
         category = classify_error_message(str(error))
@@ -2925,6 +2932,8 @@ class ScriberWebController:
                     await self._broadcast_history_updated(record=rec, reason="job_failed")
                 finally:
                     await self._sync_job_status_async(rec)
+                    if rec.status != "processing":
+                        await self._cleanup_owned_file_source(file_path, reason=rec.status)
                 return
             try:
                 await self._run_file_transcription(rec, file_path, provider=provider)

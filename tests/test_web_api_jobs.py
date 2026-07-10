@@ -134,6 +134,81 @@ async def test_youtube_start_does_not_publish_or_schedule_an_unpersisted_job(mon
     schedule_mock.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_job_start_fails_when_persisted_lifecycle_row_disappears(tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    rec = TranscriptRecord(
+        id="missing-lifecycle-row",
+        title="Missing lifecycle row",
+        date="Today",
+        duration="00:01",
+        status="processing",
+        type="file",
+        language="auto",
+    )
+    ctl._remember_job_id(rec.id, "missing-job-id")
+
+    with pytest.raises(web_api.TranscriptPersistenceError, match="no longer exists"):
+        await ctl._set_job_running_async(rec.id)
+
+
+@pytest.mark.asyncio
+async def test_file_runner_terminal_lifecycle_failure_releases_owned_upload(tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    ctl._downloads_dir = tmp_path / "downloads"
+    upload_dir = ctl._downloads_dir / "files" / "missing-job"
+    upload_dir.mkdir(parents=True)
+    file_path = upload_dir / "sample.wav"
+    file_path.write_bytes(b"RIFF....WAVEfmt ")
+    rec = TranscriptRecord(
+        id="missing-runner-lifecycle-row",
+        title="Missing lifecycle row",
+        date="Today",
+        duration="00:01",
+        status="processing",
+        type="file",
+        language="auto",
+        source_url=str(file_path),
+    )
+    ctl._remember_job_id(rec.id, "missing-job-id")
+
+    with (
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        ctl._schedule_file_job(rec, file_path)
+        task = ctl._running_tasks[rec.id]
+        await task
+
+    assert rec.status == "failed"
+    assert not upload_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_retry_lookup_failure_degrades_to_terminal_failure(monkeypatch, tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    rec = TranscriptRecord(
+        id="retry-read-failure",
+        title="Retry read failure",
+        date="Today",
+        duration="00:01",
+        status="processing",
+        type="file",
+        language="auto",
+    )
+    ctl._remember_job_id(rec.id, "job-id")
+    monkeypatch.setattr(
+        store,
+        "get",
+        lambda _job_id: (_ for _ in ()).throw(OSError("database unavailable")),
+    )
+
+    assert await ctl._schedule_retry_if_allowed(rec, TimeoutError("provider timeout")) is False
+
+
 def test_background_task_registry_consumes_and_logs_unexpected_failure():
     loop = asyncio.new_event_loop()
     try:
