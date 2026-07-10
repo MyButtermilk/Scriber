@@ -324,6 +324,40 @@ async def test_history_update_throttle_preserves_multiple_transcript_changes() -
 
 
 @pytest.mark.asyncio
+async def test_history_update_merges_pending_change_into_immediate_send() -> None:
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._history_broadcast_interval = 10.0
+    ctl._history_broadcast_last = time.monotonic()
+    first = TranscriptRecord(
+        id="pending-update",
+        title="Pending",
+        date="Today",
+        duration="00:01",
+        status="processing",
+        type="file",
+        language="de",
+    )
+    second = TranscriptRecord(
+        id="immediate-update",
+        title="Immediate",
+        date="Today",
+        duration="00:01",
+        status="completed",
+        type="youtube",
+        language="de",
+    )
+
+    with patch.object(ctl, "broadcast", new=AsyncMock()) as broadcast_mock:
+        await ctl._broadcast_history_updated(record=first, reason="progress")
+        ctl._history_broadcast_last = time.monotonic() - 20.0
+        await ctl._broadcast_history_updated(record=second, reason="completed")
+
+    payload = broadcast_mock.await_args.args[0]
+    assert payload["reason"] == "coalesced_multiple_transcripts"
+    assert "transcriptId" not in payload
+
+
+@pytest.mark.asyncio
 async def test_shutdown_cancellation_keeps_background_job_resumable(tmp_path):
     store = JobStore(db_path=tmp_path / "jobs.db")
     ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)

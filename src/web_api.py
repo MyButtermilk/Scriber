@@ -4545,8 +4545,15 @@ class ScriberWebController:
         if self._history_broadcast_handle is not None:
             self._history_broadcast_handle.cancel()
             self._history_broadcast_handle = None
-        if not payload and self._history_broadcast_pending_payload:
-            payload = self._history_broadcast_pending_payload
+        if self._history_broadcast_pending_payload:
+            payload = (
+                self._merge_pending_history_update(
+                    self._history_broadcast_pending_payload,
+                    payload,
+                )
+                if payload
+                else self._history_broadcast_pending_payload
+            )
         self._history_broadcast_pending_payload = None
         await self.broadcast(
             history_updated_event(
