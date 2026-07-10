@@ -164,19 +164,27 @@ def ffprobe_duration_args(ffprobe: str, file_path: str | Path) -> list[str]:
     ]
 
 
-def ffprobe_video_stream_args(ffprobe: str, file_path: str | Path) -> list[str]:
-    return [
+def ffprobe_video_stream_args(
+    ffprobe: str,
+    file_path: str | Path,
+    *,
+    include_all_streams: bool = False,
+) -> list[str]:
+    args = [
         ffprobe,
         "-v",
         "error",
-        "-select_streams",
-        "v:0",
+    ]
+    if not include_all_streams:
+        args.extend(["-select_streams", "v:0"])
+    args.extend([
         "-show_entries",
         "stream=codec_type",
         "-of",
         "default=noprint_wrappers=1:nokey=1",
         _path_arg(file_path),
-    ]
+    ])
+    return args
 
 
 def classify_ffmpeg_stderr(stderr: str) -> str:
@@ -184,7 +192,17 @@ def classify_ffmpeg_stderr(stderr: str) -> str:
     lowered = text.lower()
     if "stream map" in lowered and "matches no streams" in lowered:
         return "No audio stream was found in the selected file."
-    if "invalid data found" in lowered or "moov atom not found" in lowered:
+    if any(
+        marker in lowered
+        for marker in (
+            "invalid data found",
+            "moov atom not found",
+            "duplicate element",
+            "invalid as first byte of an ebml number",
+            "exceeds containing master element",
+            "error opening input: end of file",
+        )
+    ):
         return "The media file appears to be corrupted or incomplete."
     if "unknown decoder" in lowered or "unsupported codec" in lowered or "decoder not found" in lowered:
         return "The media file uses an audio codec that this app cannot decode."

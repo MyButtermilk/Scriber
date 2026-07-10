@@ -11,6 +11,7 @@ _TOOL_ENV = {
     "ffmpeg": "SCRIBER_FFMPEG_PATH",
     "ffprobe": "SCRIBER_FFPROBE_PATH",
     "yt-dlp": "SCRIBER_YT_DLP_PATH",
+    "deno": "SCRIBER_DENO_PATH",
 }
 _TOOLS_DIR_ENV = "SCRIBER_MEDIA_TOOLS_DIR"
 

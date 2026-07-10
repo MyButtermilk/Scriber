@@ -13,6 +13,15 @@ def test_classify_network_timeout():
     assert classify_error_message("websocket timeout while connecting") is ErrorCategory.TRANSIENT_NETWORK
 
 
+def test_classify_incomplete_youtube_download_as_retryable_network_failure():
+    category = classify_error_message(
+        "Downloaded YouTube media is incomplete or corrupted"
+    )
+
+    assert category is ErrorCategory.TRANSIENT_NETWORK
+    assert is_retryable(category) is True
+
+
 def test_classify_device_permission():
     assert classify_error_message("microphone access denied by OS") is ErrorCategory.DEVICE_PERMISSION
 

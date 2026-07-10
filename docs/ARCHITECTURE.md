@@ -42,7 +42,11 @@ Live mic:
 YouTube:
 
 1. Frontend search or URL lookup calls backend YouTube endpoints.
-2. Backend uses YouTube metadata helpers, `yt-dlp`, and bundled ffmpeg/ffprobe.
+2. Backend uses YouTube metadata helpers, pinned current `yt-dlp`, bundled EJS
+   challenge scripts, Deno, and bundled ffmpeg/ffprobe. yt-dlp owns current
+   YouTube player-client selection; Scriber does not force stale client names.
+   Every downloaded file must pass ffprobe audio/structure validation before it
+   can reach a transcription provider.
 3. Persistent job metadata tracks download, media preparation, transcription,
    summary, retry, resume, cancel, and completion states.
 4. Transcript and summary are saved as a `youtube` transcript.

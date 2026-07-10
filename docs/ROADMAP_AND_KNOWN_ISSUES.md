@@ -51,6 +51,11 @@ YouTube/file:
 - YouTube input is restricted to validated YouTube URLs, API/thumbnail responses
   are bounded, redirect targets are revalidated, and canceled library downloads
   use isolated attempt directories so late workers cannot corrupt retries.
+- YouTube extraction pins `yt-dlp[default,deno]==2026.7.4`, bundles matching EJS
+  scripts plus Deno, leaves player-client selection to yt-dlp, and validates an
+  audio stream and container integrity with ffprobe before provider upload.
+  Corrupted/incomplete transfers are retryable download failures rather than
+  successful downloads that later fail inside Azure MAI.
 
 Reliability and data:
 

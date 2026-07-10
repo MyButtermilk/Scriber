@@ -393,9 +393,11 @@ provider does not have credentials yet and opens the relevant key dialog.
 
 ### YouTube Or File Transcription Fails
 
-The Windows installer bundles ffmpeg and ffprobe. In development mode, make sure
-the bundled media tools were built or set `SCRIBER_MEDIA_TOOLS_DIR`,
-`SCRIBER_FFMPEG_PATH`, or `SCRIBER_FFPROBE_PATH`.
+The Windows installer bundles ffmpeg, ffprobe, current yt-dlp EJS scripts, and
+the Deno JavaScript runtime required for full YouTube extraction. In development
+mode, install `requirements-base.txt` and make sure the bundled media tools were
+built, or set `SCRIBER_MEDIA_TOOLS_DIR`, `SCRIBER_FFMPEG_PATH`,
+`SCRIBER_FFPROBE_PATH`, or `SCRIBER_DENO_PATH`.
 
 ### Microphone Changes
 

@@ -149,10 +149,63 @@ async def test_download_youtube_audio_subprocess_falls_back_on_unavailable_forma
                     "src.youtube_download.asyncio.create_subprocess_exec",
                     new=AsyncMock(side_effect=procs),
                 ) as exec_mock:
-                    got = await download_youtube_audio("https://example.com", output_dir=tmp_path)
+                    with patch(
+                        "src.youtube_download._ensure_audio_only_file",
+                        new=AsyncMock(return_value=out_file.resolve()),
+                    ):
+                        got = await download_youtube_audio("https://example.com", output_dir=tmp_path)
 
     assert got == out_file.resolve()
     assert exec_mock.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_download_youtube_audio_uses_deno_and_current_default_clients(
+    monkeypatch,
+    tmp_path: Path,
+):
+    captured_options: dict = {}
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            captured_options.update(options)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, _url, *, download):
+            assert download is True
+            output_path = Path(
+                captured_options["outtmpl"]
+                .replace("%(id)s", "video-id")
+                .replace("%(ext)s", "webm")
+            )
+            output_path.write_bytes(b"audio")
+            return {"id": "video-id", "ext": "webm"}
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+    deno_path = tmp_path / "deno.exe"
+    deno_path.write_bytes(b"deno")
+    with patch("src.youtube_download._require_ffmpeg"):
+        with patch("src.youtube_download.find_media_tool", return_value=str(deno_path)):
+            with patch(
+                "src.youtube_download._ensure_audio_only_file",
+                new=AsyncMock(side_effect=lambda path: path),
+            ):
+                result = await download_youtube_audio(
+                    "https://www.youtube.com/watch?v=video-id",
+                    output_dir=tmp_path / "downloads",
+                )
+
+    assert result.name == "video-id.webm"
+    assert "extractor_args" not in captured_options
+    assert captured_options["js_runtimes"] == {
+        "deno": {"path": str(deno_path)}
+    }
+    assert captured_options["concurrent_fragment_downloads"] == 4
 
 
 @pytest.mark.asyncio
@@ -174,7 +227,8 @@ async def test_ensure_audio_only_file_converts_video_extension(tmp_path: Path):
     webm_file.write_bytes(b"audio")
 
     with patch("src.youtube_download._extract_audio_track", new=AsyncMock(return_value=webm_file)) as extract_mock:
-        got = await _ensure_audio_only_file(mp4_file)
+        with patch("src.youtube_download._has_video_stream", new=AsyncMock(return_value=False)):
+            got = await _ensure_audio_only_file(mp4_file)
 
     assert got == webm_file
     extract_mock.assert_awaited_once_with(mp4_file)
@@ -188,7 +242,8 @@ async def test_ensure_audio_only_file_converts_non_webm_audio(tmp_path: Path):
     webm_file.write_bytes(b"audio")
 
     with patch("src.youtube_download._extract_audio_track", new=AsyncMock(return_value=webm_file)) as extract_mock:
-        got = await _ensure_audio_only_file(mp3_file)
+        with patch("src.youtube_download._has_video_stream", new=AsyncMock(return_value=False)):
+            got = await _ensure_audio_only_file(mp3_file)
 
     assert got == webm_file
     extract_mock.assert_awaited_once_with(mp3_file)
@@ -208,6 +263,36 @@ async def test_has_video_stream_kills_ffprobe_on_cancel(tmp_path: Path):
 
     assert proc.killed is True
     assert proc.waited is True
+
+
+@pytest.mark.asyncio
+async def test_has_video_stream_rejects_corrupted_download(tmp_path: Path):
+    proc = _DummyProc(
+        stdout="",
+        stderr="[matroska,webm] Duplicate element\nError opening input: End of file",
+        returncode=1,
+    )
+
+    with patch("src.youtube_download.find_media_tool", return_value="ffprobe"):
+        with patch(
+            "src.youtube_download.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            with pytest.raises(YouTubeDownloadError, match="incomplete or corrupted"):
+                await _has_video_stream(tmp_path / "broken.webm")
+
+
+@pytest.mark.asyncio
+async def test_has_video_stream_requires_audio_stream(tmp_path: Path):
+    proc = _DummyProc(stdout="video\n", stderr="", returncode=0)
+
+    with patch("src.youtube_download.find_media_tool", return_value="ffprobe"):
+        with patch(
+            "src.youtube_download.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            with pytest.raises(YouTubeDownloadError, match="does not contain an audio stream"):
+                await _has_video_stream(tmp_path / "storyboard.mp4")
 
 
 @pytest.mark.asyncio

@@ -35,6 +35,7 @@ hiddenimports = [
     "pipecat.audio.vad.silero",
     "pipecat.audio.turn.smart_turn.local_smart_turn_v3",
     "yt_dlp",
+    "yt_dlp_ejs",
     "pipecat.services.soniox.stt",
     "pipecat.services.assemblyai.stt",
     "pipecat.services.google.stt",
@@ -53,6 +54,7 @@ for package in (
     "pyautogui",
     "PIL",
     "yt_dlp",
+    "yt_dlp_ejs",
     "huggingface_hub",
 ):
     try:
@@ -73,11 +75,13 @@ datas = []
 datas += copy_metadata("pipecat-ai")
 datas += copy_metadata("onnx-asr")
 datas += copy_metadata("huggingface-hub")
+datas += copy_metadata("yt-dlp")
+datas += copy_metadata("yt-dlp-ejs")
 assets_dir = repo_root / "src" / "assets"
 if assets_dir.exists():
     datas.append((str(assets_dir), "src/assets"))
 
-for package in ("pipecat", "yt_dlp"):
+for package in ("pipecat", "yt_dlp", "yt_dlp_ejs"):
     try:
         datas += collect_data_files(package)
     except Exception:

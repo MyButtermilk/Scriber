@@ -37,6 +37,13 @@ Historical comparison points:
 - Removing ffprobe is still an experiment because standard workflows expect
   ffprobe availability.
 
+The measured baseline above predates the bundled Deno runtime. Current YouTube
+support intentionally adds Deno (about `99 MiB` installed before compression)
+because yt-dlp now requires an external JavaScript runtime plus EJS for full
+YouTube extraction. Profile B media-tool footprint gates allow `115 MiB`; the
+installer-size gate remains unchanged and must catch an excessive compressed
+size increase.
+
 ## Implemented Performance Work
 
 Startup and imports:

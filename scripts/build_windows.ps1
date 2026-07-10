@@ -396,7 +396,7 @@ if ($FastLocalInstaller) {
         $MaxInternalRuntimeDependencyMB = 250
     }
     if ($MaxMediaToolsRuntimeDependencyMB -le 0) {
-        $MaxMediaToolsRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 10 } else { 210 }
+        $MaxMediaToolsRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 115 } else { 315 }
     }
     if ($MaxGoogleGrpcRuntimeDependencyMB -le 0) {
         $MaxGoogleGrpcRuntimeDependencyMB = 15
@@ -432,7 +432,7 @@ if ($FastLocalStagedApp) {
         $MaxInternalRuntimeDependencyMB = 250
     }
     if ($MaxMediaToolsRuntimeDependencyMB -le 0) {
-        $MaxMediaToolsRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 10 } else { 210 }
+        $MaxMediaToolsRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 115 } else { 315 }
     }
     if ($MaxGoogleGrpcRuntimeDependencyMB -le 0) {
         $MaxGoogleGrpcRuntimeDependencyMB = 15

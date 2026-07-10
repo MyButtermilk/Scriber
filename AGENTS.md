@@ -54,7 +54,9 @@ Backend and runtime:
 - `src/audio_devices.py`: microphone normalization, compatibility filtering, and
   private PortAudio-to-native endpoint mapping with redacted endpoint hashes.
 - `src/audio_file_input.py`, `src/youtube_download.py`, `src/runtime/media_tools.py`:
-  ffmpeg/ffprobe resolution and media preparation.
+  ffmpeg/ffprobe resolution and media preparation. YouTube extraction uses the
+  pinned yt-dlp/EJS/Deno runtime and validates downloaded audio before provider
+  upload.
 - `src/database.py`: SQLite WAL persistence, metadata loading, FTS5 search.
 - `src/data/job_store.py`: persistent file/YouTube jobs.
 - `src/data/latency_metrics_store.py`: hot-path metrics.
@@ -371,6 +373,12 @@ Packaging and scripts:
   Essentials is explicit fallback only.
 - Keep ffmpeg and ffprobe bundled in the standard installer. `-SkipBundledFfprobe`
   is an experiment, not the release default.
+- Standard YouTube builds pin `yt-dlp[default,deno]==2026.7.4` with matching
+  `yt-dlp-ejs==0.8.0` and bundled Deno `2.9.2`. Let current yt-dlp defaults
+  select YouTube player clients; do not restore the stale forced `android,web`
+  client pair. Every returned download must pass ffprobe container and audio
+  stream validation before transcription. Keep malformed/incomplete downloads
+  retryable and never report them as download success.
 - Keep PySide6, customtkinter, and Tk overlay fallbacks out of the standard
   sidecar. Installed recording overlay rendering is owned by Tauri/Rust.
 

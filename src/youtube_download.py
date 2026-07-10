@@ -23,8 +23,9 @@ _AUDIO_ONLY_FORMAT = "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio"
 _FORMAT_SELECTORS = (
     _AUDIO_ONLY_FORMAT,
     "bestaudio/best[acodec!=none]",
-    "best[ext=webm]/best[ext=mp4]/best",
+    "best[ext=webm][acodec!=none]/best[ext=mp4][acodec!=none]/best[acodec!=none]",
 )
+_CONCURRENT_FRAGMENT_DOWNLOADS = 4
 
 
 class DownloadProgress:
@@ -59,10 +60,11 @@ def _format_eta(seconds: int) -> str:
 
 
 def _require_ffmpeg() -> None:
-    try:
-        require_media_tool("ffmpeg")
-    except RuntimeError as exc:
-        raise YouTubeDownloadError(str(exc)) from exc
+    for tool in ("ffmpeg", "ffprobe"):
+        try:
+            require_media_tool(tool)
+        except RuntimeError as exc:
+            raise YouTubeDownloadError(str(exc)) from exc
 
 
 def _is_forbidden_error(message: str) -> bool:
@@ -76,23 +78,42 @@ def _is_format_unavailable_error(message: str) -> bool:
 
 
 async def _has_video_stream(path: Path) -> bool:
-    """Return True when ffprobe sees at least one video stream."""
+    """Validate downloaded media and report whether it also contains video."""
     ffprobe = find_media_tool("ffprobe")
     if not ffprobe:
-        return False
+        raise YouTubeDownloadError(
+            "ffprobe is required to validate downloaded YouTube audio."
+        )
 
     proc = await asyncio.create_subprocess_exec(
-        *ffprobe_video_stream_args(ffprobe, path),
+        *ffprobe_video_stream_args(ffprobe, path, include_all_streams=True),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         **hidden_subprocess_kwargs(),
     )
-    stdout_b, _stderr_b = await communicate_or_kill_on_cancel(
+    stdout_b, stderr_b = await communicate_or_kill_on_cancel(
         proc,
         max_stdout_bytes=64 * 1024,
         max_stderr_bytes=1024 * 1024,
     )
-    return bool((stdout_b or b"").decode("utf-8", errors="replace").strip())
+    stderr = (stderr_b or b"").decode("utf-8", errors="replace").strip()
+    if proc.returncode != 0:
+        friendly = classify_ffmpeg_stderr(stderr)
+        raise YouTubeDownloadError(
+            "Downloaded YouTube media is incomplete or corrupted: "
+            f"{friendly or f'ffprobe exited with code {proc.returncode}'}"
+        )
+
+    stream_types = {
+        line.strip().lower()
+        for line in (stdout_b or b"").decode("utf-8", errors="replace").splitlines()
+        if line.strip()
+    }
+    if "audio" not in stream_types:
+        raise YouTubeDownloadError(
+            "Downloaded YouTube media does not contain an audio stream."
+        )
+    return "video" in stream_types
 
 
 async def _extract_audio_track(source_path: Path) -> Path:
@@ -141,6 +162,11 @@ async def _ensure_audio_only_file(path: Path) -> Path:
         logger.info(f"Normalizing downloaded media to audio-only WebM: {path.name}")
 
     audio_path = await _extract_audio_track(path)
+    if await _has_video_stream(audio_path):
+        audio_path.unlink(missing_ok=True)
+        raise YouTubeDownloadError(
+            "Normalized YouTube audio unexpectedly still contains a video stream."
+        )
     try:
         if path != audio_path:
             path.unlink(missing_ok=True)
@@ -243,9 +269,13 @@ async def download_youtube_audio(
             "quiet": True,
             "no_warnings": True,
             "socket_timeout": 15,
-            # Use Android client to avoid 403 errors (YouTube blocks web client more aggressively)
-            "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+            # Recent yt-dlp versions select clients based on EJS/runtime and
+            # PO-token availability. Do not override those maintained defaults.
+            "concurrent_fragment_downloads": _CONCURRENT_FRAGMENT_DOWNLOADS,
         }
+        deno_path = find_media_tool("deno")
+        if deno_path:
+            ydl_opts["js_runtimes"] = {"deno": {"path": deno_path}}
 
         def _run_download():
             nonlocal final_path
@@ -343,11 +373,13 @@ async def download_youtube_audio(
             "--print",
             "after_move:filepath",
             "--no-progress",
-            # Use Android client to avoid 403 errors (YouTube blocks web client more aggressively)
-            "--extractor-args",
-            "youtube:player_client=android,web",
+            "--concurrent-fragments",
+            str(_CONCURRENT_FRAGMENT_DOWNLOADS),
             url,
         ]
+        deno_path = find_media_tool("deno")
+        if deno_path:
+            args[-1:-1] = ["--js-runtimes", f"deno:{deno_path}"]
 
         for attempt in range(max_retries):
             proc = await asyncio.create_subprocess_exec(

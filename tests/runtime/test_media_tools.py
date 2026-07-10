@@ -58,6 +58,20 @@ def test_find_media_tool_uses_media_tools_dir(
     assert media_tools.find_media_tool("ffprobe") == str(configured.resolve())
 
 
+def test_find_media_tool_supports_explicit_deno_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    deno = _tool_file(tmp_path / "runtime", "deno")
+
+    monkeypatch.setenv("SCRIBER_DENO_PATH", str(deno))
+    monkeypatch.setattr(media_tools, "app_root", lambda: tmp_path / "app")
+    monkeypatch.setattr(media_tools, "repo_root", lambda: tmp_path / "repo")
+    monkeypatch.setattr(media_tools.shutil, "which", lambda _name: None)
+
+    assert media_tools.find_media_tool("deno") == str(deno.resolve())
+
+
 def test_require_media_tool_raises_actionable_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

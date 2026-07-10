@@ -339,6 +339,7 @@ function Get-SidecarInputManifest {
             $tools += Get-ToolMetadataEntry -Root $Root -Path (Resolve-MediaTool -Names @("ffprobe.exe", "ffprobe") -SearchDir $SearchDir) -Name "ffprobe"
         }
         $tools += Get-ToolMetadataEntry -Root $Root -Path (Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp") -SearchDir $SearchDir) -Name "yt-dlp"
+        $tools += Get-ToolMetadataEntry -Root $Root -Path (Resolve-PythonInstalledTool -Names @("deno.exe", "deno") -Python $Python) -Name "deno"
     }
     return [ordered]@{
         apiVersion = "1"
@@ -681,6 +682,9 @@ function Test-SidecarTargetCurrent {
         if (-not $SkipBundledFfprobe -and -not (Test-Path -LiteralPath (Join-Path $TargetDir "tools\ffmpeg\ffprobe.exe") -PathType Leaf)) {
             return $false
         }
+        if (-not (Test-Path -LiteralPath (Join-Path $TargetDir "tools\ffmpeg\deno.exe") -PathType Leaf)) {
+            return $false
+        }
         if ($ValidateSlimMediaTools -and -not (Test-Path -LiteralPath (Join-Path $TargetDir "tools\ffmpeg\ffmpeg-profile-manifest.json") -PathType Leaf)) {
             return $false
         }
@@ -864,10 +868,35 @@ function Resolve-MediaTool {
     return $null
 }
 
+function Resolve-PythonInstalledTool {
+    param(
+        [string[]]$Names,
+        [string]$Python
+    )
+
+    if ($Python) {
+        $pythonDir = Split-Path -Parent $Python
+        $candidateDirs = @(
+            $pythonDir,
+            (Join-Path $pythonDir "Scripts"),
+            (Join-Path $pythonDir "bin"),
+            (Join-Path (Split-Path -Parent $pythonDir) "bin")
+        )
+        foreach ($candidateDir in $candidateDirs | Select-Object -Unique) {
+            $resolved = Resolve-MediaTool -Names $Names -SearchDir $candidateDir
+            if ($resolved) {
+                return $resolved
+            }
+        }
+    }
+    return Resolve-MediaTool -Names $Names -SearchDir ""
+}
+
 function Test-MediaToolExecutable {
     param(
         [string]$Path,
-        [string]$Name
+        [string]$Name,
+        [string[]]$VersionArguments = @("-version")
     )
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -880,7 +909,7 @@ function Test-MediaToolExecutable {
     try {
         $process = Start-Process `
             -FilePath $Path `
-            -ArgumentList @("-version") `
+            -ArgumentList $VersionArguments `
             -WindowStyle Hidden `
             -RedirectStandardOutput $stdoutPath `
             -RedirectStandardError $stderrPath `
@@ -1070,6 +1099,15 @@ function Copy-MediaTools {
         Copy-Item -LiteralPath $ytDlp -Destination (Join-Path $toolsTarget (Split-Path $ytDlp -Leaf)) -Force
         $copied += (Join-Path $toolsTarget (Split-Path $ytDlp -Leaf))
     }
+
+    $deno = Resolve-PythonInstalledTool -Names @("deno.exe", "deno") -Python $PythonPath
+    if (-not $deno) {
+        throw "Deno was not installed with yt-dlp. Install requirements-base.txt before building the backend sidecar."
+    }
+    $copiedDeno = Join-Path $toolsTarget "deno.exe"
+    Copy-Item -LiteralPath $deno -Destination $copiedDeno -Force
+    Test-MediaToolExecutable -Path $copiedDeno -Name "deno" -VersionArguments @("--version")
+    $copied += $copiedDeno
 
     return $copied
 }
@@ -1359,6 +1397,11 @@ if (-not $cacheHit -and ($BundleMediaTools -or $MediaToolsDir)) {
     if (Test-Path -LiteralPath $toolsDir -PathType Container) {
         $mediaToolsCopied = @(Get-ChildItem -LiteralPath $toolsDir -File | Select-Object -ExpandProperty FullName)
     }
+}
+
+if ($BundleMediaTools -or $MediaToolsDir) {
+    $bundledDeno = Join-Path $sidecarDir "tools\ffmpeg\deno.exe"
+    Test-MediaToolExecutable -Path $bundledDeno -Name "deno" -VersionArguments @("--version")
 }
 
 if ($cacheEnabled -and -not $cacheHit) {

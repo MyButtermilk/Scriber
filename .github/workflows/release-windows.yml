@@ -760,7 +760,7 @@ jobs:
             "-MaxInternalRuntimeDependencyMB",
             "250",
             "-MaxMediaToolsRuntimeDependencyMB",
-            "10",
+            "115",
             "-MaxGoogleGrpcRuntimeDependencyMB",
             "15",
             "-MaxPillowRuntimeDependencyMB",

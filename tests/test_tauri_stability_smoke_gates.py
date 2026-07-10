@@ -300,7 +300,7 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "$RunMediaPreparationSmoke = $true" in build
     assert "$RunRuntimeDependencyFootprint = $true" in build
     assert "$MaxBackendRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 325 } else { 500 }" in build
-    assert "$MaxMediaToolsRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 10 } else { 210 }" in build
+    assert "$MaxMediaToolsRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 115 } else { 315 }" in build
     assert "$MaxPySide6RuntimeDependencyMB = 65" not in build
     assert "if (-not $SkipChecks -and -not $SkipPythonTests)" in build
     assert "if (-not $SkipChecks -and -not $SkipFrontendTypeCheck)" in build
@@ -337,7 +337,7 @@ def test_release_workflow_builds_profile_b_media_tools_for_standard_build() -> N
     assert "$env:SCRIBER_RELEASE_MEDIA_TOOLS_DIR" in workflow
     assert '"-ValidateSlimMediaTools"' in workflow
     assert '"325"' in workflow
-    assert '"10"' in workflow
+    assert '"115"' in workflow
     assert "choco install ffmpeg" not in workflow
     assert "prepare_gyan_ffmpeg_essentials.ps1" not in workflow
     assert '"-RunMediaPreparationSmoke"' in workflow

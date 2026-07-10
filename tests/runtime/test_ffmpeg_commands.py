@@ -96,6 +96,9 @@ def test_classify_ffmpeg_stderr_maps_common_user_failures() -> None:
         "No audio stream was found in the selected file."
     )
     assert classify_ffmpeg_stderr("moov atom not found") == "The media file appears to be corrupted or incomplete."
+    assert classify_ffmpeg_stderr("Duplicate element; Error opening input: End of file") == (
+        "The media file appears to be corrupted or incomplete."
+    )
     assert classify_ffmpeg_stderr("Decoder not found") == (
         "The media file uses an audio codec that this app cannot decode."
     )

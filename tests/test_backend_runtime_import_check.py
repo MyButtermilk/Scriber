@@ -31,6 +31,8 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "pyloudnorm" in required_modules
     assert "onnxruntime" in required_modules
     assert "onnx_asr" in required_modules
+    assert "yt_dlp" in required_modules
+    assert "yt_dlp_ejs" in required_modules
     assert "sherpa_onnx" not in required_modules
     assert "pipecat.audio.vad.silero" in required_modules
     assert "pipecat.audio.turn.smart_turn.local_smart_turn_v3" in required_modules
@@ -43,6 +45,8 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "pipecat.services.speechmatics.stt" in required_modules
     assert "src.azure_mai_stt" in required_modules
     assert ("pipecat-ai", "1.5.0") in REQUIRED_PACKAGE_VERSIONS
+    assert ("yt-dlp", "2026.7.4") in REQUIRED_PACKAGE_VERSIONS
+    assert ("yt-dlp-ejs", "0.8.0") in REQUIRED_PACKAGE_VERSIONS
 
 
 def test_backend_runtime_import_check_rejects_stale_pipecat():
@@ -70,6 +74,8 @@ def test_standard_requirements_include_audio_runtime_dependencies():
     assert "onnx-asr[cpu,hub]>=0.10.2,<0.11" in requirements
     assert "sherpa-onnx==1.13.4" not in requirements
     assert "pipecat-ai[silero]==1.5.0" in requirements
+    assert "yt-dlp[default,deno]==2026.7.4" in requirements
+    assert "deno==2.9.2" in requirements
     assert "deepgram-sdk==7.4.0" in requirements
     assert "google-cloud-speech<3,>=2.33.0" in requirements
     assert "google-genai<3,>=1.68.0" in requirements
@@ -183,6 +189,9 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert "copy_metadata" in spec
     assert 'copy_metadata("pipecat-ai")' in spec
     assert 'copy_metadata("onnx-asr")' in spec
+    assert 'copy_metadata("yt-dlp")' in spec
+    assert 'copy_metadata("yt-dlp-ejs")' in spec
+    assert '"yt_dlp_ejs"' in spec
     assert 'copy_metadata("sherpa-onnx")' not in spec
     assert 'collect_data_files(\n        "onnx_asr",' in spec
     assert '"preprocessors/*.onnx"' in spec
@@ -225,6 +234,8 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert "_internal\\onnxruntime" in build_script
     assert "_internal\\onnxruntime\\capi" in build_script
     assert "_internal\\scipy" not in build_script
+    assert 'Resolve-PythonInstalledTool -Names @("deno.exe", "deno")' in build_script
+    assert 'Test-MediaToolExecutable -Path $copiedDeno -Name "deno"' in build_script
 
 
 def test_local_stt_services_do_not_override_pipecat_settings_object():

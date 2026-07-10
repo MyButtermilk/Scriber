@@ -18,6 +18,8 @@ CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pyloudnorm", "local Pipecat loudness compatibility dependency"),
     ("onnxruntime", "Silero VAD native runtime dependency"),
     ("onnx_asr", "bundled local ONNX speech-to-text runtime dependency"),
+    ("yt_dlp", "YouTube media extraction dependency"),
+    ("yt_dlp_ejs", "YouTube external JavaScript challenge scripts"),
     ("pipecat.frames.frames", "Pipecat startup dependency"),
     ("pipecat.audio.vad.vad_analyzer", "Pipecat VAD startup dependency"),
     ("pipecat.audio.vad.silero", "Silero VAD startup dependency"),
@@ -33,6 +35,8 @@ REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
 )
 REQUIRED_PACKAGE_VERSIONS: tuple[tuple[str, str], ...] = (
     ("pipecat-ai", "1.5.0"),
+    ("yt-dlp", "2026.7.4"),
+    ("yt-dlp-ejs", "0.8.0"),
 )
 
 

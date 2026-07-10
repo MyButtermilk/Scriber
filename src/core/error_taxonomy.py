@@ -60,7 +60,18 @@ def classify_error_message(message: str) -> ErrorCategory:
         )
     ):
         return ErrorCategory.AUDIO_INVALID
-    if any(token in text for token in ("timeout", "timed out", "connection", "websocket", "handshake", "dns")):
+    if any(
+        token in text
+        for token in (
+            "timeout",
+            "timed out",
+            "connection",
+            "websocket",
+            "handshake",
+            "dns",
+            "downloaded youtube media is incomplete",
+        )
+    ):
         return ErrorCategory.TRANSIENT_NETWORK
     if any(token in text for token in ("rate limit", "429", "too many requests")):
         return ErrorCategory.PROVIDER_LIMIT

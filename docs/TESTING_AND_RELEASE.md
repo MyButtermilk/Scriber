@@ -30,7 +30,7 @@ cd Frontend\src-tauri
 cargo test
 ```
 
-The 2026-07-10 reliability/performance sweep passed `1094` Python tests with
+The 2026-07-10 reliability/performance sweep passed `1099` Python tests with
 `2` expected skips, the frontend type check and production build, `110` Rust
 library tests, `27` Rust audio-sidecar tests, `cargo fmt --check`, and Clippy
 with warnings denied.
@@ -510,6 +510,11 @@ media tools:
 - YouTube post-download normalization,
 - Azure MAI MP3 preparation,
 - optional duration probing.
+
+The frozen runtime gate also requires exact compatible yt-dlp/EJS versions, and
+sidecar preparation copies and executes bundled Deno before packaging. YouTube
+download unit coverage must reject malformed containers and audio-free fallback
+formats before a provider receives them.
 
 Support bundle smoke verifies:
 
