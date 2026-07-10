@@ -302,6 +302,23 @@ def test_buffered_provider_factories_enable_diarization_for_batch_jobs(monkeypat
     assert assemblyai._speaker_labels is True
 
 
+def test_onnx_file_factory_uses_bounded_flushing_service(monkeypatch):
+    monkeypatch.setattr("src.onnx_local_service.is_onnx_available", lambda: True)
+    monkeypatch.setattr(Config, "ONNX_MODEL", "parakeet-primeline")
+    monkeypatch.setattr(Config, "ONNX_QUANTIZATION", "fp32")
+    monkeypatch.setattr(Config, "LANGUAGE", "de")
+
+    service = ScriberPipeline(service_name="onnx_local")._create_stt_service(
+        object(),
+        for_file=True,
+    )
+
+    assert type(service).__name__ == "OnnxLocalBufferedSTTService"
+    assert service._quantization == "fp32"
+    assert service._max_buffer_secs == 30
+    assert service._flush_on_limit is True
+
+
 def test_mistral_segmented_live_uses_transcribe_model_when_rt_model_is_realtime_only(monkeypatch):
     monkeypatch.setattr(Config, "MISTRAL_API_KEY", "key")
     monkeypatch.setattr(Config, "MISTRAL_RT_MODEL", "voxtral-mini-transcribe-realtime-2602")

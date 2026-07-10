@@ -112,6 +112,7 @@ class OnnxLocalBufferedSTTService(STTService):
         sample_rate: int = 16000,
         channels: int = 1,
         max_buffer_secs: int = 300,
+        flush_on_limit: bool = False,
         **kwargs,
     ):
         if not is_onnx_available():
@@ -139,6 +140,7 @@ class OnnxLocalBufferedSTTService(STTService):
         self._buffer = bytearray()
         self._channels = max(1, int(channels or 1))
         self._max_buffer_secs = max(5, int(max_buffer_secs))
+        self._flush_on_limit = bool(flush_on_limit)
         self._max_buffer_bytes = 0
         self._min_flush_secs = 0.2
 
@@ -172,9 +174,15 @@ class OnnxLocalBufferedSTTService(STTService):
 
         self._buffer.extend(frame.audio)
         if self._max_buffer_bytes and len(self._buffer) > self._max_buffer_bytes:
-            excess = len(self._buffer) - self._max_buffer_bytes
-            if excess > 0:
-                del self._buffer[:excess]
+            if self._flush_on_limit:
+                # File transports can feed hours of decoded PCM much faster than
+                # real time. Flush bounded chunks instead of silently dropping
+                # the beginning of the recording at the live-session limit.
+                await self._flush_buffer()
+            else:
+                excess = len(self._buffer) - self._max_buffer_bytes
+                if excess > 0:
+                    del self._buffer[:excess]
 
     async def _flush_buffer(self):
         if self._muted:

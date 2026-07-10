@@ -1,7 +1,7 @@
 from unittest.mock import AsyncMock
 
 import pytest
-from pipecat.frames.frames import STTUpdateSettingsFrame
+from pipecat.frames.frames import InputAudioRawFrame, STTUpdateSettingsFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.settings import STTSettings
 from pipecat.transcriptions.language import Language
@@ -52,3 +52,33 @@ async def test_buffered_onnx_service_consumes_pipecat_1_5_settings_delta(monkeyp
         "language": "de",
         "quantization": "int8",
     }
+
+
+@pytest.mark.asyncio
+async def test_buffered_onnx_file_service_flushes_instead_of_dropping_full_chunks(monkeypatch):
+    monkeypatch.setattr(onnx_local_service, "is_onnx_available", lambda: True)
+    service = onnx_local_service.OnnxLocalBufferedSTTService(
+        model_name="parakeet-primeline",
+        language="de",
+        quantization="int8",
+        sample_rate=10,
+        channels=1,
+        max_buffer_secs=5,
+        flush_on_limit=True,
+    )
+    service._max_buffer_bytes = 100
+    flushed = []
+
+    async def capture_flush():
+        flushed.append(bytes(service._buffer))
+        service._buffer.clear()
+
+    service._flush_buffer = capture_flush
+
+    await service.process_audio_frame(
+        InputAudioRawFrame(audio=b"a" * 101, sample_rate=10, num_channels=1),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    assert flushed == [b"a" * 101]
+    assert service._buffer == bytearray()

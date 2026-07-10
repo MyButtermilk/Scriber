@@ -361,6 +361,11 @@ Packaging and scripts:
   sidecar while the direct Speechmatics batch API path is sufficient. Keep
   `onnx-asr[cpu,hub]` in the standard sidecar for the ONNX local-ASR path.
   NeMo/Torch is not exposed as a local provider in Settings.
+  Local ONNX file transcription uses the buffered Pipecat service with bounded
+  30-second flush chunks. Pipecat 1.5 no longer carries the legacy transport
+  `vad_analyzer` parameter, so file transcription must not depend on transport
+  VAD frames to trigger ONNX recognition. Long files must flush completed
+  chunks instead of dropping earlier PCM at the live-recording buffer limit.
   Primeline Parakeet support uses ready Hugging Face artifacts only; Scriber
   must not quantize this model on end-user machines. Preserve `fp32` through
   `geier/deskscribe-parakeet-primeline-onnx` with the manifest/checksum-backed

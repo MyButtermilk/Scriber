@@ -374,6 +374,11 @@ providers exposed in Settings, but the dependency boundary is explicit. The
 standard build bundles the CPU ONNX local-ASR runtime through `onnx-asr`. ONNX
 is the only local STT provider exposed in Settings; full NeMo/Torch remains
 excluded from the standard sidecar because it would dominate installer size.
+ONNX file jobs decode media to mono PCM and feed the buffered service in
+bounded 30-second chunks. Each completed chunk emits a final transcript frame,
+and the terminal frame flushes the remainder. This path does not rely on the
+removed Pipecat transport-level VAD hook and does not discard earlier audio
+from long files when the buffer limit is reached.
 The German Primeline Parakeet model is offered through prepared ONNX artifacts
 instead of exporting `primeline/parakeet-primeline` on user machines. The
 `fp32` option uses the prepared `geier/deskscribe-parakeet-primeline-onnx`

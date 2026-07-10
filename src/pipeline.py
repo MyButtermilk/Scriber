@@ -2113,12 +2113,19 @@ class ScriberPipeline:
             )
         
         elif self.service_name == "onnx_local":
-            from src.onnx_local_service import OnnxLocalBufferedSTTService, OnnxLocalSTTService
+            from src.onnx_local_service import OnnxLocalBufferedSTTService
             if for_file:
-                return OnnxLocalSTTService(
+                return OnnxLocalBufferedSTTService(
                     model_name=Config.ONNX_MODEL,
                     language=Config.LANGUAGE,
                     quantization=Config.ONNX_QUANTIZATION,
+                    sample_rate=Config.SAMPLE_RATE,
+                    channels=Config.CHANNELS,
+                    # Keep file chunks within the duration exercised by the
+                    # local model. Each full chunk emits a final frame and the
+                    # terminal frame flushes the remainder.
+                    max_buffer_secs=30,
+                    flush_on_limit=True,
                 )
             return OnnxLocalBufferedSTTService(
                 model_name=Config.ONNX_MODEL,
@@ -2355,17 +2362,10 @@ class ScriberPipeline:
             async with aiohttp.ClientSession() as session:
                 stt_service = self._create_stt_service(session, for_file=True)
 
-                vad_analyzer = None
-                if isinstance(stt_service, SegmentedSTTService):
-                    vad_analyzer = _create_vad_analyzer(quiet_mic=self.service_name == "onnx_local")
-                    if not vad_analyzer:
-                        logger.warning("Segmented STT requires VAD; transcripts may be empty.")
-
                 file_input = FfmpegAudioFileInput(
                     file_path,
                     sample_rate=Config.SAMPLE_RATE,
                     channels=Config.CHANNELS,
-                    vad_analyzer=vad_analyzer,
                 )
 
                 transcript_cb = (
