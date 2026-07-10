@@ -50,9 +50,11 @@ def discover_artifacts(root: Path = DEFAULT_ARTIFACT_DIR, *, version: str | None
     )
     if version:
         normalized_version = version[1:] if version.startswith("v") else version
-        current = [path for path in artifacts if normalized_version in path.name]
-        if current:
-            return current
+        version_pattern = re.compile(
+            rf"(?<![0-9]){re.escape(normalized_version)}(?![0-9])",
+            re.IGNORECASE,
+        )
+        return [path for path in artifacts if version_pattern.search(path.name)]
     return artifacts
 
 

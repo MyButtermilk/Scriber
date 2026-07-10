@@ -3,7 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scripts.create_release_metadata import build_latest_json, default_release_tag, sha256_file, write_metadata
+from scripts.create_release_metadata import (
+    build_latest_json,
+    default_release_tag,
+    discover_artifacts,
+    sha256_file,
+    write_metadata,
+)
 
 
 def test_write_release_metadata_creates_checksums_and_latest_json(tmp_path: Path):
@@ -69,3 +75,19 @@ def test_default_release_tag_accepts_tag_refs(monkeypatch):
     monkeypatch.setenv("GITHUB_REF_NAME", "v0.1.0")
 
     assert default_release_tag() == "v0.1.0"
+
+
+def test_discover_artifacts_does_not_fall_back_to_stale_version(tmp_path: Path):
+    stale = tmp_path / "Scriber_0.4.33_x64-setup.exe"
+    stale.write_bytes(b"stale")
+
+    assert discover_artifacts(tmp_path, version="0.4.34") == []
+
+
+def test_discover_artifacts_matches_exact_version_boundary(tmp_path: Path):
+    exact = tmp_path / "Scriber_0.4.34_x64-setup.exe"
+    future = tmp_path / "Scriber_0.4.340_x64-setup.exe"
+    exact.write_bytes(b"exact")
+    future.write_bytes(b"future")
+
+    assert discover_artifacts(tmp_path, version="v0.4.34") == [exact]
