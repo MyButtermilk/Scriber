@@ -424,7 +424,8 @@ def test_mistral_segmented_live_uses_transcribe_model_when_rt_model_is_realtime_
         ("speechmatics", "SPEECHMATICS_API_KEY", "SpeechmaticsSTTService"),
     ),
 )
-def test_pipecat_1_5_live_factories_match_runtime_signatures(
+@pytest.mark.asyncio
+async def test_pipecat_1_5_live_factories_match_runtime_signatures(
     monkeypatch,
     service_name,
     api_key_attribute,
@@ -436,8 +437,12 @@ def test_pipecat_1_5_live_factories_match_runtime_signatures(
     monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber, Pipecat")
 
     service = ScriberPipeline(service_name=service_name)._create_stt_service(object())
-
-    assert type(service).__name__ == expected_class_name
+    try:
+        assert type(service).__name__ == expected_class_name
+    finally:
+        cleanup = getattr(service, "cleanup", None)
+        if callable(cleanup):
+            await cleanup()
 
 
 def test_google_cloud_factory_uses_pipecat_1_5_settings(monkeypatch):
