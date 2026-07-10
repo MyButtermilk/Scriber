@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,16 +47,17 @@ class DebugLogEntry:
 
 def collect_debug_logs(*, limit: int = _DEFAULT_LIMIT) -> dict[str, Any]:
     limit = _clamp_limit(limit)
-    entries: list[DebugLogEntry] = []
+    ranked_entries: list[tuple[float, int, DebugLogEntry]] = []
     sources: list[str] = []
     truncated = False
     clear_offsets = load_clear_offsets()
 
-    for path in _candidate_log_files():
+    for source_index, path in enumerate(_candidate_log_files()):
         source = path.name
         sources.append(source)
         try:
             text, file_truncated = _read_tail(path, start_offset=clear_offset_for_path(path, clear_offsets))
+            fallback_timestamp_ms = path.stat().st_mtime * 1000.0
         except OSError:
             continue
         truncated = truncated or file_truncated
@@ -70,11 +72,23 @@ def collect_debug_logs(*, limit: int = _DEFAULT_LIMIT) -> dict[str, Any]:
         for offset, line in enumerate(selected):
             entry = _parse_log_line(line, source=source, line_number=start_line + offset)
             if entry is not None:
-                entries.append(entry)
+                ranked_entries.append(
+                    (
+                        _entry_sort_value(entry, fallback_timestamp_ms),
+                        source_index,
+                        entry,
+                    )
+                )
 
-    if len(entries) > limit:
+    if len(ranked_entries) > limit:
         truncated = True
-        entries = entries[-limit:]
+        ranked_entries = sorted(
+            ranked_entries,
+            key=lambda item: (item[0], item[1], item[2].line),
+        )[-limit:]
+    else:
+        ranked_entries.sort(key=lambda item: (item[0], item[1], item[2].line))
+    entries = [entry for _, _, entry in ranked_entries]
 
     return {
         "apiVersion": REST_API_VERSION,
@@ -264,3 +278,36 @@ def _safe_int(value: Any) -> int | None:
         return int(value)
     except Exception:
         return None
+
+
+def _entry_sort_value(entry: DebugLogEntry, fallback_timestamp_ms: float) -> float:
+    """Return a comparable timestamp without trusting source filename order."""
+    if entry.timestamp_ms is not None:
+        return float(entry.timestamp_ms)
+
+    timestamp = str(entry.timestamp or "").strip()
+    if timestamp:
+        normalized = timestamp.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized).timestamp() * 1000.0
+        except ValueError:
+            pass
+
+        time_match = re.match(
+            r"^(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2})(?:\.(?P<fraction>\d+))?)?",
+            timestamp,
+        )
+        if time_match:
+            fallback = datetime.fromtimestamp(fallback_timestamp_ms / 1000.0)
+            fraction = (time_match.group("fraction") or "")[:6].ljust(6, "0")
+            parsed = fallback.replace(
+                hour=int(time_match.group("hour")),
+                minute=int(time_match.group("minute")),
+                second=int(time_match.group("second") or 0),
+                microsecond=int(fraction or 0),
+            )
+            return parsed.timestamp() * 1000.0
+
+    # Preserve file-local order for unstructured lines while using mtime as the
+    # best available cross-file approximation.
+    return fallback_timestamp_ms + (entry.line / 1_000_000.0)

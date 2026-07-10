@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from src.runtime import debug_logs
 from src.runtime import log_clear_state
 import pytest
@@ -75,3 +77,30 @@ def test_clear_state_ignores_oversized_file(monkeypatch, tmp_path):
     )
 
     assert log_clear_state.load_clear_offsets() == {}
+
+
+def test_collect_debug_logs_applies_global_limit_by_time_not_source_name(monkeypatch, tmp_path):
+    logs_dir = tmp_path / "logs"
+    data_dir = tmp_path / "data"
+    repo_dir = tmp_path / "repo"
+    logs_dir.mkdir()
+    data_dir.mkdir()
+    repo_dir.mkdir()
+    monkeypatch.setattr(debug_logs, "data_dir", lambda: data_dir)
+    monkeypatch.setattr(debug_logs, "logs_dir", lambda: logs_dir)
+    monkeypatch.setattr(debug_logs, "repo_root", lambda: repo_dir)
+
+    newer = logs_dir / "aaa-new.log"
+    older = logs_dir / "zzz-old.log"
+    newer.write_text("... 12:00:02.000 ERROR newest failure\n", encoding="utf-8")
+    older.write_text("... 12:00:01.000 INFO older detail\n", encoding="utf-8")
+    # Both entries are time-only, so their file dates come from mtime. Keep the
+    # files on the same day while proving filename order cannot decide the cut.
+    same_day = 1_700_000_000
+    os.utime(newer, (same_day, same_day))
+    os.utime(older, (same_day, same_day))
+
+    payload = debug_logs.collect_debug_logs(limit=1)
+
+    assert payload["truncated"] is True
+    assert [item["message"] for item in payload["items"]] == ["newest failure"]
