@@ -1062,7 +1062,15 @@ def _load_model_impl(
             except Exception as vad_err:
                 logger.warning(f"Could not load VAD, long audio may fail: {vad_err}")
         
+        evicted_cache_keys = [key for key in _model_cache if key != cache_key]
+        _model_cache.clear()
         _model_cache[cache_key] = model
+        if evicted_cache_keys:
+            logger.info(
+                "Released {} previous ONNX model cache entr{}",
+                len(evicted_cache_keys),
+                "y" if len(evicted_cache_keys) == 1 else "ies",
+            )
         logger.info(f"Model loaded successfully: {model_name}")
         return model
         

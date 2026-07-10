@@ -173,6 +173,30 @@ def test_model_cache_normalizes_fp32_aliases(monkeypatch):
     onnx_stt.unload_model()
 
 
+def test_model_cache_releases_previous_model_after_successful_switch(monkeypatch):
+    loaded_models = []
+
+    class FakeOnnxAsr:
+        @staticmethod
+        def load_model(*_args, **_kwargs):
+            model = object()
+            loaded_models.append(model)
+            return model
+
+    monkeypatch.setattr(onnx_stt, "_get_onnx_asr", lambda: FakeOnnxAsr)
+    monkeypatch.setattr(onnx_stt, "get_model_cache_dir", lambda: None)
+    onnx_stt.unload_model()
+
+    first = onnx_stt.load_model("nemo-canary-1b-v2", "int8", False)
+    second = onnx_stt.load_model("nemo-canary-1b-v2", "fp32", False)
+
+    assert first is loaded_models[0]
+    assert second is loaded_models[1]
+    assert list(onnx_stt._model_cache.values()) == [second]
+    assert list(onnx_stt._model_cache) == ["nemo-canary-1b-v2_fp32_False"]
+    onnx_stt.unload_model()
+
+
 def test_load_model_rejects_unknown_model_before_runtime_import(monkeypatch):
     monkeypatch.setattr(
         onnx_stt,
