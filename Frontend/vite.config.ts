@@ -62,7 +62,9 @@ export default defineConfig({
           }
           if (
             normalizedId.includes("/node_modules/framer-motion/") ||
-            normalizedId.includes("/node_modules/motion/")
+            normalizedId.includes("/node_modules/motion/") ||
+            normalizedId.includes("/node_modules/motion-dom/") ||
+            normalizedId.includes("/node_modules/motion-utils/")
           ) {
             return "vendor-motion";
           }
@@ -71,6 +73,49 @@ export default defineConfig({
             normalizedId.includes("/node_modules/d3-")
           ) {
             return "vendor-charts";
+          }
+          if (
+            normalizedId.includes("/node_modules/react-markdown/") ||
+            normalizedId.includes("/node_modules/remark-") ||
+            normalizedId.includes("/node_modules/mdast-") ||
+            normalizedId.includes("/node_modules/micromark") ||
+            normalizedId.includes("/node_modules/unist-") ||
+            normalizedId.includes("/node_modules/hast-") ||
+            normalizedId.includes("/node_modules/vfile") ||
+            normalizedId.includes("/node_modules/property-information/") ||
+            normalizedId.includes("/node_modules/comma-separated-tokens/") ||
+            normalizedId.includes("/node_modules/space-separated-tokens/") ||
+            normalizedId.includes("/node_modules/decode-named-character-reference/") ||
+            normalizedId.includes("/node_modules/trim-lines/") ||
+            normalizedId.includes("/node_modules/trough/") ||
+            normalizedId.includes("/node_modules/zwitch/")
+          ) {
+            return "vendor-markdown";
+          }
+          if (normalizedId.includes("/node_modules/lucide-react/")) {
+            return "vendor-icons";
+          }
+          if (
+            normalizedId.includes("/node_modules/@radix-ui/") ||
+            normalizedId.includes("/node_modules/@floating-ui/") ||
+            normalizedId.includes("/node_modules/react-remove-scroll") ||
+            normalizedId.includes("/node_modules/react-style-singleton/") ||
+            normalizedId.includes("/node_modules/use-callback-ref/") ||
+            normalizedId.includes("/node_modules/use-sidecar/") ||
+            normalizedId.includes("/node_modules/aria-hidden/") ||
+            normalizedId.includes("/node_modules/cmdk/")
+          ) {
+            return "vendor-ui";
+          }
+          if (normalizedId.includes("/node_modules/@tauri-apps/")) {
+            return "vendor-tauri";
+          }
+          if (
+            normalizedId.includes("/node_modules/react-dropzone/") ||
+            normalizedId.includes("/node_modules/file-selector/") ||
+            normalizedId.includes("/node_modules/attr-accept/")
+          ) {
+            return "vendor-upload";
           }
           return "vendor";
         },
