@@ -26,6 +26,7 @@ from loguru import logger
 # Lazy imports to avoid startup delay if onnx-asr not installed
 _onnx_asr = None
 _model_cache: dict[str, Any] = {}
+_model_load_lock = threading.Lock()
 _download_lock = threading.Lock()
 _download_state_lock = threading.Lock()
 _download_state: dict[tuple[str, str], dict[str, Any]] = {}
@@ -992,6 +993,16 @@ def load_model(
     quantization: str = "int8",
     use_vad: bool = True,
 ):
+    """Load one model instance at a time to avoid duplicate multi-GB sessions."""
+    with _model_load_lock:
+        return _load_model_impl(model_name, quantization, use_vad)
+
+
+def _load_model_impl(
+    model_name: str = DEFAULT_MODEL,
+    quantization: str = "int8",
+    use_vad: bool = True,
+):
     """
     Load an ONNX model (downloads if not present).
     
@@ -1004,13 +1015,15 @@ def load_model(
         Loaded onnx_asr model object
     """
     global _model_cache
-    
-    cache_key = f"{model_name}_{quantization}_{use_vad}"
+
+    if model_name not in ONNX_MODELS:
+        raise ValueError(f"Unknown ONNX model: {model_name}")
+    quantization_onnx, q_label = _normalize_quantization(quantization)
+    cache_key = f"{model_name}_{q_label}_{use_vad}"
     if cache_key in _model_cache:
         logger.debug(f"Returning cached model: {cache_key}")
         return _model_cache[cache_key]
-    
-    quantization_onnx, q_label = _normalize_quantization(quantization)
+
     supported = _get_supported_quantizations(model_name)
     if q_label not in supported:
         raise ValueError(f"Quantization not supported for {model_name}: {q_label}")
@@ -1061,15 +1074,16 @@ def unload_model(model_name: str = None) -> None:
     """
     global _model_cache
     
-    if model_name is None:
-        _model_cache.clear()
-        logger.info("All ONNX models unloaded from cache")
-    else:
-        keys_to_remove = [k for k in _model_cache if k.startswith(model_name)]
-        for key in keys_to_remove:
-            del _model_cache[key]
-        if keys_to_remove:
-            logger.info(f"Unloaded model: {model_name}")
+    with _model_load_lock:
+        if model_name is None:
+            _model_cache.clear()
+            logger.info("All ONNX models unloaded from cache")
+        else:
+            keys_to_remove = [k for k in _model_cache if k.startswith(f"{model_name}_")]
+            for key in keys_to_remove:
+                del _model_cache[key]
+            if keys_to_remove:
+                logger.info(f"Unloaded model: {model_name}")
 
 
 def _result_to_text(result: Any) -> str:
@@ -1078,6 +1092,18 @@ def _result_to_text(result: Any) -> str:
     if hasattr(result, "text"):
         return str(result.text or "")
     return str(result or "")
+
+
+def _recognition_result_to_text(result: Any) -> str:
+    direct = _result_to_text(result).strip()
+    if isinstance(result, str) or hasattr(result, "text") or result is None:
+        return direct
+    try:
+        iterator = iter(result)
+    except TypeError:
+        return direct
+    segments = [_result_to_text(segment).strip() for segment in iterator]
+    return " ".join(segment for segment in segments if segment)
 
 
 def _audio_bytes_to_float32(audio_bytes: bytes, sample_rate: int) -> tuple[Any, int]:
@@ -1135,13 +1161,28 @@ async def transcribe_audio(
         Transcribed text
     """
     if on_progress:
-        on_progress("Loading model...")
-    
-    model = load_model(model_name, quantization, use_vad)
+        try:
+            on_progress("Loading model...")
+        except Exception:
+            pass
+
+    loop = asyncio.get_running_loop()
+    model = await asyncio.shield(
+        loop.run_in_executor(
+            _executor,
+            load_model,
+            model_name,
+            quantization,
+            use_vad,
+        )
+    )
     model_info = ONNX_MODELS.get(model_name, {})
     
     if on_progress:
-        on_progress("Transcribing...")
+        try:
+            on_progress("Transcribing...")
+        except Exception:
+            pass
     
     def _transcribe():
         # Determine language parameter
@@ -1149,31 +1190,17 @@ async def transcribe_audio(
         if model_info.get("supports_language_param") and language != "auto":
             lang_param = language
         
-        # Handle VAD results (returns iterator for segmented audio)
-        if use_vad:
-            segments = []
-            for result in model.recognize(audio_path, language=lang_param):
-                if isinstance(result, str):
-                    segments.append(result)
-                elif hasattr(result, 'text'):
-                    segments.append(result.text)
-                else:
-                    segments.append(str(result))
-            return " ".join(segments)
-        else:
-            result = model.recognize(audio_path, language=lang_param)
-            if isinstance(result, str):
-                return result
-            elif hasattr(result, 'text'):
-                return result.text
-            return str(result)
+        result = model.recognize(audio_path, language=lang_param)
+        return _recognition_result_to_text(result)
     
     # Run transcription in thread pool
-    loop = asyncio.get_running_loop()
-    text = await loop.run_in_executor(_executor, _transcribe)
+    text = await asyncio.shield(loop.run_in_executor(_executor, _transcribe))
     
     if on_progress:
-        on_progress("Complete")
+        try:
+            on_progress("Complete")
+        except Exception:
+            pass
     
     logger.info(f"Transcription complete: {len(text)} characters")
     return text
@@ -1200,7 +1227,16 @@ async def transcribe_audio_bytes(
     Returns:
         Transcribed text
     """
-    model = load_model(model_name, quantization, use_vad=use_vad)
+    loop = asyncio.get_running_loop()
+    model = await asyncio.shield(
+        loop.run_in_executor(
+            _executor,
+            load_model,
+            model_name,
+            quantization,
+            use_vad,
+        )
+    )
     model_info = ONNX_MODELS.get(model_name, {})
     
     def _transcribe():
@@ -1212,10 +1248,9 @@ async def transcribe_audio_bytes(
             lang_param = language
         
         result = model.recognize(audio, sample_rate=sr, language=lang_param)
-        return _result_to_text(result)
+        return _recognition_result_to_text(result)
     
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_executor, _transcribe)
+    return await asyncio.shield(loop.run_in_executor(_executor, _transcribe))
 
 
 def delete_model(model_name: str, quantization: Optional[str] = None) -> bool:

@@ -5,6 +5,7 @@ import sys
 import threading
 import types
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -112,6 +113,121 @@ def test_primeline_int8_load_uses_buttermilk_snapshot(monkeypatch, tmp_path):
         "path": tmp_path,
         "quantization": "int8",
     }
+
+
+def test_concurrent_model_loads_reuse_one_session(monkeypatch):
+    calls = 0
+
+    class FakeOnnxAsr:
+        @staticmethod
+        def load_model(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            threading.Event().wait(0.05)
+            return object()
+
+    monkeypatch.setattr(onnx_stt, "_get_onnx_asr", lambda: FakeOnnxAsr)
+    monkeypatch.setattr(onnx_stt, "get_model_cache_dir", lambda: None)
+    onnx_stt.unload_model()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            onnx_stt.load_model,
+            "nemo-canary-1b-v2",
+            "int8",
+            False,
+        )
+        second = executor.submit(
+            onnx_stt.load_model,
+            "nemo-canary-1b-v2",
+            "int8",
+            False,
+        )
+        first_model = first.result(timeout=1)
+        second_model = second.result(timeout=1)
+
+    assert first_model is second_model
+    assert calls == 1
+    onnx_stt.unload_model()
+
+
+def test_model_cache_normalizes_fp32_aliases(monkeypatch):
+    calls = 0
+
+    class FakeOnnxAsr:
+        @staticmethod
+        def load_model(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return object()
+
+    monkeypatch.setattr(onnx_stt, "_get_onnx_asr", lambda: FakeOnnxAsr)
+    monkeypatch.setattr(onnx_stt, "get_model_cache_dir", lambda: None)
+    onnx_stt.unload_model()
+
+    fp32_model = onnx_stt.load_model("nemo-canary-1b-v2", "fp32", False)
+    alias_model = onnx_stt.load_model("nemo-canary-1b-v2", "full", False)
+
+    assert fp32_model is alias_model
+    assert calls == 1
+    onnx_stt.unload_model()
+
+
+def test_load_model_rejects_unknown_model_before_runtime_import(monkeypatch):
+    monkeypatch.setattr(
+        onnx_stt,
+        "_get_onnx_asr",
+        lambda: pytest.fail("runtime imported for unknown model"),
+    )
+
+    with pytest.raises(ValueError, match="Unknown ONNX model"):
+        onnx_stt.load_model("arbitrary/remote-model", "int8", False)
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_bytes_loads_model_off_event_loop(monkeypatch):
+    event_loop_thread = threading.get_ident()
+    load_thread = None
+
+    class FakeModel:
+        @staticmethod
+        def recognize(*_args, **_kwargs):
+            return "complete transcript"
+
+    def _load_model(*_args, **_kwargs):
+        nonlocal load_thread
+        load_thread = threading.get_ident()
+        return FakeModel()
+
+    monkeypatch.setattr(onnx_stt, "load_model", _load_model)
+
+    text = await onnx_stt.transcribe_audio_bytes(
+        b"\0\0" * 160,
+        model_name="nemo-canary-1b-v2",
+        use_vad=False,
+    )
+
+    assert text == "complete transcript"
+    assert load_thread is not None
+    assert load_thread != event_loop_thread
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_does_not_split_string_vad_result(monkeypatch, tmp_path):
+    class FakeModel:
+        @staticmethod
+        def recognize(*_args, **_kwargs):
+            return "whole result"
+
+    monkeypatch.setattr(onnx_stt, "load_model", lambda *_args, **_kwargs: FakeModel())
+
+    text = await onnx_stt.transcribe_audio(
+        str(tmp_path / "audio.wav"),
+        model_name="nemo-canary-1b-v2",
+        use_vad=True,
+    )
+
+    assert text == "whole result"
 
 
 def test_primeline_archive_download_status_requires_extracted_files(monkeypatch, tmp_path):
