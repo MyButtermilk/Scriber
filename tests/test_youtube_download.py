@@ -13,9 +13,12 @@ import pytest
 
 from src.youtube_download import (
     YouTubeDownloadError,
+    _caption_text_from_json3_bytes,
+    _caption_text_from_vtt_bytes,
     _ensure_audio_only_file,
     _extract_audio_track,
     _has_video_stream,
+    _select_caption_track,
     download_youtube_audio,
 )
 
@@ -45,6 +48,56 @@ class _CancelledProc:
 
     async def wait(self):
         self.waited = True
+
+
+def test_caption_track_prefers_manual_subtitles_over_automatic_translation():
+    selected = _select_caption_track(
+        {
+            "language": "en",
+            "subtitles": {
+                "de": [{"ext": "vtt", "url": "https://example.test/manual-de"}],
+            },
+            "automatic_captions": {
+                "de": [{"ext": "json3", "url": "https://example.test/automatic-de"}],
+                "en-orig": [{"ext": "json3", "url": "https://example.test/automatic-en"}],
+            },
+        },
+        preferred_language="de",
+    )
+
+    assert selected is not None
+    language, automatic, caption_format = selected
+    assert language == "de"
+    assert automatic is False
+    assert caption_format["url"].endswith("manual-de")
+
+
+def test_caption_track_prefers_original_automatic_language():
+    selected = _select_caption_track(
+        {
+            "language": "en",
+            "automatic_captions": {
+                "de": [{"ext": "json3", "url": "https://example.test/de"}],
+                "en": [{"ext": "vtt", "url": "https://example.test/en"}],
+                "en-orig": [{"ext": "json3", "url": "https://example.test/en-orig"}],
+            },
+        },
+        preferred_language="auto",
+    )
+
+    assert selected is not None
+    language, automatic, caption_format = selected
+    assert language == "en-orig"
+    assert automatic is True
+    assert caption_format["ext"] == "json3"
+
+
+def test_caption_parsers_remove_transport_markup_and_duplicate_lines():
+    json3 = b'{"events":[{"segs":[{"utf8":"Hello "},{"utf8":"world"}]},{"segs":[{"utf8":"Hello world"}]},{"segs":[{"utf8":"Next line"}]}]}'
+    vtt = b"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n<c>Hello world</c>\n\n00:00:01.000 --> 00:00:02.000\nHello world\nNext line\n"
+
+    assert _caption_text_from_json3_bytes(json3) == "Hello world\nNext line"
+    assert _caption_text_from_vtt_bytes(vtt) == "Hello world\nNext line"
 
 
 @pytest.mark.asyncio

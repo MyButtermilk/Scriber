@@ -25,7 +25,7 @@ _connection_generation = 0
 _FTS_TOKEN_RE = re.compile(r"\w+(?:-\w+)*", re.UNICODE)
 
 
-def _compute_preview(text: str, max_words: int = 5) -> str:
+def _compute_preview(text: str, max_words: int = 16) -> str:
     words: list[str] = []
     has_more = False
     for match in re.finditer(r"\S+", text or ""):

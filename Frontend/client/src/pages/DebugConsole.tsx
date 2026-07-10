@@ -19,7 +19,10 @@ import {
   Clipboard,
   Download,
   Eraser,
+  Eye,
   Filter,
+  Check,
+  Layers3,
   RefreshCw,
   Search,
   Terminal,
@@ -464,9 +467,6 @@ export default function DebugConsole() {
               System observability · 04
             </div>
             <div className="debug-console-title-row">
-              <div className="debug-console-title-mark" aria-hidden="true">
-                <Terminal className="h-5 w-5" />
-              </div>
               <div>
                 <h1>Debug console</h1>
                 <p>Inspect runtime events, isolate failures, and package diagnostics without leaving Scriber.</p>
@@ -476,25 +476,45 @@ export default function DebugConsole() {
 
           <div className="debug-console-overview">
             <div className="debug-console-stats" aria-label="Runtime log summary">
-              <div className="debug-console-stat">
-                <span>Visible</span>
+              <div className="debug-console-stat" aria-label={`${filteredLogs.length} of ${logs.length} logs visible`}>
                 <strong>{filteredLogs.length}</strong>
-                <small>of {logs.length}</small>
+                <div className="debug-console-stat-copy">
+                  <span>Visible</span>
+                  <small>of {logs.length} logs</small>
+                </div>
+                <Eye className="debug-console-stat-icon" aria-hidden="true" />
               </div>
-              <div className="debug-console-stat" data-tone={errorCount ? "danger" : "quiet"}>
-                <span>Errors</span>
+              <div className="debug-console-stat" data-tone={errorCount ? "danger" : "quiet"} aria-label={`${errorCount} errors including critical events`}>
                 <strong>{errorCount}</strong>
-                <small>critical included</small>
+                <div className="debug-console-stat-copy">
+                  <span>Errors</span>
+                  <small>critical included</small>
+                </div>
+                {errorCount ? (
+                  <AlertTriangle className="debug-console-stat-icon" aria-hidden="true" />
+                ) : (
+                  <CheckCircle2 className="debug-console-stat-icon" aria-hidden="true" />
+                )}
               </div>
-              <div className="debug-console-stat" data-tone={warningCount ? "warning" : "quiet"}>
-                <span>Warnings</span>
+              <div className="debug-console-stat" data-tone={warningCount ? "warning" : "quiet"} aria-label={`${warningCount} warnings`}>
                 <strong>{warningCount}</strong>
-                <small>needs review</small>
+                <div className="debug-console-stat-copy">
+                  <span>Warnings</span>
+                  <small>needs review</small>
+                </div>
+                {warningCount ? (
+                  <AlertTriangle className="debug-console-stat-icon" aria-hidden="true" />
+                ) : (
+                  <CheckCircle2 className="debug-console-stat-icon" aria-hidden="true" />
+                )}
               </div>
-              <div className="debug-console-stat">
-                <span>Sources</span>
+              <div className="debug-console-stat" aria-label={`${sources.length} log sources`}>
                 <strong>{sources.length}</strong>
-                <small>{truncated ? "tail view" : "full view"}</small>
+                <div className="debug-console-stat-copy">
+                  <span>Sources</span>
+                  <small>{truncated ? "tail view" : "full view"}</small>
+                </div>
+                <Layers3 className="debug-console-stat-icon" aria-hidden="true" />
               </div>
             </div>
 
@@ -578,10 +598,14 @@ export default function DebugConsole() {
                     key={level}
                     type="button"
                     aria-pressed={selectedLevel === level}
+                    aria-label={level === "ALL" ? "Show all severity levels" : `Show ${level.toLowerCase()} logs`}
+                    title={level === "ALL" ? "Show all severity levels" : `Show ${level.toLowerCase()} logs`}
+                    data-level={level.toLowerCase()}
                     onClick={() => setSelectedLevel(level)}
                     className={cn("debug-level-button", selectedLevel === level && "is-active")}
                   >
-                    {level}
+                    <span>{level}</span>
+                    {selectedLevel === level && <Check className="debug-level-selected-icon" aria-hidden="true" />}
                   </button>
                 ))}
               </div>

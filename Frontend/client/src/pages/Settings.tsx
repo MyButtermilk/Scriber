@@ -60,6 +60,7 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { QueryErrorState } from "@/components/ui/query-error-state";
+import { PageIntro } from "@/components/page-intro";
 import {
   checkDesktopUpdate,
   checkDesktopUpdateIfDue,
@@ -112,6 +113,16 @@ function captureScrollSnapshot(): ScrollSnapshot | null {
     documentLeft: scrollingElement ? scrollingElement.scrollLeft : null,
     documentTop: scrollingElement ? scrollingElement.scrollTop : null,
   };
+}
+
+function formatUpdateTimestamp(value?: string): string {
+  if (!value) return "Never";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "Unknown";
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(parsed);
 }
 
 function restoreScrollSnapshot(snapshot: ScrollSnapshot) {
@@ -743,7 +754,7 @@ function ProviderChoice({
       onClick={handleClick}
       title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : ""}`}
       className={cn(
-        "group flex min-h-[44px] w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left outline-none transition-[background-color,box-shadow,transform] duration-200",
+        "group flex min-h-[40px] w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-[background-color,box-shadow,transform] duration-200",
         "active:translate-y-px",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
         disabled
@@ -1067,6 +1078,7 @@ export default function Settings() {
   const [summarizationModel, setSummarizationModel] = useState(DEFAULT_SUMMARIZATION_MODEL);
   const [postProcessingModel, setPostProcessingModel] = useState(DEFAULT_POST_PROCESSING_MODEL);
   const [autoSummarize, setAutoSummarize] = useState(false);
+  const [youtubePreferCaptions, setYoutubePreferCaptions] = useState(true);
   const [postProcessingEnabled, setPostProcessingEnabled] = useState(true);
   const [language, setLanguage] = useState("auto");
   const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
@@ -1416,6 +1428,7 @@ export default function Settings() {
         setSummarizationModel(settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL);
         setPostProcessingModel(settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL);
         setAutoSummarize(settings.autoSummarize === true);
+        setYoutubePreferCaptions(settings.youtubePreferCaptions !== false);
         setPostProcessingEnabled(settings.postProcessingEnabled !== false);
         setPostProcessingPrompt(settings.postProcessingPrompt || DEFAULT_POST_PROCESSING_PROMPT);
         const loadedVisualizerBarCount = normalizeVisualizerBarCount(settings.visualizerBarCount);
@@ -2050,6 +2063,28 @@ export default function Settings() {
     }
   };
 
+  const handleYoutubePreferCaptionsChange = async (enabled: boolean) => {
+    const previousValue = youtubePreferCaptions;
+    setYoutubePreferCaptions(enabled);
+    try {
+      await updateSettings({ youtubePreferCaptions: enabled });
+      toast({
+        title: "Saved",
+        description: enabled
+          ? "YouTube captions will be used before audio transcription."
+          : "YouTube videos will always be transcribed from audio.",
+        duration: 2000,
+      });
+    } catch (e: any) {
+      setYoutubePreferCaptions(previousValue);
+      toast({
+        title: "Save failed",
+        description: String(e?.message || e),
+        duration: 4000,
+      });
+    }
+  };
+
   const handlePostProcessingEnabledChange = async (enabled: boolean) => {
     setPostProcessingEnabled(enabled);
     try {
@@ -2472,13 +2507,11 @@ export default function Settings() {
     if (desktopUpdate.enabled) return "Current";
     return "Not configured";
   })();
-  const desktopUpdateLastCheckedLabel = desktopUpdate.lastCheckedAt
-    ? new Date(desktopUpdate.lastCheckedAt).toLocaleString()
-    : "Never";
+  const desktopUpdateLastCheckedLabel = formatUpdateTimestamp(desktopUpdate.lastCheckedAt);
   const desktopUpdateNextCheckLabel = !desktopUpdate.autoCheckEnabled
     ? "Automatic checks disabled"
     : desktopUpdate.lastCheckedAt && desktopUpdate.nextCheckAt
-      ? new Date(desktopUpdate.nextCheckAt).toLocaleString()
+      ? formatUpdateTimestamp(desktopUpdate.nextCheckAt)
       : "When Scriber starts";
   const desktopUpdateAvailableVersionLabel = (() => {
     if (desktopUpdate.version) return desktopUpdate.version;
@@ -2798,7 +2831,7 @@ export default function Settings() {
 
   return (
     <div className={cn(
-      "settings-page mx-auto w-full max-w-[1320px] px-4 pb-6 text-[13px] transition-opacity duration-150 md:px-5",
+      "settings-page mx-auto w-full max-w-[1320px] px-4 py-5 text-[13px] transition-opacity duration-150 md:px-6 md:py-6",
       settingsLoaded ? "opacity-100" : "opacity-0",
     )}>
       {settingsError && (
@@ -2810,24 +2843,18 @@ export default function Settings() {
         />
       )}
 
-      <header className="sticky top-0 z-20 -mx-4 mb-4 border-b border-slate-200/80 bg-card/95 px-4 pb-3 pt-5 backdrop-blur-xl dark:border-white/[0.065] md:-mx-5 md:px-5">
-        <div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
-          <div className="min-w-0 xl:w-[440px] xl:flex-none">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-              <h1 className="text-[32px] !font-semibold leading-none tracking-[-0.035em] text-slate-950 dark:text-slate-100 md:text-[35px]">
-                Settings
-              </h1>
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[10.5px] font-semibold text-emerald-700 shadow-[inset_0_0_0_1px_rgba(5,150,105,0.12)] dark:bg-emerald-950/35 dark:text-emerald-300">
-                <Check className="h-3 w-3" aria-hidden="true" />
-                Most changes save automatically
-              </span>
-            </div>
-            <p className="mt-2 max-w-[68ch] text-[12px] leading-[17px] text-slate-500 dark:text-slate-400">
-              Configure capture, transcription providers, AI processing, credentials, updates, and language behavior.
-            </p>
-          </div>
-
-          <nav aria-label="Settings sections" className="settings-section-nav min-w-0 overflow-x-auto pb-0.5">
+      <PageIntro
+        eyebrow="Workspace controls · 04"
+        title="Settings"
+        description="Configure capture, transcription providers, AI processing, credentials, updates, and language behavior."
+        titleAccessory={(
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[10.5px] font-semibold text-emerald-700 shadow-[inset_0_0_0_1px_rgba(5,150,105,0.12)] dark:bg-emerald-950/35 dark:text-emerald-300">
+            <Check className="h-3 w-3" aria-hidden="true" />
+            Most changes save automatically
+          </span>
+        )}
+        bottomContent={(
+          <nav aria-label="Settings sections" className="settings-section-nav overflow-x-auto">
             <div className="flex w-max items-center gap-1 rounded-xl bg-slate-100/80 p-1 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.05)] dark:bg-slate-950/45">
               {[
                 { href: "#settings-transcription", label: "Capture", icon: Mic },
@@ -2848,8 +2875,8 @@ export default function Settings() {
               ))}
             </div>
           </nav>
-        </div>
-      </header>
+        )}
+      />
 
       <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
         <SectionPanel
@@ -3147,8 +3174,9 @@ export default function Settings() {
           title="API keys"
           description="Manage provider credentials without expanding the whole page."
           icon={Key}
+          className="flex h-full self-stretch flex-col"
         >
-          <div className="space-y-3.5">
+          <div className="flex flex-1 flex-col gap-3.5">
             {missingActiveCredentialRequirements.length > 0 && (
               <div className="rounded-xl border border-amber-500/35 bg-amber-50 p-2.5 text-[11px] leading-[15px] text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
                 <div className="flex gap-2">
@@ -3182,7 +3210,7 @@ export default function Settings() {
               </div>
             )}
 
-            <div className="grid gap-x-2 gap-y-2.5 sm:grid-cols-2 sm:gap-y-3 xl:gap-y-3.5">
+            <div className="grid flex-1 content-between gap-x-2 gap-y-2.5 sm:grid-cols-2 sm:gap-y-3 xl:gap-y-3.5">
               <ApiCredentialRow provider="OpenAI" icon="openai" value={openAIKey} onValueChange={markCredentialChanged("OpenAI", setOpenAIKey)} show={showOpenAIKey} onShowChange={setShowOpenAIKey} helpKey="openai" saved={savedKeys.OpenAI === true} onSave={() => handleSaveApiKey("OpenAI")} note="Used for OpenAI STT and summarization." {...credentialDialogProps("OpenAI")} />
               <ApiCredentialRow provider="Gemini" icon="gemini" value={geminiKey} onValueChange={markCredentialChanged("Gemini", setGeminiKey)} show={showGeminiKey} onShowChange={setShowGeminiKey} helpKey="gemini" saved={savedKeys.Gemini === true} onSave={() => handleSaveApiKey("Gemini")} note="One key unlocks Gemini STT, summaries, and cleanup." {...credentialDialogProps("Gemini")} />
               <ApiCredentialRow provider="OpenRouter" icon="openrouter" value={openRouterKey} onValueChange={markCredentialChanged("OpenRouter", setOpenRouterKey)} show={showOpenRouterKey} onShowChange={setShowOpenRouterKey} helpKey="openrouter" saved={savedKeys.OpenRouter === true} onSave={() => handleSaveApiKey("OpenRouter")} {...credentialDialogProps("OpenRouter")} />
@@ -3217,19 +3245,20 @@ export default function Settings() {
           title="Summarization"
           description="Choose the model and automatic summary behavior."
           icon={Sparkles}
+          className="flex h-full self-stretch flex-col"
         >
-          <div className="space-y-4">
+          <div className="flex flex-1 flex-col justify-between gap-3">
             <div
               role="radiogroup"
               aria-label="Summary models"
-              className="space-y-2"
+              className="space-y-1.5"
             >
               {summaryModelGroups.map((group) => (
                 <div
                   key={group.key}
-                  className="rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60"
+                  className="rounded-xl bg-slate-50/90 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60"
                 >
-                  <div className="mb-1.5">
+                  <div className="mb-1">
                     <h3 className="text-[13px] !font-bold leading-4 text-slate-950 dark:text-slate-100">
                       {group.label}
                     </h3>
@@ -3255,9 +3284,26 @@ export default function Settings() {
               ))}
             </div>
 
-            <SettingLine label="Auto-summarize" description="Summarize new transcripts automatically.">
-              <Switch checked={autoSummarize} onCheckedChange={handleAutoSummarizeChange} />
-            </SettingLine>
+            <div className="grid gap-x-4 border-t border-slate-200/80 pt-2 dark:border-slate-800/80 sm:grid-cols-2">
+              <SettingLine
+                label="Auto-summarize"
+                description="Summarize new transcripts automatically."
+                className="py-1.5 sm:grid-cols-[minmax(0,1fr)_auto]"
+              >
+                <Switch checked={autoSummarize} onCheckedChange={handleAutoSummarizeChange} />
+              </SettingLine>
+              <SettingLine
+                label="YouTube captions first"
+                description="Prefer available captions, then fall back to audio."
+                className="border-t border-slate-200/80 py-1.5 pt-2 dark:border-slate-800/80 sm:grid-cols-[minmax(0,1fr)_auto] sm:border-l sm:border-t-0 sm:pl-4 sm:pt-1.5"
+              >
+                <Switch
+                  checked={youtubePreferCaptions}
+                  onCheckedChange={handleYoutubePreferCaptionsChange}
+                  aria-label="Use YouTube captions before audio transcription"
+                />
+              </SettingLine>
+            </div>
           </div>
         </SectionPanel>
 
@@ -3266,25 +3312,27 @@ export default function Settings() {
           title="Update app"
           description="Keep Scriber current without interrupting recordings."
           icon={Shield}
+          className="flex h-full self-stretch flex-col"
         >
-          <div className="space-y-3">
-            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-              <div>
-                <p className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Update status</p>
-                <p className="mt-0.5 text-[11px] leading-[15px] text-slate-500 dark:text-slate-400">{desktopUpdate.message}</p>
+          <div className="flex flex-1 flex-col justify-between gap-3">
+            <div className="grid gap-2 sm:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] sm:items-stretch">
+              <div className="grid gap-2 rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                <div>
+                  <p className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Update status</p>
+                  <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">{desktopUpdate.message}</p>
+                </div>
+                <Badge variant={desktopUpdateBadgeVariant}>{desktopUpdateBadgeLabel}</Badge>
               </div>
-              <Badge variant={desktopUpdateBadgeVariant}>{desktopUpdateBadgeLabel}</Badge>
+              <div className="grid gap-2 rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center dark:bg-slate-900/60">
+                <div>
+                  <p className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Automatic checks</p>
+                  <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">Weekly background checks via GitHub.</p>
+                </div>
+                <Switch checked={desktopUpdate.autoCheckEnabled} onCheckedChange={handleDesktopAutoCheckChange} disabled={isInstallingDesktopUpdate} />
+              </div>
             </div>
 
-            <div className="grid gap-2 rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center dark:bg-slate-900/60">
-              <div>
-                <p className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Automatic checks</p>
-                <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">Weekly background checks via GitHub.</p>
-              </div>
-              <Switch checked={desktopUpdate.autoCheckEnabled} onCheckedChange={handleDesktopAutoCheckChange} disabled={isInstallingDesktopUpdate} />
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 text-[11px]">
+            <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
               <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
                 <p className="text-[10px] leading-3 text-slate-500">Current</p>
                 <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">{desktopUpdate.currentVersion || "Unknown"}</p>
@@ -3313,30 +3361,32 @@ export default function Settings() {
               </div>
             )}
 
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Button variant="outline" className="h-8 text-[12px]" onClick={handleCheckDesktopUpdate} disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
-                {isCheckingDesktopUpdate ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                Check for updates
-              </Button>
-              <Button className="h-8 text-[12px]" onClick={handleInstallDesktopUpdate} disabled={!desktopUpdate.available || isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
-                {isInstallingDesktopUpdate ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
-                Install and restart
-              </Button>
-            </div>
-            {desktopUpdate.available && (
-              <div className="grid grid-cols-2 gap-2">
-                <Button variant="outline" className="h-8 text-[12px]" onClick={handleRemindDesktopUpdateLater} disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
-                  Remind tomorrow
+            <div className="space-y-2">
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Button variant="outline" className="h-8 text-[12px]" onClick={handleCheckDesktopUpdate} disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
+                  {isCheckingDesktopUpdate ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                  Check for updates
                 </Button>
-                <Button variant="outline" className="h-8 text-[12px]" onClick={handleSkipDesktopUpdateVersion} disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
-                  Skip version
+                <Button className="h-8 text-[12px]" onClick={handleInstallDesktopUpdate} disabled={!desktopUpdate.available || isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
+                  {isInstallingDesktopUpdate ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+                  Install and restart
                 </Button>
               </div>
-            )}
-            <Button variant="ghost" size="sm" className="h-8 justify-start px-1 text-[12px]" onClick={handleOpenDesktopUpdateReleaseNotes} disabled={isInstallingDesktopUpdate}>
-              <ExternalLink className="mr-2 h-4 w-4" />
-              Release notes
-            </Button>
+              {desktopUpdate.available && (
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="outline" className="h-8 text-[12px]" onClick={handleRemindDesktopUpdateLater} disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
+                    Remind tomorrow
+                  </Button>
+                  <Button variant="outline" className="h-8 text-[12px]" onClick={handleSkipDesktopUpdateVersion} disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
+                    Skip version
+                  </Button>
+                </div>
+              )}
+              <Button variant="ghost" size="sm" className="h-8 justify-start px-1 text-[12px]" onClick={handleOpenDesktopUpdateReleaseNotes} disabled={isInstallingDesktopUpdate}>
+                <ExternalLink className="mr-2 h-4 w-4" />
+                Release notes
+              </Button>
+            </div>
           </div>
         </SectionPanel>
 
@@ -3345,8 +3395,9 @@ export default function Settings() {
           title="Language"
           description="Auto-detect or choose a preferred transcription language."
           icon={Languages}
+          className="flex h-full self-stretch flex-col"
         >
-          <div className="space-y-4">
+          <div className="flex flex-1 flex-col justify-evenly gap-4">
             <SettingLine label="Auto-detect language" description="Let the provider infer spoken language.">
               <Switch
                 checked={language === "auto"}

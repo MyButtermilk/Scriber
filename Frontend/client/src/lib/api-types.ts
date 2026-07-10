@@ -300,6 +300,7 @@ export interface SettingsResponse {
   summarizationPrompt?: string;
   summarizationModel?: string;
   autoSummarize?: boolean;
+  youtubePreferCaptions?: boolean;
   postProcessingEnabled?: boolean;
   postProcessingHotkey?: string;
   postProcessingHotkeyRaw?: string;
@@ -331,6 +332,7 @@ export interface SettingsUpdatePayload {
   summarizationPrompt?: string;
   summarizationModel?: string;
   autoSummarize?: boolean;
+  youtubePreferCaptions?: boolean;
   postProcessingEnabled?: boolean;
   postProcessingHotkey?: string;
   postProcessingPrompt?: string;

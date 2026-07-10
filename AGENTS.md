@@ -373,6 +373,10 @@ Packaging and scripts:
   Essentials is explicit fallback only.
 - Keep ffmpeg and ffprobe bundled in the standard installer. `-SkipBundledFfprobe`
   is an experiment, not the release default.
+- YouTube transcription prefers manual subtitles and then automatic captions by
+  default. Keep `youtubePreferCaptions` persistent in writable runtime settings,
+  fall back to provider audio transcription when captions are unavailable, and
+  do not expose the preference as an inline control on the YouTube page.
 - Standard YouTube builds pin `yt-dlp[default,deno]==2026.7.4` with matching
   `yt-dlp-ejs==0.8.0` and bundled Deno `2.9.2`. Let current yt-dlp defaults
   select YouTube player clients; do not restore the stale forced `android,web`

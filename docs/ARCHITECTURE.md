@@ -42,14 +42,18 @@ Live mic:
 YouTube:
 
 1. Frontend search or URL lookup calls backend YouTube endpoints.
-2. Backend uses YouTube metadata helpers, pinned current `yt-dlp`, bundled EJS
-   challenge scripts, Deno, and bundled ffmpeg/ffprobe. yt-dlp owns current
-   YouTube player-client selection; Scriber does not force stale client names.
-   Every downloaded file must pass ffprobe audio/structure validation before it
-   can reach a transcription provider.
-3. Persistent job metadata tracks download, media preparation, transcription,
-   summary, retry, resume, cancel, and completion states.
-4. Transcript and summary are saved as a `youtube` transcript.
+2. Backend asks yt-dlp for manual subtitles first, then automatic captions. The
+   persistent `youtubePreferCaptions` setting defaults to enabled in the writable
+   runtime data directory. If no usable track exists, the job falls back to the
+   configured STT provider and audio workflow.
+3. The fallback uses pinned current `yt-dlp`, bundled EJS challenge scripts,
+   Deno, and bundled ffmpeg/ffprobe. yt-dlp owns current YouTube player-client
+   selection; Scriber does not force stale client names. Every downloaded file
+   must pass ffprobe audio/structure validation before it can reach a provider.
+4. Persistent job metadata tracks the caption preference, download, media
+   preparation, transcription, summary, retry, resume, cancel, and completion.
+5. Transcript and summary are saved as a `youtube` transcript. A pending summary
+   remains a processing state in Recent videos even after transcript persistence.
 
 File:
 
@@ -98,8 +102,8 @@ Key modules:
 - `Frontend/client/src/App.tsx`: Wouter routes. Live Mic, YouTube, File, and
   Settings are eager because they are primary desktop tabs; Debug Console,
   transcript detail, and not-found remain lazy.
-- `Frontend/client/src/pages/LiveMic.tsx`: live recording UI and canvas
-  waveform.
+- `Frontend/client/src/pages/LiveMic.tsx`: live recording UI, canvas waveform,
+  transcript-excerpt history cards, and non-overlapping time sections.
 - `Frontend/client/src/pages/YouTube.tsx`: YouTube search, URL workflow, recent
   videos, thumbnail display.
 - `Frontend/client/src/pages/FileUpload.tsx`: file upload and drag/drop flow.

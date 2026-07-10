@@ -801,6 +801,23 @@ async def test_settings_round_trips_openrouter_summary_model_and_key(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_settings_round_trip_youtube_caption_preference(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
+    monkeypatch.setattr(web_api.Config, "YOUTUBE_PREFER_CAPTIONS", True, raising=False)
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    settings = await ctl.update_settings({"youtubePreferCaptions": False})
+
+    assert web_api.Config.YOUTUBE_PREFER_CAPTIONS is False
+    assert settings["youtubePreferCaptions"] is False
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_controller_starts_idle_mic_prewarm_when_enabled(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")

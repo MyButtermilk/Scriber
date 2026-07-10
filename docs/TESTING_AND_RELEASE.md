@@ -514,7 +514,9 @@ media tools:
 The frozen runtime gate also requires exact compatible yt-dlp/EJS versions, and
 sidecar preparation copies and executes bundled Deno before packaging. YouTube
 download unit coverage must reject malformed containers and audio-free fallback
-formats before a provider receives them.
+formats before a provider receives them. Caption coverage must verify manual
+caption priority over automatic tracks, original-language preference, markup removal,
+audio fallback, and the no-audio/no-provider fast path.
 
 Support bundle smoke verifies:
 

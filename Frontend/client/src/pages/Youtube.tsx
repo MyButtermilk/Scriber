@@ -1,4 +1,4 @@
-import { AlertCircle, ArrowRight, Clock, PlayCircle, Youtube as YoutubeIcon, Loader2, CheckCircle2, ThumbsUp, Eye, LayoutGrid, LayoutList, Square, Search, X } from "lucide-react";
+import { AlertCircle, ArrowRight, Clock, PlayCircle, Youtube as YoutubeIcon, Loader2, CheckCircle2, ThumbsUp, Eye, LayoutGrid, LayoutList, Square } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -18,8 +18,10 @@ import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { useUrlQueryState } from "@/hooks/use-url-query-state";
 import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
+import { PageIntro } from "@/components/page-intro";
 import { friendlyError, responseErrorMessage } from "@/lib/request-errors";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
+import { TranscriptHistorySearch } from "@/components/transcript-history-search";
 import {
   prependTranscriptHistoryItem,
   transcriptHistoryQueryKey,
@@ -46,7 +48,7 @@ function isCompletedStep(step?: string): boolean {
 }
 
 function isVisiblyProcessing(item: TranscriptHistoryItem): boolean {
-  return item.status === "processing" && !isCompletedStep(item.step);
+  return item.summaryStatus === "pending" || (item.status === "processing" && !isCompletedStep(item.step));
 }
 
 type YoutubeHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";
@@ -579,14 +581,12 @@ export default function Youtube() {
 
   return (
     <div className="transcription-page youtube-page mx-auto w-full max-w-[1320px] px-4 py-5 md:px-6 md:py-6">
-      <header className="transcription-intro mb-6">
-        <div className="mb-3 flex items-center gap-2.5 text-[9.5px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-          <span className="h-px w-7 bg-red-500/70" aria-hidden="true" />
-          Media capture · 02
-        </div>
-        <h1 className="font-heading text-[36px] font-semibold leading-[0.96] tracking-[-0.045em] text-foreground md:text-[42px]">YouTube transcription</h1>
-        <p className="mt-3 max-w-[62ch] text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">Paste a video URL or search YouTube, then turn the source into a searchable transcript.</p>
-      </header>
+      <PageIntro
+        eyebrow="Media capture · 02"
+        title="YouTube transcription"
+        description="Paste a video URL or search YouTube, then turn the source into a searchable transcript."
+        accentClassName="bg-red-500/70"
+      />
 
       {/* Media discovery command bar */}
       <div className="youtube-search-shell mb-7">
@@ -766,26 +766,14 @@ export default function Youtube() {
             <p className="mt-1 text-[12px] text-muted-foreground">Search, copy, or reopen your latest video transcripts.</p>
           </div>
           <div className="flex w-full items-center gap-2 sm:w-auto">
-            <div className="transcription-search relative min-w-0 flex-1 rounded-[13px] p-1 sm:w-[340px] sm:flex-none lg:w-[400px]">
-              <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                type="text"
-                placeholder="Search history..."
-                value={historySearch}
-                onChange={(e) => setHistorySearch(e.target.value)}
-                className="h-10 rounded-[10px] border-0 bg-transparent pl-9 pr-9 shadow-none focus-visible:ring-0"
-              />
-              {historySearch && (
-                <button
-                  type="button"
-                  onClick={() => setHistorySearch("")}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Clear YouTube history search"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              )}
-            </div>
+            <TranscriptHistorySearch
+              value={historySearch}
+              onChange={setHistorySearch}
+              placeholder="Search history..."
+              ariaLabel="Search YouTube transcript history"
+              clearLabel="Clear YouTube history search"
+              className="sm:w-[340px] lg:w-[400px]"
+            />
           <ToggleGroup
             type="single"
             value={viewMode}

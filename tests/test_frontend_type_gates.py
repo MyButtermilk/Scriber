@@ -328,6 +328,7 @@ def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:
     assert "URL.createObjectURL(blob)" not in source
     assert "function isCompletedStep" in source
     assert "function isVisiblyProcessing" in source
+    assert 'item.summaryStatus === "pending"' in source
     assert 'type YoutubeHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";' in source
     assert "function youtubeHistoryStatus(item: TranscriptHistoryItem): YoutubeHistoryStatus" in source
     assert 'if (item.summaryStatus === "failed") return "summary_failed";' in source
@@ -335,6 +336,86 @@ def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:
     assert "Summary failed" in source
     assert "text-red-600 border-red-200 bg-red-50" in source
     assert "const isProcessing = isVisiblyProcessing(item);" not in source
+    assert "youtubePreferCaptions" in api_types
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert 'label="YouTube captions first"' in settings_source
+    assert "youtubePreferCaptions" in settings_source
+    assert settings_source.index('id="settings-summaries"') < settings_source.index('label="YouTube captions first"')
+    assert settings_source.index('label="Auto-summarize"') < settings_source.index('label="YouTube captions first"')
+    assert "preferCaptions," not in source
+
+
+def test_live_mic_history_uses_snippets_period_sections_and_stable_virtual_rows() -> None:
+    page_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(
+        encoding="utf-8"
+    )
+    virtual_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "virtual-transcript-history.tsx"
+    ).read_text(encoding="utf-8")
+    period_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "transcript-history-period.ts"
+    ).read_text(encoding="utf-8")
+
+    assert "const visibleSnippet =" in page_source
+    assert "item.preview" in page_source
+    assert "recordingTimeLabel(item.createdAt, item.date)" in page_source
+    assert "getItemGroup={(item) => transcriptHistoryPeriod(item.createdAt)}" in page_source
+    assert 'label: "Today"' in period_source
+    assert 'label: "Last week"' in period_source
+    assert 'label: "Last month"' in period_source
+    assert 'label: "Older"' in period_source
+    assert "translate3d(0, ${virtualRow.start}px, 0)" in virtual_source
+    assert "layoutId=" not in virtual_source
+    assert "AnimatePresence" not in virtual_source
+
+
+def test_primary_page_intros_share_responsive_full_width_layout() -> None:
+    component_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "page-intro.tsx"
+    ).read_text(encoding="utf-8")
+    page_sources = {
+        page: (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page).read_text(encoding="utf-8")
+        for page in ("LiveMic.tsx", "Youtube.tsx", "FileTranscribe.tsx", "Settings.tsx")
+    }
+
+    assert 'className="mt-3 w-full text-[13px]' in component_source
+    assert "max-w-[62ch]" not in component_source
+    assert '"transcription-intro sticky top-0 z-20' in component_source
+    assert "bottomContent" in component_source
+    assert 'title="Settings"' in page_sources["Settings.tsx"]
+    assert 'eyebrow="Workspace controls · 04"' in page_sources["Settings.tsx"]
+    assert page_sources["Settings.tsx"].index("<PageIntro") < page_sources["Settings.tsx"].index(
+        'aria-label="Settings sections"'
+    )
+    for source in page_sources.values():
+        assert 'from "@/components/page-intro"' in source
+        assert "<PageIntro" in source
+
+
+def test_primary_history_search_fields_share_sidebar_inset_design() -> None:
+    component_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "transcript-history-search.tsx"
+    ).read_text(encoding="utf-8")
+    sidebar_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "ui" / "sidebar-search.tsx"
+    ).read_text(encoding="utf-8")
+    page_sources = [
+        (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page).read_text(encoding="utf-8")
+        for page in ("LiveMic.tsx", "Youtube.tsx", "FileTranscribe.tsx")
+    ]
+
+    assert "neu-search-inset" in sidebar_source
+    assert "neu-search-inset" in component_source
+    assert "neu-kbd" not in component_source
+    assert 'type="search"' in component_source
+    assert "transcript-history-search" in component_source
+    for source in page_sources:
+        assert 'from "@/components/transcript-history-search"' in source
+        assert "<TranscriptHistorySearch" in source
+        assert "transcription-search relative" not in source
+        assert "live-mic-search relative" not in source
 
 
 def test_youtube_sorting_and_failed_retry_use_client_state_and_source_url() -> None:
@@ -581,6 +662,10 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     assert "debug-console-actions" in debug_source
     assert "debug-console-action-button" in debug_source
     assert "debug-console-action-label" in debug_source
+    assert "debug-console-stat-copy" in debug_source
+    assert "debug-console-stat-icon" in debug_source
+    assert 'aria-pressed={selectedLevel === level}' in debug_source
+    assert "debug-level-selected-icon" in debug_source
     assert "Download support bundle" in debug_source
     assert "Support bundle downloaded as ${filename}. Check your Downloads folder." in debug_source
     assert "was saved by the browser download manager" in debug_source
@@ -596,6 +681,9 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     assert "--impact-switch-track-width: 64px" in css
     assert ".debug-console-actions" in css
     assert ".debug-console-action-label" in css
+    assert ".debug-console-page .debug-level-button[aria-pressed=\"true\"]" in css
+    assert "grid-template-columns: auto minmax(0, 1fr) auto" in css
+    assert "padding: 1.5rem 1.5rem 1rem" in css
     assert "grid-template-columns: repeat(5, minmax(2.25rem, 1fr))" in css
     assert ".settings-page .mic-device-dropdown-header" in css
     assert "@media (max-width: 720px)" in css
@@ -897,6 +985,21 @@ def test_settings_summary_model_groups_do_not_render_secondary_descriptions() ->
     assert "Fast Google summaries." not in settings_source
     assert "Nitro routes for long output." not in settings_source
     assert "OpenAI summary models." not in settings_source
+
+
+def test_settings_paired_panels_balance_height_and_update_metadata_density() -> None:
+    settings_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+
+    for section_id in ("settings-api-keys", "settings-summaries", "settings-updates", "settings-language"):
+        section = settings_source[settings_source.index(f'id="{section_id}"') :]
+        assert 'className="flex h-full self-stretch flex-col"' in section[:500]
+    assert "grid flex-1 content-between" in settings_source
+    assert "sm:grid-cols-4" in settings_source
+    assert 'dateStyle: "short"' in settings_source
+    assert 'timeStyle: "short"' in settings_source
+    assert "toLocaleString()" not in settings_source
 
 
 def test_tray_panel_exposes_direct_update_install_action() -> None:

@@ -259,6 +259,16 @@ Input:"""
     # Auto-summarize transcripts when completed
     AUTO_SUMMARIZE = os.getenv("SCRIBER_AUTO_SUMMARIZE", "0") in ("1", "true", "True")
 
+    # Prefer creator-provided or automatic YouTube captions before downloading
+    # audio. This is enabled for first installs and stored in the writable data
+    # directory so installer upgrades preserve the user's choice.
+    YOUTUBE_PREFER_CAPTIONS = (
+        str(_json_settings.get("youtubePreferCaptions", os.getenv("SCRIBER_YOUTUBE_PREFER_CAPTIONS", "1")))
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"}
+    )
+
     DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b"
     _LEGACY_DEFAULT_POST_PROCESSING_MODELS = {"", "gpt-5-nano", "google/gemini-2.5-flash-lite:nitro", "openai/gpt-oss-120b"}
     _DEFAULT_POST_PROCESSING_PROMPT = """Glätte das folgende Speech-to-Text-Transkript sprachlich, typografisch und strukturell, ohne Inhalt zu verändern, zu kürzen, zu interpretieren oder neue Informationen hinzuzufügen.
@@ -466,6 +476,13 @@ ${output}"""
         _json_settings["summarizationPrompt"] = cls.SUMMARIZATION_PROMPT
 
     @classmethod
+    def set_youtube_prefer_captions(cls, enabled: bool) -> None:
+        cls.YOUTUBE_PREFER_CAPTIONS = bool(enabled)
+        os.environ["SCRIBER_YOUTUBE_PREFER_CAPTIONS"] = "1" if cls.YOUTUBE_PREFER_CAPTIONS else "0"
+        global _json_settings
+        _json_settings["youtubePreferCaptions"] = cls.YOUTUBE_PREFER_CAPTIONS
+
+    @classmethod
     def set_post_processing_enabled(cls, enabled: bool) -> None:
         cls.POST_PROCESSING_ENABLED = bool(enabled)
         os.environ["SCRIBER_POST_PROCESSING_ENABLED"] = "1" if cls.POST_PROCESSING_ENABLED else "0"
@@ -544,6 +561,7 @@ ${output}"""
         # The default prompt from config.py will be used
         add("SCRIBER_SUMMARIZATION_MODEL", cls.SUMMARIZATION_MODEL or cls.DEFAULT_SUMMARIZATION_MODEL)
         add("SCRIBER_AUTO_SUMMARIZE", "1" if cls.AUTO_SUMMARIZE else "0")
+        add("SCRIBER_YOUTUBE_PREFER_CAPTIONS", "1" if cls.YOUTUBE_PREFER_CAPTIONS else "0")
         add("SCRIBER_POST_PROCESSING_ENABLED", "1" if cls.POST_PROCESSING_ENABLED else "0")
         add("SCRIBER_POST_PROCESSING_MODEL", cls.POST_PROCESSING_MODEL or cls.DEFAULT_POST_PROCESSING_MODEL)
         add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")

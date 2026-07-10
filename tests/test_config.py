@@ -195,6 +195,15 @@ def test_persist_to_env_file_includes_vad_segmentation_setting(monkeypatch, tmp_
     assert "SCRIBER_SEGMENT_SPEECH_WITH_VAD=1" in target.read_text(encoding="utf-8")
 
 
+def test_persist_to_env_file_includes_youtube_caption_preference(monkeypatch, tmp_path):
+    target = tmp_path / ".env"
+    monkeypatch.setattr(Config, "YOUTUBE_PREFER_CAPTIONS", False)
+
+    Config.persist_to_env_file(str(target))
+
+    assert "SCRIBER_YOUTUBE_PREFER_CAPTIONS=0" in target.read_text(encoding="utf-8")
+
+
 def test_json_setting_setters_are_batched_until_explicit_persist(monkeypatch, tmp_path):
     target = tmp_path / "settings.json"
     writes = []
@@ -208,12 +217,14 @@ def test_json_setting_setters_are_batched_until_explicit_persist(monkeypatch, tm
     Config.set_post_processing_enabled(False)
     Config.set_post_processing_model("test/model")
     Config.set_segment_speech_with_vad(True)
+    Config.set_youtube_prefer_captions(False)
 
     assert writes == []
     Config.persist_json_settings()
     assert len(writes) == 1
     assert writes[0][0] == target
     assert '"postProcessingModel": "test/model"' in writes[0][1]
+    assert '"youtubePreferCaptions": false' in writes[0][1]
 
 
 def test_atomic_write_cleans_unique_temporary_file_after_replace_failure(monkeypatch, tmp_path):

@@ -1,12 +1,11 @@
 import { useCallback, useState, useEffect, memo, useMemo, useRef, useSyncExternalStore } from "react";
 import { useDropzone } from "react-dropzone";
-import { AlertCircle, UploadCloud, FileAudio, CheckCircle2, Loader2, XCircle, LayoutGrid, LayoutList, Square, Search, X } from "lucide-react";
+import { AlertCircle, UploadCloud, FileAudio, CheckCircle2, Loader2, XCircle, LayoutGrid, LayoutList, Square } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Input } from "@/components/ui/input";
 import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiUrl } from "@/lib/backend";
@@ -19,7 +18,9 @@ import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { useUrlQueryState } from "@/hooks/use-url-query-state";
 import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
+import { PageIntro } from "@/components/page-intro";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
+import { TranscriptHistorySearch } from "@/components/transcript-history-search";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
 import {
   getFileUploadSnapshot,
@@ -509,14 +510,11 @@ export default function FileTranscribe() {
 
   return (
     <div className="transcription-page file-page mx-auto w-full max-w-[1320px] px-4 py-5 md:px-6 md:py-6">
-      <header className="transcription-intro mb-6">
-        <div className="mb-3 flex items-center gap-2.5 text-[9.5px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-          <span className="h-px w-7 bg-primary/60" aria-hidden="true" />
-          Media import · 03
-        </div>
-        <h1 className="font-heading text-[36px] font-semibold leading-[0.96] tracking-[-0.045em] text-foreground md:text-[42px]">File transcription</h1>
-        <p className="mt-3 max-w-[62ch] text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">Bring in audio or video files and let Scriber prepare, transcribe, and organize them.</p>
-      </header>
+      <PageIntro
+        eyebrow="Media import · 03"
+        title="File transcription"
+        description="Bring in audio or video files and let Scriber prepare, transcribe, and organize them."
+      />
 
       {/* Import workbench */}
       <div
@@ -633,26 +631,14 @@ export default function FileTranscribe() {
             <p className="mt-1 text-[12px] text-muted-foreground">Search, copy, or reopen your imported transcripts.</p>
           </div>
           <div className="flex w-full items-center gap-2 sm:w-auto">
-            <div className="transcription-search relative min-w-0 flex-1 rounded-[13px] p-1 sm:w-[340px] sm:flex-none lg:w-[400px]">
-              <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                type="text"
-                placeholder="Search files..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="h-10 rounded-[10px] border-0 bg-transparent pl-9 pr-9 shadow-none focus-visible:ring-0"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => setSearchQuery("")}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Clear file search"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              )}
-            </div>
+            <TranscriptHistorySearch
+              value={searchQuery}
+              onChange={setSearchQuery}
+              placeholder="Search files..."
+              ariaLabel="Search file transcript history"
+              clearLabel="Clear file search"
+              className="sm:w-[340px] lg:w-[400px]"
+            />
           <ToggleGroup
             type="single"
             value={viewMode}

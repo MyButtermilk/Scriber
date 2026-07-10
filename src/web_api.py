@@ -83,7 +83,11 @@ from src.youtube_api import (
     is_youtube_url_like,
     search_youtube_videos,
 )
-from src.youtube_download import YouTubeDownloadError, download_youtube_audio
+from src.youtube_download import (
+    YouTubeDownloadError,
+    download_youtube_audio,
+    download_youtube_transcript,
+)
 from src.native_overlay import get_overlay, show_recording_overlay, show_initializing_overlay, show_transcribing_overlay, hide_recording_overlay, update_overlay_audio
 from src import database as db
 
@@ -91,6 +95,7 @@ TranscriptStatus = Literal["completed", "processing", "failed", "recording", "st
 TranscriptType = Literal["mic", "youtube", "file"]
 SummaryStatus = Literal["idle", "pending", "completed", "failed"]
 TranscriptDeleteStatus = Literal["deleted", "not_found", "busy", "persistence_error"]
+_TRANSCRIPT_PREVIEW_WORDS = 16
 
 ScriberPipeline: Any | None = None
 _invalidate_mic_device_resolution_cache_impl: Callable[[], None] | None = None
@@ -1473,6 +1478,8 @@ class TranscriptRecord:
     _pending_content_segments: list[str] = field(default_factory=list, repr=False)
     _content_loaded: bool = True
     _summary_loaded: bool = True
+    _youtube_prefer_captions: bool | None = None
+    _youtube_stt_provider_used: str = ""
 
     def content_text(self) -> str:
         if self._pending_content_segments:
@@ -1519,11 +1526,11 @@ class TranscriptRecord:
         content = self.content_text() if include_content or not self._preview else self.content
         preview = self._preview
         if not preview and content:
-            sample_words = _preview_words(content, max_words=6)
+            sample_words = _preview_words(content, max_words=_TRANSCRIPT_PREVIEW_WORDS + 1)
             preview = _preview_from_words(
-                sample_words[:5],
-                max_words=5,
-                has_more=len(sample_words) > 5,
+                sample_words[:_TRANSCRIPT_PREVIEW_WORDS],
+                max_words=_TRANSCRIPT_PREVIEW_WORDS,
+                has_more=len(sample_words) > _TRANSCRIPT_PREVIEW_WORDS,
             )
         data["preview"] = preview or self.title
 
@@ -1583,16 +1590,16 @@ class TranscriptRecord:
         self._last_segment = cleaned
         segment_words = _preview_words(cleaned, max_words=128)
         if segment_words:
-            if len(self._preview_words) >= 5:
+            if len(self._preview_words) >= _TRANSCRIPT_PREVIEW_WORDS:
                 self._preview_has_more = True
             else:
-                needed = 5 - len(self._preview_words)
+                needed = _TRANSCRIPT_PREVIEW_WORDS - len(self._preview_words)
                 self._preview_words.extend(segment_words[:needed])
                 if len(segment_words) > needed:
                     self._preview_has_more = True
             self._preview = _preview_from_words(
                 self._preview_words,
-                max_words=5,
+                max_words=_TRANSCRIPT_PREVIEW_WORDS,
                 has_more=self._preview_has_more,
             )
         self.updated_at = datetime.now().isoformat()
@@ -2691,10 +2698,15 @@ class ScriberWebController:
 
     def _schedule_youtube_job(self, rec: TranscriptRecord, *, resumed: bool = False) -> None:
         async def _runner() -> None:
+            provider: str | None = None
             try:
                 await self._set_job_running_async(rec.id)
-                provider = self._select_available_provider()
-                _validate_provider_ready(provider)
+                if rec._youtube_prefer_captions is True:
+                    candidates = self._provider_candidates()
+                    provider = candidates[0] if candidates else str(Config.DEFAULT_STT_SERVICE or "soniox")
+                else:
+                    provider = self._select_available_provider()
+                    _validate_provider_ready(provider)
             except asyncio.CancelledError:
                 if not self._shutting_down:
                     await self._finalize_canceled_background_job(rec)
@@ -2713,14 +2725,27 @@ class ScriberWebController:
                 return
             try:
                 await self._run_youtube_transcription(rec, provider=provider)
-                if rec.status == "completed":
-                    self._record_provider_success(provider)
-                elif rec.status == "failed":
-                    self._record_provider_failure(provider, rec.step)
+                used_provider = rec._youtube_stt_provider_used
+                if used_provider and rec.status == "completed":
+                    self._record_provider_success(used_provider)
+                elif used_provider and rec.status == "failed":
+                    self._record_provider_failure(used_provider, rec.step)
             except asyncio.CancelledError:
                 if not self._shutting_down:
                     await self._finalize_canceled_background_job(rec)
                 raise
+            except Exception as exc:
+                logger.exception("YouTube background job failed outside the transcription runner")
+                used_provider = rec._youtube_stt_provider_used or provider or ""
+                if used_provider:
+                    self._record_provider_failure(used_provider, exc)
+                if not await self._schedule_retry_if_allowed(rec, exc):
+                    rec.status = "failed"
+                    rec.step = "Failed"
+                    rec.append_final_text(f"[Error] {exc}")
+                rec.updated_at = datetime.now().isoformat()
+                await self._save_transcript_to_db_async(rec)
+                await self._broadcast_history_updated(record=rec, reason="job_failed")
             finally:
                 if rec.status != "stopped":
                     await self._sync_job_status_async(rec)
@@ -2801,6 +2826,11 @@ class ScriberWebController:
             summary="",
             _content_loaded=True,
             _summary_loaded=True,
+            _youtube_prefer_captions=(
+                bool(payload.get("preferCaptions"))
+                if isinstance(payload.get("preferCaptions"), bool)
+                else bool(Config.YOUTUBE_PREFER_CAPTIONS)
+            ),
         )
         return rec
 
@@ -4297,6 +4327,11 @@ class ScriberWebController:
         channel = (payload.get("channelTitle") if isinstance(payload.get("channelTitle"), str) else "").strip()[:300]
         thumbnail = (payload.get("thumbnailUrl") if isinstance(payload.get("thumbnailUrl"), str) else "").strip()[:2048]
         duration = ((payload.get("duration") if isinstance(payload.get("duration"), str) else "").strip()[:32] or "00:00")
+        prefer_captions = (
+            payload["preferCaptions"]
+            if isinstance(payload.get("preferCaptions"), bool)
+            else bool(Config.YOUTUBE_PREFER_CAPTIONS)
+        )
 
         started_at = datetime.now()
         rec = TranscriptRecord(
@@ -4311,6 +4346,7 @@ class ScriberWebController:
             source_url=url,
             channel=channel,
             thumbnail_url=thumbnail,
+            _youtube_prefer_captions=prefer_captions,
         )
         self._emit_workflow_event(
             message=f"YouTube job queued: {rec.title}",
@@ -4333,14 +4369,182 @@ class ScriberWebController:
                 "thumbnailUrl": rec.thumbnail_url,
                 "duration": rec.duration,
                 "language": rec.language,
+                "preferCaptions": prefer_captions,
             },
         )
         self._schedule_youtube_job(rec)
         return rec
 
-    async def _run_youtube_transcription(self, rec: TranscriptRecord, *, provider: str) -> None:
+    async def _finalize_youtube_content(
+        self,
+        rec: TranscriptRecord,
+        *,
+        content: str,
+        provider: str,
+        started_at: float,
+        source: str,
+    ) -> None:
+        if not content.strip():
+            _raise_empty_transcript(provider, "YouTube transcription")
+        logger.info("YouTube {} completed: {} chars", source, len(content))
+        rec.status = "completed"
+        rec.step = "Completed"
+        rec.updated_at = datetime.now().isoformat()
+        # Save the transcript before summary generation so slow LLM work never
+        # leaves completed content only in memory.
+        await self._save_transcript_to_db_async(rec)
+        await self._broadcast_history_updated(record=rec, reason="transcript_completed")
+        self._emit_workflow_event(
+            message=(
+                "YouTube captions loaded"
+                if source == "captions"
+                else "YouTube transcription completed"
+            ),
+            event=(
+                "youtube.captions.completed"
+                if source == "captions"
+                else "pipeline.transcription.completed"
+            ),
+            workflow="youtube",
+            stage="transcript_done",
+            component="youtube_captions" if source == "captions" else "pipeline",
+            record=rec,
+            provider=provider,
+            milestone=True,
+            duration_ms=(time.monotonic() - started_at) * 1000,
+            outcome="success",
+            meta={"chars": len(content), "source": source},
+        )
+
+        if Config.AUTO_SUMMARIZE and content:
+            try:
+                from src.summarization import summarize_text
+
+                rec.mark_summary_pending()
+                await self._save_transcript_summary_state_async(rec)
+                await self._broadcast_history_updated(record=rec, reason="summary_pending")
+                summarize_started = time.monotonic()
+                self._emit_workflow_event(
+                    message=f"Summary generation started ({Config.SUMMARIZATION_MODEL})",
+                    event="summary.generation.started",
+                    workflow="youtube",
+                    stage="summarizing",
+                    component="summarization",
+                    record=rec,
+                    provider=provider,
+                    milestone=True,
+                    outcome="started",
+                )
+                summary = await summarize_text(
+                    content,
+                    Config.SUMMARIZATION_MODEL,
+                    duration=rec.duration,
+                )
+                rec.mark_summary_completed(summary)
+                await self._save_transcript_summary_state_async(rec, include_summary=True)
+                await self._broadcast_history_updated(record=rec, reason="summary_completed")
+                logger.info(f"YouTube auto-summarization completed: {len(rec.summary)} chars")
+                self._emit_workflow_event(
+                    message="Summary generation completed",
+                    event="summary.generation.completed",
+                    workflow="youtube",
+                    stage="summary_done",
+                    component="summarization",
+                    record=rec,
+                    provider=provider,
+                    milestone=True,
+                    duration_ms=(time.monotonic() - summarize_started) * 1000,
+                    outcome="success",
+                    meta={"chars": len(rec.summary)},
+                )
+            except asyncio.CancelledError:
+                logger.info("YouTube auto-summarization canceled after transcription completed")
+                if rec.summary_status == "completed":
+                    await self._save_transcript_summary_state_async(rec, include_summary=True)
+                    await self._broadcast_history_updated(record=rec, reason="summary_completed")
+                else:
+                    rec.mark_summary_failed("Summary canceled")
+                    await self._save_transcript_summary_state_async(rec)
+                    await self._broadcast_history_updated(record=rec, reason="summary_canceled")
+            except Exception as sum_err:
+                logger.warning(f"Auto-summarization failed: {sum_err}")
+                rec.mark_summary_failed(sum_err)
+                await self._save_transcript_summary_state_async(rec)
+                await self._broadcast_history_updated(record=rec, reason="summary_failed")
+                self._emit_workflow_event(
+                    message="Summary generation failed",
+                    event="summary.generation.failed",
+                    workflow="youtube",
+                    stage="summarizing",
+                    level="WARNING",
+                    component="summarization",
+                    record=rec,
+                    provider=provider,
+                    outcome="failure",
+                    error_category=classify_error_message(str(sum_err)).value,
+                    meta={"error": str(sum_err)},
+                )
+
+    async def _run_youtube_transcription(self, rec: TranscriptRecord, *, provider: str | None) -> None:
         workflow_started = time.monotonic()
         out_dir = self._downloads_dir / "youtube" / _safe_work_directory_component(rec.id)
+        prefer_captions = (
+            rec._youtube_prefer_captions
+            if isinstance(rec._youtube_prefer_captions, bool)
+            else bool(Config.YOUTUBE_PREFER_CAPTIONS)
+        )
+        if prefer_captions:
+            rec.step = "Checking YouTube captions..."
+            rec.updated_at = datetime.now().isoformat()
+            await self._broadcast_history_updated(record=rec, reason="progress")
+            captions_started = time.monotonic()
+            try:
+                caption_timeout = self._timeout_seconds("SCRIBER_TIMEOUT_YOUTUBE_CAPTIONS_SEC", 90.0)
+                captions = await self._await_with_timeout(
+                    download_youtube_transcript(
+                        rec.source_url,
+                        preferred_language=rec.language,
+                    ),
+                    timeout_seconds=caption_timeout,
+                    timeout_label="YouTube captions",
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as caption_error:
+                captions = None
+                logger.warning(
+                    "YouTube captions unavailable for {} ({}); falling back to audio transcription",
+                    rec.id,
+                    caption_error,
+                )
+            if captions is not None:
+                rec.language = captions.language or rec.language
+                rec.replace_content(captions.text)
+                await self._finalize_youtube_content(
+                    rec,
+                    content=rec.content_text(),
+                    provider="youtube_captions_auto" if captions.is_automatic else "youtube_captions",
+                    started_at=captions_started,
+                    source="captions",
+                )
+                self._emit_workflow_event(
+                    message="YouTube job completed",
+                    event="api.job.completed",
+                    workflow="youtube",
+                    stage="job_done",
+                    record=rec,
+                    provider="youtube_captions_auto" if captions.is_automatic else "youtube_captions",
+                    milestone=True,
+                    duration_ms=(time.monotonic() - workflow_started) * 1000,
+                    outcome="success",
+                )
+                await self._broadcast_history_updated(record=rec, reason="job_done")
+                return
+
+        if provider is None:
+            provider = self._select_available_provider()
+        _validate_provider_ready(provider)
+        rec._youtube_stt_provider_used = provider
         workflow_phase = {"value": "downloading"}
         rec.step = "Downloading audio..."
         rec.updated_at = datetime.now().isoformat()
@@ -4479,100 +4683,14 @@ class ScriberWebController:
                 )
 
             content = rec.content_text()
-            if not content.strip():
-                _raise_empty_transcript(provider, "YouTube transcription")
-            logger.info(f"YouTube transcription completed: {len(content)} chars")
             workflow_phase["value"] = "completed"
-            rec.status = "completed"
-            rec.step = "Completed"
-            rec.updated_at = datetime.now().isoformat()
-            # Persist transcript immediately so a stuck/slow summarization
-            # cannot keep the transcript in memory-only state.
-            await self._save_transcript_to_db_async(rec)
-            await self._broadcast_history_updated(record=rec, reason="transcript_completed")
-            logger.debug(f"YouTube record updated: status={rec.status}, step={rec.step}")
-            self._emit_workflow_event(
-                message="YouTube transcription completed",
-                event="pipeline.transcription.completed",
-                workflow="youtube",
-                stage="transcript_done",
-                component="pipeline",
-                record=rec,
+            await self._finalize_youtube_content(
+                rec,
+                content=content,
                 provider=provider,
-                milestone=True,
-                duration_ms=(time.monotonic() - transcribe_started) * 1000,
-                outcome="success",
-                meta={"chars": len(content)},
+                started_at=transcribe_started,
+                source="audio",
             )
-
-            # Auto-summarize if enabled
-            if Config.AUTO_SUMMARIZE and content:
-                try:
-                    from src.summarization import summarize_text
-                    rec.mark_summary_pending()
-                    await self._save_transcript_summary_state_async(rec)
-                    await self._broadcast_history_updated(record=rec, reason="summary_pending")
-                    summarize_started = time.monotonic()
-                    self._emit_workflow_event(
-                        message=f"Summary generation started ({Config.SUMMARIZATION_MODEL})",
-                        event="summary.generation.started",
-                        workflow="youtube",
-                        stage="summarizing",
-                        component="summarization",
-                        record=rec,
-                        provider=provider,
-                        milestone=True,
-                        outcome="started",
-                    )
-                    summary = await summarize_text(
-                        content,
-                        Config.SUMMARIZATION_MODEL,
-                        duration=rec.duration,
-                    )
-                    rec.mark_summary_completed(summary)
-                    await self._save_transcript_summary_state_async(rec, include_summary=True)
-                    await self._broadcast_history_updated(record=rec, reason="summary_completed")
-                    logger.info(f"YouTube auto-summarization completed: {len(rec.summary)} chars")
-                    self._emit_workflow_event(
-                        message="Summary generation completed",
-                        event="summary.generation.completed",
-                        workflow="youtube",
-                        stage="summary_done",
-                        component="summarization",
-                        record=rec,
-                        provider=provider,
-                        milestone=True,
-                        duration_ms=(time.monotonic() - summarize_started) * 1000,
-                        outcome="success",
-                        meta={"chars": len(rec.summary)},
-                    )
-                except asyncio.CancelledError:
-                    logger.info("YouTube auto-summarization canceled after transcription completed")
-                    if rec.summary_status == "completed":
-                        await self._save_transcript_summary_state_async(rec, include_summary=True)
-                        await self._broadcast_history_updated(record=rec, reason="summary_completed")
-                    else:
-                        rec.mark_summary_failed("Summary canceled")
-                        await self._save_transcript_summary_state_async(rec)
-                        await self._broadcast_history_updated(record=rec, reason="summary_canceled")
-                except Exception as sum_err:
-                    logger.warning(f"Auto-summarization failed: {sum_err}")
-                    rec.mark_summary_failed(sum_err)
-                    await self._save_transcript_summary_state_async(rec)
-                    await self._broadcast_history_updated(record=rec, reason="summary_failed")
-                    self._emit_workflow_event(
-                        message="Summary generation failed",
-                        event="summary.generation.failed",
-                        workflow="youtube",
-                        stage="summarizing",
-                        level="WARNING",
-                        component="summarization",
-                        record=rec,
-                        provider=provider,
-                        outcome="failure",
-                        error_category=classify_error_message(str(sum_err)).value,
-                        meta={"error": str(sum_err)},
-                    )
         except (ValueError, ImportError) as exc:
             self._record_provider_failure(provider, exc)
             if await self._schedule_retry_if_allowed(rec, exc):
@@ -6035,6 +6153,7 @@ class ScriberWebController:
             "summarizationPrompt": Config.SUMMARIZATION_PROMPT or "",
             "summarizationModel": Config.SUMMARIZATION_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL,
             "autoSummarize": bool(Config.AUTO_SUMMARIZE),
+            "youtubePreferCaptions": bool(Config.YOUTUBE_PREFER_CAPTIONS),
             "postProcessingEnabled": bool(Config.POST_PROCESSING_ENABLED),
             "postProcessingHotkey": _hotkey_to_display(Config.POST_PROCESSING_HOTKEY),
             "postProcessingHotkeyRaw": Config.POST_PROCESSING_HOTKEY,
@@ -6165,6 +6284,10 @@ class ScriberWebController:
         if auto_summarize is not None:
             Config.AUTO_SUMMARIZE = auto_summarize
             os.environ["SCRIBER_AUTO_SUMMARIZE"] = "1" if Config.AUTO_SUMMARIZE else "0"
+
+        youtube_prefer_captions = _payload_bool(payload, "youtubePreferCaptions")
+        if youtube_prefer_captions is not None:
+            Config.set_youtube_prefer_captions(youtube_prefer_captions)
 
         post_processing_enabled = _payload_bool(payload, "postProcessingEnabled")
         if post_processing_enabled is not None:

@@ -56,6 +56,12 @@ YouTube/file:
   audio stream and container integrity with ffprobe before provider upload.
   Corrupted/incomplete transfers are retryable download failures rather than
   successful downloads that later fail inside Azure MAI.
+- YouTube jobs now prefer manual or automatic caption tracks before downloading
+  audio. The default-on preference is stored in runtime settings across installer
+  upgrades, and missing or unreadable captions fall back to the audio path.
+- Recent videos treats a pending automatic summary as processing, so Ready is
+  shown only after summary completion. Live Mic history uses transcript excerpts
+  and stable, non-overlapping time sections without layout-motion gaps.
 
 Reliability and data:
 

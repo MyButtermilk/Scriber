@@ -57,7 +57,8 @@ recent recordings, search, and fast reuse.
 ### YouTube To Transcript
 
 Search YouTube or paste a URL, then turn a video into a transcript and summary
-that lives beside your other recordings.
+that lives beside your other recordings. By default Scriber uses creator or
+automatic YouTube captions when available, then falls back to audio transcription.
 
 ![YouTube transcription view](docs/screenshots/youtube.png)
 
@@ -104,7 +105,10 @@ screen.
 
 - Search YouTube from inside Scriber.
 - Paste a direct URL when you already have the video.
-- Download and prepare audio through bundled media tools.
+- Use YouTube captions first by default to avoid unnecessary audio upload cost;
+  change the persistent preference under Settings > Summarization.
+- Download and prepare audio through bundled media tools only when captions are
+  disabled or unavailable.
 - Progress, retry, cancel, and durable job state for longer jobs.
 - Transcript and summary saved to the same history as live recordings.
 - Provider diarization support for batch jobs where the adapter supports stable
@@ -124,6 +128,8 @@ screen.
 
 - One local history for microphone, YouTube, and file transcripts.
 - Searchable, paginated, virtualized history lists for larger libraries.
+- Live Mic history uses transcript excerpts and non-overlapping Today, Last
+  week, Last month, and Older sections instead of repeating timestamp titles.
 - Detail pages with transcript, summary, metadata, copy actions, and export.
 - Status tracking for processing, failed, stopped, summary failed, and ready
   items.
@@ -398,6 +404,8 @@ the Deno JavaScript runtime required for full YouTube extraction. In development
 mode, install `requirements-base.txt` and make sure the bundled media tools were
 built, or set `SCRIBER_MEDIA_TOOLS_DIR`, `SCRIBER_FFMPEG_PATH`,
 `SCRIBER_FFPROBE_PATH`, or `SCRIBER_DENO_PATH`.
+When "YouTube captions first" is enabled in Settings, Scriber tries manual and
+automatic caption tracks before this audio path and falls back automatically.
 
 ### Microphone Changes
 

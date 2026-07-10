@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import html
+import json
+import re
 import shutil
 import sys
 import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 from uuid import uuid4
 
 from loguru import logger
@@ -19,6 +23,13 @@ class YouTubeDownloadError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class YouTubeTranscript:
+    text: str
+    language: str
+    is_automatic: bool
+
+
 _AUDIO_ONLY_FORMAT = "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio"
 _FORMAT_SELECTORS = (
     _AUDIO_ONLY_FORMAT,
@@ -26,6 +37,8 @@ _FORMAT_SELECTORS = (
     "best[ext=webm][acodec!=none]/best[ext=mp4][acodec!=none]/best[acodec!=none]",
 )
 _CONCURRENT_FRAGMENT_DOWNLOADS = 4
+_MAX_CAPTION_BYTES = 16 * 1024 * 1024
+_CAPTION_FORMAT_PRIORITY = {"json3": 0, "vtt": 1, "srv3": 2, "ttml": 3}
 
 
 class DownloadProgress:
@@ -75,6 +88,232 @@ def _is_forbidden_error(message: str) -> bool:
 def _is_format_unavailable_error(message: str) -> bool:
     text = (message or "").lower()
     return "requested format is not available" in text
+
+
+def _normalize_caption_language(value: str | None) -> str:
+    return str(value or "").strip().lower().replace("_", "-")
+
+
+def _caption_language_candidates(
+    tracks: dict[str, Any],
+    *,
+    preferred_language: str,
+    source_language: str,
+    automatic: bool,
+) -> list[str]:
+    available = [
+        str(key)
+        for key, value in tracks.items()
+        if key != "live_chat" and isinstance(value, list) and value
+    ]
+    normalized = {key: _normalize_caption_language(key) for key in available}
+    preferred = _normalize_caption_language(preferred_language)
+    source = _normalize_caption_language(source_language)
+    requested = [] if preferred in {"", "auto"} else [preferred]
+    if source:
+        requested.insert(0, source)
+
+    ranked: list[str] = []
+
+    def add_matching(language: str, *, original_first: bool = False) -> None:
+        if not language:
+            return
+        exact = [key for key in available if normalized[key] == language]
+        originals = [key for key in available if normalized[key] == f"{language}-orig"]
+        regional = [
+            key
+            for key in available
+            if normalized[key].startswith(f"{language}-") and key not in originals
+        ]
+        for key in (originals + exact + regional if original_first else exact + originals + regional):
+            if key not in ranked:
+                ranked.append(key)
+
+    for language in requested:
+        add_matching(language, original_first=automatic)
+
+    if automatic:
+        for key in available:
+            if normalized[key].endswith("-orig") and key not in ranked:
+                ranked.append(key)
+
+    for key in available:
+        if key not in ranked:
+            ranked.append(key)
+    return ranked
+
+
+def _select_caption_track(
+    info: dict[str, Any],
+    *,
+    preferred_language: str,
+) -> tuple[str, bool, dict[str, Any]] | None:
+    source_language = str(info.get("language") or info.get("original_language") or "")
+    for field_name, automatic in (("subtitles", False), ("automatic_captions", True)):
+        tracks = info.get(field_name)
+        if not isinstance(tracks, dict):
+            continue
+        for language in _caption_language_candidates(
+            tracks,
+            preferred_language=preferred_language,
+            source_language=source_language,
+            automatic=automatic,
+        ):
+            formats = tracks.get(language)
+            if not isinstance(formats, list):
+                continue
+            candidates = [
+                item
+                for item in formats
+                if isinstance(item, dict) and str(item.get("url") or "").strip()
+            ]
+            if not candidates:
+                continue
+            candidates.sort(
+                key=lambda item: _CAPTION_FORMAT_PRIORITY.get(
+                    str(item.get("ext") or "").strip().lower(),
+                    100,
+                )
+            )
+            return language, automatic, candidates[0]
+    return None
+
+
+def _clean_caption_text(value: str) -> str:
+    value = html.unescape(value or "")
+    value = re.sub(r"<[^>]+>", "", value)
+    return re.sub(r"[ \t\r\f\v]+", " ", value).strip()
+
+
+def _caption_text_from_json3_bytes(payload: bytes) -> str:
+    data = json.loads(payload.decode("utf-8-sig", errors="replace"))
+    events = data.get("events") if isinstance(data, dict) else None
+    if not isinstance(events, list):
+        return ""
+    lines: list[str] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        segments = event.get("segs")
+        if not isinstance(segments, list):
+            continue
+        raw_text = "".join(
+            str(segment.get("utf8") or "")
+            for segment in segments
+            if isinstance(segment, dict)
+        )
+        for raw_line in raw_text.splitlines() or [raw_text]:
+            line = _clean_caption_text(raw_line)
+            if line and (not lines or line != lines[-1]):
+                lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _caption_text_from_vtt_bytes(payload: bytes) -> str:
+    text = payload.decode("utf-8-sig", errors="replace")
+    lines: list[str] = []
+    in_note = False
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith(("NOTE", "STYLE", "REGION")):
+            in_note = True
+            continue
+        if in_note:
+            if not stripped:
+                in_note = False
+            continue
+        if (
+            not stripped
+            or stripped == "WEBVTT"
+            or "-->" in stripped
+            or stripped.isdigit()
+            or stripped.startswith("Kind:")
+            or stripped.startswith("Language:")
+        ):
+            continue
+        line = _clean_caption_text(stripped)
+        if line and (not lines or line != lines[-1]):
+            lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _parse_caption_payload(payload: bytes, extension: str) -> str:
+    if extension.lower() == "json3":
+        return _caption_text_from_json3_bytes(payload)
+    return _caption_text_from_vtt_bytes(payload)
+
+
+async def download_youtube_transcript(
+    url: str,
+    *,
+    preferred_language: str = "auto",
+) -> YouTubeTranscript | None:
+    """Return YouTube-provided captions without downloading media.
+
+    Manual subtitles are preferred over automatic captions. ``None`` means
+    that the video has no usable caption track, so callers can fall back to
+    the normal audio transcription path.
+    """
+    url = (url or "").strip()
+    if not url:
+        raise ValueError("Missing URL")
+
+    def _extract() -> YouTubeTranscript | None:
+        try:
+            import yt_dlp
+            from yt_dlp.networking import Request
+        except ImportError as exc:
+            raise YouTubeDownloadError("yt-dlp not installed") from exc
+
+        options: dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "skip_download": True,
+        }
+        deno_path = find_media_tool("deno")
+        if deno_path:
+            options["js_runtimes"] = {"deno": {"path": deno_path}}
+
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if not isinstance(info, dict):
+                return None
+            selected = _select_caption_track(
+                info,
+                preferred_language=preferred_language,
+            )
+            if selected is None:
+                return None
+            language, automatic, caption_format = selected
+            request = Request(
+                str(caption_format["url"]),
+                headers=caption_format.get("http_headers") or info.get("http_headers") or {},
+            )
+            with ydl.urlopen(request) as response:
+                payload = response.read(_MAX_CAPTION_BYTES + 1)
+            if len(payload) > _MAX_CAPTION_BYTES:
+                raise YouTubeDownloadError("YouTube caption track is unexpectedly large")
+            text = _parse_caption_payload(
+                payload,
+                str(caption_format.get("ext") or "vtt"),
+            )
+            if not text.strip():
+                return None
+            return YouTubeTranscript(
+                text=text,
+                language=language,
+                is_automatic=automatic,
+            )
+
+    try:
+        return await asyncio.to_thread(_extract)
+    except asyncio.CancelledError:
+        raise
+    except YouTubeDownloadError:
+        raise
+    except Exception as exc:
+        raise YouTubeDownloadError(f"Failed to read YouTube captions: {exc}") from exc
 
 
 async def _has_video_stream(path: Path) -> bool:
@@ -151,11 +390,7 @@ async def _ensure_audio_only_file(path: Path) -> Path:
     """Guarantee that returned file is audio-only WebM."""
     suffix = path.suffix.lower()
     if suffix == ".webm":
-        try:
-            if not await _has_video_stream(path):
-                return path
-        except Exception as exc:
-            logger.debug(f"Could not inspect WEBM streams ({path.name}): {exc}")
+        if not await _has_video_stream(path):
             return path
         logger.info(f"Downloaded WEBM contains video stream; extracting audio only: {path.name}")
     else:

@@ -1,16 +1,22 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type ViewMode = "list" | "grid";
+
+export interface TranscriptHistoryGroup {
+  key: string;
+  label: string;
+}
 
 interface VirtualTranscriptHistoryProps<TItem> {
   items: TItem[];
   viewMode: ViewMode;
   renderItem: (item: TItem, index: number) => ReactNode;
   getItemKey: (item: TItem, index: number) => string | number;
+  getItemGroup?: (item: TItem, index: number) => TranscriptHistoryGroup;
+  renderGroupHeader?: (group: TranscriptHistoryGroup, itemCount: number) => ReactNode;
   hasMore?: boolean;
   isLoadingMore?: boolean;
   onLoadMore?: () => void | Promise<unknown>;
@@ -18,29 +24,42 @@ interface VirtualTranscriptHistoryProps<TItem> {
   gridClassName?: string;
   estimateListRowHeight?: number;
   estimateGridRowHeight?: number;
+  estimateGroupHeaderHeight?: number;
 }
 
-type VirtualRow<TItem> = Array<{
+type VirtualItem<TItem> = {
   item: TItem;
   index: number;
-}>;
+};
+
+type VirtualRow<TItem> =
+  | {
+      kind: "group";
+      group: TranscriptHistoryGroup;
+      itemCount: number;
+    }
+  | {
+      kind: "items";
+      items: VirtualItem<TItem>[];
+    };
 
 const GRID_GAP_PX = 16;
 const DEFAULT_MIN_GRID_COLUMN_WIDTH = 210;
-const HISTORY_LAYOUT_TRANSITION = {
-  type: "spring",
-  stiffness: 520,
-  damping: 44,
-  mass: 0.82,
-} as const;
-const HISTORY_ITEM_TRANSITION = {
-  duration: 0.18,
-  ease: [0.16, 1, 0.3, 1],
-} as const;
 
 function calculateGridColumns(width: number) {
   if (width <= 0) return 1;
   return Math.max(1, Math.floor((width + GRID_GAP_PX) / (DEFAULT_MIN_GRID_COLUMN_WIDTH + GRID_GAP_PX)));
+}
+
+function defaultGroupHeader(group: TranscriptHistoryGroup, itemCount: number) {
+  return (
+    <div className="flex items-baseline gap-2 px-1 pb-3 pt-2">
+      <h3 className="font-heading text-[13px] font-semibold tracking-[-0.01em] text-foreground">
+        {group.label}
+      </h3>
+      <span className="text-[11px] tabular-nums text-muted-foreground">{itemCount}</span>
+    </div>
+  );
 }
 
 export function VirtualTranscriptHistory<TItem>({
@@ -48,6 +67,8 @@ export function VirtualTranscriptHistory<TItem>({
   viewMode,
   renderItem,
   getItemKey,
+  getItemGroup,
+  renderGroupHeader = defaultGroupHeader,
   hasMore = false,
   isLoadingMore = false,
   onLoadMore,
@@ -55,11 +76,11 @@ export function VirtualTranscriptHistory<TItem>({
   gridClassName,
   estimateListRowHeight = 116,
   estimateGridRowHeight = 252,
+  estimateGroupHeaderHeight = 48,
 }: VirtualTranscriptHistoryProps<TItem>) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const loadInFlightRef = useRef(false);
-  const prefersReducedMotion = useReducedMotion();
   const [containerWidth, setContainerWidth] = useState(0);
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
 
@@ -69,39 +90,63 @@ export function VirtualTranscriptHistory<TItem>({
   );
 
   const rows = useMemo<Array<VirtualRow<TItem>>>(() => {
-    if (viewMode === "list") {
-      return items.map((item, index) => [{ item, index }]);
+    const indexedItems = items.map((item, index) => ({ item, index }));
+    if (!getItemGroup) {
+      const result: Array<VirtualRow<TItem>> = [];
+      for (let index = 0; index < indexedItems.length; index += gridColumns) {
+        result.push({
+          kind: "items",
+          items: indexedItems.slice(index, index + gridColumns),
+        });
+      }
+      return result;
     }
 
-    const nextRows: Array<VirtualRow<TItem>> = [];
-    for (let index = 0; index < items.length; index += gridColumns) {
-      nextRows.push(
-        items.slice(index, index + gridColumns).map((item, itemOffset) => ({
-          item,
-          index: index + itemOffset,
-        })),
-      );
+    const grouped: Array<{
+      group: TranscriptHistoryGroup;
+      items: VirtualItem<TItem>[];
+    }> = [];
+    for (const entry of indexedItems) {
+      const group = getItemGroup(entry.item, entry.index);
+      const current = grouped[grouped.length - 1];
+      if (!current || current.group.key !== group.key) {
+        grouped.push({ group, items: [entry] });
+      } else {
+        current.items.push(entry);
+      }
     }
-    return nextRows;
-  }, [gridColumns, items, viewMode]);
+
+    const result: Array<VirtualRow<TItem>> = [];
+    for (const section of grouped) {
+      result.push({
+        kind: "group",
+        group: section.group,
+        itemCount: section.items.length,
+      });
+      for (let index = 0; index < section.items.length; index += gridColumns) {
+        result.push({
+          kind: "items",
+          items: section.items.slice(index, index + gridColumns),
+        });
+      }
+    }
+    return result;
+  }, [getItemGroup, gridColumns, items]);
 
   useLayoutEffect(() => {
     const updateLayoutMetrics = () => {
       const element = containerRef.current;
       if (!element) return;
       setScrollElement(element.closest<HTMLDivElement>("[data-app-scroll-container]"));
-      const rect = element.getBoundingClientRect();
-      setContainerWidth(rect.width);
+      setContainerWidth(element.getBoundingClientRect().width);
     };
 
     updateLayoutMetrics();
     window.addEventListener("resize", updateLayoutMetrics);
-
     const observer = new ResizeObserver(updateLayoutMetrics);
     if (containerRef.current) {
       observer.observe(containerRef.current);
     }
-
     return () => {
       window.removeEventListener("resize", updateLayoutMetrics);
       observer.disconnect();
@@ -111,18 +156,23 @@ export function VirtualTranscriptHistory<TItem>({
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: rows.length,
     getScrollElement: () => scrollElement,
-    estimateSize: () => (viewMode === "grid" ? estimateGridRowHeight : estimateListRowHeight),
+    estimateSize: (index) => {
+      const row = rows[index];
+      if (row?.kind === "group") return estimateGroupHeaderHeight;
+      return viewMode === "grid" ? estimateGridRowHeight : estimateListRowHeight;
+    },
     overscan: 6,
     getItemKey: (index) => {
       const row = rows[index];
-      if (!row?.length) return index;
-      return row.map(({ item, index: itemIndex }) => getItemKey(item, itemIndex)).join("|");
+      if (!row) return index;
+      if (row.kind === "group") return `group-${row.group.key}`;
+      return row.items.map(({ item, index: itemIndex }) => getItemKey(item, itemIndex)).join("|");
     },
   });
 
   useEffect(() => {
     virtualizer.measure();
-  }, [gridColumns, items.length, viewMode, virtualizer]);
+  }, [gridColumns, items.length, rows.length, viewMode, virtualizer]);
 
   const loadNextPage = useCallback(() => {
     if (!hasMore || isLoadingMore || loadInFlightRef.current) return;
@@ -155,7 +205,6 @@ export function VirtualTranscriptHistory<TItem>({
   useEffect(() => {
     const element = loadMoreRef.current;
     if (!element || !hasMore) return;
-
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) {
@@ -164,7 +213,6 @@ export function VirtualTranscriptHistory<TItem>({
       },
       { root: scrollElement, rootMargin: "800px 0px" },
     );
-
     observer.observe(element);
     return () => observer.disconnect();
   }, [hasMore, loadNextPage, scrollElement]);
@@ -185,87 +233,53 @@ export function VirtualTranscriptHistory<TItem>({
       data-history-virtualized="true"
       data-history-view={viewMode}
     >
-      <LayoutGroup id={`transcript-history-${viewMode}`}>
-        <div
-          style={{
-            height: `${virtualizer.getTotalSize()}px`,
-            position: "relative",
-            width: "100%",
-          }}
-        >
-          <AnimatePresence initial={false} mode="popLayout">
-            {virtualRows.map((virtualRow) => {
-              const row = rows[virtualRow.index] ?? [];
-              return (
-                <motion.div
-                  key={virtualRow.key}
-                  ref={(node) => {
-                    if (node) virtualizer.measureElement(node);
-                  }}
-                  data-index={virtualRow.index}
-                  animate={{ opacity: 1, y: virtualRow.start }}
-                  exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.985 }}
-                  initial={false}
-                  transition={prefersReducedMotion ? { duration: 0 } : HISTORY_LAYOUT_TRANSITION}
-                  style={{
-                    left: 0,
-                    position: "absolute",
-                    top: 0,
-                    width: "100%",
-                  }}
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          position: "relative",
+          width: "100%",
+        }}
+      >
+        {virtualRows.map((virtualRow) => {
+          const row = rows[virtualRow.index];
+          if (!row) return null;
+          return (
+            <div
+              key={virtualRow.key}
+              ref={virtualizer.measureElement}
+              data-index={virtualRow.index}
+              style={{
+                left: 0,
+                position: "absolute",
+                top: 0,
+                transform: `translate3d(0, ${virtualRow.start}px, 0)`,
+                width: "100%",
+              }}
+            >
+              {row.kind === "group" ? (
+                renderGroupHeader(row.group, row.itemCount)
+              ) : viewMode === "grid" ? (
+                <div
+                  className={cn("grid items-stretch gap-4 pb-4", gridClassName)}
+                  style={{ gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))` }}
                 >
-                  {viewMode === "grid" ? (
-                    <div
-                      className={cn("grid items-stretch gap-4 pb-4", gridClassName)}
-                      style={{ gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))` }}
-                    >
-                      <AnimatePresence initial={false} mode="popLayout">
-                        {row.map(({ item, index }) => {
-                          const itemKey = String(getItemKey(item, index));
-                          return (
-                            <motion.div
-                              key={itemKey}
-                              layout="position"
-                              layoutId={`history-${viewMode}-${itemKey}`}
-                              initial={prefersReducedMotion ? false : { opacity: 0, scale: 0.985, y: 8 }}
-                              animate={{ opacity: 1, scale: 1, y: 0 }}
-                              exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96, y: -6 }}
-                              transition={prefersReducedMotion ? { duration: 0 } : HISTORY_ITEM_TRANSITION}
-                              className="min-w-0"
-                            >
-                              {renderItem(item, index)}
-                            </motion.div>
-                          );
-                        })}
-                      </AnimatePresence>
+                  {row.items.map(({ item, index }) => (
+                    <div key={getItemKey(item, index)} className="h-full min-w-0">
+                      {renderItem(item, index)}
                     </div>
-                  ) : (
-                    <AnimatePresence initial={false} mode="popLayout">
-                      {row.map(({ item, index }) => {
-                        const itemKey = String(getItemKey(item, index));
-                        return (
-                          <motion.div
-                            key={itemKey}
-                            layout="position"
-                            layoutId={`history-${viewMode}-${itemKey}`}
-                            initial={prefersReducedMotion ? false : { opacity: 0, scale: 0.99, y: 8 }}
-                            animate={{ opacity: 1, scale: 1, y: 0 }}
-                            exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: -8 }}
-                            transition={prefersReducedMotion ? { duration: 0 } : HISTORY_ITEM_TRANSITION}
-                            className="pb-4 [&>*]:!mb-0"
-                          >
-                            {renderItem(item, index)}
-                          </motion.div>
-                        );
-                      })}
-                    </AnimatePresence>
-                  )}
-                </motion.div>
-              );
-            })}
-          </AnimatePresence>
-        </div>
-      </LayoutGroup>
+                  ))}
+                </div>
+              ) : (
+                row.items.map(({ item, index }) => (
+                  <div key={getItemKey(item, index)} className="pb-4 [&>*]:!mb-0">
+                    {renderItem(item, index)}
+                  </div>
+                ))
+              )}
+            </div>
+          );
+        })}
+      </div>
 
       <div ref={loadMoreRef} className="flex h-12 items-center justify-center" aria-live="polite">
         {isLoadingMore && (

@@ -10,6 +10,7 @@ from src import web_api
 from src.config import Config
 from src.data.job_store import JobStatus, JobStore
 from src.web_api import ScriberWebController, TranscriptRecord
+from src.youtube_download import YouTubeTranscript
 
 
 @pytest.mark.asyncio
@@ -82,7 +83,8 @@ def test_invalid_optional_runtime_numbers_fall_back_to_safe_defaults(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_start_youtube_transcription_persists_job_lifecycle(tmp_path):
+async def test_start_youtube_transcription_persists_job_lifecycle(monkeypatch, tmp_path):
+    monkeypatch.setattr(Config, "YOUTUBE_PREFER_CAPTIONS", True)
     loop = asyncio.get_running_loop()
     store = JobStore(db_path=tmp_path / "jobs.db")
     ctl = ScriberWebController(loop, job_store=store)
@@ -104,6 +106,36 @@ async def test_start_youtube_transcription_persists_job_lifecycle(tmp_path):
     assert job is not None
     assert job.status == JobStatus.COMPLETED
     assert job.job_type.value == "youtube"
+    assert job.payload["preferCaptions"] is True
+
+
+@pytest.mark.asyncio
+async def test_start_youtube_transcription_persists_caption_override(tmp_path):
+    loop = asyncio.get_running_loop()
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(loop, job_store=store)
+
+    async def _fake_run(rec, *, provider):
+        rec.status = "completed"
+        rec.step = "Completed"
+
+    with (
+        patch.object(ctl, "_run_youtube_transcription", new=AsyncMock(side_effect=_fake_run)),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()) as broadcast_mock,
+        patch("src.web_api._validate_provider_ready", return_value=None),
+    ):
+        rec = await ctl.start_youtube_transcription(
+            {
+                "url": "https://youtube.com/watch?v=test123",
+                "preferCaptions": False,
+            }
+        )
+        await asyncio.gather(ctl._running_tasks[rec.id], return_exceptions=True)
+
+    job = store.get(ctl._job_ids_by_transcript[rec.id])
+    assert job is not None
+    assert job.payload["preferCaptions"] is False
+    assert rec._youtube_prefer_captions is False
 
 
 @pytest.mark.asyncio
@@ -749,7 +781,44 @@ def _completed_record(*, transcript_type: str, tmp_path) -> TranscriptRecord:
         source_url="https://youtube.com/watch?v=summaryfailure" if transcript_type == "youtube" else "",
         created_at=now.isoformat(),
         updated_at=now.isoformat(),
+        _youtube_prefer_captions=False if transcript_type == "youtube" else None,
     )
+
+
+@pytest.mark.asyncio
+async def test_youtube_captions_skip_audio_download_and_stt_provider(monkeypatch, tmp_path):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._downloads_dir = tmp_path / "downloads"
+    rec = _completed_record(transcript_type="youtube", tmp_path=tmp_path)
+    rec._youtube_prefer_captions = True
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+
+    with (
+        patch(
+            "src.web_api.download_youtube_transcript",
+            new=AsyncMock(
+                return_value=YouTubeTranscript(
+                    text="Caption text without an audio upload.",
+                    language="en-orig",
+                    is_automatic=True,
+                )
+            ),
+        ) as caption_mock,
+        patch("src.web_api.download_youtube_audio", new=AsyncMock()) as audio_mock,
+        patch("src.web_api._create_scriber_pipeline") as pipeline_mock,
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()) as save_mock,
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        await ctl._run_youtube_transcription(rec, provider=None)
+
+    assert rec.status == "completed"
+    assert rec.content == "Caption text without an audio upload."
+    assert rec.language == "en-orig"
+    assert rec._youtube_stt_provider_used == ""
+    caption_mock.assert_awaited_once()
+    audio_mock.assert_not_awaited()
+    pipeline_mock.assert_not_called()
+    save_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -780,7 +849,7 @@ async def test_youtube_auto_summary_failure_is_exposed_as_summary_state(monkeypa
         patch("src.summarization.summarize_text", new=AsyncMock(side_effect=_fail_summary)),
         patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()) as save_mock,
         patch.object(ctl, "_save_transcript_summary_state_async", new=AsyncMock()) as summary_save_mock,
-        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()) as broadcast_mock,
     ):
         await ctl._run_youtube_transcription(rec, provider="soniox")
 
@@ -791,6 +860,9 @@ async def test_youtube_auto_summary_failure_is_exposed_as_summary_state(monkeypa
     assert rec.to_public(include_content=True)["summaryStatus"] == "failed"
     assert save_mock.await_count == 1
     assert summary_save_mock.await_count == 2
+    broadcast_reasons = [call.kwargs.get("reason") for call in broadcast_mock.await_args_list]
+    assert "summary_pending" in broadcast_reasons
+    assert "summary_failed" in broadcast_reasons
 
 
 @pytest.mark.asyncio
@@ -913,6 +985,7 @@ async def test_late_youtube_download_progress_cannot_overwrite_transcription_ste
         source_url="https://youtube.com/watch?v=lateprogress",
         created_at=now.isoformat(),
         updated_at=now.isoformat(),
+        _youtube_prefer_captions=False,
     )
     late_download_progress = {}
 
