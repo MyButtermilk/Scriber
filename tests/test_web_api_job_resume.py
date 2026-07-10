@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.data.job_store import JobStatus, JobStore, JobType
-from src.web_api import ScriberWebController
+from src.web_api import ScriberWebController, TranscriptRecord
 
 
 @pytest.mark.asyncio
@@ -132,3 +132,64 @@ async def test_resume_file_job_without_source_marks_failed(tmp_path):
     assert job is not None
     assert job.status == JobStatus.FAILED
     broadcast_mock.assert_awaited_once_with(record=rec, reason="job_failed")
+
+
+@pytest.mark.asyncio
+async def test_resume_missing_owned_file_cleans_stale_upload_directory(tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    ctl._downloads_dir = tmp_path / "downloads"
+    upload_dir = ctl._downloads_dir / "files" / "stale-upload"
+    upload_dir.mkdir(parents=True)
+    missing_path = upload_dir / "missing.wav"
+    (upload_dir / "leftover.tmp").write_bytes(b"stale")
+    store.enqueue(
+        transcript_id="tx-resume-owned-file-missing",
+        job_type=JobType.FILE,
+        payload={"path": str(missing_path), "title": "Missing owned file"},
+    )
+
+    with (
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+    ):
+        resumed = await ctl.resume_pending_jobs(limit=10)
+
+    assert resumed == 0
+    assert not upload_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_resume_reconciles_terminal_file_job_and_cleans_owned_upload(tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    ctl._downloads_dir = tmp_path / "downloads"
+    upload_dir = ctl._downloads_dir / "files" / "completed-upload"
+    upload_dir.mkdir(parents=True)
+    file_path = upload_dir / "sample.wav"
+    file_path.write_bytes(b"RIFF....WAVEfmt ")
+    job = store.enqueue(
+        transcript_id="tx-resume-terminal-file",
+        job_type=JobType.FILE,
+        payload={"path": str(file_path), "title": "Completed file"},
+    )
+    rec = TranscriptRecord(
+        id=job.transcript_id,
+        title="Completed file",
+        date="Today",
+        duration="00:01",
+        status="completed",
+        type="file",
+        language="auto",
+        source_url=str(file_path),
+        content="Done",
+    )
+    ctl._add_to_history(rec)
+
+    resumed = await ctl.resume_pending_jobs(limit=10)
+
+    assert resumed == 0
+    assert not upload_dir.exists()
+    persisted_job = store.get(job.id)
+    assert persisted_job is not None
+    assert persisted_job.status == JobStatus.COMPLETED

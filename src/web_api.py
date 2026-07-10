@@ -3003,6 +3003,14 @@ class ScriberWebController:
         await self._sync_job_status_async(rec)
         await self._save_transcript_to_db_async(rec)
         await self._broadcast_history_updated(record=rec, reason="job_failed")
+        if rec.type == "file" and rec.source_url:
+            await self._cleanup_owned_file_source(rec.source_url, reason="resume_failed")
+
+    async def _reconcile_terminal_background_job(self, rec: TranscriptRecord) -> None:
+        """Finish stale job bookkeeping and cleanup after an interrupted runtime."""
+        await self._sync_job_status_async(rec)
+        if rec.type == "file" and rec.source_url:
+            await self._cleanup_owned_file_source(rec.source_url, reason="terminal_reconciled")
 
     @staticmethod
     def _timeout_seconds(env_key: str, default_seconds: float) -> float:
@@ -3065,10 +3073,11 @@ class ScriberWebController:
                 if persisted and persisted.get("status") in ("completed", "failed", "stopped"):
                     rec = self._record_from_persisted_data(persisted)
                     self._remember_job_id(rec.id, job.id)
-                    await self._sync_job_status_async(rec)
+                    await self._reconcile_terminal_background_job(rec)
                     continue
             if rec and rec.status in ("completed", "failed", "stopped"):
-                await self._sync_job_status_async(rec)
+                self._remember_job_id(rec.id, job.id)
+                await self._reconcile_terminal_background_job(rec)
                 continue
             if rec is None:
                 rec = self._build_processing_record_from_job(job)
