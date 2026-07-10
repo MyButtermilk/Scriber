@@ -125,7 +125,7 @@ async def _read_youtube_json_response(resp: Any) -> Any:
         return {}
     try:
         return json.loads(body.decode(resp.charset or "utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (LookupError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise YouTubeApiError("Unexpected YouTube API response", status=502) from exc
 
 

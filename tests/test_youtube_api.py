@@ -4,6 +4,8 @@ import pytest
 from aiohttp import ClientSession
 
 from src.youtube_api import (
+    YouTubeApiError,
+    _read_youtube_json_response,
     _safe_nonnegative_count,
     extract_youtube_video_id,
     get_video_by_id,
@@ -11,6 +13,14 @@ from src.youtube_api import (
     parse_iso8601_duration,
     search_youtube_videos,
 )
+
+
+class _ChunkedBody:
+    def __init__(self, payload: bytes):
+        self._payload = payload
+
+    async def iter_chunked(self, _size: int):
+        yield self._payload
 
 
 def test_parse_iso8601_duration():
@@ -104,6 +114,24 @@ def test_youtube_counts_tolerate_malformed_and_oversized_values():
     assert _safe_nonnegative_count("123") == 123
     assert _safe_nonnegative_count("not-a-number") == 0
     assert _safe_nonnegative_count("9" * 10_000) == (1 << 63) - 1
+
+
+@pytest.mark.asyncio
+async def test_youtube_json_reader_rejects_unknown_remote_charset_cleanly():
+    response = type(
+        "Response",
+        (),
+        {
+            "content_length": None,
+            "content": _ChunkedBody(b'{"items": []}'),
+            "charset": "not-a-real-codec",
+        },
+    )()
+
+    with pytest.raises(YouTubeApiError, match="Unexpected YouTube API response") as exc_info:
+        await _read_youtube_json_response(response)
+
+    assert exc_info.value.status == 502
 
 
 @pytest.mark.asyncio
