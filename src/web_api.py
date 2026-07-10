@@ -2513,6 +2513,17 @@ class ScriberWebController:
         """Unregister a background task."""
         if self._running_tasks.get(transcript_id) is task:
             self._running_tasks.pop(transcript_id, None)
+        if task.cancelled():
+            return
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            return
+        if error is not None:
+            logger.opt(exception=error).error(
+                "Background transcription task crashed: {}",
+                transcript_id,
+            )
 
     def _remember_job_id(self, transcript_id: str, job_id: str) -> None:
         if not transcript_id or not job_id:
@@ -2847,6 +2858,7 @@ class ScriberWebController:
         rec.updated_at = datetime.now().isoformat()
         await self._sync_job_status_async(rec)
         await self._save_transcript_to_db_async(rec)
+        await self._broadcast_history_updated(record=rec, reason="job_failed")
 
     @staticmethod
     def _timeout_seconds(env_key: str, default_seconds: float) -> float:
@@ -6765,9 +6777,8 @@ class ScriberWebController:
 
         active_records = [
             rec
-            for transcript_id in tuple(self._running_tasks)
-            if (rec := self._history_by_id.get(transcript_id)) is not None
-            and rec.status in ("processing", "recording")
+            for rec in tuple(self._history_by_id.values())
+            if rec.status in ("processing", "recording")
             and (not transcript_type or rec.type == transcript_type)
         ]
         active_records.sort(key=lambda rec: rec.created_at, reverse=True)
@@ -6788,6 +6799,8 @@ class ScriberWebController:
             transcript_type=transcript_type,
             offset=db_offset,
             limit=remaining,
+            include_incomplete=True,
+            exclude_ids=tuple(rec.id for rec in active_records if rec.id),
         )
         items = active_slice + list(db_result.get("items", []))
         total = active_count + int(db_result.get("total", 0))

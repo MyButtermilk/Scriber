@@ -50,6 +50,27 @@ async def test_background_job_enqueue_runs_off_event_loop(monkeypatch, tmp_path)
     assert ctl._job_ids_by_transcript[rec.id] == "job-off-loop"
 
 
+def test_background_task_registry_consumes_and_logs_unexpected_failure():
+    loop = asyncio.new_event_loop()
+    try:
+        ctl = ScriberWebController(loop)
+        failure = RuntimeError("unexpected runner failure")
+        task = SimpleNamespace(cancelled=lambda: False, exception=lambda: failure)
+        ctl._running_tasks["failed-task"] = task
+
+        with patch("src.web_api.logger") as logger_mock:
+            ctl._unregister_task("failed-task", task)
+
+        assert "failed-task" not in ctl._running_tasks
+        logger_mock.opt.assert_called_once_with(exception=failure)
+        logger_mock.opt.return_value.error.assert_called_once_with(
+            "Background transcription task crashed: {}",
+            "failed-task",
+        )
+    finally:
+        loop.close()
+
+
 def test_job_id_runtime_cache_is_bounded(monkeypatch):
     monkeypatch.setenv("SCRIBER_JOB_ID_CACHE_LIMIT", "25")
     loop = asyncio.new_event_loop()
@@ -641,7 +662,44 @@ async def test_unfiltered_history_merges_active_jobs_with_database_page(monkeypa
 
     assert [item["id"] for item in result["items"]] == [active.id, "persisted"]
     assert result["total"] == 2
-    assert calls == [{"transcript_type": "file", "offset": 0, "limit": 1}]
+    assert calls == [{
+        "transcript_type": "file",
+        "offset": 0,
+        "limit": 1,
+        "include_incomplete": True,
+        "exclude_ids": (active.id,),
+    }]
+
+
+@pytest.mark.asyncio
+async def test_retry_waiting_job_remains_visible_without_running_task(monkeypatch):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    waiting = TranscriptRecord(
+        id="retry-waiting",
+        title="Waiting for retry",
+        date="Today",
+        duration="00:01",
+        status="processing",
+        type="file",
+        language="auto",
+        step="Retrying in 30s (1/3)",
+    )
+    ctl._add_to_history(waiting)
+    calls: list[dict] = []
+
+    def _page(**kwargs):
+        calls.append(kwargs)
+        return {"items": [{"id": "persisted", "status": "completed", "type": "file"}], "total": 1}
+
+    monkeypatch.setattr(web_api.db, "load_transcript_metadata_page", _page)
+
+    result = await ctl.list_transcripts(transcript_type="file", limit=2)
+
+    assert waiting.id not in ctl._running_tasks
+    assert [item["id"] for item in result["items"]] == [waiting.id, "persisted"]
+    assert result["total"] == 2
+    assert calls[0]["include_incomplete"] is True
+    assert calls[0]["exclude_ids"] == (waiting.id,)
 
 
 @pytest.mark.asyncio

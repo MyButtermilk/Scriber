@@ -129,6 +129,17 @@ def test_metadata_page_filters_incomplete_rows_and_paginates_in_sql(monkeypatch,
         first = database.load_transcript_metadata_page(transcript_type="mic", limit=1)
         second = database.load_transcript_metadata_page(transcript_type="mic", offset=1, limit=1)
         count_only = database.load_transcript_metadata_page(transcript_type="mic", limit=0)
+        with_incomplete = database.load_transcript_metadata_page(
+            transcript_type="mic",
+            limit=10,
+            include_incomplete=True,
+        )
+        without_active_duplicate = database.load_transcript_metadata_page(
+            transcript_type="mic",
+            limit=10,
+            include_incomplete=True,
+            exclude_ids=("mic-active",),
+        )
         indexes = {
             row[1]
             for row in database._get_connection().execute("PRAGMA index_list(transcripts)").fetchall()
@@ -141,6 +152,13 @@ def test_metadata_page_filters_incomplete_rows_and_paginates_in_sql(monkeypatch,
         assert second["hasMore"] is False
         assert count_only["items"] == []
         assert count_only["total"] == 2
+        assert [item["id"] for item in with_incomplete["items"]] == [
+            "mic-active",
+            "mic-new",
+            "mic-old",
+        ]
+        assert without_active_duplicate["total"] == 2
+        assert all(item["id"] != "mic-active" for item in without_active_duplicate["items"])
         assert "idx_transcripts_type_created_at" in indexes
     finally:
         database._close_all_connections()

@@ -296,6 +296,64 @@ async def _upload_gemini_file(
     return file_info
 
 
+def _gemini_file_state(file_info: dict[str, Any]) -> str:
+    state = file_info.get("state")
+    if isinstance(state, dict):
+        state = state.get("name") or state.get("value")
+    return str(state or "").strip().upper()
+
+
+async def _wait_for_gemini_file_active(
+    *,
+    session: aiohttp.ClientSession,
+    api_key: str,
+    file_info: dict[str, Any],
+    timeout_secs: float,
+) -> dict[str, Any]:
+    file_name = str(file_info.get("name") or "").strip()
+    if not file_name:
+        raise RuntimeError("Gemini file upload response did not include a file name.")
+    timeout = env_float(
+        "SCRIBER_GEMINI_FILE_PROCESSING_TIMEOUT_SEC",
+        min(300.0, max(1.0, float(timeout_secs))),
+        minimum=1.0,
+        maximum=max(1.0, float(timeout_secs)),
+    )
+    poll_interval = env_float(
+        "SCRIBER_GEMINI_FILE_PROCESSING_POLL_SEC",
+        1.0,
+        minimum=0.25,
+        maximum=10.0,
+    )
+    started_at = asyncio.get_running_loop().time()
+    current = file_info
+    while True:
+        state = _gemini_file_state(current)
+        if state == "ACTIVE":
+            return current
+        if state == "FAILED":
+            raise RuntimeError(f"Gemini file processing failed: {current}")
+        if asyncio.get_running_loop().time() - started_at >= timeout:
+            raise TimeoutError(
+                f"Gemini file processing timed out after {timeout:.1f}s"
+            )
+        await asyncio.sleep(poll_interval)
+        async with session.get(
+            f"https://generativelanguage.googleapis.com/v1beta/{file_name}",
+            params={"key": api_key},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as response:
+            raw = await read_response_text_limited(response, 1024 * 1024)
+            if response.status >= 400:
+                raise RuntimeError(
+                    f"Gemini file status failed ({response.status}): {raw[:500]}"
+                )
+            parsed = json.loads(raw) if raw else {}
+            if not isinstance(parsed, dict):
+                raise RuntimeError("Gemini file status response was invalid.")
+            current = parsed.get("file") if isinstance(parsed.get("file"), dict) else parsed
+
+
 def _gemini_audio_source_size(audio_source: bytes | BinaryIO) -> int:
     if isinstance(audio_source, bytes):
         return len(audio_source)
@@ -306,6 +364,19 @@ def _gemini_audio_source_size(audio_source: bytes | BinaryIO) -> int:
         return max(0, size)
     except (AttributeError, OSError):
         return -1
+
+
+def _spool_gemini_audio_source(audio_source: BinaryIO) -> tuple[BinaryIO, int]:
+    spooled_source = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
+    try:
+        while chunk := audio_source.read(1024 * 1024):
+            spooled_source.write(chunk)
+        audio_size = int(spooled_source.tell())
+        spooled_source.seek(0)
+        return spooled_source, audio_size
+    except BaseException:
+        spooled_source.close()
+        raise
 
 
 async def transcribe_with_gemini_audio(
@@ -366,22 +437,28 @@ async def transcribe_with_gemini_audio(
     try:
         _report_progress(on_progress, "Uploading audio...")
         if 0 <= audio_size <= inline_limit_bytes:
-            audio_bytes = audio_source if isinstance(audio_source, bytes) else audio_source.read()
+            audio_bytes = (
+                audio_source
+                if isinstance(audio_source, bytes)
+                else await asyncio.to_thread(audio_source.read)
+            )
+            encoded_audio = await asyncio.to_thread(
+                lambda: base64.b64encode(audio_bytes).decode("ascii")
+            )
             audio_part = {
                 "inlineData": {
                     "mimeType": mime_type,
-                    "data": base64.b64encode(audio_bytes).decode("ascii"),
+                    "data": encoded_audio,
                 }
             }
         else:
             if audio_size < 0:
                 # Direct callers may provide a non-seekable source. Spool it so
                 # the resumable upload still has a trustworthy content length.
-                spooled_source = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
-                while chunk := audio_source.read(1024 * 1024):
-                    spooled_source.write(chunk)
-                audio_size = spooled_source.tell()
-                spooled_source.seek(0)
+                spooled_source, audio_size = await asyncio.to_thread(
+                    _spool_gemini_audio_source,
+                    audio_source,
+                )
                 audio_source = spooled_source
                 if not audio_size:
                     return {}
@@ -394,6 +471,13 @@ async def transcribe_with_gemini_audio(
                 content_type=mime_type,
             )
             file_name = str(file_info.get("name") or "")
+            _report_progress(on_progress, "Processing uploaded audio...")
+            file_info = await _wait_for_gemini_file_active(
+                session=session,
+                api_key=api_key,
+                file_info=file_info,
+                timeout_secs=timeout_secs,
+            )
             audio_part = {
                 "fileData": {
                     "mimeType": str(file_info.get("mimeType") or mime_type),
@@ -421,7 +505,7 @@ async def transcribe_with_gemini_audio(
         if file_name:
             await _delete_gemini_file(session=session, api_key=api_key, file_name=file_name)
         if spooled_source is not None:
-            spooled_source.close()
+            await asyncio.to_thread(spooled_source.close)
 
 
 async def transcribe_with_openai_audio_transcription(

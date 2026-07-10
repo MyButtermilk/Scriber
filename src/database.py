@@ -7,7 +7,7 @@ import re
 import sqlite3
 import threading
 from dataclasses import asdict
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Iterable
 from datetime import datetime
 
 from loguru import logger
@@ -375,21 +375,37 @@ def load_transcript_metadata_page(
     transcript_type: str = "",
     offset: int = 0,
     limit: int = 50,
+    include_incomplete: bool = False,
+    exclude_ids: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Load one metadata page without materializing the complete history."""
     offset = max(0, int(offset))
     limit = max(0, min(100, int(limit)))
     try:
         with _get_connection() as conn:
-            type_clause = " AND type = ?" if transcript_type else ""
-            params: list[Any] = ["processing", "recording"]
+            clauses: list[str] = []
+            params: list[Any] = []
+            if not include_incomplete:
+                clauses.append("status NOT IN (?, ?)")
+                params.extend(("processing", "recording"))
             if transcript_type:
+                clauses.append("type = ?")
                 params.append(transcript_type)
+            excluded = tuple(
+                dict.fromkeys(
+                    str(transcript_id).strip()
+                    for transcript_id in exclude_ids
+                    if str(transcript_id).strip()
+                )
+            )
+            if excluded:
+                clauses.append(f"id NOT IN ({','.join('?' for _ in excluded)})")
+                params.extend(excluded)
+            where_clause = f" WHERE {' AND '.join(clauses)}" if clauses else ""
 
             total = int(
                 conn.execute(
-                    "SELECT COUNT(*) AS c FROM transcripts "
-                    "WHERE status NOT IN (?, ?)" + type_clause,
+                    "SELECT COUNT(*) AS c FROM transcripts" + where_clause,
                     params,
                 ).fetchone()["c"]
             )
@@ -398,7 +414,7 @@ def load_transcript_metadata_page(
                     "SELECT id, title, date, duration, status, type, language, step, "
                     "source_url, channel, thumbnail_url, created_at, updated_at, preview, "
                     "summary_status, summary_error, summary_updated_at "
-                    "FROM transcripts WHERE status NOT IN (?, ?)" + type_clause +
+                    "FROM transcripts" + where_clause +
                     " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                     [*params, limit, offset],
                 ).fetchall()

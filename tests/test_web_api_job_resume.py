@@ -118,7 +118,7 @@ async def test_resume_file_job_without_source_marks_failed(tmp_path):
     ctl = ScriberWebController(loop, job_store=store)
 
     with (
-        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()) as broadcast_mock,
         patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
     ):
         resumed = await ctl.resume_pending_jobs(limit=10)
@@ -131,3 +131,4 @@ async def test_resume_file_job_without_source_marks_failed(tmp_path):
     job = store.get_by_transcript_id("tx-resume-file-missing")
     assert job is not None
     assert job.status == JobStatus.FAILED
+    broadcast_mock.assert_awaited_once_with(record=rec, reason="job_failed")
