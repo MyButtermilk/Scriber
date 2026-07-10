@@ -220,18 +220,17 @@ export async function getAutostartStatus(): Promise<AutostartStatus> {
   if (isTauriRuntime()) {
     if (!desktopAutostartLoadInFlight) {
       const { invoke } = await import("@tauri-apps/api/core");
-      const request = invoke<AutostartStatus>("get_desktop_autostart");
-      desktopAutostartLoadInFlight = request;
-      request.then(
-        () => {
-          if (desktopAutostartLoadInFlight === request) desktopAutostartLoadInFlight = null;
-        },
-        () => {
-          if (desktopAutostartLoadInFlight === request) desktopAutostartLoadInFlight = null;
-        },
+      const request = withPromiseTimeout(
+        invoke<AutostartStatus>("get_desktop_autostart"),
+        5_000,
+        "Autostart status lookup",
       );
+      desktopAutostartLoadInFlight = request;
+      void request.finally(() => {
+        if (desktopAutostartLoadInFlight === request) desktopAutostartLoadInFlight = null;
+      }).catch(() => undefined);
     }
-    return withPromiseTimeout(desktopAutostartLoadInFlight, 5_000, "Autostart status lookup");
+    return desktopAutostartLoadInFlight;
   }
 
   const res = await fetchWithTimeout(
