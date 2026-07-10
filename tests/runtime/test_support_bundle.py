@@ -15,10 +15,12 @@ def test_redaction_helpers_hide_sensitive_values():
     escaped_endpoint_id = endpoint_id.replace("\\", "\\\\")
     groq_key = "gsk_" + "a" * 32
     google_key = "AIza" + "b" * 32
+    backend_token = "local-backend-session-secret"
     redacted = redact_text(
         f"OPENAI_API_KEY=sk-abcdefghijklmnop Authorization: Bearer token-value "
         f"rawGroq={groq_key} "
         f"url=https://example.test/v1?key={google_key}&access_token=query-token "
+        f"backend=http://127.0.0.1:8765/api/runtime?scriberToken={backend_token} "
         f"pipe={pipe_name} escaped={escaped_pipe_name} "
         f"endpoint={endpoint_id} escapedEndpoint={escaped_endpoint_id}"
     )
@@ -26,6 +28,7 @@ def test_redaction_helpers_hide_sensitive_values():
     assert "sk-abcdefghijklmnop" not in redacted
     assert groq_key not in redacted
     assert google_key not in redacted
+    assert backend_token not in redacted
     assert "query-token" not in redacted
     assert "token-value" not in redacted
     assert pipe_name not in redacted

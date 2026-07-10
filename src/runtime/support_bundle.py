@@ -34,7 +34,8 @@ _OPENAI_STYLE_SECRET_RE = re.compile(r"\b(sk-[A-Za-z0-9_-]{8,})")
 _GROQ_STYLE_SECRET_RE = re.compile(r"\b(gsk_[A-Za-z0-9_-]{20,})")
 _GOOGLE_STYLE_SECRET_RE = re.compile(r"\b(AIza[A-Za-z0-9_-]{20,})")
 _URL_SECRET_PARAM_RE = re.compile(
-    r"(?i)([?&](?:api[_-]?key|key|token|access[_-]?token|auth|authorization|secret)=)"
+    r"(?i)([?&](?:api[_-]?key|key|token|access[_-]?token|refresh[_-]?token|"
+    r"id[_-]?token|session[_-]?token|scriber[_-]?token|auth|authorization|secret)=)"
     r"[^&#\s\"']+"
 )
 _SHELL_IPC_PIPE_RE = re.compile(
