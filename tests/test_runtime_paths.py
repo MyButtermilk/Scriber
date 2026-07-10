@@ -1,4 +1,7 @@
 import os
+from pathlib import Path
+
+import pytest
 
 from src.runtime import paths
 
@@ -146,3 +149,21 @@ def test_migrate_legacy_runtime_data_does_not_mix_wal_from_later_source(monkeypa
 
     assert (data / "transcripts.db").read_bytes() == b"first-db"
     assert not (data / "transcripts.db-wal").exists()
+
+
+def test_copy_file_if_missing_never_leaves_partial_target(monkeypatch, tmp_path):
+    source = tmp_path / "legacy.db"
+    target = tmp_path / "data" / "transcripts.db"
+    source.write_bytes(b"complete database")
+
+    def fail_mid_copy(_source, temporary):
+        Path(temporary).write_bytes(b"partial")
+        raise OSError("copy interrupted")
+
+    monkeypatch.setattr(paths.shutil, "copy2", fail_mid_copy)
+
+    with pytest.raises(OSError, match="copy interrupted"):
+        paths._copy_file_if_missing(source, target)
+
+    assert not target.exists()
+    assert list(target.parent.glob(".*.tmp")) == []

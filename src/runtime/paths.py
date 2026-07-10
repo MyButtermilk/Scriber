@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 _APP_NAME = "Scriber"
 _LEGACY_DATA_FILES = (
@@ -216,8 +217,18 @@ def _copy_file_if_missing(src: Path, dst: Path) -> bool:
     if not src.is_file() or dst.exists():
         return False
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
-    return True
+    temporary = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid4().hex}.tmp")
+    try:
+        shutil.copy2(src, temporary)
+        if dst.exists():
+            return False
+        os.replace(temporary, dst)
+        return True
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _copy_tree_missing(src_dir: Path, dst_dir: Path) -> list[str]:
