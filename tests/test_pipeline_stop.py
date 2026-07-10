@@ -1,5 +1,7 @@
 import asyncio
+import gc
 import io
+import weakref
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -107,6 +109,18 @@ class _RejectedSonioxUploadSession:
     def post(self, url, **kwargs):
         self.post_calls.append((url, kwargs))
         return _RejectedUploadResponse()
+
+
+def test_soniox_async_processor_disposal_closes_audio_spool():
+    processor = SonioxAsyncProcessor(api_key="test-key", session=object())
+    audio_spool = processor._buffer
+    processor_ref = weakref.ref(processor)
+
+    del processor
+    gc.collect()
+
+    assert processor_ref() is None
+    assert audio_spool.closed
 
 
 @pytest.mark.asyncio

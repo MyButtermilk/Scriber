@@ -38,7 +38,7 @@ from src.runtime.media_tools import find_media_tool
 from src.runtime.provider_dependencies import import_provider_runtime_module
 from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
 from src.runtime.http_response import read_response_json_limited, read_response_text_limited
-from src.runtime.audio_spool import append_pcm_frame, create_pcm_spool, pcm_stream_to_wav
+from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.env_values import env_float as _safe_env_float
 
 try:
@@ -317,12 +317,12 @@ class SonioxAsyncProcessor(FrameProcessor):
         return create_pcm_spool()
 
     def _reset_buffer(self) -> None:
-        try:
-            self._buffer.close()
-        except Exception:
-            pass
+        close_pcm_spool(getattr(self, "_buffer", None))
         self._buffer = self._create_buffer()
         self._buffer_size = 0
+
+    def __del__(self) -> None:
+        close_pcm_spool(getattr(self, "_buffer", None))
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)

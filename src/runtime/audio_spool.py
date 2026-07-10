@@ -20,6 +20,16 @@ def create_pcm_spool() -> BinaryIO:
     )
 
 
+def close_pcm_spool(audio_stream: BinaryIO | None) -> None:
+    """Best-effort deterministic cleanup for processor-owned PCM spools."""
+    if audio_stream is None:
+        return
+    try:
+        audio_stream.close()
+    except Exception:
+        pass
+
+
 async def append_pcm_frame(
     audio_stream: BinaryIO,
     current_size: int,

@@ -27,7 +27,7 @@ from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
-from src.runtime.audio_spool import append_pcm_frame, create_pcm_spool, pcm_stream_to_wav
+from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.http_response import read_response_text_limited
 
 
@@ -332,12 +332,12 @@ class MistralAsyncProcessor(FrameProcessor):
         return create_pcm_spool()
 
     def _reset_buffer(self) -> None:
-        try:
-            self._buffer.close()
-        except Exception:
-            pass
+        close_pcm_spool(getattr(self, "_buffer", None))
         self._buffer = self._create_buffer()
         self._buffer_size = 0
+
+    def __del__(self) -> None:
+        close_pcm_spool(getattr(self, "_buffer", None))
 
     def _report_progress(self, msg: str) -> None:
         if not self._on_progress:

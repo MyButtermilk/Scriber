@@ -34,7 +34,7 @@ from src.config import Config
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, mp3_encode_pcm_pipe_args, mp3_transcode_args
 from src.runtime.http_response import read_response_text_limited
 from src.runtime.media_tools import require_media_tool
-from src.runtime.audio_spool import append_pcm_frame, create_pcm_spool
+from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool
 from src.runtime.subprocess_utils import (
     communicate_or_kill_on_cancel,
     hidden_subprocess_kwargs,
@@ -371,12 +371,12 @@ class AzureMaiTranscribeSTTService(STTService):
         return create_pcm_spool()
 
     def _reset_buffer(self) -> None:
-        try:
-            self._buffer.close()
-        except Exception:
-            pass
+        close_pcm_spool(getattr(self, "_buffer", None))
         self._buffer = self._create_buffer()
         self._buffer_size = 0
+
+    def __del__(self) -> None:
+        close_pcm_spool(getattr(self, "_buffer", None))
 
     async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
         mp3_bytes = await _pcm_to_mp3(
