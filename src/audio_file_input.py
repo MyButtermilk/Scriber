@@ -142,10 +142,24 @@ class FfmpegAudioFileInput(BaseInputTransport):
                 name="ffmpeg_audio_file_stderr",
             )
 
+            pcm_sample_width = max(1, int(self._params.audio_in_channels)) * 2
+            pending_pcm = bytearray()
             while True:
-                chunk = await proc.stdout.read(bytes_per_frame)
-                if not chunk:
+                read_size = max(1, bytes_per_frame - len(pending_pcm))
+                decoded = await proc.stdout.read(read_size)
+                if decoded:
+                    pending_pcm.extend(decoded)
+                if decoded and len(pending_pcm) < bytes_per_frame:
+                    # Let the concurrent stderr drainer run even when the pipe
+                    # has several immediately available short reads.
+                    await asyncio.sleep(0)
+                    continue
+                if not pending_pcm:
                     break
+                if len(pending_pcm) % pcm_sample_width:
+                    raise RuntimeError("ffmpeg produced a truncated PCM sample")
+                chunk = bytes(pending_pcm)
+                pending_pcm.clear()
                 frame = InputAudioRawFrame(
                     audio=chunk,
                     sample_rate=int(self._params.audio_in_sample_rate),
@@ -154,6 +168,8 @@ class FfmpegAudioFileInput(BaseInputTransport):
                 await self.push_audio_frame(frame)
                 await self._wait_for_audio_queue_capacity()
                 await asyncio.sleep(0)
+                if not decoded:
+                    break
 
             stderr_b = await stderr_task
             rc = await proc.wait()

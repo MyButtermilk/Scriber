@@ -20,6 +20,14 @@ class _FakeStdout:
         return b""
 
 
+class _FragmentedStdout:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+
+    async def read(self, _size: int) -> bytes:
+        return self._chunks.pop(0)
+
+
 class _FakeStderr:
     def __init__(self, started: asyncio.Event) -> None:
         self._started = started
@@ -46,6 +54,12 @@ class _FakeProcess:
 
     def kill(self) -> None:
         self.returncode = -9
+
+
+class _FragmentedProcess(_FakeProcess):
+    def __init__(self, chunks: list[bytes]) -> None:
+        super().__init__()
+        self.stdout = _FragmentedStdout(chunks)
 
 
 @pytest.mark.asyncio
@@ -90,3 +104,44 @@ async def test_ffmpeg_file_input_applies_backpressure_to_decoded_pcm(monkeypatch
 
     assert transport._max_queued_frames == 5
     assert sleep.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_ffmpeg_file_input_reassembles_short_pcm_reads(monkeypatch, tmp_path):
+    source = tmp_path / "audio.wav"
+    source.write_bytes(b"RIFF")
+    fake_process = _FragmentedProcess([b"\x01", b"\x02\x03", b"\x04", b""])
+    transport = FfmpegAudioFileInput(source, block_size=2)
+    transport.push_audio_frame = AsyncMock()
+    transport._audio_in_queue = SimpleNamespace(join=AsyncMock())
+    monkeypatch.setattr("src.audio_file_input.require_media_tool", lambda _name: "ffmpeg")
+    monkeypatch.setattr(
+        "src.audio_file_input.asyncio.create_subprocess_exec",
+        AsyncMock(return_value=fake_process),
+    )
+
+    await transport._feed_audio()
+
+    assert transport.error is None
+    frame = transport.push_audio_frame.await_args.args[0]
+    assert frame.audio == b"\x01\x02\x03\x04"
+
+
+@pytest.mark.asyncio
+async def test_ffmpeg_file_input_rejects_truncated_pcm_sample(monkeypatch, tmp_path):
+    source = tmp_path / "audio.wav"
+    source.write_bytes(b"RIFF")
+    fake_process = _FragmentedProcess([b"\x01", b""])
+    transport = FfmpegAudioFileInput(source, block_size=2)
+    transport.push_audio_frame = AsyncMock()
+    transport._audio_in_queue = SimpleNamespace(join=AsyncMock())
+    monkeypatch.setattr("src.audio_file_input.require_media_tool", lambda _name: "ffmpeg")
+    monkeypatch.setattr(
+        "src.audio_file_input.asyncio.create_subprocess_exec",
+        AsyncMock(return_value=fake_process),
+    )
+
+    await transport._feed_audio()
+
+    assert transport.error == "ffmpeg produced a truncated PCM sample"
+    transport.push_audio_frame.assert_not_awaited()
