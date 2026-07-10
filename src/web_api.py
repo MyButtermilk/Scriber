@@ -6264,6 +6264,18 @@ class ScriberWebController:
         except Exception as exc:
             logger.warning(f"Settings persist flush during shutdown failed: {exc}")
 
+    def close_persistence_stores(self) -> None:
+        """Close controller-owned and shared SQLite connections after draining work."""
+        for name, close_store in (
+            ("job store", self._job_store.close),
+            ("latency metrics store", self._latency_metrics_store.close),
+            ("transcript database", db._close_all_connections),
+        ):
+            try:
+                close_store()
+            except Exception as exc:
+                logger.warning("Failed to close {} connections: {}", name, exc)
+
     def get_settings(self) -> dict[str, Any]:
         # Track favorite mic availability for UI feedback
         _favorite_mic_available = False
@@ -8249,58 +8261,89 @@ async def run_server(host: str, port: int) -> None:
         _backend_loop_exception_handler(previous_loop_exception_handler)
     )
     controller = ScriberWebController(loop)
-    controller.register_hotkeys()
     force_process_exit = _should_force_process_exit_after_shutdown()
 
     stop_event = asyncio.Event()
     app = create_app(controller)
     app[APP_SHUTDOWN_EVENT] = stop_event
     runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host=host, port=port)
-    await site.start()
-    logger.info(f"Scriber web API listening on http://{host}:{port} (ws://{host}:{port}/ws)")
-
-    # Start background initialization (improves first recording latency)
-    background_init_task = asyncio.create_task(_background_init(controller), name="background_init")
+    site: web.TCPSite | None = None
+    runner_ready = False
+    site_started = False
+    shutdown_requested = False
+    background_init_task: asyncio.Task | None = None
+    previous_signal_handlers: dict[int, Any] = {}
+    force_exit_timer: threading.Timer | None = None
 
     def _request_stop(*_args: Any) -> None:
         loop.call_soon_threadsafe(stop_event.set)
 
-    for sig in (signal.SIGINT, getattr(signal, "SIGTERM", signal.SIGINT)):
-        try:
-            signal.signal(sig, _request_stop)
-        except Exception:  # pragma: no cover - platform dependent
-            pass
+    try:
+        await runner.setup()
+        runner_ready = True
+        site = web.TCPSite(runner, host=host, port=port)
+        await site.start()
+        site_started = True
+        controller.register_hotkeys()
+        logger.info(f"Scriber web API listening on http://{host}:{port} (ws://{host}:{port}/ws)")
 
-    force_exit_timer: threading.Timer | None = None
-    await stop_event.wait()
-    logger.info("Scriber web API shutdown requested")
-    controller.begin_shutdown()
-    if force_process_exit:
-        force_exit_timer = _arm_force_process_exit_after_shutdown()
-    if not background_init_task.done():
-        background_init_task.cancel()
-        await asyncio.gather(background_init_task, return_exceptions=True)
-    try:
-        await controller.stop_listening()
-    except Exception:
-        logger.exception("Scriber live-mic shutdown failed")
-    try:
-        await controller.drain_background_tasks_for_shutdown()
-    except Exception:
-        logger.exception("Scriber background shutdown drain failed")
+        # Start background initialization (improves first recording latency)
+        background_init_task = asyncio.create_task(_background_init(controller), name="background_init")
+
+        for sig in (signal.SIGINT, getattr(signal, "SIGTERM", signal.SIGINT)):
+            try:
+                previous_signal_handlers[int(sig)] = signal.getsignal(sig)
+                signal.signal(sig, _request_stop)
+            except Exception:  # pragma: no cover - platform dependent
+                pass
+
+        await stop_event.wait()
+        shutdown_requested = True
+        logger.info("Scriber web API shutdown requested")
     finally:
+        controller.begin_shutdown()
+        if shutdown_requested and force_process_exit:
+            force_exit_timer = _arm_force_process_exit_after_shutdown()
+        if site_started and site is not None:
+            try:
+                await site.stop()
+            except Exception:
+                logger.exception("Scriber API listener shutdown failed")
+        if background_init_task is not None and not background_init_task.done():
+            background_init_task.cancel()
+            await asyncio.gather(background_init_task, return_exceptions=True)
+        try:
+            await controller.stop_listening()
+        except Exception:
+            logger.exception("Scriber live-mic shutdown failed")
+        try:
+            await controller.drain_background_tasks_for_shutdown()
+        except Exception:
+            logger.exception("Scriber background shutdown drain failed")
         try:
             controller.shutdown()
-            await runner.cleanup()
-            logger.info("Scriber web API shutdown cleanup complete")
-        finally:
-            if force_exit_timer is not None:
-                force_exit_timer.cancel()
-            loop.set_exception_handler(previous_loop_exception_handler)
-            if force_process_exit:
-                os._exit(0)
+        except Exception:
+            logger.exception("Scriber controller shutdown failed")
+        try:
+            if runner_ready:
+                await runner.cleanup()
+        except Exception:
+            logger.exception("Scriber HTTP runner cleanup failed")
+        try:
+            controller.close_persistence_stores()
+        except Exception:
+            logger.exception("Scriber persistence cleanup failed")
+        logger.info("Scriber web API shutdown cleanup complete")
+        for sig_value, previous_handler in previous_signal_handlers.items():
+            try:
+                signal.signal(sig_value, previous_handler)
+            except Exception:  # pragma: no cover - platform dependent
+                pass
+        if force_exit_timer is not None:
+            force_exit_timer.cancel()
+        loop.set_exception_handler(previous_loop_exception_handler)
+        if shutdown_requested and force_process_exit:
+            os._exit(0)
 
 
 async def _background_init(controller: ScriberWebController) -> None:

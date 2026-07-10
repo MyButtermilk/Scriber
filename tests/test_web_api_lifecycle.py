@@ -248,6 +248,107 @@ def test_arm_force_process_exit_after_shutdown_starts_daemon_timer(monkeypatch):
     assert exits == [0]
 
 
+def test_close_persistence_stores_closes_every_sqlite_owner(monkeypatch):
+    ctl = ScriberWebController.__new__(ScriberWebController)
+    ctl._job_store = MagicMock()
+    ctl._latency_metrics_store = MagicMock()
+    close_transcripts = MagicMock()
+    monkeypatch.setattr(web_api.db, "_close_all_connections", close_transcripts)
+
+    ctl.close_persistence_stores()
+
+    ctl._job_store.close.assert_called_once_with()
+    ctl._latency_metrics_store.close.assert_called_once_with()
+    close_transcripts.assert_called_once_with()
+
+
+class _RunServerControllerStub:
+    def __init__(self):
+        self.events: list[str] = []
+
+    def register_hotkeys(self):
+        self.events.append("register_hotkeys")
+
+    def begin_shutdown(self):
+        self.events.append("begin_shutdown")
+
+    async def stop_listening(self):
+        self.events.append("stop_listening")
+
+    async def drain_background_tasks_for_shutdown(self):
+        self.events.append("drain")
+        return 0
+
+    def shutdown(self):
+        self.events.append("shutdown")
+
+    def close_persistence_stores(self):
+        self.events.append("close_persistence")
+
+
+@pytest.mark.asyncio
+async def test_run_server_cleans_up_when_listener_start_fails(monkeypatch):
+    controller = _RunServerControllerStub()
+    monkeypatch.setattr(web_api, "ScriberWebController", lambda _loop: controller)
+    monkeypatch.setattr(web_api, "_should_force_process_exit_after_shutdown", lambda: False)
+    monkeypatch.setattr(web_api.web.TCPSite, "start", AsyncMock(side_effect=OSError("port busy")))
+
+    with pytest.raises(OSError, match="port busy"):
+        await web_api.run_server("127.0.0.1", 0)
+
+    assert "register_hotkeys" not in controller.events
+    assert controller.events == [
+        "begin_shutdown",
+        "stop_listening",
+        "drain",
+        "shutdown",
+        "close_persistence",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_server_cancellation_restores_signals_and_cleans_up(monkeypatch):
+    controller = _RunServerControllerStub()
+    background_started = asyncio.Event()
+    signal_calls: list[tuple[int, object]] = []
+    previous_handlers: dict[int, object] = {}
+
+    async def _blocking_background_init(_controller):
+        background_started.set()
+        await asyncio.Event().wait()
+
+    def _getsignal(sig):
+        return previous_handlers.setdefault(int(sig), object())
+
+    def _signal(sig, handler):
+        signal_calls.append((int(sig), handler))
+
+    monkeypatch.setattr(web_api, "ScriberWebController", lambda _loop: controller)
+    monkeypatch.setattr(web_api, "_should_force_process_exit_after_shutdown", lambda: False)
+    monkeypatch.setattr(web_api, "_background_init", _blocking_background_init)
+    monkeypatch.setattr(web_api.signal, "getsignal", _getsignal)
+    monkeypatch.setattr(web_api.signal, "signal", _signal)
+    monkeypatch.setattr(web_api.web.TCPSite, "start", AsyncMock())
+    monkeypatch.setattr(web_api.web.TCPSite, "stop", AsyncMock())
+
+    task = asyncio.create_task(web_api.run_server("127.0.0.1", 0))
+    await asyncio.wait_for(background_started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert controller.events == [
+        "register_hotkeys",
+        "begin_shutdown",
+        "stop_listening",
+        "drain",
+        "shutdown",
+        "close_persistence",
+    ]
+    for sig_value, previous_handler in previous_handlers.items():
+        assert (sig_value, previous_handler) in signal_calls
+
+
 def _install_fake_sounddevice_module(
     monkeypatch: pytest.MonkeyPatch,
     *,
