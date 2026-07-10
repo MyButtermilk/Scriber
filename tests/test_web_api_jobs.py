@@ -211,6 +211,60 @@ async def test_cancel_transcript_marks_background_job_canceled(tmp_path):
     assert any(call.kwargs.get("reason") == "canceled" for call in broadcast_mock.await_args_list)
 
 
+@pytest.mark.asyncio
+async def test_cancel_transcript_removes_owned_upload_directory(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    upload_dir = ctl._downloads_dir / "files" / "cancel-owned-upload"
+    upload_dir.mkdir(parents=True)
+    sample_file = upload_dir / "sample.wav"
+    sample_file.write_bytes(b"RIFF....WAVEfmt ")
+
+    async def _slow_run(_rec, _path, *, provider):
+        await asyncio.sleep(10)
+
+    with (
+        patch.object(ctl, "_run_file_transcription", new=AsyncMock(side_effect=_slow_run)),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        rec = await ctl.start_file_transcription(sample_file, "sample.wav")
+        await asyncio.sleep(0)
+        assert await ctl.cancel_transcript(rec.id) is True
+        task = ctl._running_tasks[rec.id]
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert rec.status == "stopped"
+    assert not upload_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_cancel_transcript_preserves_external_source_directory(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=JobStore(db_path=tmp_path / "jobs.db"))
+    external_dir = tmp_path / "external"
+    external_dir.mkdir()
+    sample_file = external_dir / "sample.wav"
+    sample_file.write_bytes(b"RIFF....WAVEfmt ")
+
+    async def _slow_run(_rec, _path, *, provider):
+        await asyncio.sleep(10)
+
+    with (
+        patch.object(ctl, "_run_file_transcription", new=AsyncMock(side_effect=_slow_run)),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        rec = await ctl.start_file_transcription(sample_file, "sample.wav")
+        await asyncio.sleep(0)
+        assert await ctl.cancel_transcript(rec.id) is True
+        await asyncio.gather(ctl._running_tasks[rec.id], return_exceptions=True)
+
+    assert external_dir.exists()
+    assert sample_file.exists()
+
+
 def test_live_record_start_exposes_wall_clock_attempt_start() -> None:
     rec = TranscriptRecord(
         id="live-attempt-start",
@@ -700,6 +754,72 @@ async def test_retry_waiting_job_remains_visible_without_running_task(monkeypatc
     assert result["total"] == 2
     assert calls[0]["include_incomplete"] is True
     assert calls[0]["exclude_ids"] == (waiting.id,)
+
+
+@pytest.mark.asyncio
+async def test_retry_discards_partial_output_from_failed_attempt(tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    rec = TranscriptRecord(
+        id="retry-partial-output",
+        title="Retry partial output",
+        date="Today",
+        duration="--:--",
+        status="processing",
+        type="file",
+        language="auto",
+    )
+    rec.append_final_text("partial first segment")
+    rec.append_final_text("partial second segment")
+    job = store.enqueue(
+        transcript_id=rec.id,
+        job_type=web_api.JobType.FILE,
+        payload={"path": str(tmp_path / "sample.wav")},
+    )
+    assert store.mark_running(job.id)
+    ctl._remember_job_id(rec.id, job.id)
+
+    scheduled = await ctl._schedule_retry_if_allowed(rec, TimeoutError("provider timeout"))
+
+    assert scheduled is True
+    assert rec.content_text() == ""
+    assert rec.to_public(include_content=False)["preview"] == rec.title
+    persisted_job = store.get(job.id)
+    assert persisted_job is not None
+    assert persisted_job.status == JobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_resumed_retry_discards_partial_output_from_older_runtime(monkeypatch, tmp_path):
+    source = tmp_path / "sample.wav"
+    source.write_bytes(b"RIFF....WAVEfmt ")
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    job = store.enqueue(
+        transcript_id="resume-partial-output",
+        job_type=web_api.JobType.FILE,
+        payload={"path": str(source), "title": "Resume partial"},
+    )
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    rec = TranscriptRecord(
+        id=job.transcript_id,
+        title="Resume partial",
+        date="Today",
+        duration="--:--",
+        status="processing",
+        type="file",
+        language="auto",
+        source_url=str(source),
+        content="stale partial output",
+    )
+    ctl._add_to_history(rec)
+    scheduled: list[TranscriptRecord] = []
+    monkeypatch.setattr(ctl, "_schedule_file_job", lambda record, *_args, **_kwargs: scheduled.append(record))
+
+    resumed = await ctl.resume_pending_jobs()
+
+    assert resumed == 1
+    assert scheduled == [rec]
+    assert rec.content_text() == ""
 
 
 @pytest.mark.asyncio

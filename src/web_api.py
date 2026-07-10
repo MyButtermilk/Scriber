@@ -1633,6 +1633,15 @@ class TranscriptRecord:
         self._preview_has_more = False
         self.append_final_text(text)
 
+    def reset_transcription_attempt(self) -> None:
+        """Discard provider output that belongs to an unsuccessful attempt."""
+        self.replace_content("")
+        self.summary = ""
+        self.summary_status = "idle"
+        self.summary_error = ""
+        self.summary_updated_at = ""
+        self._youtube_stt_provider_used = ""
+
 
 class ScriberWebController:
     def __init__(
@@ -2754,6 +2763,7 @@ class ScriberWebController:
         except Exception as exc:  # pragma: no cover - best effort persistence
             logger.warning(f"Failed to persist retry state for transcript {rec.id}: {exc}")
             return False
+        rec.reset_transcription_attempt()
         self._schedule_retry_scan(delay_seconds)
         logger.warning(
             f"Scheduled retry for transcript {rec.id} in {delay_seconds:.1f}s "
@@ -2778,6 +2788,25 @@ class ScriberWebController:
     async def _sync_job_status_async(self, rec: TranscriptRecord) -> None:
         await asyncio.to_thread(self._sync_job_status, rec)
 
+    async def _cleanup_owned_file_source(self, source_path: str | Path, *, reason: str) -> bool:
+        """Remove only per-upload directories owned by Scriber."""
+        try:
+            files_root = (self._downloads_dir / "files").resolve()
+            file_dir = Path(source_path).expanduser().resolve().parent
+            owned_upload_dir = file_dir != files_root and file_dir.parent == files_root
+            if not owned_upload_dir:
+                if file_dir.exists():
+                    logger.debug("Preserving source outside the Scriber upload workspace: {}", file_dir)
+                return False
+            if not file_dir.exists():
+                return False
+            await _remove_tree_if_exists(file_dir)
+            logger.debug("Cleaned up uploaded file directory ({}): {}", reason, file_dir)
+            return True
+        except Exception as exc:
+            logger.warning("Failed to cleanup uploaded file ({}): {}", reason, exc)
+            return False
+
     async def _finalize_canceled_background_job(self, rec: TranscriptRecord) -> None:
         """Persist and publish the terminal state reached after task cancellation."""
         rec.status = "stopped"
@@ -2786,6 +2815,8 @@ class ScriberWebController:
         await self._sync_job_status_async(rec)
         await self._save_transcript_to_db_async(rec)
         await self._broadcast_history_updated(record=rec, reason="canceled")
+        if rec.type == "file" and rec.source_url:
+            await self._cleanup_owned_file_source(rec.source_url, reason="canceled")
 
     def _schedule_youtube_job(self, rec: TranscriptRecord, *, resumed: bool = False) -> None:
         async def _runner() -> None:
@@ -3009,6 +3040,7 @@ class ScriberWebController:
             self._remember_job_id(rec.id, job.id)
             # A resumed attempt starts now. Do not make the UI count time while
             # Scriber was not running as active processing time.
+            rec.reset_transcription_attempt()
             rec.processing_started_at = datetime.now().isoformat()
 
             if job.job_type == JobType.YOUTUBE:
@@ -5221,7 +5253,7 @@ class ScriberWebController:
                 meta={"error": str(exc)},
             )
         finally:
-            if rec.duration.strip() in {"", "--", "--:--", "-:--"}:
+            if rec.status != "processing" and rec.duration.strip() in {"", "--", "--:--", "-:--"}:
                 rec.duration = _format_duration(time.monotonic() - workflow_started)
             if rec.status == "completed":
                 self._emit_workflow_event(
@@ -5239,21 +5271,8 @@ class ScriberWebController:
             if rec.status != "completed":
                 await self._save_transcript_to_db_async(rec)
             await self._broadcast_history_updated(record=rec, reason="job_done")
-            # Cleanup: delete the uploaded file and its directory
-            try:
-                files_root = (self._downloads_dir / "files").resolve()
-                file_dir = file_path.resolve().parent
-                owned_upload_dir = file_dir != files_root and file_dir.parent == files_root
-                if rec.status != "processing" and owned_upload_dir and file_dir.exists():
-                    await _remove_tree_if_exists(file_dir)
-                    logger.debug(f"Cleaned up uploaded file directory: {file_dir}")
-                elif rec.status != "processing" and file_dir.exists() and not owned_upload_dir:
-                    logger.debug(
-                        "Preserving source outside the Scriber upload workspace: {}",
-                        file_dir,
-                    )
-            except Exception as cleanup_err:
-                logger.warning(f"Failed to cleanup uploaded file: {cleanup_err}")
+            if rec.status != "processing":
+                await self._cleanup_owned_file_source(file_path, reason=rec.status)
 
     async def start_listening(self, *, post_process: bool = False) -> ProviderUserError | None:
         # Acquire lock for entire operation - no parallel start/stop allowed
@@ -6626,6 +6645,9 @@ class ScriberWebController:
         if not deleted:
             logger.error(f"Refusing to remove transcript from memory after database deletion failed: {transcript_id}")
             return "persistence_error", rec
+
+        if rec.type == "file" and rec.source_url:
+            await self._cleanup_owned_file_source(rec.source_url, reason="transcript_deleted")
 
         try:
             await asyncio.to_thread(

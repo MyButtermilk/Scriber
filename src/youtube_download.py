@@ -270,6 +270,10 @@ async def download_youtube_transcript(
             "no_warnings": True,
             "noplaylist": True,
             "skip_download": True,
+            "socket_timeout": 15,
+            "retries": 3,
+            "fragment_retries": 3,
+            "extractor_retries": 3,
         }
         deno_path = find_media_tool("deno")
         if deno_path:
@@ -504,6 +508,9 @@ async def download_youtube_audio(
             "quiet": True,
             "no_warnings": True,
             "socket_timeout": 15,
+            "retries": 3,
+            "fragment_retries": 3,
+            "extractor_retries": 3,
             # Recent yt-dlp versions select clients based on EJS/runtime and
             # PO-token availability. Do not override those maintained defaults.
             "concurrent_fragment_downloads": _CONCURRENT_FRAGMENT_DOWNLOADS,
@@ -553,6 +560,9 @@ async def download_youtube_audio(
                 # If we exhausted all retries
                 if last_error:
                     raise last_error
+            except BaseException:
+                shutil.rmtree(library_out_dir, ignore_errors=True)
+                raise
             finally:
                 if cancel_event.is_set():
                     shutil.rmtree(library_out_dir, ignore_errors=True)
@@ -570,15 +580,19 @@ async def download_youtube_audio(
                 pass
             raise
 
-        if final_path and final_path.exists():
-            return await _ensure_audio_only_file(final_path)
+        try:
+            if final_path and final_path.exists():
+                return await _ensure_audio_only_file(final_path)
 
-        # Try to find the file (audio formats only)
-        for ext in ["webm", "m4a", "opus", "mp3", "wav", "ogg", "flac", "aac"]:
-            for f in library_out_dir.glob(f"*.{ext}"):
-                return await _ensure_audio_only_file(f)
+            # Try to find the file (audio formats only)
+            for ext in ["webm", "m4a", "opus", "mp3", "wav", "ogg", "flac", "aac"]:
+                for f in library_out_dir.glob(f"*.{ext}"):
+                    return await _ensure_audio_only_file(f)
 
-        raise YouTubeDownloadError("Downloaded file not found")
+            raise YouTubeDownloadError("Downloaded file not found")
+        except BaseException:
+            shutil.rmtree(library_out_dir, ignore_errors=True)
+            raise
         
     except ImportError:
         logger.warning("yt-dlp library not available, falling back to subprocess")

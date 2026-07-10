@@ -259,6 +259,34 @@ async def test_download_youtube_audio_uses_deno_and_current_default_clients(
         "deno": {"path": str(deno_path)}
     }
     assert captured_options["concurrent_fragment_downloads"] == 4
+    assert captured_options["socket_timeout"] == 15
+    assert captured_options["retries"] == 3
+    assert captured_options["fragment_retries"] == 3
+    assert captured_options["extractor_retries"] == 3
+
+
+@pytest.mark.asyncio
+async def test_download_youtube_audio_library_failure_cleans_attempt_directory(monkeypatch, tmp_path: Path):
+    class FakeYoutubeDL:
+        def __init__(self, _options):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, _url, *, download):
+            assert download is True
+            raise RuntimeError("synthetic yt-dlp failure")
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+    with patch("src.youtube_download._require_ffmpeg"):
+        with pytest.raises(RuntimeError, match="synthetic yt-dlp failure"):
+            await download_youtube_audio("https://example.com", output_dir=tmp_path)
+
+    assert not list(tmp_path.glob(".yt-dlp-*"))
 
 
 @pytest.mark.asyncio
