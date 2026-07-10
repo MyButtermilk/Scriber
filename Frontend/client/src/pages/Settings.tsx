@@ -2445,6 +2445,9 @@ export default function Settings() {
       return;
     }
     if (msg.type === "onnx_download_progress") {
+      if (msg.quantization && msg.quantization !== onnxQuantization) {
+        return;
+      }
       setOnnxModels((prev) =>
         prev.map((m) =>
           m.id === msg.modelId
@@ -2462,7 +2465,7 @@ export default function Settings() {
     if (msg.type === "onnx_models_updated") {
       loadOnnxModels();
     }
-  }, [loadOnnxModels, selectedDeviceId, toast]);
+  }, [loadOnnxModels, onnxQuantization, selectedDeviceId, toast]);
 
   useSharedWebSocket(handleWsMessage);
 

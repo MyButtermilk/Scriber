@@ -871,6 +871,23 @@ def _validate_summarization_model(raw_model: str) -> str:
     return model
 
 
+def _validate_onnx_selection(raw_model: str, raw_quantization: str) -> tuple[str, str]:
+    from src.onnx_stt import get_model_info
+
+    model = (raw_model or "").strip()
+    info = get_model_info(model)
+    if not info:
+        raise ValueError(f"Unknown ONNX model '{raw_model}'")
+    quantization = (raw_quantization or "").strip().lower()
+    supported = list(info.get("supported_quantizations") or ["int8", "fp32"])
+    if quantization not in supported:
+        raise ValueError(
+            f"Quantization '{raw_quantization}' is not supported for {model}. "
+            f"Allowed: {', '.join(supported)}"
+        )
+    return model, quantization
+
+
 def _payload_bool(payload: dict[str, Any], key: str) -> bool | None:
     value = payload.get(key)
     return value if isinstance(value, bool) else None
@@ -1639,6 +1656,8 @@ class ScriberWebController:
         self._pending_transcript_finals: deque[dict[str, Any]] = deque()
         self._control_broadcast_task: asyncio.Task | None = None
         self._pending_control_payloads: dict[str, dict[str, Any]] = {}
+        self._device_change_task: asyncio.Task | None = None
+        self._pending_device_change_devices: list[dict[str, str]] | None = None
 
         self._pipeline: Optional[Any] = None
         self._pipeline_task: Optional[asyncio.Task] = None
@@ -1820,6 +1839,13 @@ class ScriberWebController:
             )
         except Exception:
             self._settings_persist_debounce_seconds = 0.5
+        try:
+            self._settings_persist_retry_seconds = max(
+                0.05,
+                min(60.0, float(os.getenv("SCRIBER_SETTINGS_PERSIST_RETRY_SEC", "5") or 5)),
+            )
+        except Exception:
+            self._settings_persist_retry_seconds = 5.0
 
         self._downloads_dir = downloads_dir()
 
@@ -1867,6 +1893,12 @@ class ScriberWebController:
             return
         except Exception as exc:
             logger.warning(f"Failed to persist debounced settings: {exc}")
+            if not self._shutting_down and not self._loop.is_closed():
+                self._cancel_settings_persist_timer()
+                self._settings_persist_handle = self._loop.call_later(
+                    self._settings_persist_retry_seconds,
+                    self._start_settings_persist_flush,
+                )
 
     def _schedule_settings_persist(self) -> None:
         """Debounce .env writes while keeping in-memory settings immediate."""
@@ -1895,7 +1927,11 @@ class ScriberWebController:
         self._settings_persist_pending = False
         async with self._settings_persist_lock:
             async with self._settings_update_lock:
-                await asyncio.to_thread(Config.persist_settings_files)
+                try:
+                    await asyncio.to_thread(Config.persist_settings_files)
+                except Exception:
+                    self._settings_persist_pending = True
+                    raise
 
     def _flush_settings_persist_sync(self) -> None:
         self._cancel_settings_persist_timer()
@@ -1903,7 +1939,11 @@ class ScriberWebController:
         if not self._settings_persist_pending and not persist_in_flight:
             return
         self._settings_persist_pending = False
-        Config.persist_settings_files()
+        try:
+            Config.persist_settings_files()
+        except Exception:
+            self._settings_persist_pending = True
+            raise
 
     def _on_mic_prewarm_done(self, task: asyncio.Task) -> None:
         if self._mic_prewarm_task is task:
@@ -2429,12 +2469,48 @@ class ScriberWebController:
         """Bridge device monitor thread callbacks onto the asyncio loop."""
         if self._loop.is_closed():
             return
-        try:
-            self._loop.call_soon_threadsafe(
-                lambda d=devices: asyncio.create_task(self._handle_devices_changed(d))
+
+        snapshot = [dict(device) for device in devices]
+
+        def enqueue() -> None:
+            if self._shutting_down:
+                return
+            self._pending_device_change_devices = snapshot
+            if self._device_change_task is not None and not self._device_change_task.done():
+                return
+            task = self._loop.create_task(
+                self._drain_device_changes(),
+                name="device_change_handler",
             )
+            self._device_change_task = task
+            task.add_done_callback(self._on_device_change_task_done)
+
+        try:
+            self._loop.call_soon_threadsafe(enqueue)
         except Exception as exc:
             logger.warning(f"Failed to schedule devices-changed handler: {exc}")
+
+    async def _drain_device_changes(self) -> None:
+        """Coalesce hotplug bursts and serialize prewarm reconfiguration."""
+        while self._pending_device_change_devices is not None and not self._shutting_down:
+            devices = self._pending_device_change_devices
+            self._pending_device_change_devices = None
+            try:
+                await self._handle_devices_changed(devices)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(f"Devices-changed handler failed: {exc}")
+
+    def _on_device_change_task_done(self, task: asyncio.Task) -> None:
+        if self._device_change_task is task:
+            self._device_change_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning(f"Devices-changed task failed: {exc}")
 
     async def _handle_devices_changed(self, devices: list[dict[str, str]]) -> None:
         invalidate_mic_device_resolution_cache()
@@ -6017,7 +6093,12 @@ class ScriberWebController:
         current = asyncio.current_task()
         tasks = {
             task
-            for task in (*self._running_tasks.values(), *self._summary_tasks.values())
+            for task in (
+                *self._running_tasks.values(),
+                *self._summary_tasks.values(),
+                self._device_change_task,
+            )
+            if task is not None
             if task is not current and not task.done()
         }
         for task in tasks:
@@ -6084,6 +6165,10 @@ class ScriberWebController:
         if self._control_broadcast_task is not None:
             self._control_broadcast_task.cancel()
             self._control_broadcast_task = None
+        self._pending_device_change_devices = None
+        if self._device_change_task is not None:
+            self._device_change_task.cancel()
+            self._device_change_task = None
         # Cancel pending debounce timers so they don't fire on a tearing-down loop.
         self._cancel_settings_persist_timer()
         if self._history_broadcast_handle is not None:
@@ -6277,6 +6362,8 @@ class ScriberWebController:
         validated_service: str | None = None
         validated_soniox_mode: str | None = None
         validated_summarization_model: str | None = None
+        validated_onnx_model: str | None = None
+        validated_onnx_quantization: str | None = None
         mic_runtime_changed = False
 
         # Validate first to avoid partial updates on invalid payloads.
@@ -6292,6 +6379,20 @@ class ScriberWebController:
         validated_post_processing_model: str | None = None
         if "postProcessingModel" in payload and isinstance(payload["postProcessingModel"], str):
             validated_post_processing_model = _validate_summarization_model(payload["postProcessingModel"])
+        has_onnx_model = "onnxModel" in payload and isinstance(payload["onnxModel"], str)
+        has_onnx_quantization = "onnxQuantization" in payload and isinstance(
+            payload["onnxQuantization"],
+            str,
+        )
+        if has_onnx_model or has_onnx_quantization:
+            selected_model, selected_quantization = _validate_onnx_selection(
+                payload["onnxModel"] if has_onnx_model else Config.ONNX_MODEL,
+                payload["onnxQuantization"] if has_onnx_quantization else Config.ONNX_QUANTIZATION,
+            )
+            if has_onnx_model:
+                validated_onnx_model = selected_model
+            if has_onnx_quantization:
+                validated_onnx_quantization = selected_quantization
 
         if "hotkey" in payload and isinstance(payload["hotkey"], str):
             normalized = _normalize_hotkey_for_backend(payload["hotkey"])
@@ -6378,11 +6479,11 @@ class ScriberWebController:
         if "openaiRealtimeSttModel" in payload and isinstance(payload["openaiRealtimeSttModel"], str):
             Config.set_openai_realtime_stt_model(payload["openaiRealtimeSttModel"])
 
-        if "onnxModel" in payload and isinstance(payload["onnxModel"], str):
-            Config.set_onnx_model(payload["onnxModel"])
+        if validated_onnx_model is not None:
+            Config.set_onnx_model(validated_onnx_model)
 
-        if "onnxQuantization" in payload and isinstance(payload["onnxQuantization"], str):
-            Config.set_onnx_quantization(payload["onnxQuantization"])
+        if validated_onnx_quantization is not None:
+            Config.set_onnx_quantization(validated_onnx_quantization)
 
         onnx_use_gpu = _payload_bool(payload, "onnxUseGpu")
         if onnx_use_gpu is not None:
@@ -7986,6 +8087,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 payload = {
                     "type": "onnx_download_progress",
                     "modelId": model_id,
+                    "quantization": quantization,
                     "progress": progress,
                     "status": status_value,
                     "message": message,
@@ -8005,6 +8107,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             await ctl.broadcast({
                 "type": "onnx_download_progress",
                 "modelId": model_id,
+                "quantization": quantization,
                 "progress": final_status.get("progress", 0.0),
                 "status": final_status.get("status", "error" if not success else "ready"),
                 "message": final_status.get("message", ""),
@@ -8015,11 +8118,13 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     "success": True,
                     "message": "Model downloaded successfully",
                     "modelId": model_id,
+                    "quantization": quantization,
                 })
             return web.json_response({
                 "success": False,
                 "message": "Download failed",
                 "modelId": model_id,
+                "quantization": quantization,
             }, status=500)
 
         except ValueError as e:
@@ -8073,6 +8178,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     "modelId": model_id,
                 }, status=404)
                 
+        except ValueError as e:
+            return web.json_response({"message": str(e)}, status=400)
         except Exception as e:
             logger.exception(f"Failed to delete model {model_id}")
             return web.json_response({"message": str(e)}, status=500)

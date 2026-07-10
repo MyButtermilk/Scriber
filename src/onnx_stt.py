@@ -27,7 +27,7 @@ _onnx_asr = None
 _model_cache: dict[str, Any] = {}
 _download_lock = threading.Lock()
 _download_state_lock = threading.Lock()
-_download_state: dict[str, dict[str, Any]] = {}
+_download_state: dict[tuple[str, str], dict[str, Any]] = {}
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="onnx_stt")
 
 # =============================================================================
@@ -243,12 +243,16 @@ def _set_download_state(
     status: str,
     progress: Optional[float] = None,
     message: str = "",
+    *,
+    quantization: Optional[str] = None,
 ) -> None:
+    _, quantization_label = _normalize_quantization(quantization)
     with _download_state_lock:
-        _download_state[model_name] = {
+        _download_state[(model_name, quantization_label)] = {
             "status": status,
             "progress": progress,
             "message": message,
+            "quantization": quantization_label,
         }
 
 
@@ -473,19 +477,38 @@ def _list_repo_files(repo_id: str, allow_patterns: list[str]) -> list[dict[str, 
     return files
 
 
-def get_download_state(model_name: str) -> dict[str, Any]:
+def get_download_state(
+    model_name: str,
+    quantization: Optional[str] = None,
+) -> dict[str, Any]:
     with _download_state_lock:
-        return dict(_download_state.get(model_name, {}))
+        if quantization is not None:
+            _, quantization_label = _normalize_quantization(quantization)
+            return dict(_download_state.get((model_name, quantization_label), {}))
+        matching = [
+            state
+            for (candidate, _label), state in _download_state.items()
+            if candidate == model_name
+        ]
+        if not matching:
+            return {}
+        active = next((state for state in matching if state.get("status") == "downloading"), None)
+        return dict(active or matching[-1])
 
 
-def is_model_downloading(model_name: str) -> bool:
-    state = get_download_state(model_name)
-    return state.get("status") == "downloading"
+def is_model_downloading(model_name: str, quantization: Optional[str] = None) -> bool:
+    if quantization is not None:
+        return get_download_state(model_name, quantization).get("status") == "downloading"
+    with _download_state_lock:
+        return any(
+            candidate == model_name and state.get("status") == "downloading"
+            for (candidate, _label), state in _download_state.items()
+        )
 
 
 def get_model_status(model_name: str, quantization: Optional[str] = None) -> dict[str, Any]:
     """Get download status + availability for a model."""
-    state = get_download_state(model_name)
+    state = get_download_state(model_name, quantization)
     status = state.get("status")
     progress = state.get("progress")
     message = state.get("message", "")
@@ -617,11 +640,17 @@ async def download_model(
     quantization_onnx, q_label = _normalize_quantization(quantization)
     supported = _get_supported_quantizations(model_name)
     if q_label not in supported:
-        _set_download_state(model_name, "error", -1.0, f"Quantization not supported: {q_label}")
+        _set_download_state(
+            model_name,
+            "error",
+            -1.0,
+            f"Quantization not supported: {q_label}",
+            quantization=q_label,
+        )
         raise ValueError(f"Quantization not supported: {q_label}")
 
     if is_model_downloaded(model_name, quantization=q_label):
-        _set_download_state(model_name, "ready", 100.0, "Already downloaded")
+        _set_download_state(model_name, "ready", 100.0, "Already downloaded", quantization=q_label)
         if on_progress:
             on_progress(100.0, "Already downloaded")
         return True
@@ -632,7 +661,7 @@ async def download_model(
 
     repo_id = _resolve_repo_id(model_name, q_label)
     if not repo_id:
-        _set_download_state(model_name, "error", -1.0, "Missing repo for model")
+        _set_download_state(model_name, "error", -1.0, "Missing repo for model", quantization=q_label)
         return False
     allow_patterns = _build_allow_patterns(model_name, q_label)
 
@@ -642,7 +671,7 @@ async def download_model(
                 # A second request may have passed the optimistic checks while
                 # another worker owned the lock. Re-check after serialization.
                 if is_model_downloaded(model_name, quantization=q_label):
-                    _set_download_state(model_name, "ready", 100.0, "Already downloaded")
+                    _set_download_state(model_name, "ready", 100.0, "Already downloaded", quantization=q_label)
                     if on_progress:
                         on_progress(100.0, "Already downloaded")
                     return True
@@ -654,7 +683,7 @@ async def download_model(
 
                 cache_dir = get_model_cache_dir()
                 start_msg = f"Downloading model files ({q_label}). This can take a while..."
-                _set_download_state(model_name, "downloading", 0.0, start_msg)
+                _set_download_state(model_name, "downloading", 0.0, start_msg, quantization=q_label)
 
                 if on_progress:
                     on_progress(0.0, start_msg)
@@ -675,7 +704,13 @@ async def download_model(
                                 if on_progress_cb and self.total:
                                     percent = min(100.0, (self.n / self.total) * 100.0)
                                     message = f"Downloading files {self.n}/{self.total}..."
-                                    _set_download_state(model_name, "downloading", percent, message)
+                                    _set_download_state(
+                                        model_name,
+                                        "downloading",
+                                        percent,
+                                        message,
+                                        quantization=q_label,
+                                    )
                                     on_progress_cb(percent, message)
                                 return result
 
@@ -693,12 +728,18 @@ async def download_model(
 
                     if _uses_archive(model_name, q_label):
                         prepare_msg = "Preparing local model package..."
-                        _set_download_state(model_name, "downloading", 99.9, prepare_msg)
+                        _set_download_state(
+                            model_name,
+                            "downloading",
+                            99.9,
+                            prepare_msg,
+                            quantization=q_label,
+                        )
                         if on_progress:
                             on_progress(99.9, prepare_msg)
                         _archive_model_path(model_name, q_label, local_files_only=True)
 
-                    _set_download_state(model_name, "ready", 100.0, "Download complete")
+                    _set_download_state(model_name, "ready", 100.0, "Download complete", quantization=q_label)
                     if on_progress:
                         on_progress(100.0, "Download complete!")
 
@@ -724,7 +765,13 @@ async def download_model(
                         total_files = max(len(files), 1)
                         percent = min(99.9, (downloaded_files / total_files) * 100.0)
                         message = f"Downloading files {downloaded_files}/{total_files}..."
-                    _set_download_state(model_name, "downloading", percent, message)
+                    _set_download_state(
+                        model_name,
+                        "downloading",
+                        percent,
+                        message,
+                        quantization=q_label,
+                    )
                     if on_progress:
                         on_progress(percent, message)
 
@@ -798,12 +845,18 @@ async def download_model(
 
                 if _uses_archive(model_name, q_label):
                     prepare_msg = "Preparing local model package..."
-                    _set_download_state(model_name, "downloading", 99.9, prepare_msg)
+                    _set_download_state(
+                        model_name,
+                        "downloading",
+                        99.9,
+                        prepare_msg,
+                        quantization=q_label,
+                    )
                     if on_progress:
                         on_progress(99.9, prepare_msg)
                     _archive_model_path(model_name, q_label, local_files_only=True)
 
-                _set_download_state(model_name, "ready", 100.0, "Download complete")
+                _set_download_state(model_name, "ready", 100.0, "Download complete", quantization=q_label)
                 if on_progress:
                     on_progress(100.0, "Download complete!")
 
@@ -812,7 +865,7 @@ async def download_model(
 
             except Exception as e:
                 logger.error(f"Failed to download model {model_name}: {e}")
-                _set_download_state(model_name, "error", -1.0, str(e))
+                _set_download_state(model_name, "error", -1.0, str(e), quantization=q_label)
                 if on_progress:
                     on_progress(-1.0, f"Download failed: {e}")
                 return False
@@ -1066,6 +1119,13 @@ def delete_model(model_name: str, quantization: Optional[str] = None) -> bool:
     """
     if model_name not in ONNX_MODELS:
         return False
+    if quantization:
+        _, requested_quantization = _normalize_quantization(quantization)
+        supported_quantizations = _get_supported_quantizations(model_name)
+        if requested_quantization not in supported_quantizations:
+            raise ValueError(
+                f"Quantization not supported for {model_name}: {requested_quantization}"
+            )
     if is_model_downloading(model_name):
         logger.warning(f"Refusing to delete model while download is active: {model_name}")
         return False
@@ -1080,7 +1140,7 @@ def delete_model(model_name: str, quantization: Optional[str] = None) -> bool:
         repo_ids: list[str] = []
         quantizations_to_delete: list[str]
         if quantization:
-            _, q_label = _normalize_quantization(quantization)
+            q_label = requested_quantization
             quantizations_to_delete = [q_label]
             repo_id = _resolve_repo_id(model_name, q_label)
             if repo_id:
@@ -1140,7 +1200,14 @@ def delete_model(model_name: str, quantization: Optional[str] = None) -> bool:
 
         if deleted:
             logger.info(f"Deleted model from cache: {model_name}")
-            _set_download_state(model_name, "not_downloaded", 0.0, "Deleted")
+            for q_label in quantizations_to_delete:
+                _set_download_state(
+                    model_name,
+                    "not_downloaded",
+                    0.0,
+                    "Deleted",
+                    quantization=q_label,
+                )
         return deleted
         
     except Exception as e:

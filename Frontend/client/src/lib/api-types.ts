@@ -246,6 +246,7 @@ export interface LocalModelActionResponse {
   success?: boolean;
   message?: string;
   modelId?: string;
+  quantization?: string;
 }
 
 export interface FileUploadLimits {

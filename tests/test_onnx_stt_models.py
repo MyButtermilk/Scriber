@@ -136,3 +136,45 @@ def test_delete_model_refuses_active_download(monkeypatch):
     )
 
     assert onnx_stt.delete_model("parakeet-primeline", quantization="int8") is False
+
+
+def test_download_status_is_isolated_by_quantization(monkeypatch):
+    with onnx_stt._download_state_lock:
+        onnx_stt._download_state.clear()
+
+
+def test_delete_model_rejects_unsupported_quantization_before_unload(monkeypatch):
+    monkeypatch.setattr(
+        onnx_stt,
+        "unload_model",
+        lambda *_args, **_kwargs: pytest.fail("invalid selection unloaded the active model"),
+    )
+
+    with pytest.raises(ValueError, match="Quantization not supported"):
+        onnx_stt.delete_model("parakeet-primeline", quantization="fp16")
+    monkeypatch.setattr(onnx_stt, "is_model_downloaded", lambda *_args, **_kwargs: False)
+
+    onnx_stt._set_download_state(
+        "parakeet-primeline",
+        "error",
+        -1.0,
+        "fp32 failed",
+        quantization="fp32",
+    )
+    onnx_stt._set_download_state(
+        "parakeet-primeline",
+        "downloading",
+        42.0,
+        "int8 active",
+        quantization="int8",
+    )
+
+    assert onnx_stt.get_model_status("parakeet-primeline", "fp32")["status"] == "error"
+    int8_status = onnx_stt.get_model_status("parakeet-primeline", "int8")
+    assert int8_status["status"] == "downloading"
+    assert int8_status["progress"] == 42.0
+    assert onnx_stt.is_model_downloading("parakeet-primeline") is True
+    assert onnx_stt.is_model_downloading("parakeet-primeline", "fp32") is False
+
+    with onnx_stt._download_state_lock:
+        onnx_stt._download_state.clear()

@@ -93,6 +93,7 @@ export type ScriberWebSocketMessage =
     | (BaseWsMessage & {
         type: "onnx_download_progress";
         modelId: string;
+        quantization?: string;
         progress: number;
         status: ModelDownloadStatus;
         message?: string;

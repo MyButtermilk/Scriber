@@ -3112,12 +3112,16 @@ class ScriberPipeline:
                 except Exception as e:
                     logger.debug(f"Runner cancel error: {e}")
 
-        # Ensure future is cleaned up
-        if stop_future and not stop_future.done():
-            try:
-                await stop_future
-            except Exception:
-                pass
+        # Always retrieve the stop task result. A fast failure can complete
+        # before _start_done is observed; skipping an already-done task leaves
+        # its exception unconsumed and produces noisy asyncio warnings.
+        if stop_future is not None:
+            stop_result = (await asyncio.gather(stop_future, return_exceptions=True))[0]
+            if isinstance(stop_result, BaseException) and not isinstance(
+                stop_result,
+                asyncio.CancelledError,
+            ):
+                logger.debug(f"Pipeline stop task warning: {stop_result}")
 
         # Flush any buffered transcription as a last resort.
         try:

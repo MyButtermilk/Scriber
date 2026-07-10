@@ -677,6 +677,73 @@ async def test_update_settings_debounces_env_persistence(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_settings_persistence_retries_after_transient_write_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "0")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_RETRY_SEC", "0.05")
+    persist_mock = MagicMock(side_effect=[OSError("disk temporarily busy"), None])
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", persist_mock)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    await ctl.update_settings({"language": "en"})
+
+    async def _wait_for_retry() -> None:
+        while persist_mock.call_count < 2:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_wait_for_retry(), timeout=1)
+    assert ctl._settings_persist_pending is False
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_settings_persistence_failure_remains_pending_for_shutdown(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "0")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_RETRY_SEC", "60")
+    persist_mock = MagicMock(side_effect=[OSError("disk temporarily busy"), None])
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", persist_mock)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    await ctl.update_settings({"language": "de"})
+    task = ctl._settings_persist_task
+    assert task is not None
+    await asyncio.gather(task, return_exceptions=True)
+    assert ctl._settings_persist_pending is True
+
+    ctl.shutdown()
+
+    assert persist_mock.call_count == 2
+    assert ctl._settings_persist_pending is False
+
+
+@pytest.mark.asyncio
+async def test_device_change_bursts_are_coalesced_and_handler_failures_are_consumed(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    handled: list[list[dict[str, str]]] = []
+
+    async def _handle(devices: list[dict[str, str]]) -> None:
+        handled.append(devices)
+        if len(handled) == 1:
+            raise RuntimeError("synthetic hotplug failure")
+
+    monkeypatch.setattr(ctl, "_handle_devices_changed", _handle)
+
+    ctl._on_devices_changed([{"deviceId": "first"}])
+    ctl._on_devices_changed([{"deviceId": "second"}])
+    ctl._on_devices_changed([{"deviceId": "latest"}])
+    await asyncio.sleep(0.05)
+
+    assert handled == [[{"deviceId": "latest"}]]
+    assert ctl._device_change_task is None
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_update_settings_rejects_oversized_text_before_mutation(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
@@ -708,6 +775,24 @@ async def test_update_settings_rejects_oversized_api_secret(monkeypatch, tmp_pat
             {"apiKeys": {"openai": "x" * (web_api._SETTINGS_SECRET_MAX_BYTES + 1)}}
         )
 
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_update_settings_rejects_invalid_onnx_selection_before_mutation(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "ONNX_MODEL", "parakeet-primeline")
+    monkeypatch.setattr(web_api.Config, "ONNX_QUANTIZATION", "int8")
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    with pytest.raises(ValueError, match="Unknown ONNX model"):
+        await ctl.update_settings({"onnxModel": "arbitrary/remote-model"})
+    with pytest.raises(ValueError, match="is not supported"):
+        await ctl.update_settings({"onnxQuantization": "fp16"})
+
+    assert web_api.Config.ONNX_MODEL == "parakeet-primeline"
+    assert web_api.Config.ONNX_QUANTIZATION == "int8"
     ctl.shutdown()
 
 

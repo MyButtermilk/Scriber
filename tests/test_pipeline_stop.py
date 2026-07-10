@@ -219,6 +219,14 @@ class _RecordingStopTask(_DummyTask):
         await super().stop_when_done()
 
 
+class _FastFailingStopTask(_DummyTask):
+    async def stop_when_done(self):
+        self.stop_when_done_called = True
+        self._finished = True
+        self._done_event.set()
+        raise RuntimeError("synthetic stop failure")
+
+
 class _DummyPrewarmManager:
     def __init__(self, events: list[str] | None = None, *, resume_result: bool = True) -> None:
         self.detach_calls = 0
@@ -802,6 +810,18 @@ async def test_stop_waits_for_start_done_gracefully():
 
     assert pipeline.task.stop_when_done_called is True
     assert pipeline.task.cancel_called is False
+
+
+@pytest.mark.asyncio
+async def test_stop_consumes_fast_stop_task_failure():
+    pipeline = ScriberPipeline(service_name="soniox", on_status_change=None)
+    pipeline.is_active = True
+    pipeline._start_done.clear()
+    pipeline.task = _FastFailingStopTask(pipeline._start_done, set_done_on_stop=True)
+
+    await pipeline.stop(timeout_secs=0.5)
+
+    assert pipeline.task.stop_when_done_called is True
 
 
 @pytest.mark.asyncio

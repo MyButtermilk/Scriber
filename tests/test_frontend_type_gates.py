@@ -422,6 +422,19 @@ def test_api_key_saved_feedback_replaces_stale_reset_timers() -> None:
     assert "savedKeyResetTimersRef.current.forEach" in source
 
 
+def test_onnx_progress_only_updates_the_selected_quantization() -> None:
+    settings_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+    websocket_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "quantization?: string;" in websocket_source
+    assert "msg.quantization !== onnxQuantization" in settings_source
+    assert "[loadOnnxModels, onnxQuantization, selectedDeviceId, toast]" in settings_source
+
+
 def test_primary_page_intros_share_responsive_full_width_layout() -> None:
     component_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "page-intro.tsx"
