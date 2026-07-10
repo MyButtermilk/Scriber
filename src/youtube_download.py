@@ -507,6 +507,10 @@ async def download_youtube_audio(
             "progress_hooks": [progress_hook],
             "quiet": True,
             "no_warnings": True,
+            # The hook above is the single progress channel used by the app.
+            # Suppress yt-dlp's terminal renderer so supervised builds do not
+            # duplicate every fragment update into backend logs.
+            "noprogress": True,
             "socket_timeout": 15,
             "retries": 3,
             "fragment_retries": 3,

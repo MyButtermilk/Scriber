@@ -259,6 +259,7 @@ async def test_download_youtube_audio_uses_deno_and_current_default_clients(
         "deno": {"path": str(deno_path)}
     }
     assert captured_options["concurrent_fragment_downloads"] == 4
+    assert captured_options["noprogress"] is True
     assert captured_options["socket_timeout"] == 15
     assert captured_options["retries"] == 3
     assert captured_options["fragment_retries"] == 3
