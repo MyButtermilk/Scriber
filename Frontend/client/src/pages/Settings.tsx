@@ -59,9 +59,12 @@ import type {
   LocalModelActionResponse,
   MicrophoneDevice,
   MicrophonesResponse,
+  MeetingProfilesResponse,
+  MeetingTranscriptionMode,
   OnnxModelInfo,
   OnnxModelsResponse,
   OutlookCalendarStatus,
+  SpeakerModelStatus,
   SpeakerProfilesResponse,
   SettingsResponse,
   SettingsUpdatePayload,
@@ -554,18 +557,18 @@ const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
 ];
 
 const MEETING_FINAL_STT_OPTIONS = [
-  { value: "soniox_async", label: "Soniox Async", model: "stt-async-v5", credentialModel: "soniox-async", recommended: true, nativeDiarization: true, fiveHourSupported: true, detail: "Best continuity with Soniox live captions. Native timestamps and diarization. Fixed 300-minute maximum." },
-  { value: "assemblyai", label: "AssemblyAI", model: "Universal-3.5 Pro", credentialModel: "assemblyai", recommended: true, nativeDiarization: true, fiveHourSupported: true, detail: "Strong speaker utterances with native diarization and timestamps." },
-  { value: "mistral_async", label: "Mistral Voxtral", model: "Voxtral Mini Transcribe 2", credentialModel: "mistral-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Native diarization with timestamped segments, up to 3 hours per offline request." },
-  { value: "deepgram_async", label: "Deepgram", model: "Nova-3", credentialModel: "deepgram-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Word timestamps and speaker labels; up to 2 GB, but the current synchronous Scriber route is not verified for five-hour processing." },
-  { value: "gladia_async", label: "Gladia", model: "Pre-recorded", credentialModel: "gladia-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Native speaker utterances and timestamps, limited to 135 minutes per request." },
-  { value: "smallest_async", label: "Smallest AI", model: "Pulse batch", credentialModel: "smallest-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Native diarized utterances when available." },
-  { value: "speechmatics_async", label: "Speechmatics", model: "Batch", credentialModel: "speechmatics-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Native labeled batch diarization." },
-  { value: "openai_async", label: "OpenAI Batch", model: "gpt-4o-mini-transcribe", credentialModel: "openai-async", recommended: false, nativeDiarization: false, fiveHourSupported: false, detail: "Fast batch STT; Scriber aligns its timestamps with local Sherpa-ONNX speaker turns." },
-  { value: "gemini_stt", label: "Gemini STT", model: "Gemini audio", credentialModel: "gemini-stt", recommended: false, nativeDiarization: false, fiveHourSupported: false, detail: "Scriber adds local Sherpa-ONNX speaker turns after transcription." },
-  { value: "azure_mai", label: "Microsoft MAI", model: "mai-transcribe-1.5", credentialModel: "azure_mai", recommended: false, nativeDiarization: false, fiveHourSupported: true, detail: "Scriber adds local Sherpa-ONNX speaker turns after transcription." },
-  { value: "groq", label: "Groq Whisper", model: "whisper-large-v3-turbo", credentialModel: "groq", recommended: false, nativeDiarization: false, fiveHourSupported: false, detail: "Scriber adds local Sherpa-ONNX speaker turns after transcription." },
-  { value: "onnx_local", label: "Local ONNX STT", model: "Configured local model", credentialModel: "onnx_local", recommended: false, nativeDiarization: false, fiveHourSupported: true, detail: "Fully local STT with local Sherpa-ONNX speaker separation." },
+  { value: "soniox_async", label: "Soniox Async", model: "stt-async-v5", credentialModel: "soniox-async", recommended: true, nativeDiarization: true, fiveHourSupported: true, detail: "Keeps live and final transcription with the same service. Includes speaker names and exact timing for meetings up to 5 hours." },
+  { value: "assemblyai", label: "AssemblyAI", model: "Universal-3.5 Pro", credentialModel: "assemblyai", recommended: true, nativeDiarization: true, fiveHourSupported: true, detail: "Strong speaker naming and timing for meetings up to 5 hours." },
+  { value: "mistral_async", label: "Mistral Voxtral", model: "Voxtral Mini Transcribe 2", credentialModel: "mistral-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Includes speaker names and timing for recordings up to 3 hours." },
+  { value: "deepgram_async", label: "Deepgram", model: "Nova-3", credentialModel: "deepgram-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Includes word timing and speaker names. The current Scriber setup is not recommended for 5-hour meetings." },
+  { value: "gladia_async", label: "Gladia", model: "Pre-recorded", credentialModel: "gladia-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Includes speaker names and timing for recordings up to 2 hours 15 minutes." },
+  { value: "smallest_async", label: "Smallest AI", model: "Pulse batch", credentialModel: "smallest-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Can include speaker names when they are available." },
+  { value: "speechmatics_async", label: "Speechmatics", model: "Batch", credentialModel: "speechmatics-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Includes speaker names in the completed transcript." },
+  { value: "openai_async", label: "OpenAI Batch", model: "gpt-4o-mini-transcribe", credentialModel: "openai-async", recommended: false, nativeDiarization: false, fiveHourSupported: false, detail: "Creates the final transcript quickly. Scriber can add speaker names on this device." },
+  { value: "gemini_stt", label: "Gemini STT", model: "Gemini audio", credentialModel: "gemini-stt", recommended: false, nativeDiarization: false, fiveHourSupported: false, detail: "Creates the final transcript, then Scriber can add speaker names on this device." },
+  { value: "azure_mai", label: "Microsoft MAI", model: "mai-transcribe-1.5", credentialModel: "azure_mai", recommended: false, nativeDiarization: false, fiveHourSupported: true, detail: "Supports long meetings. Scriber can add speaker names on this device." },
+  { value: "groq", label: "Groq Whisper", model: "whisper-large-v3-turbo", credentialModel: "groq", recommended: false, nativeDiarization: false, fiveHourSupported: false, detail: "Creates the final transcript, then Scriber can add speaker names on this device." },
+  { value: "onnx_local", label: "Local ONNX STT", model: "Configured local model", credentialModel: "onnx_local", recommended: false, nativeDiarization: false, fiveHourSupported: true, detail: "Works without uploading audio. Scriber can also add speaker names on this device." },
 ] as const;
 
 function parseGermanMetricNumber(value: string | undefined): number {
@@ -580,6 +583,12 @@ function providerErrorRate(option: ProviderModelOption): number {
 
 function providerHourlyCost(option: ProviderModelOption): number {
   return parseGermanMetricNumber(option.detail.match(/^([\d,.]+)\s*€\/h/i)?.[1]);
+}
+
+function formatMeetingHourlyCost(value: number | null | undefined): string {
+  if (value == null) return "Provider rate varies";
+  if (value === 0) return "$0.00 / meeting hour";
+  return `~$${value.toFixed(2)} / meeting hour`;
 }
 
 function compareMetricAscending(a: number, b: number): number {
@@ -1099,6 +1108,8 @@ export default function Settings() {
   const [hotkey, setHotkey] = useState("Ctrl + Shift + S");
   const [postProcessingHotkey, setPostProcessingHotkey] = useState("Ctrl + Shift + P");
   const [meetingHotkey, setMeetingHotkey] = useState("Ctrl + Alt + M");
+  const [sonioxRealtimeModel, setSonioxRealtimeModel] = useState("stt-rt-v5");
+  const [meetingTranscriptionMode, setMeetingTranscriptionMode] = useState<MeetingTranscriptionMode>("live_final");
   const [meetingFinalProvider, setMeetingFinalProvider] = useState("soniox_async");
   const [meetingAnalysisModel, setMeetingAnalysisModel] = useState(DEFAULT_SUMMARIZATION_MODEL);
   const [meetingSmartTurnEnabled, setMeetingSmartTurnEnabled] = useState(true);
@@ -1130,6 +1141,8 @@ export default function Settings() {
   const [autoSummarize, setAutoSummarize] = useState(false);
   const [youtubePreferCaptions, setYoutubePreferCaptions] = useState(true);
   const [voiceprintLibraryOptIn, setVoiceprintLibraryOptIn] = useState(false);
+  const [mergeTargetProfileId, setMergeTargetProfileId] = useState("");
+  const [mergeSourceProfileId, setMergeSourceProfileId] = useState("");
   const [editingSpeakerProfileId, setEditingSpeakerProfileId] = useState("");
   const [speakerProfileName, setSpeakerProfileName] = useState("");
   const [postProcessingEnabled, setPostProcessingEnabled] = useState(true);
@@ -1168,7 +1181,29 @@ export default function Settings() {
         credentials: "include",
         signal,
       }, 10_000);
-      if (!response.ok) throw new Error(`Voice profiles unavailable (${response.status})`);
+      if (!response.ok) throw new Error(`Saved speakers unavailable (${response.status})`);
+      return response.json();
+    },
+  });
+  const meetingProfilesQuery = useQuery<MeetingProfilesResponse>({
+    queryKey: ["/api/meeting-profiles"],
+    queryFn: async ({ signal }) => {
+      const response = await fetchWithTimeout(apiUrl("/api/meeting-profiles"), {
+        credentials: "include",
+        signal,
+      }, 10_000);
+      if (!response.ok) throw new Error(`Meeting transcription options unavailable (${response.status})`);
+      return response.json();
+    },
+  });
+  const speakerModelQuery = useQuery<SpeakerModelStatus>({
+    queryKey: ["/api/meetings/speaker-model"],
+    queryFn: async ({ signal }) => {
+      const response = await fetchWithTimeout(apiUrl("/api/meetings/speaker-model"), {
+        credentials: "include",
+        signal,
+      }, 10_000);
+      if (!response.ok) throw new Error(`Speaker model unavailable (${response.status})`);
       return response.json();
     },
   });
@@ -1196,9 +1231,36 @@ export default function Settings() {
       setEditingSpeakerProfileId("");
       setSpeakerProfileName("");
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
-      toast({ title: variables.action === "delete" ? "Voice profile deleted" : "Voice profile named" });
+      toast({ title: variables.action === "delete" ? "Saved speaker deleted" : "Speaker name saved" });
     },
-    onError: (error) => toast({ title: "Voice profile update failed", description: error.message, variant: "destructive" }),
+    onError: (error) => toast({ title: "Saved speaker could not be updated", description: error.message, variant: "destructive" }),
+  });
+  const speakerModelMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/meetings/speaker-model");
+      return response.json() as Promise<SpeakerModelStatus>;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-model"] });
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
+      toast({ title: "Voice recognition ready", description: "Scriber can now recognize familiar speakers in new meetings." });
+    },
+    onError: (error) => toast({ title: "Voice recognition download failed", description: error.message, variant: "destructive" }),
+  });
+  const mergeProfilesMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/meetings/speaker-profiles/merge", {
+        targetProfileId: mergeTargetProfileId,
+        sourceProfileId: mergeSourceProfileId,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      setMergeSourceProfileId("");
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
+      toast({ title: "Duplicate speakers merged" });
+    },
+    onError: (error) => toast({ title: "Speakers could not be merged", description: error.message, variant: "destructive" }),
   });
   const outlookMutation = useMutation({
     mutationFn: async (action: "connect" | "sync" | "disconnect") => {
@@ -1433,6 +1495,14 @@ export default function Settings() {
   const selectedMeetingFinalOption =
     MEETING_FINAL_STT_OPTIONS.find((option) => option.value === meetingFinalProvider)
     ?? MEETING_FINAL_STT_OPTIONS[0];
+  const selectedMeetingProfile = meetingProfilesQuery.data?.profiles.find(
+    (profile) => profile.finalProvider === meetingFinalProvider,
+  ) ?? meetingProfilesQuery.data?.profiles[0];
+  const meetingCostEstimate = selectedMeetingProfile?.costEstimate;
+  const finalOnlyHourlyCost = meetingCostEstimate?.finalPerMeetingHour;
+  const liveAndFinalHourlyCost = finalOnlyHourlyCost == null
+    ? null
+    : finalOnlyHourlyCost + (meetingCostEstimate?.livePreviewPerMeetingHour ?? 0.24);
   const missingActiveCredentialRequirements = uniqueCredentialRequirements([
     missingSelectedCredentialRequirement,
     missingSummarizationCredentialRequirement,
@@ -1539,6 +1609,8 @@ export default function Settings() {
         setHotkey(settings.hotkey || settings.hotkeyRaw || "");
         setPostProcessingHotkey(settings.postProcessingHotkey || settings.postProcessingHotkeyRaw || "Ctrl + Shift + P");
         setMeetingHotkey(settings.meetingHotkey || settings.meetingHotkeyRaw || "Ctrl + Alt + M");
+        setSonioxRealtimeModel(settings.sonioxRealtimeModel || "stt-rt-v5");
+        setMeetingTranscriptionMode(settings.meetingTranscriptionMode === "final_only" ? "final_only" : "live_final");
         setMeetingFinalProvider(settings.meetingFinalProvider || "soniox_async");
         setMeetingAnalysisModel(settings.meetingAnalysisModel || settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL);
         setMeetingSmartTurnEnabled(settings.meetingSmartTurnEnabled !== false);
@@ -2275,11 +2347,15 @@ export default function Settings() {
     setVoiceprintLibraryOptIn(enabled);
     try {
       await updateSettings({ voiceprintLibraryOptIn: enabled });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-model"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] }),
+      ]);
       toast({
         title: "Saved",
         description: enabled
-          ? "Local biometric voice profiles may now be created for meetings where Voice Library is enabled."
-          : "New voice-profile collection is disabled; existing profiles remain until deleted.",
+          ? "Voice Library will recognize recurring speakers in new meetings after its local model is installed."
+          : "Scriber will not learn new voices. Existing saved speakers remain until you delete them.",
         duration: 3500,
       });
     } catch (e: any) {
@@ -2300,7 +2376,8 @@ export default function Settings() {
       setVoiceprintLibraryOptIn(false);
       setVoiceLibraryDeleteOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
-      toast({ title: "Voice Library deleted", description: "The model and every stored voiceprint were removed.", duration: 3500 });
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-model"] });
+      toast({ title: "Voice data deleted", description: "All saved speakers and the local download were removed.", duration: 3500 });
     } catch (e: any) {
       toast({ title: "Delete failed", description: String(e?.message || e), duration: 5000 });
     } finally {
@@ -2420,6 +2497,7 @@ export default function Settings() {
   const updateMeetingPreferences = async (patch: SettingsUpdatePayload) => {
     try {
       const updated = await updateSettings(patch);
+      setMeetingTranscriptionMode(updated.meetingTranscriptionMode === "final_only" ? "final_only" : "live_final");
       setMeetingFinalProvider(updated.meetingFinalProvider || meetingFinalProvider);
       setMeetingAnalysisModel(updated.meetingAnalysisModel || meetingAnalysisModel);
       setMeetingSmartTurnEnabled(updated.meetingSmartTurnEnabled !== false);
@@ -2428,7 +2506,7 @@ export default function Settings() {
       setMeetingAudioRetentionDays(updated.meetingAudioRetentionDays ?? meetingAudioRetentionDays);
       setSpeakerDiarizationFallbackEnabled(updated.speakerDiarizationFallbackEnabled !== false);
       await queryClient.invalidateQueries({ queryKey: ["/api/meeting-profiles"] });
-      toast({ title: "Meeting defaults saved", description: "New meetings will use this pipeline.", duration: 2200 });
+      toast({ title: "Meeting settings saved", description: "New meetings will use these choices.", duration: 2200 });
     } catch (error: any) {
       toast({ title: "Meeting settings could not be saved", description: String(error?.message || error), duration: 5000 });
       throw error;
@@ -2462,7 +2540,7 @@ export default function Settings() {
       setDiarizationComponent(payload);
       toast({
         title: "Local speaker separation installed",
-        description: "Sherpa-ONNX is ready for STT models without native diarization.",
+        description: "Local speaker separation is ready to use.",
         duration: 3500,
       });
     } catch (error: any) {
@@ -3175,6 +3253,84 @@ export default function Settings() {
 
   const activeLocalModelSettings = onnxLocalModelSettings;
 
+  const speechToTextProviderPanel = (
+    <SectionPanel
+      id="settings-providers"
+      title="Speech-to-text provider"
+      description="Choose the primary transcription provider."
+      icon={Cloud}
+    >
+      <div className="mb-2.5 rounded-xl bg-slate-50 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+        <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Current provider</p>
+        <div className="mt-1 flex items-center gap-2">
+          <ProviderIcon
+            icon={PROVIDER_MODEL_OPTIONS.find((option) => option.value === transcriptionModel)?.icon}
+            label={compactTranscriptionModelLabel}
+          />
+          <p className="truncate text-[14px] font-semibold text-slate-950 dark:text-slate-100">
+            {compactTranscriptionModelLabel}
+          </p>
+        </div>
+        {transcriptionModel === "assemblyai" && (
+          <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+            Async mode returns the transcript after recording stops.
+          </p>
+        )}
+        {transcriptionModel === "assemblyai-realtime" && (
+          <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+            Realtime mode uses AssemblyAI Universal-3.5 Pro through Pipecat.
+          </p>
+        )}
+      </div>
+
+      <div className="space-y-2.5">
+        <div className="space-y-2.5">
+          {providerGroups.map((group) => (
+            <div
+              key={group.key}
+              role="radiogroup"
+              aria-label={`${group.label} transcription providers`}
+              className="rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60"
+            >
+              <div className="mb-1.5">
+                <div className="min-w-0">
+                  <h3 className="text-[13px] !font-bold leading-4 text-slate-950 dark:text-slate-100">
+                    {group.label}
+                  </h3>
+                  <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+                    {group.description}
+                  </p>
+                </div>
+              </div>
+              <div className="grid gap-x-2 gap-y-1 sm:grid-cols-2">
+                {group.items.map((option) => {
+                  const requirement = requiredCredentialForTranscriptionModel(option.value);
+                  const disabledReason = missingCredentialReason(requirement);
+                  return (
+                    <ProviderChoice
+                      key={option.value}
+                      option={option}
+                      selected={transcriptionModel === option.value}
+                      disabled={Boolean(disabledReason)}
+                      disabledReason={disabledReason}
+                      onCredentialAction={() => openCredentialDialog(requirement)}
+                      onSelect={() => void handleTranscriptionModelChange(option.value)}
+                    />
+                  );
+                })}
+              </div>
+              {group.key === "local" && activeLocalModelSettings ? (
+                <div className="mt-2 border-t border-slate-200/80 pt-2 dark:border-slate-800/80">
+                  {activeLocalModelSettings}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </div>
+    </SectionPanel>
+  );
+
   return (
     <div className={cn(
       "settings-page mx-auto w-full max-w-[1320px] px-4 py-5 text-[13px] transition-opacity duration-150 md:px-6 md:py-6",
@@ -3190,7 +3346,7 @@ export default function Settings() {
       )}
 
       <PageIntro
-        eyebrow="Workspace controls · 04"
+        eyebrow="Workspace controls · 06"
         title="Settings"
         description="Configure capture, transcription providers, AI processing, credentials, updates, and language behavior."
         bottomContent={(
@@ -3198,8 +3354,8 @@ export default function Settings() {
             <div className="flex w-max items-center gap-1 rounded-xl bg-slate-100/80 p-1 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.05)] dark:bg-slate-950/45">
               {[
                 { section: "transcription", href: "#settings-transcription", label: "Transcription", icon: Mic },
+                { section: "providers", href: "#settings-providers", label: "Speech-to-text", icon: Cloud },
                 { section: "meetings", href: "#settings-meetings", label: "Meetings", icon: Users },
-                { section: "providers", href: "#settings-providers", label: "Providers", icon: Cloud },
                 { section: "apiKeys", href: "#settings-api-keys", label: "API keys", icon: Key },
                 { section: "summarization", href: "#settings-summaries", label: "Summarization", icon: Sparkles },
                 { section: "updates", href: "#settings-updates", label: "Updates", icon: Shield },
@@ -3407,52 +3563,6 @@ export default function Settings() {
               </Dialog>
                 </SettingLine>
 
-                <SettingLine label="Meeting hotkey" description="Opens meeting controls or the required recording confirmation.">
-                  <Dialog open={isRecordingMeetingHotkey} onOpenChange={setIsRecordingMeetingHotkey}>
-                    <DialogTrigger asChild>
-                      <Button variant="outline" className="h-8 w-[220px] max-w-full justify-start font-mono text-[11px]">
-                        <Keyboard className="mr-2 h-4 w-4 text-muted-foreground" />
-                        {meetingHotkey}
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent className="sm:max-w-[425px]">
-                      <DialogHeader>
-                        <DialogTitle>Meeting hotkey</DialogTitle>
-                        <DialogDescription>Press the shortcut that should open the meeting workspace.</DialogDescription>
-                      </DialogHeader>
-                      <div
-                        ref={meetingHotkeyCaptureRef}
-                        className="flex h-32 items-center justify-center rounded-lg border-2 border-dashed bg-secondary/20 outline-none transition-colors focus:border-primary focus:bg-primary/5"
-                        tabIndex={0}
-                        aria-label="Meeting hotkey capture area"
-                      >
-                        <p className="text-lg font-medium text-primary">{meetingHotkey}</p>
-                      </div>
-                      <div className="flex justify-end gap-2">
-                        <Button variant="ghost" onClick={() => setIsRecordingMeetingHotkey(false)}>Cancel</Button>
-                        <Button onClick={handleSaveMeetingHotkey}>Save</Button>
-                      </div>
-                    </DialogContent>
-                  </Dialog>
-                </SettingLine>
-
-                <SettingLine
-                  label="Voice Library biometric opt-in"
-                  description="Optional local speaker identification. Voice embeddings are biometric data, remain on this device, and are excluded from exports and support bundles."
-                >
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    <Button type="button" size="sm" variant="ghost" className="text-destructive hover:text-destructive" disabled={voiceLibraryDeletePending || speakerProfileMutation.isPending} onClick={() => setVoiceLibraryDeleteOpen(true)}>
-                      <Trash2 className="mr-1.5 h-3.5 w-3.5" />Delete library
-                    </Button>
-                    <Switch
-                      checked={voiceprintLibraryOptIn}
-                      disabled={voiceLibraryDeletePending}
-                      onCheckedChange={handleVoiceprintOptInChange}
-                      aria-label="Allow local biometric voice profile collection"
-                    />
-                  </div>
-                </SettingLine>
-
                 <SettingLine label="Visualizer bars" description={`Current count: ${visualizerBarCount}`}>
                   <div className="flex w-full items-center gap-2">
                     <BarChart3 className="h-4 w-4 shrink-0 text-slate-500" />
@@ -3485,27 +3595,84 @@ export default function Settings() {
           </div>
         </SectionPanel>
 
+        {speechToTextProviderPanel}
+
         <SectionPanel
           id="settings-meetings"
           title="Meetings"
-          description="Set the default live, final, and intelligence pipeline for new meeting recordings. Existing meetings retain their original model snapshot."
+          description="Choose how new meetings are transcribed, summarized, protected, and connected to Outlook. Changes apply to new meetings."
           icon={Users}
           className="lg:col-span-2"
         >
           <div className="grid gap-3 lg:grid-cols-2">
             <SettingsSubsection
-              title="Transcription pipeline"
-              description="Soniox handles live captions. The selected batch model rebuilds the final transcript from checkpointed audio."
+              title="Transcription"
+              description="Choose whether to see live text or wait for the accurate transcript after the meeting."
               icon={Mic}
             >
               <div className="divide-y divide-slate-200/80 dark:divide-slate-800">
-                <SettingLine label="Live captions" description="Low-latency microphone and system-audio streams.">
+                <div className="pb-3" role="radiogroup" aria-label="Meeting transcription timing">
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {([
+                      {
+                        value: "final_only" as const,
+                        title: "Transcript after meeting",
+                        badge: "Lowest cost",
+                        description: "Records safely without cloud live text. The accurate transcript appears after you stop.",
+                        cost: finalOnlyHourlyCost,
+                      },
+                      {
+                        value: "live_final" as const,
+                        title: "Live text + accurate transcript",
+                        badge: "Live captions",
+                        description: "Shows words while people speak, then transcribes both saved tracks again for the final version.",
+                        cost: liveAndFinalHourlyCost,
+                      },
+                    ] satisfies Array<{
+                      value: MeetingTranscriptionMode;
+                      title: string;
+                      badge: string;
+                      description: string;
+                      cost: number | null | undefined;
+                    }>).map((option) => {
+                      const selected = meetingTranscriptionMode === option.value;
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          role="radio"
+                          aria-checked={selected}
+                          onClick={() => void updateMeetingPreferences({ meetingTranscriptionMode: option.value })}
+                          className={cn(
+                            "rounded-xl px-3.5 py-3 text-left outline-none transition-[background-color,box-shadow,transform] duration-150 focus-visible:ring-2 focus-visible:ring-primary/60 active:scale-[0.99]",
+                            selected
+                              ? "bg-primary/[0.08] shadow-[inset_0_0_0_1.5px_hsl(var(--primary)/0.42)]"
+                              : "bg-slate-50 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.07)] hover:bg-slate-100/80 dark:bg-slate-900/55 dark:hover:bg-slate-900",
+                          )}
+                        >
+                          <span className="flex items-start justify-between gap-3">
+                            <span className="text-xs font-semibold text-slate-950 dark:text-slate-100">{option.title}</span>
+                            <Badge variant="outline" className="shrink-0 text-[9.5px]">{option.badge}</Badge>
+                          </span>
+                          <span className="mt-1.5 block text-[11px] leading-4 text-slate-600 dark:text-slate-300">{option.description}</span>
+                          <span className="mt-2 block font-mono text-[10.5px] font-semibold text-slate-700 dark:text-slate-200">
+                            {formatMeetingHourlyCost(option.cost)}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-2 text-[10.5px] leading-4 text-slate-500 dark:text-slate-400">
+                    {meetingCostEstimate?.assumption || "Estimate for a typical meeting hour with separate microphone and system-audio tracks. Provider prices can change."}
+                  </p>
+                </div>
+                <SettingLine label="Live text" description="Shows words from your microphone and speakers as people talk.">
                   <div className="text-right">
-                    <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">Soniox Realtime</p>
-                    <p className="font-mono text-[10.5px] text-slate-500">stt-rt-v5</p>
+                    <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">{meetingTranscriptionMode === "live_final" ? "Soniox Realtime" : "Off"}</p>
+                    <p className="font-mono text-[10.5px] text-slate-500">{meetingTranscriptionMode === "live_final" ? sonioxRealtimeModel : "No live provider cost"}</p>
                   </div>
                 </SettingLine>
-                <SettingLine label="Final transcript" description="Native speaker models are recommended; other models use the local fallback below.">
+                <SettingLine label="Final transcript" description="Choose the service that creates the accurate transcript and speaker names after the meeting.">
                   <Select value={meetingFinalProvider} onValueChange={(value) => void updateMeetingPreferences({ meetingFinalProvider: value })}>
                     <SelectTrigger className="h-9 w-[220px] max-w-full text-xs" aria-label="Final meeting transcription model">
                       <SelectValue />
@@ -3529,25 +3696,34 @@ export default function Settings() {
                       <div className="flex flex-wrap items-center justify-end gap-1.5">
                         {selectedMeetingFinalOption.recommended && <Badge variant="outline" className="text-[10px]">Recommended</Badge>}
                         <Badge variant="outline" className={selectedMeetingFinalOption.fiveHourSupported ? "border-emerald-500/40 text-[10px] text-emerald-700 dark:text-emerald-300" : "text-[10px] text-slate-500"}>
-                          {selectedMeetingFinalOption.fiveHourSupported ? "5 h route" : "5 h not verified"}
+                          {selectedMeetingFinalOption.fiveHourSupported ? "Ready for 5 hours" : "Not for 5-hour meetings"}
                         </Badge>
                       </div>
                     </div>
                     <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">{selectedMeetingFinalOption.detail}</p>
                     <p className="mt-1.5 font-mono text-[10.5px] text-slate-500 dark:text-slate-400">
                       {selectedMeetingFinalOption.model}. {selectedMeetingFinalOption.nativeDiarization
-                        ? "Native timestamps and diarization."
-                        : "Local Sherpa-ONNX speaker alignment."} {selectedMeetingFinalOption.fiveHourSupported
-                          ? "Finalization transport is compatible with five-hour files."
-                          : "Use a 5 h route for very long meetings."}
+                        ? "Includes speaker names and exact timing."
+                        : "Scriber can add speaker names on this device."} {selectedMeetingFinalOption.fiveHourSupported
+                          ? "Works with meetings up to 5 hours."
+                          : "Choose a 5-hour option for very long meetings."}
                     </p>
+                    <div className="mt-2.5 grid gap-1 border-t border-slate-200/80 pt-2.5 text-[10.5px] dark:border-slate-800 sm:grid-cols-3">
+                      <span className="text-slate-500">During meeting <strong className="block font-mono font-semibold text-slate-800 dark:text-slate-200">{meetingTranscriptionMode === "live_final" ? formatMeetingHourlyCost(meetingCostEstimate?.livePreviewPerMeetingHour) : "$0.00 / meeting hour"}</strong></span>
+                      <span className="text-slate-500">After meeting <strong className="block font-mono font-semibold text-slate-800 dark:text-slate-200">{formatMeetingHourlyCost(finalOnlyHourlyCost)}</strong></span>
+                      <span className="text-slate-500">Estimated total <strong className="block font-mono font-semibold text-primary">{formatMeetingHourlyCost(meetingTranscriptionMode === "live_final" ? liveAndFinalHourlyCost : finalOnlyHourlyCost)}</strong></span>
+                    </div>
+                    {meetingCostEstimate?.sources.length ? <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+                      {meetingCostEstimate.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[10.5px] text-primary hover:underline">{source.label}<ExternalLink className="h-3 w-3" /></a>)}
+                      <span className="text-[10px] text-slate-500">Prices checked {meetingCostEstimate.pricingUpdatedAt}</span>
+                    </div> : null}
                   </div>
                 </div>
-                <SettingLine label="Local speaker fallback" description="For File, YouTube, Meetings, and imported meeting recordings when STT has no native diarization.">
+                <SettingLine label="Add speaker names locally" description="When the chosen service cannot identify speakers, Scriber can do it on this device for File, YouTube, and Meetings.">
                   <Switch
                     checked={speakerDiarizationFallbackEnabled}
                     onCheckedChange={(enabled) => void updateMeetingPreferences({ speakerDiarizationFallbackEnabled: enabled })}
-                    aria-label="Use local speaker diarization fallback"
+                    aria-label="Add speaker names on this device when needed"
                   />
                 </SettingLine>
                 {speakerDiarizationFallbackEnabled && <div className="py-3">
@@ -3555,7 +3731,7 @@ export default function Settings() {
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">Sherpa-ONNX offline diarization</p>
+                          <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">Local speaker separation</p>
                           <Badge variant="outline" className="text-[10px]">
                             {diarizationComponent?.installed
                               ? "Installed"
@@ -3565,7 +3741,7 @@ export default function Settings() {
                           </Badge>
                         </div>
                         <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">
-                          Pyannote 3.0 INT8 segmentation + 3D-Speaker embeddings + native clustering, locally for recordings up to 60 minutes. Choose native STT diarization for longer audio.
+                          Separates speakers on this device for recordings up to 60 minutes. For longer recordings, choose a service that already includes speaker names.
                         </p>
                       </div>
                       {!diarizationComponent?.installed && <Button
@@ -3578,35 +3754,72 @@ export default function Settings() {
                         {diarizationComponentPending
                           ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
                           : <Download className="mr-2 h-3.5 w-3.5" />}
-                        Install component
+                        Install speaker tool
                       </Button>}
                     </div>
                     {diarizationComponent?.installed && <p className="mt-2 font-mono text-[10.5px] text-slate-500 dark:text-slate-400">
                       v{diarizationComponent.version} · {(diarizationComponent.byteSize / 1_048_576).toFixed(1)} MB installed locally
                     </p>}
                     {!diarizationComponent?.installed && diarizationComponent?.workerReady === false && <p className="mt-2 text-[10.5px] leading-4 text-amber-700 dark:text-amber-300">
-                      This Scriber build does not contain the signed local worker. Choose native STT diarization until the app is updated.
+                      This version of Scriber does not include local speaker separation. Update Scriber or choose a service that includes speaker names.
                     </p>}
                   </div>
                 </div>}
-                <SettingLine label="Smart Turn V3" description="Keeps incomplete microphone phrases together when provider endpointing cuts them too early.">
-                  <Switch checked={meetingSmartTurnEnabled} onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingSmartTurnEnabled: enabled })} aria-label="Use Smart Turn V3 for meeting live captions" />
-                </SettingLine>
-                <SettingLine label="AEC3 echo control" description="Uses system audio as the render reference and keeps a raw microphone recovery track.">
-                  <Switch checked={meetingAecEnabled} onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingAecEnabled: enabled })} aria-label="Use AEC3 for meetings" />
+                {meetingTranscriptionMode === "live_final" && <SettingLine label="Keep live sentences together" description="Smart Turn V3 improves where the live preview ends a thought. It does not change the final transcript or its price.">
+                  <Switch checked={meetingSmartTurnEnabled} onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingSmartTurnEnabled: enabled })} aria-label="Keep meeting live sentences together across short pauses" />
+                </SettingLine>}
+                <details className="group py-3 text-[11px]">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-medium text-slate-700 marker:content-none dark:text-slate-200">
+                    Why Scriber does not upload one-minute pieces
+                    <ChevronDown className="h-3.5 w-3.5 text-slate-500 transition-transform group-open:rotate-180 motion-reduce:transition-none" />
+                  </summary>
+                  <p className="mt-2 max-w-[70ch] leading-5 text-slate-600 dark:text-slate-300">
+                    Small cloud requests do not reduce the audio duration you pay for and can reset speaker labels or cut words at the boundary. Scriber instead protects audio locally every 30 seconds, then gives the final service the longest supported context.
+                  </p>
+                </details>
+                <SettingLine label="Reduce speaker echo" description="Helps prevent voices from your speakers being recorded again through your microphone.">
+                  <Switch checked={meetingAecEnabled} onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingAecEnabled: enabled })} aria-label="Reduce speaker echo in meetings" />
                 </SettingLine>
               </div>
             </SettingsSubsection>
 
             <SettingsSubsection
-              title="Meeting intelligence and durability"
-              description="Choose the model for cited summaries, decisions, action items, and meeting chat."
+              title="Summaries and storage"
+              description="Choose how Scriber creates the meeting brief and how long it keeps local audio."
               icon={Sparkles}
             >
               <div className="divide-y divide-slate-200/80 dark:divide-slate-800">
-                <SettingLine label="Analysis model" description="Used only after the canonical transcript is available.">
+                <SettingLine label="Meeting shortcut" description="Open the meeting workspace from anywhere in Windows.">
+                  <Dialog open={isRecordingMeetingHotkey} onOpenChange={setIsRecordingMeetingHotkey}>
+                    <DialogTrigger asChild>
+                      <Button variant="outline" className="h-8 w-[220px] max-w-full justify-start font-mono text-[11px]">
+                        <Keyboard className="mr-2 h-4 w-4 text-muted-foreground" />
+                        {meetingHotkey}
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="sm:max-w-[425px]">
+                      <DialogHeader>
+                        <DialogTitle>Meeting shortcut</DialogTitle>
+                        <DialogDescription>Press the key combination that should open the meeting workspace.</DialogDescription>
+                      </DialogHeader>
+                      <div
+                        ref={meetingHotkeyCaptureRef}
+                        className="flex h-32 items-center justify-center rounded-lg border-2 border-dashed bg-secondary/20 outline-none transition-colors focus:border-primary focus:bg-primary/5"
+                        tabIndex={0}
+                        aria-label="Meeting shortcut capture area"
+                      >
+                        <p className="text-lg font-medium text-primary">{meetingHotkey}</p>
+                      </div>
+                      <div className="flex justify-end gap-2">
+                        <Button variant="ghost" onClick={() => setIsRecordingMeetingHotkey(false)}>Cancel</Button>
+                        <Button onClick={handleSaveMeetingHotkey}>Save</Button>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                </SettingLine>
+                <SettingLine label="Summary model" description="Creates the summary, decisions, action items, and answers after the transcript is ready.">
                   <Select value={meetingAnalysisModel} onValueChange={(value) => void updateMeetingPreferences({ meetingAnalysisModel: value })}>
-                    <SelectTrigger className="h-9 w-[220px] max-w-full text-xs" aria-label="Meeting analysis model">
+                    <SelectTrigger className="h-9 w-[220px] max-w-full text-xs" aria-label="Meeting summary model">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -3622,10 +3835,10 @@ export default function Settings() {
                     </SelectContent>
                   </Select>
                 </SettingLine>
-                <SettingLine label="Generate automatically" description="Build the cited workspace after final transcription. Turn off to run analysis manually.">
+                <SettingLine label="Create meeting brief automatically" description="Creates the summary, decisions, and action items when transcription is finished.">
                   <Switch checked={meetingAutoAnalyze} onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingAutoAnalyze: enabled })} aria-label="Automatically analyze completed meetings" />
                 </SettingLine>
-                <SettingLine label="Local audio retention" description="Transcript, notes, and outputs remain after audio is purged.">
+                <SettingLine label="Keep meeting audio" description="Choose how long audio stays on this device. The transcript and notes remain until you delete them.">
                   <Select value={String(meetingAudioRetentionDays)} onValueChange={(value) => void updateMeetingPreferences({ meetingAudioRetentionDays: Number(value) })}>
                     <SelectTrigger className="h-9 w-[180px] max-w-full text-xs" aria-label="Default meeting audio retention">
                       <SelectValue />
@@ -3641,36 +3854,82 @@ export default function Settings() {
                 <div className="py-3">
                   <div className="flex items-start gap-2.5 rounded-lg bg-slate-50 px-3 py-2.5 text-[11.5px] leading-4 text-slate-600 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60 dark:text-slate-300">
                     <Shield className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-300" />
-                    <p><span className="font-semibold text-slate-950 dark:text-slate-100">30-second recovery checkpoints.</span> Each completed audio chunk commits an atomic, checksum-protected snapshot of all final live transcript segments.</p>
+                    <p><span className="font-semibold text-slate-950 dark:text-slate-100">Protected every 30 seconds.</span> Scriber saves audio and transcript progress while the meeting runs, so a crash should not lose the whole meeting.</p>
                   </div>
                 </div>
               </div>
             </SettingsSubsection>
 
             <SettingsSubsection
-              title="Voice profiles"
-              description="Review the local identities used to recognize recurring speakers across meetings."
+              title="Voice Library"
+              description="Optionally remember familiar voices and add their names in future meetings. Voice data stays on this device and is never included in exports or support files."
               icon={Users}
             >
               <div className="space-y-2.5">
+                <div className="divide-y divide-slate-200/80 rounded-lg border border-slate-200/80 px-3 dark:divide-slate-800 dark:border-slate-800">
+                  <SettingLine
+                    label="Recognize familiar speakers"
+                    description="Turn this on only when everyone has agreed. Saved voice data stays on this device."
+                    className="py-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      {(speakerModelQuery.data?.installed || (speakerProfilesQuery.data?.items.length ?? 0) > 0) && (
+                        <Button type="button" size="sm" variant="ghost" className="text-destructive hover:text-destructive" disabled={voiceLibraryDeletePending || speakerProfileMutation.isPending} onClick={() => setVoiceLibraryDeleteOpen(true)}>
+                          <Trash2 className="mr-1.5 h-3.5 w-3.5" />Delete voice data
+                        </Button>
+                      )}
+                      <Switch
+                        checked={voiceprintLibraryOptIn}
+                        disabled={voiceLibraryDeletePending}
+                        onCheckedChange={handleVoiceprintOptInChange}
+                        aria-label="Recognize familiar speakers in future meetings"
+                      />
+                    </div>
+                  </SettingLine>
+                  <SettingLine
+                    label="Voice recognition download"
+                    description="A one-time local download. Scriber checks it before use and applies it automatically to new meetings."
+                    className="py-3"
+                  >
+                    {speakerModelQuery.data?.installed ? (
+                      <Badge variant="outline" className={cn(
+                        "text-[10px]",
+                        voiceprintLibraryOptIn
+                          ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
+                          : "text-slate-500",
+                      )}>{voiceprintLibraryOptIn ? "Ready" : "Installed · off"}</Badge>
+                    ) : (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={!voiceprintLibraryOptIn || speakerModelMutation.isPending || speakerModelQuery.isLoading}
+                        onClick={() => speakerModelMutation.mutate()}
+                      >
+                        {speakerModelMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Download className="mr-2 h-3.5 w-3.5" />}
+                        {voiceprintLibraryOptIn ? "Download" : "Turn on first"}
+                      </Button>
+                    )}
+                  </SettingLine>
+                </div>
                 <div className="flex items-start justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
                   <div className="min-w-0">
                     <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">
-                      {speakerProfilesQuery.data?.enabled ? "Recognition ready" : "Recognition inactive"}
+                      {speakerProfilesQuery.data?.enabled ? "Voice recognition is ready" : "Voice recognition is off"}
                     </p>
                     <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">
-                      A name is applied automatically only after two independent high-confidence matches. Embeddings never leave this device.
+                      Scriber adds a name only after the same voice has matched reliably more than once. Saved voice data never leaves this device.
                     </p>
                   </div>
                   <Badge variant="outline" className="shrink-0 text-[10px]">
-                    {speakerProfilesQuery.data?.items.length ?? 0} profiles
+                    {speakerProfilesQuery.data?.items.length ?? 0} saved speakers
                   </Badge>
                 </div>
-                {speakerProfilesQuery.isLoading && <p className="px-1 text-[11px] text-slate-500">Loading local profiles…</p>}
-                {speakerProfilesQuery.isError && <p className="px-1 text-[11px] text-amber-700 dark:text-amber-300">Voice profiles could not be loaded.</p>}
+                {speakerProfilesQuery.isLoading && <p className="px-1 text-[11px] text-slate-500">Loading saved speakers…</p>}
+                {speakerProfilesQuery.isError && <p className="px-1 text-[11px] text-amber-700 dark:text-amber-300">Saved speakers could not be loaded.</p>}
                 {speakerProfilesQuery.data?.items.length === 0 && (
                   <p className="rounded-lg border border-dashed border-slate-300 px-3 py-4 text-center text-[11px] text-slate-500 dark:border-slate-700">
-                    No voice profiles yet. Enable Voice Library for a meeting to create them locally.
+                    No saved speakers yet. Once enabled, Scriber learns familiar voices from new meetings on this device.
                   </p>
                 )}
                 {speakerProfilesQuery.data?.items.map((profile) => (
@@ -3685,17 +3944,17 @@ export default function Settings() {
                           if (event.key === "Escape") setEditingSpeakerProfileId("");
                         }}
                         className="h-8 min-w-0 flex-1 text-xs"
-                        aria-label={`Name voice profile ${profile.displayName}`}
+                        aria-label={`Name saved speaker ${profile.displayName}`}
                       />
                     ) : (
                       <button
                         type="button"
                         className="min-w-0 flex-1 rounded-md px-1 py-0.5 text-left transition-transform duration-150 active:scale-[0.98]"
                         onClick={() => { setEditingSpeakerProfileId(profile.id); setSpeakerProfileName(profile.displayName); }}
-                        title="Rename voice profile"
+                        title="Rename saved speaker"
                       >
                         <span className="block truncate text-xs font-semibold text-slate-950 dark:text-slate-100">{profile.displayName}</span>
-                        <span className="block text-[10.5px] text-slate-500">{profile.sampleCount} voice samples · {profile.isNamed ? "named" : "not named yet"}</span>
+                        <span className="block text-[10.5px] text-slate-500">{profile.sampleCount} voice matches · {profile.isNamed ? "named" : "name needed"}</span>
                       </button>
                     )}
                     {editingSpeakerProfileId === profile.id && (
@@ -3708,38 +3967,105 @@ export default function Settings() {
                       className="h-8 w-8 shrink-0 text-slate-500 hover:text-destructive active:scale-[0.96]"
                       disabled={speakerProfileMutation.isPending || voiceLibraryDeletePending}
                       onClick={() => setSpeakerProfilePendingDelete({ id: profile.id, name: profile.displayName })}
-                      aria-label={`Delete voice profile ${profile.displayName}`}
+                      aria-label={`Delete saved speaker ${profile.displayName}`}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
                 ))}
+                {(speakerProfilesQuery.data?.items.length ?? 0) >= 2 && (
+                  <div className="rounded-lg border border-slate-200/80 p-3 dark:border-slate-800">
+                    <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">Merge duplicate speakers</p>
+                    <p className="mt-1 text-[11px] leading-4 text-slate-500">Keep the correct speaker and merge the duplicate into it.</p>
+                    <div className="mt-2.5 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                      <Select value={mergeTargetProfileId} onValueChange={setMergeTargetProfileId}>
+                        <SelectTrigger className="h-9 min-w-0 text-xs" aria-label="Saved speaker to keep"><SelectValue placeholder="Keep speaker…" /></SelectTrigger>
+                        <SelectContent>{speakerProfilesQuery.data?.items.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.displayName} · {profile.sampleCount}</SelectItem>)}</SelectContent>
+                      </Select>
+                      <Select value={mergeSourceProfileId} onValueChange={setMergeSourceProfileId}>
+                        <SelectTrigger className="h-9 min-w-0 text-xs" aria-label="Duplicate saved speaker"><SelectValue placeholder="Merge duplicate…" /></SelectTrigger>
+                        <SelectContent>{speakerProfilesQuery.data?.items.filter((profile) => profile.id !== mergeTargetProfileId).map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.displayName} · {profile.sampleCount}</SelectItem>)}</SelectContent>
+                      </Select>
+                      <Button type="button" size="sm" variant="outline" className="h-9" disabled={!mergeTargetProfileId || !mergeSourceProfileId || mergeTargetProfileId === mergeSourceProfileId || mergeProfilesMutation.isPending} onClick={() => mergeProfilesMutation.mutate()}>Merge speakers</Button>
+                    </div>
+                  </div>
+                )}
               </div>
             </SettingsSubsection>
 
             <SettingsSubsection
               title="Outlook calendar"
-              description="Connect your Microsoft account for meeting titles, participants, join links, and addressed email drafts."
+              description="Connect Outlook once. Scriber then suggests meeting titles and participants and addresses recap emails for you."
               icon={CalendarClock}
             >
               <div className="space-y-3">
                 <div className="rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">
-                      {outlookQuery.data?.connected ? "Microsoft account connected" : outlookQuery.data?.configured ? "Ready to connect" : "App registration required"}
+                      {outlookQuery.isLoading
+                        ? "Checking Outlook"
+                        : outlookQuery.data?.connected
+                          ? "Outlook is connected"
+                          : outlookQuery.data?.authorizationPending
+                            ? "Finish signing in with Microsoft"
+                            : outlookQuery.data?.configured
+                              ? outlookQuery.data.lastError ? "Outlook needs to reconnect" : "Outlook is ready to connect"
+                              : "Outlook setup is unavailable in this copy"}
                     </p>
-                    <Badge variant="outline" className="text-[10px]">
-                      {outlookQuery.data?.connected ? "Connected" : "Disconnected"}
+                    <Badge variant="outline" className={cn(
+                      "text-[10px]",
+                      outlookQuery.data?.connected && "border-emerald-500/40 text-emerald-700 dark:text-emerald-300",
+                      !outlookQuery.isLoading && !outlookQuery.data?.connected && "border-amber-500/40 text-amber-700 dark:text-amber-300",
+                    )}>
+                      {outlookQuery.isLoading ? "Checking" : outlookQuery.data?.connected ? "Connected" : outlookQuery.data?.authorizationPending ? "Waiting" : "Not connected"}
                     </Badge>
                   </div>
                   <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">
-                    {outlookQuery.data?.configured
-                      ? "Scriber requests read-only calendar access through Microsoft OAuth. Passwords and access tokens are never stored in the web frontend."
-                      : "This build has no Microsoft public-client ID. The release must include Scriber’s public Entra application ID before account connection can work."}
+                    {outlookQuery.data?.connected
+                      ? "Upcoming meeting titles and participants now appear automatically. Scriber cannot edit your calendar or see your Microsoft password."
+                      : outlookQuery.data?.authorizationPending
+                        ? "Complete the Microsoft sign-in in your browser. This page updates automatically when you return."
+                        : outlookQuery.data?.configured
+                          ? "Click Connect Outlook below. Microsoft opens in your browser and asks for read-only calendar access."
+                          : "This copy cannot connect Outlook yet. Update or reinstall Scriber, restart it, then return here."}
                   </p>
                   {outlookQuery.data?.lastSyncAt && <p className="mt-1.5 font-mono text-[10.5px] text-slate-500">Last sync · {formatUpdateTimestamp(outlookQuery.data.lastSyncAt)}</p>}
-                  {outlookQuery.data?.lastError && <p className="mt-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">Last sync failed: {outlookQuery.data.lastError}</p>}
+                  {outlookQuery.data?.lastError && <p className="mt-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">What happened: {outlookQuery.data.lastError}</p>}
                 </div>
+                {!outlookQuery.isLoading && !outlookQuery.data?.connected && (
+                  <ol className="grid gap-2 rounded-lg border border-slate-200/80 p-3 text-[11px] leading-4 text-slate-600 dark:border-slate-800 dark:text-slate-300">
+                    {(outlookQuery.data?.authorizationPending
+                      ? [
+                          "Return to the Microsoft sign-in in your browser.",
+                          "Finish signing in and allow read-only calendar access.",
+                          "Come back to Scriber; this status updates automatically.",
+                        ]
+                      : outlookQuery.data?.configured
+                        ? [
+                          "Choose Connect Outlook below.",
+                          "Sign in with Microsoft and allow read-only calendar access.",
+                          "Return to Scriber; upcoming meetings sync automatically.",
+                          ]
+                        : [
+                          "Install the latest Scriber release or update the app.",
+                          "Restart Scriber after installation.",
+                          "Return here and choose Connect Outlook.",
+                          ]).map((step, index) => (
+                          <li key={step} className="flex items-start gap-2">
+                            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-blue-600 text-[10px] font-semibold text-white">{index + 1}</span>
+                            <span className="pt-0.5">{step}</span>
+                          </li>
+                        ))}
+                  </ol>
+                )}
+                {!outlookQuery.isLoading && !outlookQuery.data?.configured && (
+                  <details className="rounded-lg border border-slate-200/80 px-3 py-2 dark:border-slate-800">
+                    <summary className="cursor-pointer text-[11px] font-semibold text-slate-700 dark:text-slate-200">Help for self-built copies</summary>
+                    <p className="mt-2 text-[10.5px] leading-4 text-slate-500 dark:text-slate-400">
+                      Before starting Scriber, set <code className="rounded bg-slate-100 px-1 py-0.5 font-mono dark:bg-slate-900">SCRIBER_OUTLOOK_CLIENT_ID</code> to the application ID from your Microsoft Entra public-client registration.
+                    </p>
+                  </details>
+                )}
                 {outlookQuery.data?.nextEvent && (
                   <div className="rounded-lg border border-slate-200/80 px-3 py-2.5 dark:border-slate-800">
                     <p className="truncate text-xs font-semibold text-slate-950 dark:text-slate-100">{outlookQuery.data.nextEvent.subject}</p>
@@ -3747,93 +4073,17 @@ export default function Settings() {
                   </div>
                 )}
                 <div className="flex flex-wrap justify-end gap-2">
-                  {outlookQuery.data?.connected ? <>
-                    <Button size="sm" variant="outline" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("sync")}><RefreshCw className="mr-1.5 h-3.5 w-3.5" />Sync now</Button>
-                    <Button size="sm" variant="ghost" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("disconnect")}>Disconnect</Button>
-                  </> : (
-                    <Button size="sm" disabled={!outlookQuery.data?.configured || outlookMutation.isPending} onClick={() => outlookMutation.mutate("connect")}>
-                      <ExternalLink className="mr-1.5 h-3.5 w-3.5" />Connect Outlook
+                  {outlookQuery.data?.connected ? (
+                    <Button size="sm" variant="outline" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("disconnect")}>Disconnect Outlook</Button>
+                  ) : outlookQuery.data?.configured ? (
+                    <Button size="sm" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("connect")}>
+                      {outlookMutation.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <ExternalLink className="mr-1.5 h-3.5 w-3.5" />}
+                      {outlookQuery.data.authorizationPending ? "Continue Microsoft sign-in" : outlookQuery.data.lastError ? "Reconnect Outlook" : "Connect Outlook"}
                     </Button>
-                  )}
+                  ) : null}
                 </div>
               </div>
             </SettingsSubsection>
-          </div>
-        </SectionPanel>
-
-        <SectionPanel
-          id="settings-providers"
-          title="Speech-to-text provider"
-          description="Choose the primary transcription provider."
-          icon={Cloud}
-        >
-          <div className="mb-2.5 rounded-xl bg-slate-50 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
-            <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Current provider</p>
-            <div className="mt-1 flex items-center gap-2">
-              <ProviderIcon
-                icon={PROVIDER_MODEL_OPTIONS.find((option) => option.value === transcriptionModel)?.icon}
-                label={compactTranscriptionModelLabel}
-              />
-              <p className="truncate text-[14px] font-semibold text-slate-950 dark:text-slate-100">
-                {compactTranscriptionModelLabel}
-              </p>
-            </div>
-            {transcriptionModel === "assemblyai" && (
-              <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-                Async mode returns the transcript after recording stops.
-              </p>
-            )}
-            {transcriptionModel === "assemblyai-realtime" && (
-              <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-                Realtime mode uses AssemblyAI Universal-3.5 Pro through Pipecat.
-              </p>
-            )}
-          </div>
-
-          <div className="space-y-2.5">
-            <div className="space-y-2.5">
-              {providerGroups.map((group) => (
-                <div
-                  key={group.key}
-                  role="radiogroup"
-                  aria-label={`${group.label} transcription providers`}
-                  className="rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60"
-                >
-                  <div className="mb-1.5">
-                    <div className="min-w-0">
-                      <h3 className="text-[13px] !font-bold leading-4 text-slate-950 dark:text-slate-100">
-                        {group.label}
-                      </h3>
-                      <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-                        {group.description}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="grid gap-x-2 gap-y-1 sm:grid-cols-2">
-                    {group.items.map((option) => {
-                      const requirement = requiredCredentialForTranscriptionModel(option.value);
-                      const disabledReason = missingCredentialReason(requirement);
-                      return (
-                        <ProviderChoice
-                          key={option.value}
-                          option={option}
-                          selected={transcriptionModel === option.value}
-                          disabled={Boolean(disabledReason)}
-                          disabledReason={disabledReason}
-                          onCredentialAction={() => openCredentialDialog(requirement)}
-                          onSelect={() => void handleTranscriptionModelChange(option.value)}
-                        />
-                      );
-                    })}
-                  </div>
-                  {group.key === "local" && activeLocalModelSettings ? (
-                    <div className="mt-2 border-t border-slate-200/80 pt-2 dark:border-slate-800/80">
-                      {activeLocalModelSettings}
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
           </div>
         </SectionPanel>
 
@@ -4135,7 +4385,7 @@ export default function Settings() {
       <AlertDialog open={Boolean(speakerProfilePendingDelete)} onOpenChange={(open) => { if (!open) setSpeakerProfilePendingDelete(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete this voice profile?</AlertDialogTitle>
+            <AlertDialogTitle>Delete this saved speaker?</AlertDialogTitle>
             <AlertDialogDescription>
               {speakerProfilePendingDelete?.name || "This speaker"} will no longer be recognized automatically in future meetings. Existing transcripts stay intact.
             </AlertDialogDescription>
@@ -4150,7 +4400,7 @@ export default function Settings() {
                 if (speakerProfilePendingDelete) speakerProfileMutation.mutate({ action: "delete", id: speakerProfilePendingDelete.id });
               }}
             >
-              Delete voice profile
+              Delete speaker
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -4158,9 +4408,9 @@ export default function Settings() {
       <AlertDialog open={voiceLibraryDeleteOpen} onOpenChange={(open) => { if (!voiceLibraryDeletePending) setVoiceLibraryDeleteOpen(open); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete the entire Voice Library?</AlertDialogTitle>
+            <AlertDialogTitle>Delete all saved voice data?</AlertDialogTitle>
             <AlertDialogDescription>
-              This permanently removes every local biometric voice profile and the optional speaker model, then disables future collection. Existing meeting transcripts remain available.
+              This removes every saved speaker and the local voice-recognition download, then turns off future recognition. Existing meetings and transcripts remain available.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -4171,7 +4421,7 @@ export default function Settings() {
               onClick={(event) => { event.preventDefault(); void handleDeleteVoiceprintLibrary(); }}
             >
               {voiceLibraryDeletePending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Delete entire library
+              Delete voice data
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

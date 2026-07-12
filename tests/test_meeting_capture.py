@@ -289,6 +289,82 @@ def test_expected_native_disconnect_clears_only_pipe_errors(tmp_path):
     assert snapshot["system"]["errorCode"] == "disk_full"
 
 
+def test_expected_windows_pipe_disconnect_commits_partial_before_resume(
+    monkeypatch, tmp_path
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "pause-resume.db")
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    meeting_id = store.create(MeetingCreate(title="Pause and resume"))["id"]
+    pcm = b"\0\0" * 160
+    frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=len(pcm), sequence=0, timestamp_micros=0,
+            frame_count=160, channels=1,
+        ),
+        pcm,
+    )
+    disconnect = threading.Event()
+
+    class WindowsNamedPipeReader:
+        def __init__(self):
+            self.buffer = io.BytesIO(frame)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, size=-1):
+            payload = self.buffer.read(size)
+            if payload:
+                return payload
+            disconnect.wait(timeout=2)
+            raise OSError(errno.EINVAL, "synthetic Windows named-pipe stop")
+
+    readers = {
+        "first-pipe": lambda: WindowsNamedPipeReader(),
+        "second-pipe": lambda: io.BytesIO(frame),
+    }
+    recorder = MeetingAudioRecorder(
+        meeting_id,
+        tmp_path / "meetings",
+        store,
+        reader_factory=lambda path, *_args, **_kwargs: readers[path](),
+    )
+    recorder.start([{"source": "microphone", "framePipe": "first-pipe"}])
+    deadline = time.monotonic() + 1
+    while recorder.snapshot()["microphone"]["frames"] < 1 and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+    # The backend arms this boundary before asking Rust to pause. Windows then
+    # reports EINVAL instead of a clean EOF as the named pipe disappears.
+    recorder.prepare_for_expected_disconnect()
+    disconnect.set()
+    first = recorder.stop(expected_disconnect=True)
+
+    assert first["microphone"]["errorCode"] == ""
+    assert first["microphone"]["chunks"] == 1
+    assert not list(recorder.root.glob("*.partial.wav"))
+    assert [row["sequence"] for row in store.audio_chunks(meeting_id, "microphone")] == [0]
+
+    # A resumed native session must publish the next deterministic sequence,
+    # rather than collide with the partial left by the pause boundary.
+    recorder.start([{"source": "microphone", "framePipe": "second-pipe"}])
+    deadline = time.monotonic() + 1
+    while recorder.snapshot()["microphone"]["chunks"] < 2 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    second = recorder.stop()
+
+    assert second["microphone"]["errorCode"] == ""
+    assert [row["sequence"] for row in store.audio_chunks(meeting_id, "microphone")] == [0, 1]
+    assert not list(recorder.root.glob("*.partial.wav"))
+    database._close_all_connections()
+
+
 def test_recovery_finishes_prepared_partial_after_crash(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "prepared-partial.db")

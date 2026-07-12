@@ -8,6 +8,7 @@ interface PageIntroProps {
   description: string;
   accentClassName?: string;
   titleAccessory?: ReactNode;
+  actions?: ReactNode;
   bottomContent?: ReactNode;
   sticky?: boolean;
   className?: string;
@@ -19,6 +20,7 @@ export function PageIntro({
   description,
   accentClassName = "bg-primary/60",
   titleAccessory,
+  actions,
   bottomContent,
   sticky = true,
   className,
@@ -32,21 +34,27 @@ export function PageIntro({
         className,
       )}
     >
-      <div className="mb-3 flex items-center gap-2.5 text-[9.5px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-        <span className={cn("h-px w-7 shrink-0", accentClassName)} aria-hidden="true" />
-        <span>{eyebrow}</span>
-      </div>
+      <div className={cn(actions && "flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6")}>
+        <div className="min-w-0">
+          <div className="mb-3 flex items-center gap-2.5 text-[9.5px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+            <span className={cn("h-px w-7 shrink-0", accentClassName)} aria-hidden="true" />
+            <span>{eyebrow}</span>
+          </div>
 
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h1 className="text-balance font-heading text-[36px] font-semibold leading-[0.96] tracking-[-0.045em] text-foreground md:text-[42px]">
-          {title}
-        </h1>
-        {titleAccessory ? <div className="shrink-0">{titleAccessory}</div> : null}
-      </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <h1 className="text-balance font-heading text-[36px] font-semibold leading-[0.96] tracking-[-0.045em] text-foreground md:text-[42px]">
+              {title}
+            </h1>
+            {titleAccessory ? <div className="shrink-0">{titleAccessory}</div> : null}
+          </div>
 
-      <p className="mt-3 max-w-[65ch] text-pretty text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">
-        {description}
-      </p>
+          <p className="mt-3 max-w-[65ch] text-pretty text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">
+            {description}
+          </p>
+        </div>
+
+        {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end sm:pt-1">{actions}</div> : null}
+      </div>
 
       {bottomContent ? (
         <div className="-mx-4 mt-4 border-t border-slate-200/80 px-4 py-2 dark:border-white/[0.065] md:-mx-6 md:px-6">

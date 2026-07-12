@@ -391,6 +391,152 @@ _MEETING_FINAL_STT_PROVIDERS = frozenset({
     "gladia_async", "smallest_async", "speechmatics_async", "openai_async",
     "gemini_stt", "azure_mai", "onnx_local", "groq",
 })
+_MEETING_TRANSCRIPTION_MODES = frozenset({"live_final", "final_only"})
+_MEETING_PRICING_UPDATED_AT = "2026-07-12"
+_MEETING_LIVE_SONIOX_USD_PER_TRACK_HOUR = 0.12
+_MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
+    "soniox_async": {
+        "perTrackHourUsd": 0.10,
+        "systemDiarizationHourUsd": 0.0,
+        "pricingUrl": "https://soniox.com/pricing",
+        "estimateKind": "token_estimate",
+    },
+    "assemblyai": {
+        "perTrackHourUsd": 0.21,
+        "systemDiarizationHourUsd": 0.02,
+        "pricingUrl": "https://www.assemblyai.com/pricing/",
+        "estimateKind": "published_hourly",
+    },
+    "mistral_async": {
+        "perTrackHourUsd": 0.18,
+        "systemDiarizationHourUsd": 0.0,
+        "pricingUrl": "https://mistral.ai/pricing/api/",
+        "estimateKind": "published_minute",
+    },
+    "deepgram_async": {
+        "perTrackHourUsd": 0.35,
+        "systemDiarizationHourUsd": 0.12,
+        "pricingUrl": "https://deepgram.com/pricing",
+        "estimateKind": "published_hourly",
+    },
+    "gladia_async": {
+        "perTrackHourUsd": 0.61,
+        "systemDiarizationHourUsd": 0.0,
+        "pricingUrl": "https://support.gladia.io/article/understanding-our-transcription-pricing-pv1atikh8y9c8sw7sudm3rcy",
+        "estimateKind": "published_hourly",
+    },
+    "smallest_async": {
+        "perTrackHourUsd": 0.18,
+        "systemDiarizationHourUsd": 0.0,
+        "pricingUrl": "https://smallest.ai/pricing",
+        "estimateKind": "published_minute",
+    },
+    "speechmatics_async": {
+        "perTrackHourUsd": 0.40,
+        "systemDiarizationHourUsd": 0.0,
+        "pricingUrl": "https://www.speechmatics.com/pricing",
+        "estimateKind": "published_hourly",
+    },
+    "openai_async": {
+        "perTrackHourUsd": 0.18,
+        "systemDiarizationHourUsd": 0.0,
+        "pricingUrl": "https://developers.openai.com/api/docs/models/gpt-4o-mini-transcribe",
+        "estimateKind": "token_estimate",
+    },
+    "gemini_stt": {
+        "perTrackHourUsd": 0.15,
+        "systemDiarizationHourUsd": 0.0,
+        "pricingUrl": "https://ai.google.dev/gemini-api/docs/pricing",
+        "estimateKind": "token_estimate",
+    },
+    "azure_mai": {
+        "perTrackHourUsd": None,
+        "systemDiarizationHourUsd": 0.0,
+        "pricingUrl": "https://azure.microsoft.com/pricing/details/ai-services/",
+        "estimateKind": "account_pricing",
+    },
+    "groq": {
+        "perTrackHourUsd": 0.04,
+        "systemDiarizationHourUsd": 0.0,
+        "pricingUrl": "https://groq.com/pricing",
+        "estimateKind": "published_hourly",
+    },
+    "onnx_local": {
+        "perTrackHourUsd": 0.0,
+        "systemDiarizationHourUsd": 0.0,
+        "pricingUrl": "",
+        "estimateKind": "local",
+    },
+}
+
+
+def _meeting_transcription_mode(meeting: dict[str, Any] | None = None) -> str:
+    raw = (
+        meeting.get("transcriptionMode")
+        if isinstance(meeting, dict)
+        else Config.MEETING_TRANSCRIPTION_MODE
+    )
+    normalized = str(raw or "live_final").strip().lower()
+    return normalized if normalized in _MEETING_TRANSCRIPTION_MODES else "live_final"
+
+
+def _meeting_live_preview_enabled(meeting: dict[str, Any]) -> bool:
+    return _meeting_transcription_mode(meeting) == "live_final"
+
+
+def _meeting_stt_cost_estimate(provider: str, mode: str) -> dict[str, Any]:
+    provider_key = str(provider or "").strip().lower()
+    normalized_mode = mode if mode in _MEETING_TRANSCRIPTION_MODES else "live_final"
+    final_pricing = _MEETING_FINAL_COSTS.get(provider_key, {})
+    per_track = final_pricing.get("perTrackHourUsd")
+    final_cost = None
+    single_track_final_cost = None
+    if isinstance(per_track, (int, float)):
+        single_track_final_cost = round(
+            float(per_track)
+            + float(final_pricing.get("systemDiarizationHourUsd") or 0.0),
+            2,
+        )
+        final_cost = round(
+            float(per_track) * 2.0
+            + float(final_pricing.get("systemDiarizationHourUsd") or 0.0),
+            2,
+        )
+    live_cost = (
+        round(_MEETING_LIVE_SONIOX_USD_PER_TRACK_HOUR * 2.0, 2)
+        if normalized_mode == "live_final"
+        else 0.0
+    )
+    total_cost = round(final_cost + live_cost, 2) if final_cost is not None else None
+    sources = []
+    if normalized_mode == "live_final":
+        sources.append({"label": "Soniox Realtime pricing", "url": "https://soniox.com/pricing"})
+    final_url = str(final_pricing.get("pricingUrl") or "")
+    if final_url and all(item["url"] != final_url for item in sources):
+        sources.append({"label": f"{_service_label(provider_key)} pricing", "url": final_url})
+    return {
+        "currency": "USD",
+        "pricingUpdatedAt": _MEETING_PRICING_UPDATED_AT,
+        "audioTrackAssumption": 2,
+        "livePreviewPerMeetingHour": round(
+            _MEETING_LIVE_SONIOX_USD_PER_TRACK_HOUR * 2.0, 2
+        ),
+        "livePerMeetingHour": live_cost,
+        "finalPerMeetingHour": final_cost,
+        "singleTrackFinalPerAudioHour": single_track_final_cost,
+        "totalPerMeetingHour": total_cost,
+        "estimateKind": str(final_pricing.get("estimateKind") or "unavailable"),
+        "sources": sources,
+        "assumption": (
+            "Estimate for one hour with separate microphone and system-audio tracks. "
+            "Actual invoices can vary with speech volume, token output, plan, taxes, retries, and provider changes."
+            + (
+                " Deepgram uses the conservative multilingual Nova-3 rate; a fixed monolingual language can cost less."
+                if provider_key == "deepgram_async"
+                else ""
+            )
+        ),
+    }
 
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _MAX_UPLOAD_FILENAME_CHARS = 180
@@ -2099,6 +2245,32 @@ class _MeetingCaptureSetupError(RuntimeError):
         self.message = str(message)
 
 
+def _meeting_live_preview_metadata(
+    meeting: dict[str, Any],
+    *,
+    degraded: bool,
+    error_code: str,
+) -> dict[str, Any]:
+    if not _meeting_live_preview_enabled(meeting):
+        return {
+            "status": "disabled",
+            "provider": "",
+            "model": "",
+            "errorCode": "",
+        }
+    provider = str(meeting.get("liveProvider") or "soniox")
+    return {
+        "status": "degraded" if degraded else "connected",
+        "provider": provider,
+        "model": (
+            Config.SONIOX_RT_MODEL
+            if provider.strip().lower() == "soniox"
+            else provider
+        ),
+        "errorCode": error_code if degraded else "",
+    }
+
+
 async def _start_meeting_live_preview_best_effort(
     controller: Any,
     meeting: dict[str, Any],
@@ -2106,6 +2278,9 @@ async def _start_meeting_live_preview_best_effort(
     timeline_offsets: dict[str, int] | None = None,
 ) -> tuple[Any | None, bool]:
     """Attach optional provider preview without making it a capture owner."""
+
+    if not _meeting_live_preview_enabled(meeting):
+        return None, False
 
     try:
         live = await controller.start_meeting_live_transcription(
@@ -2151,6 +2326,11 @@ async def _cleanup_meeting_capture_ownership(
     if not meeting_id:
         return None
 
+    recorder = ownership.recorder
+    mapped_recorder = getattr(controller, "_meeting_recorders", {}).get(meeting_id)
+    if recorder is None:
+        recorder = mapped_recorder
+
     try:
         controller.stop_meeting_capture_watchdog(meeting_id)
     except Exception:
@@ -2158,6 +2338,11 @@ async def _cleanup_meeting_capture_ownership(
 
     if ownership.native_capture_started:
         try:
+            prepare_disconnect = getattr(
+                recorder, "prepare_for_expected_disconnect", None
+            )
+            if callable(prepare_disconnect):
+                prepare_disconnect()
             await _to_thread_cancellation_barrier(
                 call_shell_ipc,
                 "audioMeetingStop",
@@ -2170,10 +2355,6 @@ async def _cleanup_meeting_capture_ownership(
             ownership.native_capture_started = False
 
     persistence: dict[str, Any] | None = None
-    recorder = ownership.recorder
-    mapped_recorder = getattr(controller, "_meeting_recorders", {}).get(meeting_id)
-    if recorder is None:
-        recorder = mapped_recorder
     if recorder is not None:
         try:
             result = await _to_thread_cancellation_barrier(
@@ -3540,6 +3721,12 @@ class ScriberWebController:
         meeting_id = str(meeting["id"])
         metadata = dict(meeting.get("captureMetadata", {}))
         self.stop_meeting_capture_watchdog(meeting_id)
+        recorder = self._meeting_recorders.get(meeting_id)
+        prepare_disconnect = getattr(
+            recorder, "prepare_for_expected_disconnect", None
+        )
+        if callable(prepare_disconnect):
+            prepare_disconnect()
         try:
             stop_response = await asyncio.to_thread(
                 call_shell_ipc, "audioMeetingStop",
@@ -3551,9 +3738,10 @@ class ScriberWebController:
                 "success": False,
                 "fallbackReason": f"{type(exc).__name__}: meeting capture stop failed",
             }
-        recorder = self._meeting_recorders.get(meeting_id)
         if recorder is not None:
-            metadata["persistence"] = await asyncio.to_thread(recorder.stop)
+            metadata["persistence"] = await asyncio.to_thread(
+                recorder.stop, expected_disconnect=True
+            )
         live = self._meeting_live_transcribers.pop(meeting_id, None)
         if live is not None:
             await live.stop()
@@ -3666,18 +3854,11 @@ class ScriberWebController:
             metadata.pop("pauseStartedAtUtc", None)
             metadata["timelineOffsetMs"] = gap_end_ms
             metadata["timelineStartedAtUtc"] = timeline_started_at_utc
-            metadata["livePreview"] = {
-                "status": "degraded" if live_preview_degraded else "connected",
-                "provider": str(meeting.get("liveProvider") or "soniox"),
-                "model": (
-                    Config.SONIOX_RT_MODEL
-                    if str(meeting.get("liveProvider") or "").strip().lower() == "soniox"
-                    else str(meeting.get("liveProvider") or "")
-                ),
-                "errorCode": (
-                    "live_stt_resume_failed" if live_preview_degraded else ""
-                ),
-            }
+            metadata["livePreview"] = _meeting_live_preview_metadata(
+                meeting,
+                degraded=live_preview_degraded,
+                error_code="live_stt_resume_failed",
+            )
             recording = await asyncio.to_thread(
                 self._meeting_store.transition,
                 meeting_id,
@@ -3705,6 +3886,11 @@ class ScriberWebController:
         except Exception as exc:
             if restart_capture_id:
                 try:
+                    prepare_disconnect = getattr(
+                        recorder, "prepare_for_expected_disconnect", None
+                    )
+                    if recorder_started and callable(prepare_disconnect):
+                        prepare_disconnect()
                     await asyncio.to_thread(
                         call_shell_ipc, "audioMeetingStop",
                         {"meetingId": meeting_id, "captureId": restart_capture_id},
@@ -8543,6 +8729,7 @@ class ScriberWebController:
                                     MeetingCreate(
                                         title=str(metadata.get("title") or Path(record.source_filename).stem),
                                         language=str(profile.get("language") or "auto"),
+                                        transcription_mode="final_only",
                                         live_provider="file-import",
                                         final_provider=str(profile.get("finalProvider") or Config.MEETING_FINAL_PROVIDER),
                                         analysis_model=str(profile.get("analysisModel") or Config.MEETING_ANALYSIS_MODEL),
@@ -9611,6 +9798,7 @@ class ScriberWebController:
             "mode": Config.MODE,
             "defaultSttService": Config.DEFAULT_STT_SERVICE,
             "sonioxMode": Config.SONIOX_MODE,
+            "sonioxRealtimeModel": Config.SONIOX_RT_MODEL,
             "sonioxAsyncModel": Config.SONIOX_ASYNC_MODEL,
             "language": Config.LANGUAGE,
             "micDevice": resolved_mic,
@@ -9630,6 +9818,7 @@ class ScriberWebController:
             "postProcessingHotkeyRaw": Config.POST_PROCESSING_HOTKEY,
             "meetingHotkey": _hotkey_to_display(Config.MEETING_HOTKEY),
             "meetingHotkeyRaw": Config.MEETING_HOTKEY,
+            "meetingTranscriptionMode": Config.MEETING_TRANSCRIPTION_MODE,
             "meetingFinalProvider": Config.MEETING_FINAL_PROVIDER,
             "meetingAnalysisModel": Config.MEETING_ANALYSIS_MODEL,
             "meetingSmartTurnEnabled": bool(Config.MEETING_SMART_TURN_ENABLED),
@@ -9685,6 +9874,7 @@ class ScriberWebController:
         validated_soniox_mode: str | None = None
         validated_summarization_model: str | None = None
         validated_meeting_analysis_model: str | None = None
+        validated_meeting_transcription_mode: str | None = None
         validated_meeting_final_provider: str | None = None
         validated_onnx_model: str | None = None
         validated_onnx_quantization: str | None = None
@@ -9702,6 +9892,13 @@ class ScriberWebController:
             validated_summarization_model = _validate_summarization_model(payload["summarizationModel"])
         if "meetingAnalysisModel" in payload and isinstance(payload["meetingAnalysisModel"], str):
             validated_meeting_analysis_model = _validate_summarization_model(payload["meetingAnalysisModel"])
+        if "meetingTranscriptionMode" in payload:
+            if not isinstance(payload["meetingTranscriptionMode"], str):
+                raise ValueError("Meeting transcription mode must be text.")
+            candidate_mode = payload["meetingTranscriptionMode"].strip().lower()
+            if candidate_mode not in _MEETING_TRANSCRIPTION_MODES:
+                raise ValueError("Unsupported meeting transcription mode.")
+            validated_meeting_transcription_mode = candidate_mode
         if "meetingFinalProvider" in payload and isinstance(payload["meetingFinalProvider"], str):
             candidate = payload["meetingFinalProvider"].strip().lower()
             allowed_meeting_final_providers = {
@@ -9797,6 +9994,9 @@ class ScriberWebController:
 
         if validated_meeting_analysis_model is not None:
             Config.set_meeting_analysis_model(validated_meeting_analysis_model)
+
+        if validated_meeting_transcription_mode is not None:
+            Config.set_meeting_transcription_mode(validated_meeting_transcription_mode)
 
         if validated_meeting_final_provider is not None:
             Config.set_meeting_final_provider(validated_meeting_final_provider)
@@ -11566,6 +11766,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
         soniox_ready = bool(Config.get_api_key("soniox"))
         analysis_model = Config.MEETING_ANALYSIS_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL
         final_provider = Config.MEETING_FINAL_PROVIDER
+        transcription_mode = Config.MEETING_TRANSCRIPTION_MODE
+        live_enabled = transcription_mode == "live_final"
 
         def long_session_metadata(provider: str) -> dict[str, Any]:
             key = str(provider or "").strip().lower()
@@ -11672,6 +11874,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         }
         selected_final = final_options.get(final_provider, final_options["soniox_async"])
         final_ready = bool(Config.get_api_key(final_provider)) or final_provider == "onnx_local"
+        cost_estimate = _meeting_stt_cost_estimate(final_provider, transcription_mode)
         return web.json_response(
             {
                 "apiVersion": REST_API_VERSION,
@@ -11680,19 +11883,24 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     {
                         "id": "soniox-balanced",
                         "name": (
-                            f"Soniox live + {selected_final['label']} final"
-                            if soniox_ready
-                            else f"Durable capture + {selected_final['label']} final"
+                            f"Live text + {selected_final['label']} final"
+                            if live_enabled
+                            else f"{selected_final['label']} after the meeting"
                         ),
                         "description": (
-                            "Soniox provides immediate captions. After stopping, the selected final model retranscribes the complete checkpointed audio."
-                            if soniox_ready
-                            else "Durable local audio capture remains available. Soniox live captions are unavailable until its API key is configured; the selected final model still retranscribes the saved audio."
+                            "Soniox provides immediate captions. After stopping, the selected final model retranscribes both complete checkpointed audio tracks."
+                            if live_enabled and soniox_ready
+                            else (
+                                "Scriber records both audio tracks locally and sends them to the selected final model only after you stop."
+                                if not live_enabled
+                                else "Durable local audio capture remains available. Live captions are unavailable until a Soniox API key is configured; the selected final model still retranscribes the saved audio."
+                            )
                         ),
+                        "transcriptionMode": transcription_mode,
                         "liveProvider": "soniox",
-                        "livePreviewAvailable": soniox_ready,
+                        "livePreviewAvailable": live_enabled and soniox_ready,
                         "livePreviewWarning": (
-                            "" if soniox_ready
+                            "" if not live_enabled or soniox_ready
                             else "Soniox live captions are unavailable. Durable local recording and final transcription remain available."
                         ),
                         "finalProvider": final_provider,
@@ -11701,12 +11909,16 @@ def create_app(controller: ScriberWebController) -> web.Application:
                             {
                                 "id": "live",
                                 "label": "During the meeting",
-                                "provider": "Soniox Realtime",
-                                "model": Config.SONIOX_RT_MODEL,
+                                "provider": "Soniox Realtime" if live_enabled else "Off",
+                                "model": Config.SONIOX_RT_MODEL if live_enabled else "",
                                 "purpose": (
                                     "Immediate captions for microphone and system audio."
-                                    if soniox_ready
-                                    else "Optional live captions are unavailable; durable local capture continues without them."
+                                    if live_enabled and soniox_ready
+                                    else (
+                                        "No audio is sent to a live transcription service."
+                                        if not live_enabled
+                                        else "Optional live captions are unavailable; durable local capture continues without them."
+                                    )
                                 ),
                             },
                             {
@@ -11735,6 +11947,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         "smartTurnEnabled": bool(Config.MEETING_SMART_TURN_ENABLED),
                         "autoAnalyze": bool(Config.MEETING_AUTO_ANALYZE),
                         "available": final_ready,
+                        "costEstimate": cost_estimate,
                         **long_session_metadata(final_provider),
                         "unavailableReason": (
                             "" if final_ready
@@ -12525,6 +12738,13 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Expected JSON payload"}, status=400)
         if not isinstance(raw, dict):
             return web.json_response({"message": "Expected JSON object"}, status=400)
+        requested_transcription_mode = str(
+            raw.get("transcriptionMode", Config.MEETING_TRANSCRIPTION_MODE)
+        ).strip().lower()
+        if requested_transcription_mode not in _MEETING_TRANSCRIPTION_MODES:
+            return web.json_response(
+                {"message": "Unsupported meeting transcription mode."}, status=400
+            )
         requested_voice_library = bool(raw.get("voiceLibraryEnabled", False))
         if requested_voice_library and not Config.VOICEPRINT_LIBRARY_OPT_IN:
             return web.json_response(
@@ -12539,6 +12759,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         create_request = MeetingCreate(
             title=str(raw.get("title", "")),
             language=str(raw.get("language", "auto")),
+            transcription_mode=requested_transcription_mode,
             live_provider=str(raw.get("liveProvider", "soniox")),
             final_provider=str(raw.get("finalProvider", Config.MEETING_FINAL_PROVIDER)),
             analysis_model=str(raw.get("analysisModel", Config.MEETING_ANALYSIS_MODEL)),
@@ -12677,18 +12898,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 ]
                 capture_metadata["timelineOffsetMs"] = 0
                 capture_metadata["timelineStartedAtUtc"] = timeline_started_at_utc
-                capture_metadata["livePreview"] = {
-                    "status": "degraded" if live_preview_degraded else "connected",
-                    "provider": str(meeting.get("liveProvider") or "soniox"),
-                    "model": (
-                        Config.SONIOX_RT_MODEL
-                        if str(meeting.get("liveProvider") or "").strip().lower() == "soniox"
-                        else str(meeting.get("liveProvider") or "")
-                    ),
-                    "errorCode": (
-                        "live_stt_start_failed" if live_preview_degraded else ""
-                    ),
-                }
+                capture_metadata["livePreview"] = _meeting_live_preview_metadata(
+                    meeting,
+                    degraded=live_preview_degraded,
+                    error_code="live_stt_start_failed",
+                )
                 capture_metadata["captureStartLatencyMs"] = round(
                     (time.perf_counter() - request_started) * 1000.0, 1
                 )
@@ -13017,18 +13231,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
             capture_metadata.pop("pauseStartedAtUtc", None)
             capture_metadata["timelineOffsetMs"] = gap_end_ms
             capture_metadata["timelineStartedAtUtc"] = timeline_started_at_utc
-            capture_metadata["livePreview"] = {
-                "status": "degraded" if live_preview_degraded else "connected",
-                "provider": str(current.get("liveProvider") or "soniox"),
-                "model": (
-                    Config.SONIOX_RT_MODEL
-                    if str(current.get("liveProvider") or "").strip().lower() == "soniox"
-                    else str(current.get("liveProvider") or "")
-                ),
-                "errorCode": (
-                    "live_stt_resume_failed" if live_preview_degraded else ""
-                ),
-            }
+            capture_metadata["livePreview"] = _meeting_live_preview_metadata(
+                current,
+                degraded=live_preview_degraded,
+                error_code="live_stt_resume_failed",
+            )
             updated, pending_cancel = await _await_with_delayed_cancellation(
                 asyncio.to_thread(
                     ctl._meeting_store.transition,
@@ -13129,13 +13336,31 @@ def create_app(controller: ScriberWebController) -> web.Application:
             "meetingId": meeting_id,
             "captureId": current_metadata.get("captureId"),
         }
-        response = await asyncio.to_thread(
-            call_shell_ipc,
-            command,
-            ipc_command_payload,
-            timeout_seconds=4.0,
+        recorder = ctl._meeting_recorders.get(meeting_id)
+        prepare_disconnect = getattr(
+            recorder, "prepare_for_expected_disconnect", None
         )
+        cancel_disconnect = getattr(recorder, "cancel_expected_disconnect", None)
+        disconnect_prepared = bool(
+            command in {"audioMeetingPause", "audioMeetingStop"}
+            and callable(prepare_disconnect)
+        )
+        if disconnect_prepared:
+            prepare_disconnect()
+        try:
+            response = await asyncio.to_thread(
+                call_shell_ipc,
+                command,
+                ipc_command_payload,
+                timeout_seconds=4.0,
+            )
+        except (Exception, asyncio.CancelledError):
+            if disconnect_prepared and callable(cancel_disconnect):
+                cancel_disconnect()
+            raise
         if not response.get("success"):
+            if disconnect_prepared and callable(cancel_disconnect):
+                cancel_disconnect()
             if current.get("state") == "recording":
                 ctl.start_meeting_capture_watchdog(
                     meeting_id, str(current.get("captureMetadata", {}).get("captureId") or "")
@@ -13156,7 +13381,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 ]
                 if isinstance(native_stop.get("aecMetrics"), dict):
                     capture_metadata["aecMetrics"] = native_stop["aecMetrics"]
-        recorder = ctl._meeting_recorders.get(meeting_id)
         if command in {"audioMeetingPause", "audioMeetingStop"} and recorder is not None:
             persistence = await asyncio.to_thread(
                 recorder.stop, expected_disconnect=True
@@ -13375,18 +13599,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
             metadata.pop("pauseStartedAtUtc", None)
             metadata["timelineOffsetMs"] = gap_end_ms
             metadata["timelineStartedAtUtc"] = timeline_started_at_utc
-            metadata["livePreview"] = {
-                "status": "degraded" if live_preview_degraded else "connected",
-                "provider": str(current.get("liveProvider") or "soniox"),
-                "model": (
-                    Config.SONIOX_RT_MODEL
-                    if str(current.get("liveProvider") or "").strip().lower() == "soniox"
-                    else str(current.get("liveProvider") or "")
-                ),
-                "errorCode": (
-                    "live_stt_resume_failed" if live_preview_degraded else ""
-                ),
-            }
+            metadata["livePreview"] = _meeting_live_preview_metadata(
+                current,
+                degraded=live_preview_degraded,
+                error_code="live_stt_resume_failed",
+            )
             recording, pending_cancel = await _await_with_delayed_cancellation(
                 asyncio.to_thread(
                     ctl._meeting_store.transition,

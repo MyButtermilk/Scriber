@@ -10,6 +10,8 @@ export type MeetingState =
   | "ready" | "capture_failed" | "finalization_failed" | "analysis_failed"
   | "interrupted" | "discarded";
 
+export type MeetingTranscriptionMode = "live_final" | "final_only";
+
 export type MeetingImportState =
   | "created" | "receiving" | "received" | "probing" | "preparing"
   | "waiting_for_workspace" | "committing" | "finalizing" | "completed"
@@ -78,6 +80,7 @@ export interface MeetingSummary {
   title: string;
   state: MeetingState;
   language: string;
+  transcriptionMode: MeetingTranscriptionMode;
   liveProvider: string;
   finalProvider: string;
   analysisModel: string;
@@ -281,7 +284,10 @@ export interface MeetingProviderProfile {
   id: string;
   name: string;
   description: string;
+  transcriptionMode: MeetingTranscriptionMode;
   liveProvider: string;
+  livePreviewAvailable?: boolean;
+  livePreviewWarning?: string;
   finalProvider: string;
   analysisModel: string;
   stages: Array<{
@@ -302,6 +308,19 @@ export interface MeetingProviderProfile {
   fiveHourReason: string;
   maxDurationSeconds: number | null;
   unavailableReason: string;
+  costEstimate: {
+    currency: "USD";
+    pricingUpdatedAt: string;
+    audioTrackAssumption: number;
+    livePreviewPerMeetingHour: number;
+    livePerMeetingHour: number;
+    finalPerMeetingHour: number | null;
+    singleTrackFinalPerAudioHour: number | null;
+    totalPerMeetingHour: number | null;
+    estimateKind: string;
+    sources: Array<{ label: string; url: string }>;
+    assumption: string;
+  };
 }
 
 export interface MeetingProfilesResponse {
@@ -711,6 +730,7 @@ export interface SettingsResponse {
   mode?: "toggle" | "push_to_talk" | string;
   defaultSttService?: string;
   sonioxMode?: "realtime" | "async" | string;
+  sonioxRealtimeModel?: string;
   sonioxAsyncModel?: string;
   language?: string;
   micDevice?: string;
@@ -730,6 +750,7 @@ export interface SettingsResponse {
   postProcessingHotkeyRaw?: string;
   meetingHotkey?: string;
   meetingHotkeyRaw?: string;
+  meetingTranscriptionMode?: MeetingTranscriptionMode;
   meetingFinalProvider?: string;
   meetingAnalysisModel?: string;
   meetingSmartTurnEnabled?: boolean;
@@ -770,6 +791,7 @@ export interface SettingsUpdatePayload {
   postProcessingEnabled?: boolean;
   postProcessingHotkey?: string;
   meetingHotkey?: string;
+  meetingTranscriptionMode?: MeetingTranscriptionMode;
   meetingFinalProvider?: string;
   meetingAnalysisModel?: string;
   meetingSmartTurnEnabled?: boolean;

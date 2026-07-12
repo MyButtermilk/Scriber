@@ -50,11 +50,20 @@ def test_default_device_reconnect_starts_durable_reader_before_live_preview():
 class FakeRecorder:
     def __init__(self, *_args, **_kwargs):
         self.sources = []
+        self.expected_disconnect = False
 
     def start(self, sources):
         self.sources = sources
+        self.expected_disconnect = False
+
+    def prepare_for_expected_disconnect(self):
+        self.expected_disconnect = True
+
+    def cancel_expected_disconnect(self):
+        self.expected_disconnect = False
 
     def stop(self, **_kwargs):
+        self.expected_disconnect = False
         return {"microphone": {"chunks": 1}, "system": {"chunks": 1}}
 
 
@@ -435,6 +444,7 @@ async def test_meeting_capabilities_reports_verified_five_hour_storage(monkeypat
 async def test_meeting_profile_treats_missing_live_key_as_non_blocking_preview_warning(
     monkeypatch
 ):
+    monkeypatch.setattr(web_api.Config, "MEETING_TRANSCRIPTION_MODE", "live_final")
     monkeypatch.setattr(web_api.Config, "MEETING_FINAL_PROVIDER", "onnx_local")
     monkeypatch.setattr(web_api.Config, "get_api_key", lambda _provider: "")
 
@@ -449,8 +459,73 @@ async def test_meeting_profile_treats_missing_live_key_as_non_blocking_preview_w
     assert profile["unavailableReason"] == ""
     assert profile["livePreviewAvailable"] is False
     assert "Durable local recording" in profile["livePreviewWarning"]
-    assert profile["name"].startswith("Durable capture +")
-    assert "live captions are unavailable" in profile["description"]
+    assert profile["name"] == "Live text + Local ONNX STT final"
+    assert "Live captions are unavailable" in profile["description"]
+
+
+@pytest.mark.asyncio
+async def test_final_only_profile_disables_live_preview_and_reports_two_track_cost(monkeypatch):
+    monkeypatch.setattr(web_api.Config, "MEETING_TRANSCRIPTION_MODE", "final_only")
+    monkeypatch.setattr(web_api.Config, "MEETING_FINAL_PROVIDER", "soniox_async")
+    monkeypatch.setattr(web_api.Config, "get_api_key", lambda _provider: "configured")
+
+    app = web_api.create_app(object())
+    handler = _route_handler(app, "GET", "/api/meeting-profiles")
+    response = await handler(_DirectRequest(app))
+    profile = json.loads(response.body)["profiles"][0]
+
+    assert response.status == 200
+    assert profile["transcriptionMode"] == "final_only"
+    assert profile["livePreviewAvailable"] is False
+    assert profile["livePreviewWarning"] == ""
+    assert profile["stages"][0]["provider"] == "Off"
+    assert profile["costEstimate"]["audioTrackAssumption"] == 2
+    assert profile["costEstimate"]["livePerMeetingHour"] == 0.0
+    assert profile["costEstimate"]["finalPerMeetingHour"] == 0.2
+    assert profile["costEstimate"]["singleTrackFinalPerAudioHour"] == 0.1
+    assert profile["costEstimate"]["totalPerMeetingHour"] == 0.2
+
+
+@pytest.mark.asyncio
+async def test_live_and_final_profile_reports_both_soniox_passes(monkeypatch):
+    monkeypatch.setattr(web_api.Config, "MEETING_TRANSCRIPTION_MODE", "live_final")
+    monkeypatch.setattr(web_api.Config, "MEETING_FINAL_PROVIDER", "soniox_async")
+    monkeypatch.setattr(web_api.Config, "get_api_key", lambda _provider: "configured")
+
+    app = web_api.create_app(object())
+    handler = _route_handler(app, "GET", "/api/meeting-profiles")
+    response = await handler(_DirectRequest(app))
+    profile = json.loads(response.body)["profiles"][0]
+
+    assert profile["transcriptionMode"] == "live_final"
+    assert profile["costEstimate"]["livePerMeetingHour"] == 0.24
+    assert profile["costEstimate"]["finalPerMeetingHour"] == 0.2
+    assert profile["costEstimate"]["totalPerMeetingHour"] == 0.44
+
+
+@pytest.mark.asyncio
+async def test_final_only_mode_never_starts_a_live_preview_provider():
+    class Controller:
+        async def start_meeting_live_transcription(self, *_args, **_kwargs):
+            raise AssertionError("final-only meetings must not open a live provider")
+
+    live, degraded = await web_api._start_meeting_live_preview_best_effort(
+        Controller(),
+        {"id": "meeting-final-only", "transcriptionMode": "final_only"},
+    )
+
+    assert live is None
+    assert degraded is False
+    assert web_api._meeting_live_preview_metadata(
+        {"transcriptionMode": "final_only"},
+        degraded=False,
+        error_code="live_stt_start_failed",
+    ) == {
+        "status": "disabled",
+        "provider": "",
+        "model": "",
+        "errorCode": "",
+    }
 
 
 class TrackingRecorder:
@@ -460,16 +535,25 @@ class TrackingRecorder:
         self.started = False
         self.start_count = 0
         self.stop_count = 0
+        self.expected_disconnect = False
         self.on_pcm = _kwargs.get("on_pcm")
         type(self).instances.append(self)
 
     def start(self, _sources):
         self.started = True
         self.start_count += 1
+        self.expected_disconnect = False
+
+    def prepare_for_expected_disconnect(self):
+        self.expected_disconnect = True
+
+    def cancel_expected_disconnect(self):
+        self.expected_disconnect = False
 
     def stop(self, **_kwargs):
         self.started = False
         self.stop_count += 1
+        self.expected_disconnect = False
         return {"microphone": {"chunks": 1, "errorCode": ""}}
 
 
@@ -482,6 +566,7 @@ class TrackingLiveTranscriber(FakeLiveTranscriber):
 
 
 def _capture_cancellation_controller(monkeypatch, tmp_path, db_name):
+    monkeypatch.setattr(web_api.Config, "MEETING_TRANSCRIPTION_MODE", "live_final")
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / db_name)
     monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
@@ -550,6 +635,7 @@ def _audio_race_controller(monkeypatch, tmp_path):
 async def test_meeting_start_keeps_durable_capture_when_live_preview_fails(
     monkeypatch, tmp_path
 ):
+    monkeypatch.setattr(web_api.Config, "MEETING_TRANSCRIPTION_MODE", "live_final")
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "degraded-live-preview.db")
     monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
@@ -633,6 +719,75 @@ async def test_meeting_start_keeps_durable_capture_when_live_preview_fails(
 
 
 @pytest.mark.asyncio
+async def test_final_only_start_skips_live_provider_but_records_durably(
+    monkeypatch, tmp_path
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "final-only-start.db")
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
+    monkeypatch.setattr(web_api.Config, "MEETING_TRANSCRIPTION_MODE", "live_final")
+    monkeypatch.setattr(web_api.Config, "get_api_key", lambda _provider: "")
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    controller = FakeController(store)
+    controller.on_meeting_pcm = lambda *_args, **_kwargs: None
+    TrackingRecorder.instances = []
+    monkeypatch.setattr(web_api, "MeetingAudioRecorder", TrackingRecorder)
+
+    async def unexpected_live_provider(*_args, **_kwargs):
+        raise AssertionError("final-only capture must not open Soniox Realtime")
+
+    controller.start_meeting_live_transcription = unexpected_live_provider
+
+    def shell_call(command, _payload, **_kwargs):
+        if command == "audioMeetingStart":
+            return {
+                "success": True,
+                "payload": {
+                    "captureId": "capture-final-only",
+                    "sampleRate": 16_000,
+                    "frameDurationMs": 10,
+                    "aecActive": True,
+                    "sources": [],
+                },
+            }
+        if command == "audioMeetingStop":
+            return {"success": True, "payload": {"stopped": True}}
+        raise AssertionError(command)
+
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings")
+
+    response = await handler(
+        _DirectRequest(
+            app,
+            payload={
+                "title": "Quiet durable capture",
+                "transcriptionMode": "final_only",
+            },
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.status == 201
+    assert payload["state"] == "recording"
+    assert payload["transcriptionMode"] == "final_only"
+    assert payload["captureMetadata"]["livePreview"] == {
+        "status": "disabled",
+        "provider": "",
+        "model": "",
+        "errorCode": "",
+    }
+    assert controller._meeting_recorders[payload["id"]].started is True
+    assert all(event["type"] != "meeting_live_status" for event in controller.events)
+    await web_api._release_persistent_audio(controller)
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
 async def test_meeting_pcm_without_live_preview_still_emits_local_audio_level():
     controller = object.__new__(web_api.ScriberWebController)
     controller._loop = asyncio.get_running_loop()
@@ -653,6 +808,73 @@ async def test_meeting_pcm_without_live_preview_still_emits_local_audio_level():
     assert events[0]["type"] == "meeting_audio_level"
     assert events[0]["source"] == "microphone"
     assert events[0]["rms"] > 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume_state", ["paused", "interrupted"])
+async def test_final_only_resume_stays_final_only_when_global_setting_changes(
+    monkeypatch, tmp_path, resume_state
+):
+    controller, store, lives = _capture_cancellation_controller(
+        monkeypatch, tmp_path, f"final-only-resume-{resume_state}.db"
+    )
+    meeting = store.create(
+        MeetingCreate(
+            title=f"Final-only {resume_state}",
+            transcription_mode="final_only",
+        )
+    )
+    store.transition(
+        meeting["id"],
+        "recording",
+        capture_metadata={"captureId": "capture-before-resume", "deviceSelection": {}},
+    )
+    if resume_state == "paused":
+        store.transition(
+            meeting["id"],
+            "paused",
+            capture_metadata={
+                "captureId": "capture-before-resume",
+                "deviceSelection": {},
+                "pauseStartedAtMs": 0,
+                "pauseStartedAtUtc": web_api.datetime.now(
+                    web_api.timezone.utc
+                ).isoformat(),
+            },
+        )
+    else:
+        store.transition(meeting["id"], "interrupted")
+
+    def shell_call(command, _payload, **_kwargs):
+        if command == "audioMeetingResume":
+            return {
+                "success": True,
+                "payload": {
+                    "captureId": f"capture-final-only-{resume_state}",
+                    "sampleRate": 16_000,
+                    "sources": [],
+                },
+            }
+        if command == "audioMeetingStop":
+            return {"success": True, "payload": {"stopped": True}}
+        raise AssertionError(command)
+
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/{id}/resume")
+
+    response = await handler(_DirectRequest(app, meeting_id=meeting["id"]))
+    payload = json.loads(response.body)
+
+    assert response.status == 200
+    assert payload["state"] == "recording"
+    assert payload["transcriptionMode"] == "final_only"
+    assert payload["captureMetadata"]["livePreview"]["status"] == "disabled"
+    assert payload["errorCode"] == ""
+    assert lives == []
+    assert all(event["type"] != "meeting_live_status" for event in controller.events)
+    await web_api._release_persistent_audio(controller)
+    database._close_all_connections()
 
 
 @pytest.mark.asyncio
@@ -1598,6 +1820,8 @@ async def test_durable_import_worker_commits_workspace_and_enters_shared_finaliz
     meeting = meeting_store.get(persisted.meeting_id)
     assert meeting["state"] == "finalizing"
     assert meeting["origin"] == "imported"
+    assert meeting["transcriptionMode"] == "final_only"
+    assert meeting["liveProvider"] == "file-import"
     assert meeting["consentConfirmed"] is False
     assert meeting["captureMetadata"]["importId"] == record.id
     chunks = meeting_store.audio_chunks(persisted.meeting_id, "system")
@@ -2345,6 +2569,7 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "meetings.db")
     monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
+    monkeypatch.setattr(web_api.Config, "MEETING_TRANSCRIPTION_MODE", "live_final")
     monkeypatch.setattr(web_api.Config, "MEETING_FINAL_PROVIDER", "soniox_async")
     monkeypatch.setattr(
         web_api.Config,
@@ -2364,6 +2589,10 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
 
     def shell_call(command, payload, **_kwargs):
         shell_calls.append((command, dict(payload)))
+        if command in {"audioMeetingPause", "audioMeetingStop"}:
+            recorder = controller._meeting_recorders.get(str(payload.get("meetingId") or ""))
+            if recorder is not None:
+                assert recorder.expected_disconnect is True
         if command == "audioEndpointInventory":
             return {
                 "success": True,
@@ -2466,7 +2695,7 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
         assert profile_payload["providerCapabilities"]["gladia_async"]["maxDurationSeconds"] == 8_100
         assert profile_payload["providerCapabilities"]["mistral_async"]["maxDurationSeconds"] == 10_800
         assert profile_payload["profiles"][0]["fiveHourSupported"] is True
-        assert profile_payload["profiles"][0]["name"] == "Soniox live + Soniox Async final"
+        assert profile_payload["profiles"][0]["name"] == "Live text + Soniox Async final"
         assert [stage["model"] for stage in profile_payload["profiles"][0]["stages"]] == [
             web_api.Config.SONIOX_RT_MODEL,
             web_api.Config.SONIOX_ASYNC_MODEL,

@@ -245,6 +245,10 @@ Packaging and scripts:
 - Meeting exports must use `src/meeting_export.py` as the shared template
   boundary. Email headers must remain single-line and participant addresses
   validated/deduplicated; body-only drafts must not claim an attachment exists.
+  In Tauri, exports use the native Save As dialog and an atomic file replace.
+  Subsequent Open/Open Folder commands must resolve only the bounded,
+  process-local opaque token returned by that save; never accept a frontend
+  path for those commands. Browser builds keep the normal download fallback.
 
 ### Microphone and Device Handling
 
@@ -356,6 +360,16 @@ Packaging and scripts:
   may merge provider-final tokens while the local analyzer reports an
   incomplete phrase, but must not gate durable audio, system-audio preview, or
   canonical finalization. Failure must fall back to provider endpointing.
+- Meeting transcription mode is a persisted per-meeting contract with exactly
+  `live_final` and `final_only`. Settings owns the choice; the Meeting start and
+  import surfaces may summarize it but must not expose a second provider/model
+  selector. `final_only` must skip every live-preview start/restart path while
+  preserving native capture, 30-second checkpoints, final transcription,
+  diarization, analysis, and recovery. Imports are always `final_only`.
+- Provider-cost copy is an estimate, not billing authority. Captured Meetings
+  assume separate microphone and system tracks; imported Meeting audio assumes
+  one track. Add provider diarization cost only to the system/import track on
+  which it is requested, and keep pricing sources plus the checked date visible.
 - Soniox Async defaults to `stt-async-v5`. Keep
   `SCRIBER_SONIOX_ASYNC_MODEL` as an override for temporary compatibility, but
   do not restore `stt-async-v4` as the code default. Direct Soniox async upload
@@ -491,6 +505,17 @@ Packaging and scripts:
   sequence, WAV shape, digest, and start offset are unambiguous. Checkpoints
   carry per-source durable frontiers and may include a live segment only through
   its own source's committed frontier.
+- Arm Meeting readers for an expected disconnect before asking native capture
+  to pause, stop, reconnect, or clean up. Windows named pipes may close with
+  `OSError` instead of an end-of-stream frame; that intentional boundary must
+  commit a valid partial WAV before resume, while a failed native command must
+  disarm it. Never let resume reuse a deterministic sequence still occupied by
+  the preceding pause's partial file. Unexpected reader/storage failures remain
+  watchdog failures and must not be reclassified as intentional stops.
+- Startup recovery must preserve workflow phase: only `starting`, `recording`,
+  and `paused` become resumable `interrupted` capture. `stopping` and
+  `finalizing` become `finalization_failed`, and `analyzing` becomes
+  `analysis_failed`; never offer capture resume for a post-capture crash.
 - Keep audio format layers separate. AEC3, Silero, Smart Turn, live STT, and
   checkpoint capture use PCM. The verified long-lived archive is lossless
   Matroska/FLAC; timeline-aligned mix, clean-microphone, and system Opus files
@@ -559,7 +584,12 @@ Packaging and scripts:
   Meeting finalization persists microphone/system results independently in
   `transcription_track_stage_results`; retry only missing tracks, then aggregate
   them into the attempt StageResult and canonical artifact. Project canonical
-  artifact segment ids unchanged into `meeting_segments`.
+  artifact segment ids unchanged into `meeting_segments`. A genuinely silent
+  individual canonical track contributes no fabricated segment and does not
+  fail finalization when another track contains usable speech. Fail when every
+  available canonical track is empty, when provider work raises, or when text
+  cannot be normalized into usable segments; preserve the surviving track's
+  source and Meeting-clock timing unchanged.
   Attempt transitions and canonical-head replacement use compare-and-swap state
   versions; stale attempts become `superseded` and cannot overwrite newer work.
 - Stable fallback segment ids hash transcript id, source track, start/end,

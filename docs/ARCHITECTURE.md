@@ -66,8 +66,11 @@ File:
 
 Meetings:
 
-1. The eager **Meetings** tab creates a durable meeting row and explicit consent
-   record before capture. Only one meeting may own capture at a time.
+1. The eager **Meetings** tab creates a durable meeting row with a frozen
+   transcription mode and provider snapshot before capture. Only one meeting
+   may own capture at a time. The mode is selected in Settings, not on the
+   start surface: `live_final` adds best-effort live text and then a canonical
+   final pass; `final_only` records locally and opens no live STT connection.
 2. One crash-isolated Rust audio-sidecar process opens WASAPI microphone and
    loopback sources at 48 kHz. Pinned `aec3-rs` consumes the loopback render
    reference and produces a cleaned microphone stream before all three tracks
@@ -114,9 +117,9 @@ Meetings:
    patches its Meeting caches incrementally and performs a full detail
    reconciliation on selection, reconnect, and terminal state transitions; it
    does not poll the complete Meeting during steady live capture.
-   Native Capture and the durable recorder start before live STT on initial
+   Native Capture and the durable recorder start before optional live STT on initial
    start, resume, interrupted recovery, and default-device reconnect. Each
-   Soniox live source then runs as a best-effort preview with an independent
+   Soniox live source in `live_final` then runs as a best-effort preview with an independent
    reconnect supervisor. Missing credentials, initialization failure, or a
    later disconnect never blocks the recorder: bounded live queues may drop
    preview frames, one visible gap is emitted per outage, reconnect attempts use
@@ -127,13 +130,23 @@ Meetings:
    Recorder write failures are independently watched: disk-full stops capture
    visibly as `meeting_storage_full`, retains completed chunks, and leaves the
    open partial for startup quarantine instead of publishing it as complete.
+   In `final_only`, this entire provider-preview branch is skipped on start,
+   pause/resume, crash recovery, and device reconnect; durable recording,
+   checkpoints, finalization, speaker processing, and analysis are unchanged.
    Optional Smart Turn V3 runs only on the clean microphone preview stream. It
    may hold and merge an early Soniox endpoint when the local ONNX analyzer
    reports an incomplete phrase, but it never gates durable recording, system
    audio, or the canonical post-meeting transcript. Analyzer failures fall back
    to provider endpointing and remain visible only as redacted counters.
-4. Pause releases native capture and records a timeline gap. Stop first closes
-   capture, then validates chunk hashes/headers, builds FLAC multitrack and Opus
+4. Pause arms the Python readers for an intentional disconnect before releasing
+   native capture, commits any valid in-progress WAV through the normal
+   two-phase path, and records a timeline gap. This ordering is required because
+   Windows named pipes may report `OSError` rather than a clean end-of-stream;
+   resume must open fresh pipes at the next durable sequence instead of
+   colliding with the preceding `.partial.wav`. A rejected native command
+   disarms the boundary, while unplanned reader/storage failures still reach the
+   capture watchdog. Stop and default-device reconnect use the same ordering.
+   Stop then validates chunk hashes/headers, builds FLAC multitrack and Opus
    playback assets, and runs final provider transcription. Provider-native word
    or utterance times become canonical segments; explicitly marked estimated
    timing is used only when a provider has no structured timestamps. The
@@ -206,7 +219,12 @@ from verified local evidence, recorded as
 cancellation-safe provider-release boundary, and never promoted to the lossless
 archive. Meeting finalization applies this policy independently to each missing
 track; a recovered track StageResult therefore never repeats either encoding or
-the paid provider call.
+the paid provider call. An individual microphone or system call may validly
+return no speech; that track contributes no synthetic segment when another
+canonical track has usable units. Finalization still fails if every available
+canonical track is empty, a provider request raises, or returned text cannot be
+normalized into usable segments. Surviving units retain their original source
+and Meeting-clock intervals.
 
 Local speaker separation is a second immutable evidence layer rather than a
 mutation of the provider result. `transcription_track_derivations` binds the
@@ -243,9 +261,11 @@ bytes.
    preparation progress, and cancellation before navigating directly into the
    new workspace. Imports therefore receive the same meeting search, playback,
    analysis, exports, retry recovery, and email output as captured meetings.
-   Interrupted meetings can resume into fresh capture and STT sessions while
-   retaining the prior hashed device selection and recording one explicit
-   `crash-recovery` gap.
+   Interrupted capture phases can resume into fresh capture and optional STT
+   sessions while retaining the prior hashed device selection and recording one
+   explicit `crash-recovery` gap. A process exit during `stopping` or
+   `finalizing` becomes `finalization_failed` instead, so the UI retries from
+   saved audio and never offers to append new capture to a stopped meeting.
 5. The canonical transcript is immutable input to versioned MeetingAnalysisV1
    output. Notes, speaker renames, action-item edits, cited chat, exports, and
    webhook delivery are separate durable work objects. Analysis stays on a
@@ -270,7 +290,11 @@ bytes.
    render inputs, avoiding duplicate document headers. Email preview and RFC
    822 `.eml` drafts reuse the same summary template, populate valid unique
    Outlook participant addresses, and support body-only, Markdown, PDF, or DOCX
-   attachment modes without claiming that a missing attachment exists.
+   attachment modes without claiming that a missing attachment exists. Tauri
+   saves each export through the native Save As dialog with an atomic replace;
+   the resulting Open file/Open folder actions accept only a bounded,
+   process-local opaque registry token, never a path supplied by the WebView.
+   Browser builds retain the ordinary download behavior.
 6. Optional speaker recognition is local and opt-in. The pinned WeSpeaker ONNX
    model is downloaded after installation, hash-verified before first use, and
    never included in transcript/export payloads. Outlook Calendar uses public

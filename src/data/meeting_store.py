@@ -159,6 +159,7 @@ def _action_user_match_score(incoming: dict[str, Any], existing: dict[str, Any])
 class MeetingCreate:
     title: str
     language: str = "auto"
+    transcription_mode: str = "live_final"
     live_provider: str = "soniox"
     final_provider: str = "soniox_async"
     analysis_model: str = ""
@@ -184,6 +185,8 @@ class MeetingStore:
                     title TEXT NOT NULL,
                     state TEXT NOT NULL,
                     language TEXT NOT NULL DEFAULT 'auto',
+                    transcription_mode TEXT NOT NULL DEFAULT 'live_final'
+                        CHECK(transcription_mode IN ('live_final','final_only')),
                     live_provider TEXT NOT NULL,
                     final_provider TEXT NOT NULL,
                     analysis_model TEXT NOT NULL DEFAULT '',
@@ -487,6 +490,11 @@ class MeetingStore:
             if "quality" not in observation_columns:
                 conn.execute("ALTER TABLE speaker_profile_observations ADD COLUMN quality REAL")
             meeting_columns = {row["name"] for row in conn.execute("PRAGMA table_info(meetings)")}
+            if "transcription_mode" not in meeting_columns:
+                conn.execute(
+                    """ALTER TABLE meetings ADD COLUMN transcription_mode TEXT NOT NULL DEFAULT 'live_final'
+                       CHECK(transcription_mode IN ('live_final','final_only'))"""
+                )
             if "audio_retention_days" not in meeting_columns:
                 conn.execute("ALTER TABLE meetings ADD COLUMN audio_retention_days INTEGER NOT NULL DEFAULT 0")
             if "smart_turn_enabled" not in meeting_columns:
@@ -628,7 +636,7 @@ class MeetingStore:
             conn.commit()
 
     def recover_interrupted(self) -> int:
-        """Mark capture/finalization work left open by a prior process."""
+        """Recover each unfinished workflow at the phase where it stopped."""
         now = _utc_now()
         with db._get_connection() as conn:
             open_meeting_ids = [
@@ -649,17 +657,32 @@ class MeetingStore:
                 """,
                 (now,),
             )
+            finalization_cursor = conn.execute(
+                """
+                UPDATE meetings
+                SET state = 'finalization_failed', ended_at = COALESCE(ended_at, ?),
+                    updated_at = ?,
+                    error_code = 'process_interrupted_during_finalization',
+                    error_message = 'The saved audio is intact; Scriber stopped while creating the final transcript.'
+                WHERE state IN ('stopping','finalizing')
+                """,
+                (now, now),
+            )
             interrupted_cursor = conn.execute(
                 """
                 UPDATE meetings
                 SET state = 'interrupted', ended_at = COALESCE(ended_at, ?), updated_at = ?, error_code = 'process_interrupted',
                     error_message = 'Scriber stopped before the meeting workflow completed.'
-                WHERE state IN ('starting','recording','paused','stopping','finalizing')
+                WHERE state IN ('starting','recording','paused')
                 """,
                 (now, now),
             )
             conn.commit()
-            return int(analysis_cursor.rowcount) + int(interrupted_cursor.rowcount)
+            return (
+                int(analysis_cursor.rowcount)
+                + int(finalization_cursor.rowcount)
+                + int(interrupted_cursor.rowcount)
+            )
 
     @staticmethod
     def _restore_latest_transcript_checkpoint_conn(
@@ -883,6 +906,9 @@ class MeetingStore:
         origin = str(request.origin or "captured").strip().lower()
         if origin not in {"captured", "imported"}:
             raise ValueError("Meeting origin must be captured or imported.")
+        transcription_mode = str(request.transcription_mode or "live_final").strip().lower()
+        if transcription_mode not in {"live_final", "final_only"}:
+            raise ValueError("Meeting transcription mode must be live_final or final_only.")
         now = _utc_now()
         resolved_meeting_id = str(meeting_id or uuid4().hex).strip()
         if not re.fullmatch(r"[0-9a-f]{32}", resolved_meeting_id):
@@ -897,16 +923,17 @@ class MeetingStore:
                 conn.execute(
                     """
                     INSERT INTO meetings (
-                        id, title, state, language, live_provider, final_provider,
+                        id, title, state, language, transcription_mode, live_provider, final_provider,
                         analysis_model, aec_enabled, voice_library_enabled,
                         consent_confirmed, origin, audio_retention_days, smart_turn_enabled,
                         auto_analyze, capture_metadata_json, created_at, updated_at
-                    ) VALUES (?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         resolved_meeting_id,
                         title,
                         request.language.strip() or "auto",
+                        transcription_mode,
                         request.live_provider.strip() or "soniox",
                         request.final_provider.strip() or "soniox_async",
                         request.analysis_model.strip(),
@@ -3526,6 +3553,7 @@ class MeetingStore:
     def _meeting(row: sqlite3.Row) -> dict[str, Any]:
         return {
             "id": row["id"], "title": row["title"], "state": row["state"], "language": row["language"],
+            "transcriptionMode": row["transcription_mode"],
             "liveProvider": row["live_provider"], "finalProvider": row["final_provider"],
             "analysisModel": row["analysis_model"], "aecEnabled": bool(row["aec_enabled"]),
             "voiceLibraryEnabled": bool(row["voice_library_enabled"]),

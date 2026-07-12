@@ -2,6 +2,8 @@ import os
 import unittest
 from pathlib import Path
 
+import pytest
+
 import src.config as config_module
 from src.config import Config
 
@@ -16,6 +18,50 @@ def test_numeric_env_helpers_fall_back_and_clamp(monkeypatch):
     monkeypatch.setenv("TEST_SCRIBER_FLOAT", "-4")
     assert config_module._env_int("TEST_SCRIBER_INT", 12, minimum=1, maximum=20) == 20
     assert config_module._env_float("TEST_SCRIBER_FLOAT", 2.5, minimum=0.0, maximum=5.0) == 0.0
+
+
+def test_versioned_model_env_upgrades_legacy_dotenv_default(monkeypatch):
+    monkeypatch.setattr(config_module, "_PROCESS_ENV_KEYS_BEFORE_DOTENV", frozenset())
+    monkeypatch.setenv("TEST_SCRIBER_MODEL", "stt-rt-v3")
+
+    resolved = config_module._versioned_model_env(
+        "TEST_SCRIBER_MODEL",
+        "stt-rt-v5",
+        legacy_dotenv_defaults={"stt-rt-v3", "stt-rt-v4"},
+    )
+
+    assert resolved == "stt-rt-v5"
+    assert os.environ["TEST_SCRIBER_MODEL"] == "stt-rt-v5"
+
+
+def test_versioned_model_env_preserves_explicit_process_override(monkeypatch):
+    monkeypatch.setattr(
+        config_module,
+        "_PROCESS_ENV_KEYS_BEFORE_DOTENV",
+        frozenset({"TEST_SCRIBER_MODEL"}),
+    )
+    monkeypatch.setenv("TEST_SCRIBER_MODEL", "stt-rt-v3")
+
+    resolved = config_module._versioned_model_env(
+        "TEST_SCRIBER_MODEL",
+        "stt-rt-v5",
+        legacy_dotenv_defaults={"stt-rt-v3", "stt-rt-v4"},
+    )
+
+    assert resolved == "stt-rt-v3"
+
+
+def test_versioned_model_env_uses_default_for_blank_value(monkeypatch):
+    monkeypatch.setattr(config_module, "_PROCESS_ENV_KEYS_BEFORE_DOTENV", frozenset())
+    monkeypatch.setenv("TEST_SCRIBER_MODEL", "  ")
+
+    resolved = config_module._versioned_model_env(
+        "TEST_SCRIBER_MODEL",
+        "stt-rt-v5",
+        legacy_dotenv_defaults={"stt-rt-v3", "stt-rt-v4"},
+    )
+
+    assert resolved == "stt-rt-v5"
 
 
 def test_json_settings_loader_rejects_oversized_or_non_object_payload(monkeypatch, tmp_path):
@@ -78,6 +124,12 @@ class TestConfig(unittest.TestCase):
 
     def test_soniox_realtime_default_model_is_v5(self):
         self.assertEqual(Config.DEFAULT_SONIOX_RT_MODEL, "stt-rt-v5")
+
+    def test_historical_soniox_models_are_registered_for_default_migration(self):
+        self.assertIn("stt-async-preview", Config._LEGACY_DEFAULT_SONIOX_ASYNC_MODELS)
+        self.assertIn("stt-async-v4", Config._LEGACY_DEFAULT_SONIOX_ASYNC_MODELS)
+        self.assertIn("stt-rt-v3", Config._LEGACY_DEFAULT_SONIOX_RT_MODELS)
+        self.assertIn("stt-rt-v4", Config._LEGACY_DEFAULT_SONIOX_RT_MODELS)
 
     def test_post_processing_default_model_is_cerebras_gemma(self):
         self.assertEqual(Config.DEFAULT_POST_PROCESSING_MODEL, "cerebras/gemma-4-31b")
@@ -158,6 +210,22 @@ def test_persist_to_env_file_includes_soniox_realtime_v5_default(monkeypatch, tm
     Config.persist_to_env_file(str(target))
 
     assert "SCRIBER_SONIOX_RT_MODEL=stt-rt-v5" in target.read_text(encoding="utf-8")
+
+
+def test_meeting_transcription_mode_is_validated_and_persisted(monkeypatch, tmp_path):
+    target = tmp_path / ".env"
+    monkeypatch.setattr(Config, "MEETING_TRANSCRIPTION_MODE", "live_final")
+    monkeypatch.setattr(config_module, "_json_settings", dict(config_module._json_settings))
+    monkeypatch.setenv("SCRIBER_MEETING_TRANSCRIPTION_MODE", "live_final")
+
+    Config.set_meeting_transcription_mode(" FINAL_ONLY ")
+    Config.persist_to_env_file(str(target))
+
+    assert Config.MEETING_TRANSCRIPTION_MODE == "final_only"
+    assert config_module._json_settings["meetingTranscriptionMode"] == "final_only"
+    assert "SCRIBER_MEETING_TRANSCRIPTION_MODE=final_only" in target.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="live_final or final_only"):
+        Config.set_meeting_transcription_mode("minute_chunks")
 
 
 def test_persist_to_env_file_includes_assemblyai_models(monkeypatch, tmp_path):

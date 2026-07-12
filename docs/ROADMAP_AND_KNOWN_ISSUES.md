@@ -88,9 +88,15 @@ Meetings:
 - Native meeting capture uses one Rust audio sidecar for mic plus loopback,
   pinned `aec3-rs` echo cancellation, a shared monotonic timeline, three durable
   tracks, health monitoring, pause/resume gaps, and checksum-validated chunks.
+- Pause, stop, cleanup, and device reconnect now arm the recorder before native
+  pipes close, so Windows `OSError` disconnects commit the valid partial chunk
+  and resume advances to a collision-free sequence. Unexpected failures remain
+  capture-watchdog errors.
 - Final transcription uses provider-native timestamps for Soniox, AssemblyAI,
   Deepgram, and Mistral when available. Providers without structured timing use
-  an explicitly identifiable estimated fallback.
+  an explicitly identifiable estimated fallback. One silent microphone/system
+  track no longer discards speech from the other track; all-silent input and
+  provider/normalization failures still fail finalization.
 - Outlook Calendar has public-desktop PKCE, Windows Credential Manager refresh
   token storage, incremental Graph delta sync, periodic refresh, and offline
   backoff. Settings exposes configuration state, connect, sync, disconnect,
@@ -108,7 +114,9 @@ Meetings:
   it returns only level/activity statistics and never persists or uploads audio.
 - Post-meeting progress, Overview and Notes views, independent track mute
   controls, all four exports, and preview-confirmed webhook delivery are exposed
-  in the workspace.
+  in the workspace. Desktop exports use native Save As; Open file/Open folder
+  resolve only the bounded opaque token returned by that save, while browser
+  builds download normally.
 - The pre-React boot shell resolves the stored/system theme synchronously and
   uses the high-contrast dark Scriber mark before the application bundle mounts;
   the real-browser smoke freezes and screenshots this exact dark startup frame.

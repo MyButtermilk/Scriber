@@ -477,7 +477,13 @@ def test_primary_page_intros_share_responsive_full_width_layout() -> None:
     ).read_text(encoding="utf-8")
     page_sources = {
         page: (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page).read_text(encoding="utf-8")
-        for page in ("LiveMic.tsx", "Youtube.tsx", "FileTranscribe.tsx", "Settings.tsx")
+        for page in (
+            "LiveMic.tsx",
+            "Meetings.tsx",
+            "Youtube.tsx",
+            "FileTranscribe.tsx",
+            "Settings.tsx",
+        )
     }
 
     assert 'className="mt-3 max-w-[65ch] text-pretty text-[13px]' in component_source
@@ -485,15 +491,32 @@ def test_primary_page_intros_share_responsive_full_width_layout() -> None:
     assert 'sticky ? "sticky top-0 z-20" : "relative z-0"' in component_source
     assert "bottomContent" in component_source
     assert 'title="Settings"' in page_sources["Settings.tsx"]
-    assert 'eyebrow="Workspace controls · 04"' in page_sources["Settings.tsx"]
+    assert 'eyebrow="Workspace controls · 06"' in page_sources["Settings.tsx"]
     assert page_sources["Settings.tsx"].index("<PageIntro") < page_sources["Settings.tsx"].index(
         'aria-label="Settings sections"'
     )
     for source in page_sources.values():
         assert 'from "@/components/page-intro"' in source
         assert "<PageIntro" in source
-    for page in ("LiveMic.tsx", "Youtube.tsx", "FileTranscribe.tsx"):
+    for page in ("LiveMic.tsx", "Meetings.tsx", "Youtube.tsx", "FileTranscribe.tsx"):
         assert "sticky={false}" in page_sources[page]
+
+
+def test_primary_section_numbers_follow_navigation_order() -> None:
+    page_markers = {
+        "LiveMic.tsx": 'eyebrow="Voice capture · 01"',
+        "Meetings.tsx": 'eyebrow="Meeting workspace · 02"',
+        "Youtube.tsx": 'eyebrow="Media capture · 03"',
+        "FileTranscribe.tsx": 'eyebrow="Media import · 04"',
+        "DebugConsole.tsx": "System observability · 05",
+        "Settings.tsx": 'eyebrow="Workspace controls · 06"',
+    }
+
+    for page, marker in page_markers.items():
+        source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page).read_text(
+            encoding="utf-8"
+        )
+        assert marker in source
 
 
 def test_settings_section_navigation_accounts_for_sticky_header() -> None:
@@ -1258,19 +1281,19 @@ def test_meeting_workspace_uses_focus_canvas_and_gpu_only_live_progress() -> Non
         encoding="utf-8"
     )
 
-    assert "Ready the room" in source
-    assert "Long-session readiness" in source
-    assert "Ready for up to 5 hours" in source
+    assert "Ready to start" in source
+    assert "Check before a long meeting" in source
+    assert "Ready for a long meeting" in source
     assert "What matters now" in source
     assert "Key outcome" in source
     assert "Render-active attenuation" in source
-    assert "Render-aware AEC3" in source
+    assert "Reduces speaker echo" in source
     assert "I confirm I am permitted to record" not in source
     assert "Recording conversations without permission" not in source
     assert "consentConfirmed: true" not in source
     assert "h-auto min-h-9 w-full whitespace-normal" in source
     assert 'className="sr-only">Meeting workspace' in source
-    assert "<PageIntro" not in source
+    assert "<PageIntro" in source
     assert "transition-[width]" not in source
     assert "transition-transform" in source
     assert "motion-reduce:transition-none" in source
@@ -1284,7 +1307,7 @@ def test_meeting_workspace_uses_focus_canvas_and_gpu_only_live_progress() -> Non
     assert "selectedProfile.stages" in source
     assert "Models used" in source
     assert "playLoadedAudio" in source
-    assert "Test tone played" in source
+    assert "Speaker sound played" in source
 
 
 def test_meeting_workspace_reconciles_after_backend_websocket_restart() -> None:
@@ -1317,11 +1340,217 @@ def test_meeting_workspace_scopes_drafts_playback_and_imports_to_durable_state()
     assert "Audio is no longer retained" in meetings
     assert "meetingImportsQuery.data?.items.find" in meetings
     assert 'job.meetingId' in meetings
-    assert 'queryKey: ["/api/meetings/speaker-profiles"]' in meetings
+    assert 'queryKey: ["/api/meetings/speaker-profiles"]' in settings
+    assert "const speakerProfilesQuery" not in meetings
     assert 'onClick={() => setVoiceLibraryDeleteOpen(true)}' in settings
-    assert "Delete the entire Voice Library?" in settings
-    assert "Delete this voice profile?" in settings
+    assert "Delete all saved voice data?" in settings
+    assert "Delete this saved speaker?" in settings
     assert "voiceLibraryDeletePending" in settings
+
+
+def test_meeting_defaults_and_voice_library_live_only_in_meeting_settings() -> None:
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+        encoding="utf-8"
+    )
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    meeting_settings = settings[
+        settings.index('id="settings-meetings"') : settings.index('id="settings-api-keys"')
+    ]
+    transcription_settings = settings[
+        settings.index('id="settings-transcription"') : settings.index("{speechToTextProviderPanel}")
+    ]
+
+    assert "Advanced · Retention" not in meetings
+    assert "Local audio retention" not in meetings
+    assert "Local Voice Library" not in meetings
+    assert 'voiceLibraryEnabled: Boolean(speakerModelQuery.data?.optedIn && speakerModelQuery.data?.installed)' in meetings
+    assert "audioRetentionDays: profile?.audioRetentionDays ?? 0" in meetings
+
+    assert 'label="Meeting shortcut"' in meeting_settings
+    assert 'label="Keep meeting audio"' in meeting_settings
+    assert 'title="Voice Library"' in meeting_settings
+    assert 'label="Recognize familiar speakers"' in meeting_settings
+    assert 'aria-label="Recognize familiar speakers in future meetings"' in meeting_settings
+    assert 'setSonioxRealtimeModel(settings.sonioxRealtimeModel || "stt-rt-v5")' in settings
+    assert "sonioxRealtimeModel" in meeting_settings
+    assert 'label="Meeting shortcut"' not in transcription_settings
+    assert 'label="Recognize familiar speakers"' not in transcription_settings
+
+    assert 'title="Transcription"' in meeting_settings
+    assert 'title="Summaries and storage"' in meeting_settings
+    assert "Protected every 30 seconds." in meeting_settings
+    assert 'label="Reduce speaker echo"' in meeting_settings
+    assert "checkpointed audio" not in meeting_settings
+    assert "AEC3 echo control" not in meeting_settings
+    assert "Voice embeddings" not in meeting_settings
+
+
+def test_meeting_transcription_modes_are_configured_only_in_settings() -> None:
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+        encoding="utf-8"
+    )
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+        encoding="utf-8"
+    )
+    meeting_settings = settings[
+        settings.index('id="settings-meetings"') : settings.index('id="settings-api-keys"')
+    ]
+
+    assert 'id="meeting-profile"' not in meetings
+    assert 'id="meeting-import-profile"' not in meetings
+    assert "Change in Settings" in meetings
+    assert "Transcript after meeting" in meeting_settings
+    assert "Live text + accurate transcript" in meeting_settings
+    assert 'role="radiogroup" aria-label="Meeting transcription timing"' in meeting_settings
+    assert "meetingTranscriptionMode" in meeting_settings
+    assert "Estimated total" in meeting_settings
+    assert "Why Scriber does not upload one-minute pieces" in meeting_settings
+    assert "It does not change the final transcript or its price." in meeting_settings
+
+
+def test_live_meeting_transcript_follows_latest_text_without_trapping_review() -> None:
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "const [followLatest, setFollowLatest] = useState(true);" in meetings
+    assert 'virtualizer.scrollToIndex(segments.length - 1, { align: "end" });' in meetings
+    assert "scrollToLatest, search, segments]" in meetings
+    assert "element.scrollHeight - element.clientHeight - element.scrollTop <= 40" in meetings
+    assert ">Latest text" in meetings
+    assert "isLive={detail.state === \"recording\" || detail.state === \"paused\"}" in meetings
+    assert "key={detail.id}" in meetings
+    assert "Recording safely. The transcript appears after you stop." in meetings
+
+
+def test_settings_cards_follow_the_requested_two_column_order() -> None:
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+        encoding="utf-8"
+    )
+    rendered = settings[settings.index("<PageIntro") :]
+    navigation = rendered[rendered.index('{ section: "transcription"') : rendered.index("].map((item)")]
+
+    assert rendered.index('id="settings-transcription"') < rendered.index("{speechToTextProviderPanel}")
+    assert rendered.index("{speechToTextProviderPanel}") < rendered.index('id="settings-meetings"')
+    assert rendered.index('id="settings-meetings"') < rendered.index('id="settings-api-keys"')
+    assert rendered.index('id="settings-api-keys"') < rendered.index('id="settings-summaries"')
+    assert rendered.index('id="settings-updates"') < rendered.index('id="settings-language"')
+
+    assert navigation.index('section: "transcription"') < navigation.index('section: "providers"')
+    assert navigation.index('section: "providers"') < navigation.index('section: "meetings"')
+    assert navigation.index('section: "apiKeys"') < navigation.index('section: "summarization"')
+    assert navigation.index('section: "updates"') < navigation.index('section: "language"')
+
+
+def test_outlook_meeting_settings_explain_each_connection_state_plainly() -> None:
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+        encoding="utf-8"
+    )
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+        encoding="utf-8"
+    )
+    meeting_settings = settings[
+        settings.index('id="settings-meetings"') : settings.index('id="settings-api-keys"')
+    ]
+
+    assert "Outlook is connected" in meeting_settings
+    assert "Outlook is ready to connect" in meeting_settings
+    assert "Finish signing in with Microsoft" in meeting_settings
+    assert "Outlook setup is unavailable in this copy" in meeting_settings
+    assert "Choose Connect Outlook below." in meeting_settings
+    assert "Sign in with Microsoft and allow read-only calendar access." in meeting_settings
+    assert "Return to Scriber; upcoming meetings sync automatically." in meeting_settings
+    assert "Help for self-built copies" in meeting_settings
+    assert "SCRIBER_OUTLOOK_CLIENT_ID" in meeting_settings
+    assert "Disconnect Outlook" in meeting_settings
+    assert "Reconnect Outlook" in meeting_settings
+    assert "Sync now" not in meeting_settings
+    assert "const outlookMutation" not in meetings
+    assert "Connect Outlook in Settings to use meeting titles and participants automatically." in meetings
+    assert 'setLocation("/settings")' in meetings
+
+
+def test_meeting_copy_uses_plain_outcome_focused_language() -> None:
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Your recording is saved every 30 seconds" in meetings
+    assert ">Safety saves<" in meetings
+    assert ">Final transcript<" in meetings
+    assert "Answers use only this meeting's final transcript." in meetings
+    assert "Creating your meeting brief…" in meetings
+    assert "Added on this device · up to 60 min" in meetings
+    assert "Render-aware AEC3" not in meetings
+    assert ">Native capture<" not in meetings
+    assert ">Final STT<" not in meetings
+    assert "canonical transcript" not in meetings
+
+
+def test_meeting_workspace_uses_the_shared_transcription_frame_and_type_scale() -> None:
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+        encoding="utf-8"
+    )
+    live_mic = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(
+        encoding="utf-8"
+    )
+    page_intro = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "page-intro.tsx"
+    ).read_text(encoding="utf-8")
+    styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert "transcription-page meetings-page" in meetings
+    assert '<PageIntro' in meetings
+    assert 'eyebrow="Meeting workspace · 02"' in meetings
+    assert 'max-w-[1440px]' in meetings
+    assert 'max-w-[1680px]' not in meetings
+    assert 'meetings-history-rail rounded-[22px]' in meetings
+    assert 'meetings-workspace-panel min-w-0 overflow-hidden rounded-[26px]' in meetings
+    assert 'min-[1380px]:grid-cols-[minmax(0,1fr)_260px]' in meetings
+    assert '2xl:grid-cols-[minmax(0,1fr)_300px]' in meetings
+    assert '2xl:border-l 2xl:border-t-0' in meetings
+
+    assert 'max-w-[1320px]' in live_mic
+    assert 'actions?: ReactNode' in page_intro
+    assert 'text-[36px]' in page_intro
+    assert 'md:text-[42px]' in page_intro
+    assert '.meetings-history-rail' in styles
+    assert '.meetings-workspace-panel' in styles
+    assert 'background: var(--live-core);' in styles
+
+
+def test_meeting_export_uses_native_save_as_and_visible_follow_up_actions() -> None:
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+        encoding="utf-8"
+    )
+    export_client = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "meeting-export.ts"
+    ).read_text(encoding="utf-8")
+    export_shell = (
+        REPO_ROOT / "Frontend" / "src-tauri" / "src" / "export_dialog.rs"
+    ).read_text(encoding="utf-8")
+    shell = (REPO_ROOT / "Frontend" / "src-tauri" / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
+
+    assert "downloadApiFile" not in meetings
+    assert "Save or share" in meetings
+    assert "Saved in" in meetings
+    assert "Open file" in meetings
+    assert "Open folder" in meetings
+    assert "Save email draft" in meetings
+    assert 'invoke<NativeSavedMeetingExport | null>("save_meeting_export"' in export_client
+    assert 'invoke("open_meeting_export"' in export_client
+    assert 'invoke("reveal_meeting_export"' in export_client
+    assert ".blocking_save_file()" in export_shell
+    assert "write_export_atomically" in export_shell
+    assert "MAX_RECENT_EXPORTS" in export_shell
+    assert "export_dialog::save_meeting_export" in shell
 
 
 def test_meeting_workspace_guards_async_state_and_touch_delete_controls() -> None:

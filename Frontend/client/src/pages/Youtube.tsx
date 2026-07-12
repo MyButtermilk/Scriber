@@ -618,7 +618,7 @@ export default function Youtube() {
   return (
     <div className="transcription-page youtube-page mx-auto w-full max-w-[1320px] px-4 py-5 md:px-6 md:py-6">
       <PageIntro
-        eyebrow="Media capture · 02"
+        eyebrow="Media capture · 03"
         title="YouTube transcription"
         description="Paste a link or search YouTube, then turn the video into a searchable transcript."
         accentClassName="bg-red-500/70"

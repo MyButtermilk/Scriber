@@ -1070,6 +1070,23 @@ html:has(body[data-scroll-locked]) {
     inset 0 0 0 1px var(--live-hairline);
 }
 
+.meetings-history-rail,
+.meetings-workspace-panel {
+  border: 1px solid var(--workspace-border);
+  box-shadow:
+    0 24px 52px -44px var(--live-shadow),
+    inset 0 1px 0 var(--live-highlight),
+    inset 0 0 0 1px var(--live-hairline);
+}
+
+.meetings-history-rail {
+  background: color-mix(in srgb, var(--live-control) 82%, var(--live-core));
+}
+
+.meetings-workspace-panel {
+  background: var(--live-core);
+}
+
 .live-mic-control-deck {
   isolation: isolate;
   background:

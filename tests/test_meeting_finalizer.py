@@ -114,6 +114,40 @@ def _write_meeting_wav(
         output.writeframes(int(sample_value).to_bytes(2, "little", signed=True) * frames)
 
 
+def _stub_two_track_preparation(
+    finalizer: MeetingFinalizer, tmp_path: Path
+) -> dict[str, PreparedMeetingTrack]:
+    tracks = {
+        "mic_clean": PreparedMeetingTrack(
+            path=tmp_path / "mic-clean.work.flac",
+            duration_ms=1_000,
+            timeline_origin_ms=1_200,
+            sample_count=16_000,
+            pcm_sha256="a" * 64,
+        ),
+        "system": PreparedMeetingTrack(
+            path=tmp_path / "system.work.flac",
+            duration_ms=1_500,
+            timeline_origin_ms=400,
+            sample_count=24_000,
+            pcm_sha256="b" * 64,
+        ),
+    }
+    finalizer._validated_chunks = lambda _meeting_id, source: (
+        [{"sequence": 0}] if source in tracks else []
+    )
+
+    async def prepare(_meeting_id, source, _chunks):
+        return tracks[source]
+
+    async def consolidate(_meeting_id, _tracks):
+        return None
+
+    finalizer._prepare_lossless_track = prepare
+    finalizer._consolidate_audio_assets = consolidate
+    return tracks
+
+
 @pytest.mark.asyncio
 async def test_finalizer_rejects_track_beyond_the_selected_provider_duration(
     monkeypatch, tmp_path
@@ -163,6 +197,161 @@ async def test_finalizer_rejects_track_beyond_the_selected_provider_duration(
         await finalizer.run(meeting["id"], progress)
 
     assert provider_calls == []
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("speech_source", "expected_start_ms", "expected_end_ms"),
+    (("microphone", 1_200, 2_200), ("system", 400, 1_900)),
+)
+async def test_finalizer_accepts_one_silent_canonical_track(
+    monkeypatch, tmp_path, speech_source, expected_start_ms, expected_end_ms
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / f"silent-{speech_source}.db")
+    monkeypatch.setattr(
+        "src.meeting_finalizer.supports_direct_file_upload", lambda _provider: False
+    )
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    meeting = store.create(MeetingCreate(
+        title="One silent track",
+        final_provider="soniox_async",
+        auto_analyze=False,
+    ))
+    store.transition(meeting["id"], "finalizing")
+
+    class TrackPipeline(FakePipeline):
+        async def transcribe_file(self, path: str):
+            await self.transcribe_file_direct(path)
+
+    def pipeline_factory(*, on_transcription, enable_speaker_diarization, **_kwargs):
+        source = "system" if enable_speaker_diarization else "microphone"
+        text = f"Valid {source} speech" if source == speech_source else ""
+        return TrackPipeline(text, on_transcription)
+
+    finalizer = MeetingFinalizer(
+        store, tmp_path / "audio", pipeline_factory, lambda *_args, **_kwargs: None
+    )
+    _stub_two_track_preparation(finalizer, tmp_path)
+    updates: list[tuple[str, float]] = []
+
+    async def progress(status, amount):
+        updates.append((status, amount))
+
+    result = await finalizer.run(meeting["id"], progress)
+    detail = store.detail(meeting["id"])
+
+    assert result["state"] == "ready"
+    assert len(detail["segments"]) == 1
+    segment = detail["segments"][0]
+    assert segment["source"] == speech_source
+    assert segment["startMs"] == expected_start_ms
+    assert segment["endMs"] == expected_end_ms
+    assert segment["durationMs"] == expected_end_ms - expected_start_ms
+    assert segment["text"] == f"Valid {speech_source} speech"
+    head = finalizer.artifact_store.get_head(meeting["id"])
+    assert head is not None
+    artifact = finalizer.artifact_store.get_artifact(head.artifact_id)
+    assert artifact is not None
+    assert [unit.source_track for unit in artifact.segments] == [speech_source]
+    assert [
+        item.source_track
+        for item in finalizer.artifact_store.list_track_stage_results(artifact.attempt_id)
+    ] == [speech_source]
+    silent_source = "system" if speech_source == "microphone" else "microphone"
+    assert any(f"No {silent_source} speech detected" in status for status, _ in updates)
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_finalizer_rejects_meeting_when_every_canonical_track_is_silent(
+    monkeypatch, tmp_path
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "all-tracks-silent.db")
+    monkeypatch.setattr(
+        "src.meeting_finalizer.supports_direct_file_upload", lambda _provider: False
+    )
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    meeting = store.create(MeetingCreate(
+        title="Silent meeting",
+        final_provider="soniox_async",
+        auto_analyze=False,
+    ))
+    store.transition(meeting["id"], "finalizing")
+
+    class SilentPipeline(FakePipeline):
+        async def transcribe_file(self, path: str):
+            await self.transcribe_file_direct(path)
+
+    finalizer = MeetingFinalizer(
+        store,
+        tmp_path / "audio",
+        lambda *, on_transcription, **_kwargs: SilentPipeline("", on_transcription),
+        lambda *_args, **_kwargs: None,
+    )
+    _stub_two_track_preparation(finalizer, tmp_path)
+
+    async def progress(_status, _amount):
+        return None
+
+    with pytest.raises(
+        ValueError,
+        match=r"no speech on any canonical Meeting track \(microphone, system\)",
+    ):
+        await finalizer.run(meeting["id"], progress)
+
+    assert finalizer.artifact_store.get_head(meeting["id"]) is None
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_finalizer_does_not_treat_provider_failure_as_a_silent_track(
+    monkeypatch, tmp_path
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "provider-failure.db")
+    monkeypatch.setattr(
+        "src.meeting_finalizer.supports_direct_file_upload", lambda _provider: False
+    )
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    meeting = store.create(MeetingCreate(
+        title="Provider failure",
+        final_provider="soniox_async",
+        auto_analyze=False,
+    ))
+    store.transition(meeting["id"], "finalizing")
+
+    class ProviderPipeline(FakePipeline):
+        async def transcribe_file(self, path: str):
+            if "system" in Path(path).name:
+                raise RuntimeError("synthetic provider request failed")
+            await self.transcribe_file_direct(path)
+
+    finalizer = MeetingFinalizer(
+        store,
+        tmp_path / "audio",
+        lambda *, on_transcription, **_kwargs: ProviderPipeline(
+            "Valid microphone speech", on_transcription
+        ),
+        lambda *_args, **_kwargs: None,
+    )
+    _stub_two_track_preparation(finalizer, tmp_path)
+
+    async def progress(_status, _amount):
+        return None
+
+    with pytest.raises(RuntimeError, match="synthetic provider request failed"):
+        await finalizer.run(meeting["id"], progress)
+
+    assert finalizer.artifact_store.get_head(meeting["id"]) is None
     database._close_all_connections()
 
 

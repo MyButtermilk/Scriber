@@ -555,7 +555,7 @@ export default function FileTranscribe() {
   return (
     <div className="transcription-page file-page mx-auto w-full max-w-[1320px] px-4 py-5 md:px-6 md:py-6">
       <PageIntro
-        eyebrow="Media import · 03"
+        eyebrow="Media import · 04"
         title="File transcription"
         description="Drop in audio or video; Scriber prepares, transcribes, and organizes it."
         sticky={false}

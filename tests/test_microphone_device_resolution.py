@@ -289,6 +289,31 @@ async def test_get_settings_prefers_favorite_for_ui_when_available(monkeypatch: 
 
 
 @pytest.mark.asyncio
+async def test_get_settings_exposes_effective_soniox_realtime_model(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    try:
+        monkeypatch.setattr(Config, "SONIOX_RT_MODEL", "stt-rt-v5-effective", raising=False)
+        monkeypatch.setattr(
+            ctl,
+            "list_microphones",
+            lambda: [{"deviceId": "default", "label": "Default"}],
+        )
+        monkeypatch.setattr(ctl, "_schedule_settings_persist", lambda: None)
+
+        settings = ctl.get_settings()
+        updated = await ctl.update_settings({"sonioxRealtimeModel": "stt-rt-v3"})
+
+        assert settings["sonioxRealtimeModel"] == "stt-rt-v5-effective"
+        assert updated["sonioxRealtimeModel"] == "stt-rt-v5-effective"
+        assert Config.SONIOX_RT_MODEL == "stt-rt-v5-effective"
+    finally:
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_get_settings_falls_back_to_first_available_when_favorite_missing(
     monkeypatch: pytest.MonkeyPatch,
 ):

@@ -1146,6 +1146,7 @@ async def test_settings_round_trip_meeting_pipeline_preferences(monkeypatch, tmp
     monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
     monkeypatch.setattr(config_module, "_json_settings", dict(config_module._json_settings))
     for name, value in {
+        "MEETING_TRANSCRIPTION_MODE": "live_final",
         "MEETING_FINAL_PROVIDER": "soniox_async",
         "MEETING_ANALYSIS_MODEL": "gemini-flash-latest",
         "MEETING_SMART_TURN_ENABLED": True,
@@ -1157,6 +1158,7 @@ async def test_settings_round_trip_meeting_pipeline_preferences(monkeypatch, tmp
     ctl = ScriberWebController(asyncio.get_running_loop())
 
     settings = await ctl.update_settings({
+        "meetingTranscriptionMode": "final_only",
         "meetingFinalProvider": "assemblyai",
         "meetingAnalysisModel": "gemini-3.5-flash",
         "meetingSmartTurnEnabled": False,
@@ -1165,12 +1167,14 @@ async def test_settings_round_trip_meeting_pipeline_preferences(monkeypatch, tmp
         "meetingAudioRetentionDays": 30,
     })
 
+    assert settings["meetingTranscriptionMode"] == "final_only"
     assert settings["meetingFinalProvider"] == "assemblyai"
     assert settings["meetingAnalysisModel"] == "gemini-3.5-flash"
     assert settings["meetingSmartTurnEnabled"] is False
     assert settings["meetingAutoAnalyze"] is False
     assert settings["meetingAecEnabled"] is False
     assert settings["meetingAudioRetentionDays"] == 30
+    assert config_module._json_settings["meetingTranscriptionMode"] == "final_only"
     assert config_module._json_settings["meetingFinalProvider"] == "assemblyai"
     assert config_module._json_settings["meetingAudioRetentionDays"] == 30
 
@@ -1181,6 +1185,10 @@ async def test_settings_round_trip_meeting_pipeline_preferences(monkeypatch, tmp
         })
     assert web_api.Config.MEETING_FINAL_PROVIDER == "assemblyai"
     assert web_api.Config.MEETING_SMART_TURN_ENABLED is False
+
+    with pytest.raises(ValueError, match="Unsupported meeting transcription mode"):
+        await ctl.update_settings({"meetingTranscriptionMode": "minute_chunks"})
+    assert web_api.Config.MEETING_TRANSCRIPTION_MODE == "final_only"
     ctl.shutdown()
 
 

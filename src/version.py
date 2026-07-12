@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 
-__version__ = "0.5.2"
+__version__ = "0.5.3"
 
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 

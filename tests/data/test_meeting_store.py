@@ -42,6 +42,68 @@ def test_origin_is_first_class_without_fabricating_consent(store: MeetingStore):
         store.create(MeetingCreate(title="Invalid", origin="unknown"))
 
 
+def test_transcription_mode_is_first_class_and_validated(store: MeetingStore):
+    meeting = store.create(
+        MeetingCreate(title="Quiet capture", transcription_mode="final_only")
+    )
+    assert meeting["transcriptionMode"] == "final_only"
+    assert store.get(meeting["id"])["transcriptionMode"] == "final_only"
+
+    store.transition(meeting["id"], "discarded")
+    with pytest.raises(ValueError, match="transcription mode"):
+        store.create(MeetingCreate(title="Invalid mode", transcription_mode="minute_chunks"))
+
+
+def test_existing_meetings_migrate_to_live_and_final_mode(monkeypatch, tmp_path):
+    database._close_all_connections()
+    target = tmp_path / "legacy-transcription-mode.db"
+    monkeypatch.setattr(database, "_DB_PATH", target)
+    with sqlite3.connect(target) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE meetings (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                state TEXT NOT NULL,
+                language TEXT NOT NULL DEFAULT 'auto',
+                live_provider TEXT NOT NULL,
+                final_provider TEXT NOT NULL,
+                analysis_model TEXT NOT NULL DEFAULT '',
+                aec_enabled INTEGER NOT NULL DEFAULT 1,
+                voice_library_enabled INTEGER NOT NULL DEFAULT 0,
+                consent_confirmed INTEGER NOT NULL DEFAULT 0,
+                origin TEXT NOT NULL DEFAULT 'captured',
+                started_at TEXT,
+                ended_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                error_code TEXT NOT NULL DEFAULT '',
+                error_message TEXT NOT NULL DEFAULT '',
+                capture_metadata_json TEXT NOT NULL DEFAULT '{}',
+                audio_retention_days INTEGER NOT NULL DEFAULT 0,
+                smart_turn_enabled INTEGER NOT NULL DEFAULT 1,
+                auto_analyze INTEGER NOT NULL DEFAULT 1,
+                transcript_edit_version INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO meetings (
+                id,title,state,language,live_provider,final_provider,created_at,updated_at
+            ) VALUES (
+                '11111111111111111111111111111111','Legacy meeting','ready','auto',
+                'soniox','soniox_async','2026-01-01T00:00:00+00:00','2026-01-01T01:00:00+00:00'
+            );
+            """
+        )
+
+    legacy_store = MeetingStore()
+    legacy_store.initialize()
+
+    assert legacy_store.get("1" * 32)["transcriptionMode"] == "live_final"
+    with database._get_connection() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(meetings)")}
+    assert "transcription_mode" in columns
+    database._close_all_connections()
+
+
 def test_enforces_one_open_meeting_and_state_transitions(store: MeetingStore):
     meeting = store.create(create_request())
     assert meeting["state"] == "starting"
@@ -436,6 +498,21 @@ def test_analysis_recovery_preserves_canonical_phase_for_analysis_only_retry(
     assert store.detail(meeting["id"])["segments"][0]["id"] == (
         "canonical-before-analysis-crash"
     )
+
+
+@pytest.mark.parametrize("phase", ["stopping", "finalizing"])
+def test_finalization_recovery_never_reopens_capture(store: MeetingStore, phase: str):
+    meeting = store.create(create_request())
+    store.transition(meeting["id"], "recording")
+    store.transition(meeting["id"], "stopping")
+    if phase == "finalizing":
+        store.transition(meeting["id"], "finalizing")
+
+    assert store.recover_interrupted() == 1
+    recovered = store.get(meeting["id"])
+    assert recovered["state"] == "finalization_failed"
+    assert recovered["errorCode"] == "process_interrupted_during_finalization"
+    assert "saved audio is intact" in recovered["errorMessage"]
 
 
 def test_delivery_persistence_keeps_only_sanitized_request_metadata(store: MeetingStore):

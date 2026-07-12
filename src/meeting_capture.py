@@ -170,6 +170,7 @@ class MeetingAudioRecorder:
         self._thread_sources: dict[threading.Thread, str] = {}
         self._lifecycle_lock = threading.RLock()
         self._stop = threading.Event()
+        self._expected_disconnect = threading.Event()
         self._stats: dict[str, MeetingCaptureStats] = {}
         self._lock = threading.Lock()
 
@@ -196,6 +197,7 @@ class MeetingAudioRecorder:
             self._thread_sources.clear()
             self.root.mkdir(parents=True, exist_ok=True)
             self._stop.clear()
+            self._expected_disconnect.clear()
             settled_events: dict[str, threading.Event] = {}
             opened_events: dict[str, threading.Event] = {}
             for source, pipe, timeline_offset_ms in resolved_sources:
@@ -239,6 +241,8 @@ class MeetingAudioRecorder:
         self, timeout: float = 5.0, *, expected_disconnect: bool = False
     ) -> dict[str, Any]:
         with self._lifecycle_lock:
+            if expected_disconnect:
+                self._expected_disconnect.set()
             self._stop.set()
             threads = list(self._threads)
             deadline = time.monotonic() + max(0.0, float(timeout))
@@ -265,7 +269,26 @@ class MeetingAudioRecorder:
                     for stats in self._stats.values():
                         if stats.error_code in {"OSError", "BrokenPipeError"}:
                             stats.error_code = ""
-            return self.snapshot()
+            snapshot = self.snapshot()
+            self._expected_disconnect.clear()
+            return snapshot
+
+    def prepare_for_expected_disconnect(self) -> None:
+        """Arm readers before an intentional native pause/stop closes their pipes.
+
+        Windows named-pipe readers commonly receive ``OSError`` rather than an
+        explicit end-of-stream frame when the Rust capture process exits.  The
+        backend must arm this boundary *before* issuing the native command so
+        the in-progress WAV is published instead of being left as an orphaned
+        ``.partial.wav`` that would collide with the next resume sequence.
+        """
+
+        self._expected_disconnect.set()
+
+    def cancel_expected_disconnect(self) -> None:
+        """Disarm a native transition that did not stop the capture source."""
+
+        self._expected_disconnect.clear()
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -375,6 +398,23 @@ class MeetingAudioRecorder:
                         break
         except EOFError:
             pass
+        except (OSError, BrokenPipeError) as exc:
+            if self._expected_disconnect.is_set():
+                logger.debug(
+                    "Meeting {} frame reader observed expected native disconnect: {}",
+                    source,
+                    type(exc).__name__,
+                )
+            else:
+                failed = True
+                self._record_error(source, exc)
+                logger.warning(
+                    "Meeting {} frame reader stopped: {} errno={} winerror={}",
+                    source,
+                    type(exc).__name__,
+                    getattr(exc, "errno", None),
+                    getattr(exc, "winerror", None),
+                )
         except Exception as exc:
             failed = True
             self._record_error(source, exc)

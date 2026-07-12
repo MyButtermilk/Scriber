@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   CalendarClock,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -14,6 +15,7 @@ import {
   Download,
   FileUp,
   FileText,
+  FolderOpen,
   Headphones,
   Loader2,
   Mail,
@@ -39,6 +41,13 @@ import { apiUrl } from "@/lib/backend";
 import { apiRequest } from "@/lib/queryClient";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import {
+  meetingExportFolderName,
+  openMeetingExport,
+  revealMeetingExport,
+  saveMeetingExport,
+  type MeetingExportResult,
+} from "@/lib/meeting-export";
+import {
   calculateMeetingElapsedMs,
   captureMeetingPlaybackRequest,
   formatMeetingOffset,
@@ -63,6 +72,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { PageIntro } from "@/components/page-intro";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
@@ -97,7 +107,6 @@ import type {
   MeetingSummary,
   MeetingsResponse,
   OutlookCalendarStatus,
-  SpeakerProfileSummary,
   SpeakerModelStatus,
 } from "@/lib/api-types";
 
@@ -113,7 +122,21 @@ const MEETING_WORKSPACE_VIEWS: ReadonlyArray<readonly [MeetingWorkspaceView, str
 ];
 
 function stateLabel(state: MeetingState): string {
-  return state.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
+  const labels: Record<MeetingState, string> = {
+    starting: "Starting",
+    recording: "Recording",
+    paused: "Paused",
+    stopping: "Saving",
+    finalizing: "Creating transcript",
+    analyzing: "Creating meeting brief",
+    ready: "Ready",
+    capture_failed: "Recording stopped",
+    finalization_failed: "Transcript needs attention",
+    analysis_failed: "Meeting brief needs attention",
+    interrupted: "Recording interrupted",
+    discarded: "Discarded",
+  };
+  return labels[state];
 }
 
 function stateTone(state: MeetingState): string {
@@ -194,7 +217,7 @@ function MeetingImportInbox({
       <div className="flex items-center justify-between gap-2 px-2 py-1">
         <div className="min-w-0">
           <p id="meeting-import-inbox-title" className="text-xs font-semibold">Imports</p>
-          <p className="text-[11px] text-muted-foreground">Durable work across restarts</p>
+          <p className="text-[11px] text-muted-foreground">Continues after you restart Scriber</p>
         </div>
         {!loading && !error && items.length > 0 && (
           <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
@@ -286,6 +309,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
   segments,
   search,
   hasPlayableAudio,
+  isLive,
   onPlay,
   canEdit,
   savingSegmentId,
@@ -295,6 +319,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
   segments: DisplayMeetingSegment[];
   search: string;
   hasPlayableAudio: boolean;
+  isLive: boolean;
   onPlay: (source: "microphone" | "system" | "mixed", startMs: number) => void;
   canEdit: boolean;
   savingSegmentId: string;
@@ -302,6 +327,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
   onUndo: (segment: DisplayMeetingSegment) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [followLatest, setFollowLatest] = useState(true);
   const [editingId, setEditingId] = useState("");
   const [draft, setDraft] = useState("");
   const beginEdit = (segment: DisplayMeetingSegment) => {
@@ -319,9 +345,41 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
     overscan: 8,
     getItemKey: (index) => segments[index]?.id ?? index,
   });
+  const scrollToLatest = useCallback(() => {
+    if (segments.length === 0) return;
+    virtualizer.scrollToIndex(segments.length - 1, { align: "end" });
+    const viewport = scrollRef.current;
+    if (viewport) viewport.scrollTop = viewport.scrollHeight;
+  }, [segments.length, virtualizer]);
+  useEffect(() => {
+    if (!isLive) setFollowLatest(true);
+  }, [isLive]);
+  useEffect(() => {
+    if (!isLive || !followLatest || search.trim() || editingId || segments.length === 0) return;
+    let settledFrame = 0;
+    const layoutFrame = window.requestAnimationFrame(() => {
+      scrollToLatest();
+      settledFrame = window.requestAnimationFrame(scrollToLatest);
+    });
+    return () => {
+      window.cancelAnimationFrame(layoutFrame);
+      if (settledFrame) window.cancelAnimationFrame(settledFrame);
+    };
+  }, [editingId, followLatest, isLive, scrollToLatest, search, segments]);
   return (
-    <div ref={scrollRef} className="max-h-[520px] overflow-y-auto pr-2" aria-label="Meeting transcript segments">
-      <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
+    <div className="relative">
+      <div
+        ref={scrollRef}
+        className="max-h-[520px] overflow-y-auto pr-2"
+        aria-label="Meeting transcript segments"
+        onScroll={(event) => {
+          if (!isLive || search.trim()) return;
+          const element = event.currentTarget;
+          const atLatest = element.scrollHeight - element.clientHeight - element.scrollTop <= 40;
+          setFollowLatest((current) => current === atLatest ? current : atLatest);
+        }}
+      >
+        <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
         {virtualizer.getVirtualItems().map((virtualRow) => {
           const segment = segments[virtualRow.index];
           if (!segment) return null;
@@ -360,7 +418,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
                     <span className="text-right text-muted-foreground">{(segment.durationMs / 1000).toFixed(1)} s</span>
                   </span>
                   {segment.alignmentQuality === "estimated" && (
-                    <span className="mt-1 block font-sans text-[9px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300" title="This interval was estimated because the transcription provider returned no exact word timing.">
+                    <span className="mt-1 block font-sans text-[9px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300" title="Exact word timing was not available, so this time was estimated.">
                       Estimated timing
                     </span>
                   )}
@@ -419,14 +477,28 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
             </div>
           );
         })}
+        </div>
       </div>
+      {isLive && !search.trim() && !followLatest && (
+        <Button
+          type="button"
+          size="sm"
+          className="absolute bottom-3 right-4 h-8 rounded-full px-3 text-[11px] shadow-lg active:scale-[0.97]"
+          onClick={() => {
+            setFollowLatest(true);
+            scrollToLatest();
+          }}
+        >
+          <ChevronDown className="mr-1.5 h-3.5 w-3.5" />Latest text
+        </Button>
+      )}
     </div>
   );
 });
 
 function EvidenceList({ items, onCitation }: { items: unknown; onCitation?: (id: string) => void }) {
   if (!Array.isArray(items) || items.length === 0) {
-    return <p className="py-12 text-center text-sm text-muted-foreground">Nothing was identified with sufficient transcript evidence.</p>;
+    return <p className="py-12 text-center text-sm text-muted-foreground">Nothing clear enough was found in the transcript.</p>;
   }
   return <div className="divide-y divide-border/60">{items.map((raw, index) => {
     const item = raw && typeof raw === "object" ? raw as Record<string, unknown> : { text: String(raw) };
@@ -451,7 +523,7 @@ function ActionItems({
   onCitation?: (id: string) => void;
 }) {
   if (items.length === 0) {
-    return <p className="py-12 text-center text-sm text-muted-foreground">No evidence-backed action items were identified.</p>;
+    return <p className="py-12 text-center text-sm text-muted-foreground">No clear action items were found in the transcript.</p>;
   }
   return <div className="divide-y divide-border/60" aria-busy={saving}>{items.map((item) => (
     <div key={`${item.id}:${item.updatedAt}`} className="grid gap-3 py-4 sm:grid-cols-[32px_minmax(0,1fr)]">
@@ -483,28 +555,6 @@ async function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetchWithTimeout(apiUrl(path), { credentials: "include", signal }, 15_000);
   if (!response.ok) throw new Error(`Request failed (${response.status})`);
   return response.json() as Promise<T>;
-}
-
-async function downloadApiFile(path: string, fallbackName: string): Promise<string> {
-  const response = await fetchWithTimeout(apiUrl(path), { credentials: "include" }, 60_000);
-  if (!response.ok) throw new Error(`Download failed (${response.status})`);
-  const disposition = response.headers.get("Content-Disposition") || "";
-  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
-  const plain = disposition.match(/filename="([^"]+)"/i)?.[1];
-  const filename = encoded ? decodeURIComponent(encoded) : plain || fallbackName;
-  const objectUrl = URL.createObjectURL(await response.blob());
-  try {
-    const anchor = document.createElement("a");
-    anchor.href = objectUrl;
-    anchor.download = filename;
-    anchor.style.display = "none";
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-  } finally {
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
-  }
-  return filename;
 }
 
 const MeetingElapsedTime = memo(function MeetingElapsedTime({
@@ -549,12 +599,12 @@ const MeetingElapsedTime = memo(function MeetingElapsedTime({
     <div className="order-first text-left sm:order-none sm:text-center" aria-label={`Meeting elapsed time ${formatOffset(elapsedMs)}`}>
       <p className="font-mono text-2xl font-semibold tabular-nums tracking-tight">{formatOffset(elapsedMs)}</p>
       <p className="mt-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">
-        {paused ? "Capture paused" : "Live capture"}
+        {paused ? "Recording paused" : "Recording"}
       </p>
       {showProviderLimit && <p className="mt-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300" role="status">
         {providerRemainingMs > 0
-          ? `Final STT limit in ${formatOffset(providerRemainingMs)}`
-          : "Final STT duration limit reached"}
+          ? `Final transcript time remaining: ${formatOffset(providerRemainingMs)}`
+          : "This transcription option has reached its time limit"}
       </p>}
     </div>
   );
@@ -577,12 +627,12 @@ const MeetingCheckpointStatus = memo(function MeetingCheckpointStatus({
     return () => window.clearInterval(handle);
   }, [checkpoint, paused]);
   if (!checkpoint) {
-    return <span>First protected checkpoint at 0:30</span>;
+    return <span>First safety save at 0:30</span>;
   }
   const freshness = meetingCheckpointFreshness(checkpoint.updatedAt, now, paused);
   return (
     <span className={freshness.stale ? "text-amber-700 dark:text-amber-300" : undefined}>
-      Saved through {formatOffset(checkpoint.cutoffMs)} · {freshness.ageLabel} · {checkpoint.sources.length}/{expectedTrackCount} tracks
+      Protected through {formatOffset(checkpoint.cutoffMs)} · {freshness.ageLabel} · {checkpoint.sources.length}/{expectedTrackCount} audio sources
     </span>
   );
 });
@@ -703,8 +753,6 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [title, setTitle] = useState("");
-  const [voiceLibraryEnabled, setVoiceLibraryEnabled] = useState(false);
-  const [audioRetentionDays, setAudioRetentionDays] = useState(0);
   const [note, setNote] = useState("");
   const [noteHydratedFor, setNoteHydratedFor] = useState("");
   const lastSavedNote = useRef("");
@@ -725,19 +773,16 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const [meetingPendingDelete, setMeetingPendingDelete] = useState<MeetingSummary | null>(null);
   const [transcriptSearch, setTranscriptSearch] = useState("");
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
+  const [lastExport, setLastExport] = useState<Extract<MeetingExportResult, { status: "saved" }> | null>(null);
   const [meetingImportCandidate, setMeetingImportCandidate] = useState<{
     file: File;
     title: string;
     durationSeconds: number | null;
   } | null>(null);
-  const [meetingImportProfileId, setMeetingImportProfileId] = useState("");
   const [meetingImportId, setMeetingImportId] = useState("");
   const [meetingImportProgress, setMeetingImportProgress] = useState({ stage: "Ready", percentage: 0 });
   const [emailAttachment, setEmailAttachment] = useState<"" | "md" | "pdf" | "docx">("pdf");
-  const [mergeTargetProfileId, setMergeTargetProfileId] = useState("");
-  const [mergeSourceProfileId, setMergeSourceProfileId] = useState("");
   const [retryFinalProvider, setRetryFinalProvider] = useState("");
-  const [profileId, setProfileId] = useState("");
   const [microphoneEndpointHash, setMicrophoneEndpointHash] = useState("");
   const [renderEndpointHash, setRenderEndpointHash] = useState("");
   const [webhookUrl, setWebhookUrl] = useState("");
@@ -753,6 +798,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const [liveStatuses, setLiveStatuses] = useState<Record<"microphone" | "system", { status: "reconnecting" | "recovered" | "degraded"; reconnectCount: number } | null>>({ microphone: null, system: null });
   const meetingWsHasConnectedRef = useRef(false);
   const meetingWsWasConnectedRef = useRef(false);
+
+  useEffect(() => setLastExport(null), [selectedId]);
 
   const meetingsQuery = useInfiniteQuery<MeetingsResponse, Error>({
     queryKey: MEETING_HISTORY_QUERY_KEY,
@@ -808,11 +855,6 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     queryFn: ({ signal }) => fetchJson("/api/meetings/speaker-model", signal),
     staleTime: 30_000,
   });
-  const speakerProfilesQuery = useQuery<{ items: SpeakerProfileSummary[] }>({
-    queryKey: ["/api/meetings/speaker-profiles"],
-    queryFn: ({ signal }) => fetchJson("/api/meetings/speaker-profiles", signal),
-    staleTime: 15_000,
-  });
   const detailQuery = useQuery<MeetingDetail>({
     queryKey: ["/api/meetings", selectedId],
     queryFn: ({ signal }) => fetchJson(`/api/meetings/${selectedId}`, signal),
@@ -836,17 +878,6 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     enabled: Boolean(selectedId && emailDialogOpen),
     staleTime: 10_000,
   });
-
-  useEffect(() => {
-    if (!profileId && profilesQuery.data?.defaultProfileId) {
-      setProfileId(profilesQuery.data.defaultProfileId);
-    }
-  }, [profileId, profilesQuery.data?.defaultProfileId]);
-
-  useEffect(() => {
-    const profile = profilesQuery.data?.profiles.find((item) => item.id === profileId);
-    if (profile) setAudioRetentionDays(profile.audioRetentionDays);
-  }, [profileId, profilesQuery.data?.profiles]);
 
   useEffect(() => {
     setEmailDialogOpen(false);
@@ -956,7 +987,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
           setMeetingImportCandidate(null);
           invalidateMeetings(message.meetingId);
           setLocation(`/meetings/${message.meetingId}`);
-          toast({ title: "Meeting workspace created", description: "Final transcription and speaker processing are running." });
+          toast({ title: "Meeting created", description: "Scriber is preparing the transcript and speaker names." });
         } else if (message.phase === "failed" || message.phase === "canceled") {
           meetingImportIdRef.current = "";
           setMeetingImportId("");
@@ -992,7 +1023,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       setMeetingImportCandidate(null);
       invalidateMeetings(job.meetingId);
       setLocation(`/meetings/${job.meetingId}`);
-      toast({ title: "Meeting workspace created", description: "The durable import was reconciled from server state." });
+      toast({ title: "Meeting created", description: "Scriber is preparing the transcript and speaker names." });
     } else if (["failed", "canceled"].includes(job.state)) {
       meetingImportIdRef.current = "";
       meetingImportExplicitCancelRef.current = false;
@@ -1003,16 +1034,18 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
 
   const startMutation = useMutation({
     mutationFn: async () => {
-      const profile = profilesQuery.data?.profiles.find((item) => item.id === profileId);
+      const profile = profilesQuery.data?.profiles.find((item) => item.id === profilesQuery.data?.defaultProfileId)
+        ?? profilesQuery.data?.profiles[0];
       const response = await apiRequest("POST", "/api/meetings", {
         title,
         language: profile?.language ?? "auto",
+        transcriptionMode: profile?.transcriptionMode ?? "live_final",
         liveProvider: profile?.liveProvider ?? "soniox",
         finalProvider: profile?.finalProvider ?? "soniox_async",
         analysisModel: profile?.analysisModel ?? "",
         aecEnabled: profile?.aecEnabled ?? true,
-        voiceLibraryEnabled,
-        audioRetentionDays,
+        voiceLibraryEnabled: Boolean(speakerModelQuery.data?.optedIn && speakerModelQuery.data?.installed),
+        audioRetentionDays: profile?.audioRetentionDays ?? 0,
         smartTurnEnabled: profile?.smartTurnEnabled ?? true,
         autoAnalyze: profile?.autoAnalyze ?? true,
         microphoneNativeEndpointIdHash: microphoneEndpointHash,
@@ -1022,7 +1055,6 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     },
     onSuccess: (meeting) => {
       setTitle("");
-      setVoiceLibraryEnabled(false);
       invalidateMeetings(meeting.id);
       setLocation(`/meetings/${meeting.id}`);
     },
@@ -1030,7 +1062,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   });
   const deviceTestMutation = useMutation({
     mutationFn: async () => {
-      const profile = profilesQuery.data?.profiles.find((item) => item.id === profileId);
+      const profile = profilesQuery.data?.profiles.find((item) => item.id === profilesQuery.data?.defaultProfileId)
+        ?? profilesQuery.data?.profiles[0];
       const response = await apiRequest("POST", "/api/meetings/device-test", {
         microphoneNativeEndpointIdHash: microphoneEndpointHash,
         renderNativeEndpointIdHash: renderEndpointHash,
@@ -1091,31 +1124,6 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       }
     },
   });
-  const outlookMutation = useMutation({
-    mutationFn: async (action: "connect" | "sync" | "disconnect") => {
-      const response = action === "disconnect"
-        ? await apiRequest("DELETE", "/api/calendar/outlook")
-        : await apiRequest("POST", `/api/calendar/outlook/${action}`, action === "connect" ? { openBrowser: true } : undefined);
-      return response.json();
-    },
-    onSuccess: (_payload, action) => {
-      void queryClient.invalidateQueries({ queryKey: ["/api/calendar/outlook/status"] });
-      toast({ title: action === "connect" ? "Continue in your browser" : action === "sync" ? "Calendar synchronized" : "Outlook disconnected" });
-    },
-    onError: (error) => toast({ variant: "destructive", title: "Outlook action failed", description: error.message }),
-  });
-  const speakerModelMutation = useMutation({
-    mutationFn: async () => {
-      const response = await apiRequest("POST", "/api/meetings/speaker-model");
-      return response.json() as Promise<SpeakerModelStatus>;
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-model"] });
-      toast({ title: "Speaker model installed", description: "The checksum-verified model is ready for local Voice Library processing." });
-    },
-    onError: (error) => toast({ variant: "destructive", title: "Model installation failed", description: error.message }),
-  });
-
   const meetingImportMutation = useMutation({
     mutationFn: async ({ file, title, profile }: { file: File; title: string; profile: MeetingProviderProfile }) => {
       meetingImportExplicitCancelRef.current = false;
@@ -1174,7 +1182,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       invalidateMeetingImports();
       toast({
         title: "Recording safely uploaded",
-        description: "Scriber is preparing the durable Meeting workspace.",
+        description: "Scriber is preparing the transcript, speaker names, playback, and summary.",
       });
     },
     onError: (error) => {
@@ -1195,7 +1203,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         variant: "destructive",
         title: "Meeting import needs attention",
         description: importId
-          ? "The upload response was interrupted. Its durable server state remains in Imports and will be reconciled there."
+          ? "The upload may still have finished. Check Imports in a moment; Scriber will continue from the saved copy when possible."
           : error.message,
       });
     },
@@ -1257,11 +1265,35 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
 
   const exportMutation = useMutation({
     mutationFn: async ({ path, fallbackName }: { path: string; fallbackName: string }) => (
-      downloadApiFile(path, fallbackName)
+      saveMeetingExport(path, fallbackName)
     ),
-    onSuccess: (filename) => toast({ title: "Export ready", description: filename }),
+    onSuccess: (result) => {
+      if (result.status === "cancelled") return;
+      setLastExport(result);
+      setEmailDialogOpen(false);
+      if (!result.desktop) {
+        toast({
+          title: "Download started",
+          description: `${result.filename} will appear in your browser's Downloads folder.`,
+        });
+      }
+    },
     onError: (error) => toast({ variant: "destructive", title: "Export failed", description: error.message }),
   });
+
+  const runSavedExportAction = useCallback(async (action: "open" | "reveal") => {
+    if (!lastExport?.desktop) return;
+    try {
+      if (action === "open") await openMeetingExport(lastExport.token);
+      else await revealMeetingExport(lastExport.token);
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: action === "open" ? "File could not be opened" : "Folder could not be opened",
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [lastExport, toast]);
 
   const composeEmailBody = useCallback(async () => {
     const preview = emailPreviewQuery.data;
@@ -1391,7 +1423,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       invalidateMeetingImports();
       if (variables.action === "discard") setLocation("/meetings");
     },
-    onError: (error) => toast({ variant: "destructive", title: "Recovery action failed", description: error.message }),
+    onError: (error) => toast({ variant: "destructive", title: "Meeting could not be recovered", description: error.message }),
   });
   const speakerMutation = useMutation({
     mutationFn: async ({ id, speakerId, displayName }: { id: string; speakerId: string; displayName: string }) => {
@@ -1409,25 +1441,9 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     onSuccess: (_payload, variables) => {
       invalidateMeetings(variables.id);
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
-      toast({ title: "Speaker profile separated" });
+      toast({ title: "Speaker will be recognized separately" });
     },
-    onError: (error) => toast({ variant: "destructive", title: "Profile could not be separated", description: error.message }),
-  });
-  const mergeProfilesMutation = useMutation({
-    mutationFn: async () => {
-      const response = await apiRequest("POST", "/api/meetings/speaker-profiles/merge", {
-        targetProfileId: mergeTargetProfileId,
-        sourceProfileId: mergeSourceProfileId,
-      });
-      return response.json();
-    },
-    onSuccess: () => {
-      setMergeSourceProfileId("");
-      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
-      invalidateMeetings(selectedId);
-      toast({ title: "Speaker profiles merged" });
-    },
-    onError: (error) => toast({ variant: "destructive", title: "Profiles could not be merged", description: error.message }),
+    onError: (error) => toast({ variant: "destructive", title: "Speaker could not be separated", description: error.message }),
   });
   const chatMutation = useMutation({
     mutationFn: async ({ id, question }: { id: string; question: string }) => {
@@ -1456,7 +1472,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   }, [meetingsQuery.data?.pages]);
   const meetingsTotal = meetingsQuery.data?.pages[0]?.total ?? meetings.length;
   const activeMeeting = meetingsQuery.data?.pages.find((page) => page.activeMeeting)?.activeMeeting ?? null;
-  const selectedProfile = profilesQuery.data?.profiles.find((item) => item.id === profileId);
+  const selectedProfile = profilesQuery.data?.profiles.find((item) => item.id === profilesQuery.data?.defaultProfileId)
+    ?? profilesQuery.data?.profiles[0];
   const longSession = capabilitiesQuery.data?.longSession;
   const finalProviderCapability = selectedProfile
     ? profilesQuery.data?.providerCapabilities[selectedProfile.finalProvider]
@@ -1467,12 +1484,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       && finalProviderCapability?.fiveHourSupported,
   );
   const finalProviderDurationLabel = finalProviderCapability?.maxDurationSeconds != null
-    ? `Max ${formatImportDuration(finalProviderCapability.maxDurationSeconds)}`
+    ? `Up to ${formatImportDuration(finalProviderCapability.maxDurationSeconds)}`
     : finalProviderCapability?.fiveHourSupported
-      ? "5 h compatible"
-      : "Not 5 h compatible";
-  const meetingImportProfile = profilesQuery.data?.profiles.find((item) => item.id === meetingImportProfileId)
-    ?? profilesQuery.data?.profiles.find((item) => item.id === profilesQuery.data?.defaultProfileId);
+      ? "Ready for 5 hours"
+      : "Not for 5-hour meetings";
+  const meetingImportProfile = selectedProfile;
   const meetingImportFinalProviderCapability = meetingImportProfile
     ? profilesQuery.data?.providerCapabilities[meetingImportProfile.finalProvider]
     : undefined;
@@ -1662,18 +1678,24 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     const segment = liveSegments.find((item) => item.id === segmentId);
     if (segment) playSegment(segment.source, segment.startMs);
   }, [liveSegments, playSegment]);
+  const openMeetingSettings = useCallback(() => {
+    try {
+      window.sessionStorage.setItem("scriber:open-settings-section", "meetings");
+    } catch {
+      // Settings still opens when session storage is unavailable.
+    }
+    setLocation("/settings");
+  }, [setLocation]);
 
   return (
-    <div className="mx-auto flex min-h-[calc(100dvh-3.5rem)] w-full max-w-[1680px] flex-col gap-3 px-3 pb-4 pt-3 sm:px-4 lg:px-5">
-      <div className="flex min-h-12 flex-wrap items-center justify-between gap-3 px-1">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h1 className="text-lg font-semibold tracking-[-0.015em] sm:text-xl"><span className="sr-only">Meeting workspace · </span>Meetings</h1>
-            {activeMeeting && <Badge variant="outline" className={stateTone(activeMeeting.state)}>{stateLabel(activeMeeting.state)}</Badge>}
-          </div>
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">Capture, understand, and follow through from one durable workspace.</p>
-        </div>
-        {!selectedId && <div className="flex flex-wrap items-center justify-end gap-2">
+    <div className="transcription-page meetings-page mx-auto flex min-h-[calc(100dvh-3.5rem)] w-full max-w-[1440px] flex-col px-4 py-5 md:px-6 md:py-6">
+      <PageIntro
+        eyebrow="Meeting workspace · 02"
+        title="Meetings"
+        description="Record, review, summarize, and follow up in one place."
+        sticky={false}
+        titleAccessory={activeMeeting ? <Badge variant="outline" className={stateTone(activeMeeting.state)}>{stateLabel(activeMeeting.state)}</Badge> : null}
+        actions={!selectedId ? <>
           <input
             ref={meetingImportRef}
             type="file"
@@ -1686,7 +1708,6 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               if (!file) return;
               const title = file.name.replace(/\.[^.]+$/, "");
               setMeetingImportCandidate({ file, title, durationSeconds: null });
-              setMeetingImportProfileId(profileId || profilesQuery.data?.defaultProfileId || "");
               setMeetingImportProgress({ stage: "Ready", percentage: 0 });
               const objectUrl = URL.createObjectURL(file);
               const probe = document.createElement("audio");
@@ -1717,11 +1738,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
           <Button type="button" size="sm" onClick={() => document.getElementById("meeting-title")?.focus()} className="active:scale-[0.97]">
             <CirclePlay className="mr-2 h-3.5 w-3.5" />New meeting
           </Button>
-        </div>}
-      </div>
+        </> : null}
+      />
 
       {!capabilitiesQuery.isLoading && !capabilitiesQuery.data?.nativeMeetingCapture && (
-        <div className="flex items-start gap-3 rounded-2xl border border-amber-300/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100" role="status">
+        <div className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-300/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100" role="status">
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
           <div>
             <p className="font-semibold">Native meeting capture is not connected</p>
@@ -1730,8 +1751,9 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         </div>
       )}
 
-      <div className="grid min-h-[680px] flex-1 gap-3 min-[1100px]:grid-cols-[248px_minmax(0,1fr)]">
-        <aside className={`${selectedId ? "hidden min-[1100px]:block" : ""} rounded-[18px] border border-border/65 bg-card/55 p-2 shadow-sm`}>
+      <h2 className="sr-only">Meeting workspace</h2>
+      <div className="grid min-h-[680px] flex-1 gap-4 min-[1100px]:grid-cols-[232px_minmax(0,1fr)]">
+        <aside className={`${selectedId ? "hidden min-[1100px]:block" : ""} meetings-history-rail rounded-[22px] p-2`}>
           <div className="flex items-center justify-between px-2 py-2">
             <div>
               <p className="text-sm font-semibold">Meetings</p>
@@ -1808,20 +1830,25 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
           </div>
         </aside>
 
-        <main className="min-w-0 overflow-hidden rounded-[20px] border border-border/65 bg-card/45 shadow-sm">
+        <main className="meetings-workspace-panel min-w-0 overflow-hidden rounded-[26px]">
           {!selectedId ? (
             <div className="h-full overflow-y-auto">
-              <header className="border-b border-border/60 px-5 py-4 sm:px-7">
+              <header className="border-b border-border/60 px-5 py-5 md:px-6 md:py-6 lg:px-7">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">New meeting</p>
-                <h2 className="mt-1 text-2xl font-semibold tracking-[-0.025em]">Ready the room</h2>
-                <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">Confirm the title and audio routes. Scriber keeps both sources locally durable while live transcription runs.</p>
+                <h2 className="mt-1 font-heading text-[26px] font-semibold leading-tight tracking-[-0.03em] md:text-[28px]">Ready to start</h2>
+                <p className="mt-2 max-w-[65ch] text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">
+                  Check the title and choose which microphone and speakers to record. Scriber saves both on this device
+                  {selectedProfile?.transcriptionMode === "final_only"
+                    ? " and creates the transcript after you stop."
+                    : " while it shows live text."}
+                </p>
               </header>
-              <div className="border-b border-border/60 bg-muted/20 px-5 py-3 sm:px-7">
+              <div className="border-b border-border/60 bg-muted/20 px-5 py-3.5 md:px-6 lg:px-7">
                 <div className="grid gap-3 sm:grid-cols-3 sm:gap-4">
                   {[
-                    { icon: Mic2, label: "Microphone", detail: "Raw and clean voice" },
-                    { icon: Headphones, label: "System audio", detail: "Remote participants" },
-                    { icon: Waves, label: "Echo control", detail: "Render-aware AEC3" },
+                    { icon: Mic2, label: "Microphone", detail: "Your voice" },
+                    { icon: Headphones, label: "System audio", detail: "Other participants" },
+                    { icon: Waves, label: "Echo control", detail: "Reduces speaker echo" },
                   ].map(({ icon: Icon, label, detail }) => (
                     <div key={label} className="flex min-w-0 items-center gap-2.5">
                       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10"><Icon className="h-4 w-4 text-primary" /></span>
@@ -1830,7 +1857,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   ))}
                 </div>
               </div>
-              <div className="grid gap-5 p-5 sm:p-7 min-[1100px]:grid-cols-[minmax(0,1fr)_260px]">
+              <div className="grid gap-5 p-5 md:p-6 lg:p-7 min-[1380px]:grid-cols-[minmax(0,1fr)_260px]">
                 <section className="flex min-w-0 flex-col gap-4">
                 {detectionQuery.data?.detection && <div className="rounded-2xl border border-primary/35 bg-primary/5 p-4">
                   <div className="flex items-start gap-3">
@@ -1849,22 +1876,18 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   <div className="flex items-start gap-3">
                     <CalendarClock className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium">Outlook calendar context</p>
+                      <p className="text-sm font-medium">Outlook calendar</p>
                       {outlookQuery.data.connected ? (
                         <>
                           {outlookQuery.data.nextEvent ? <button type="button" className="mt-2 block w-full rounded-xl bg-muted/55 p-3 text-left" onClick={() => setTitle(outlookQuery.data?.nextEvent?.subject ?? "")}>
                             <span className="block truncate text-sm font-medium">{outlookQuery.data.nextEvent.subject || "Untitled Outlook meeting"}</span>
                             <span className="mt-1 block text-xs text-muted-foreground">{formatMoment(outlookQuery.data.nextEvent.start_at)} · Use as meeting title</span>
-                          </button> : <p className="mt-1 text-xs text-muted-foreground">Connected · no upcoming event in the synchronized window.</p>}
-                          <div className="mt-3 flex gap-2">
-                            <Button type="button" size="sm" variant="outline" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("sync")}>Sync</Button>
-                            <Button type="button" size="sm" variant="ghost" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("disconnect")}>Disconnect</Button>
-                          </div>
+                          </button> : <p className="mt-1 text-xs text-muted-foreground">Connected · no upcoming meeting found.</p>}
                         </>
                       ) : (
-                        <div className="mt-2 flex items-center justify-between gap-3">
-                          <p className="text-xs leading-5 text-muted-foreground">Optional; requests only User.Read, Calendars.Read and offline_access.</p>
-                          <Button type="button" size="sm" variant="outline" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("connect")}>Connect</Button>
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                          <p className="text-xs leading-5 text-muted-foreground">Connect Outlook in Settings to use meeting titles and participants automatically.</p>
+                          <Button type="button" size="sm" variant="outline" onClick={openMeetingSettings}>Open settings</Button>
                         </div>
                       )}
                     </div>
@@ -1872,21 +1895,39 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 </div>}
                 <div className="grid min-w-0 gap-4 overflow-hidden rounded-2xl border border-border/70 bg-background/55 p-4">
                   <div className="min-w-0">
-                    <label htmlFor="meeting-profile" className="text-sm font-medium">Meeting profile</label>
-                    <select id="meeting-profile" value={profileId} onChange={(event) => setProfileId(event.target.value)} className="mt-2 h-10 w-full min-w-0 rounded-lg border border-input bg-background px-3 text-sm">
-                      {profilesQuery.data?.profiles.map((profile) => <option key={profile.id} value={profile.id} disabled={!profile.available}>{profile.name}{profile.available ? "" : " (unavailable)"}</option>)}
-                    </select>
-                    <p className="mt-2 text-xs leading-5 text-muted-foreground">{selectedProfile?.description || "Loading provider capabilities..."}</p>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium">Transcription</p>
+                        <p className="mt-1 text-sm font-semibold text-foreground">
+                          {selectedProfile
+                            ? selectedProfile.transcriptionMode === "final_only"
+                              ? "Transcript after meeting"
+                              : "Live text + accurate transcript"
+                            : "Loading transcription settings…"}
+                        </p>
+                        {selectedProfile && <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                          {selectedProfile.transcriptionMode === "final_only"
+                            ? `No cloud live text · ${selectedProfile.stages.find((stage) => stage.id === "final")?.provider ?? selectedProfile.finalProvider} after you stop`
+                            : selectedProfile.livePreviewAvailable === false
+                              ? `Live text needs a Soniox API key · ${selectedProfile.stages.find((stage) => stage.id === "final")?.provider ?? selectedProfile.finalProvider} still runs after you stop`
+                              : `Soniox live text · ${selectedProfile.stages.find((stage) => stage.id === "final")?.provider ?? selectedProfile.finalProvider} final pass`}
+                          {selectedProfile.costEstimate.totalPerMeetingHour != null
+                            ? ` · about $${selectedProfile.costEstimate.totalPerMeetingHour.toFixed(2)} per meeting hour`
+                            : " · provider price varies"}
+                        </p>}
+                      </div>
+                      <Button type="button" size="sm" variant="outline" className="shrink-0" onClick={openMeetingSettings}>Change in Settings</Button>
+                    </div>
                     {selectedProfile && <details className="group mt-3 rounded-xl border border-border/60 bg-muted/15">
                       <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs font-medium marker:content-none">
-                        <span>How this profile works</span>
+                        <span>What happens</span>
                         <ChevronDown className="h-3.5 w-3.5 text-muted-foreground group-open:rotate-180 motion-reduce:transform-none" />
                       </summary>
                       <div className="divide-y divide-border/60 border-t border-border/60 px-3">
                         {(selectedProfile.stages ?? []).map((stage) => <div key={stage.id} className="grid gap-1 py-2.5 sm:grid-cols-[130px_minmax(0,1fr)]">
                           <p className="text-[11px] font-medium text-muted-foreground">{stage.label}</p>
                           <div className="min-w-0">
-                            <p className="truncate text-xs font-semibold">{stage.provider} · <span className="font-mono font-normal">{stage.model}</span></p>
+                            <p className="truncate text-xs font-semibold">{stage.provider}{stage.model ? <> · <span className="font-mono font-normal">{stage.model}</span></> : null}</p>
                             <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">{stage.purpose}</p>
                           </div>
                         </div>)}
@@ -1896,18 +1937,18 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   </div>
                   <div className="min-w-0 border-t border-border/60 pt-4">
                     <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm font-medium">Audio routes</p>
+                      <p className="text-sm font-medium">Audio devices</p>
                       <Button type="button" size="sm" variant="ghost" disabled={audioDevicesQuery.isFetching} onClick={() => void audioDevicesQuery.refetch()}><RefreshCw className={`mr-2 h-3.5 w-3.5 ${audioDevicesQuery.isFetching ? "animate-spin" : ""}`} />Refresh</Button>
                     </div>
                     <div className="mt-2 grid gap-2 sm:grid-cols-2">
                       <div className="min-w-0"><label htmlFor="meeting-microphone" className="text-xs text-muted-foreground">Microphone</label><select id="meeting-microphone" value={microphoneEndpointHash} onChange={(event) => setMicrophoneEndpointHash(event.target.value)} className="mt-1 h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs"><option value="">Windows default microphone</option>{audioDevicesQuery.data?.capture.map((endpoint) => <option key={endpoint.endpointIdHash} value={endpoint.endpointIdHash}>{endpoint.friendlyName}{endpoint.isDefault ? " (default)" : ""}</option>)}</select></div>
-                      <div className="min-w-0"><label htmlFor="meeting-render" className="text-xs text-muted-foreground">System playback</label><select id="meeting-render" value={renderEndpointHash} onChange={(event) => setRenderEndpointHash(event.target.value)} className="mt-1 h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs"><option value="">Windows default playback device</option>{audioDevicesQuery.data?.render.map((endpoint) => <option key={endpoint.endpointIdHash} value={endpoint.endpointIdHash}>{endpoint.friendlyName}{endpoint.isDefault ? " (default)" : ""}</option>)}</select></div>
+                      <div className="min-w-0"><label htmlFor="meeting-render" className="text-xs text-muted-foreground">Speakers / meeting audio</label><select id="meeting-render" value={renderEndpointHash} onChange={(event) => setRenderEndpointHash(event.target.value)} className="mt-1 h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs"><option value="">Windows default speakers</option>{audioDevicesQuery.data?.render.map((endpoint) => <option key={endpoint.endpointIdHash} value={endpoint.endpointIdHash}>{endpoint.friendlyName}{endpoint.isDefault ? " (default)" : ""}</option>)}</select></div>
                     </div>
-                    <p className="mt-2 text-xs leading-5 text-muted-foreground">{audioDevicesQuery.data?.available ? `${audioDevicesQuery.data.capture.length} microphones and ${audioDevicesQuery.data.render.length} playback routes available.` : "Native audio inventory is unavailable."}</p>
+                    <p className="mt-2 text-xs leading-5 text-muted-foreground">{audioDevicesQuery.data?.available ? `${audioDevicesQuery.data.capture.length} microphones and ${audioDevicesQuery.data.render.length} speaker choices available.` : "Windows audio devices are unavailable."}</p>
                     <Button type="button" size="sm" variant="outline" className="mt-3 h-auto min-h-9 w-full whitespace-normal px-3 text-center leading-5" disabled={!audioDevicesQuery.data?.available || deviceTestMutation.isPending || capabilitiesQuery.data?.liveMicBusy || Boolean(capabilitiesQuery.data?.activeMeeting)} onClick={() => deviceTestMutation.mutate()}>
                       {deviceTestMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Waves className="mr-2 h-3.5 w-3.5" />}Test microphone and playback
                     </Button>
-                    <p className="mt-2 text-[11px] leading-4 text-muted-foreground">Speak normally during the 3-second test. Scriber also plays a short tone to verify speaker loopback. Nothing is saved or sent to a provider.</p>
+                    <p className="mt-2 text-[11px] leading-4 text-muted-foreground">Speak normally during the 3-second test. Scriber also plays a short sound through your speakers. Nothing is saved or uploaded.</p>
                     {deviceTestMutation.data && <div className="mt-3 space-y-2" role="status">
                       {(["microphone", "system"] as const).map((source) => {
                         const result = deviceTestMutation.data?.sources[source];
@@ -1919,10 +1960,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                         return <div key={source} className="rounded-lg border border-border/60 bg-muted/35 px-2.5 py-2">
                           <div className="flex items-center justify-between gap-3 text-[11px]"><span className="font-medium">{source === "microphone" ? "Microphone input" : "Speaker loopback"}</span><span className={hasFrames ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{hasFrames ? "Signal received" : result?.errorCode ? "Could not read" : "No signal"}</span></div>
                           <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${levelPercent}%` }} /></div>
-                          <p className="mt-1 text-[10px] text-muted-foreground">{result?.frames ?? 0} frames · {rms > 0 ? `${(20 * Math.log10(rms)).toFixed(1)} dBFS` : "silence"}</p>
+                          <p className="mt-1 text-[10px] text-muted-foreground">{hasFrames ? `Input level: ${Math.round(levelPercent)}%` : "No sound detected"}</p>
                         </div>;
                       })}
-                      <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><Volume2 className="h-3.5 w-3.5" />{deviceTestMutation.data.testTonePlayed ? "Test tone played" : "Test tone unavailable"} · AEC3 {deviceTestMutation.data.aecActive ? "initialized" : "not active"}</p>
+                      <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><Volume2 className="h-3.5 w-3.5" />{deviceTestMutation.data.testTonePlayed ? "Speaker sound played" : "Speaker sound unavailable"} · Echo reduction {deviceTestMutation.data.aecActive ? "ready" : "unavailable"}</p>
                     </div>}
                   </div>
                 </div>
@@ -1931,84 +1972,33 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   <Input id="meeting-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Weekly product sync" className="mt-2 h-12 text-base" />
                 </div>
                 </section>
-                <aside className="h-fit min-w-0 rounded-2xl border border-border/70 bg-background/45 p-4 min-[1100px]:sticky min-[1100px]:top-4">
+                <aside className="h-fit min-w-0 rounded-[22px] border border-border/70 bg-background/45 p-4 min-[1380px]:sticky min-[1380px]:top-4">
                   <div className="flex items-center gap-2">
                     <ShieldCheck className={`h-4 w-4 ${longSessionReady ? "text-emerald-600 dark:text-emerald-300" : "text-amber-600 dark:text-amber-300"}`} />
-                    <h3 className="text-sm font-semibold">{longSessionReady ? "Ready for up to 5 hours" : "Long-session readiness"}</h3>
+                    <h3 className="text-sm font-semibold">{longSessionReady ? "Ready for a long meeting" : "Check before a long meeting"}</h3>
                   </div>
                   <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
                     {longSessionReady
-                      ? "Local capture stays protected every 30 seconds. Final processing continues safely after you stop."
+                      ? "Your recording is saved every 30 seconds and can continue for up to 5 hours. The final transcript starts after you stop."
                       : !capabilitiesQuery.data?.nativeMeetingCapture
-                        ? "Native Windows capture must be available before a long meeting can start."
+                        ? "Meeting audio recording is not available on this PC right now."
                         : longSession?.availableFreeBytes == null
-                          ? "Free-space verification is unavailable here. Keep at least 6 GB free before a five-hour session."
+                          ? "Scriber could not check free space. Keep at least 6 GB free before a five-hour meeting."
                           : !longSession.storageReady
-                            ? "Free space is below the conservative reserve for a five-hour capture and finalization."
+                            ? "There is not enough free space for a five-hour meeting."
                             : !finalProviderCapability?.fiveHourSupported
-                              ? finalProviderCapability?.fiveHourReason || "The selected final transcription model is not verified for a five-hour source."
-                              : "Five-hour readiness could not be verified."}
+                              ? "The selected transcription option cannot process a five-hour meeting. Choose another in Settings."
+                              : "Scriber could not confirm that this setup is ready for five hours."}
                   </p>
                   <div className="mt-4 divide-y divide-border/60 rounded-xl border border-border/60 bg-muted/20 px-3">
-                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">Native capture</span><span className={capabilitiesQuery.data?.nativeMeetingCapture ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{capabilitiesQuery.data?.nativeMeetingCapture ? "Ready" : "Unavailable"}</span></div>
-                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">Recovery</span><span>Every {longSession?.checkpointIntervalSeconds ?? 30} s</span></div>
-                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">Free space</span><span className={longSession?.storageReady ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{longSession?.availableFreeBytes != null ? formatImportBytes(longSession.availableFreeBytes) : "Not verified"}</span></div>
-                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">Estimated capacity</span><span>{formatCapacity(longSession?.estimatedCaptureSeconds)}</span></div>
-                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">Final STT</span><span className={finalProviderCapability?.fiveHourSupported ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{finalProviderDurationLabel}</span></div>
-                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">Speaker labels</span><span className={finalProviderCapability?.batchDiarization ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{finalProviderCapability?.batchDiarization ? "Native provider" : "Best effort"}</span></div>
+                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">Audio recording</span><span className={capabilitiesQuery.data?.nativeMeetingCapture ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{capabilitiesQuery.data?.nativeMeetingCapture ? "Ready" : "Unavailable"}</span></div>
+                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">Safety saves</span><span>Every {longSession?.checkpointIntervalSeconds ?? 30} s</span></div>
+                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">Free storage</span><span className={longSession?.storageReady ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{longSession?.availableFreeBytes != null ? formatImportBytes(longSession.availableFreeBytes) : "Not checked"}</span></div>
+                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">Estimated recording time</span><span>{formatCapacity(longSession?.estimatedCaptureSeconds)}</span></div>
+                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">Final transcript</span><span className={finalProviderCapability?.fiveHourSupported ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{finalProviderDurationLabel}</span></div>
+                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">Speaker names</span><span className={finalProviderCapability?.batchDiarization ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{finalProviderCapability?.batchDiarization ? "Included" : "Up to 60 min"}</span></div>
                   </div>
-                  {!finalProviderCapability?.batchDiarization && <p className="mt-2 text-[11px] leading-4 text-muted-foreground">For speaker labels beyond 60 minutes, choose a final model with native diarization.</p>}
-                <details className="group mt-3 rounded-xl border border-border/60 bg-muted/15">
-                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs font-medium marker:content-none">
-                    <span>Advanced · Retention &amp; Voice Library</span>
-                    <ChevronDown className="h-3.5 w-3.5 text-muted-foreground group-open:rotate-180 motion-reduce:transform-none" />
-                  </summary>
-                  <div className="border-t border-border/60 p-3">
-                  <div className="flex flex-col gap-2 border-b border-border/60 pb-3">
-                    <label htmlFor="meeting-retention" className="text-xs font-medium">Local audio retention</label>
-                    <select id="meeting-retention" value={audioRetentionDays} onChange={(event) => setAudioRetentionDays(Number(event.target.value))} className="h-9 rounded-lg border border-input bg-background px-3 text-xs">
-                      <option value={0}>Until deleted</option>
-                      <option value={7}>7 days</option>
-                      <option value={30}>30 days</option>
-                      <option value={90}>90 days</option>
-                    </select>
-                    <p className="text-[11px] leading-4 text-muted-foreground">Transcript, notes and outputs remain after audio is purged.</p>
-                  </div>
-                  <div className="mt-3 flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-medium">Local Voice Library</p>
-                      <p className="mt-1 text-xs leading-5 text-muted-foreground">Optional biometric speaker matching using a local checksum-verified WeSpeaker ONNX model. Nothing is sent to exports, chat, providers, or support bundles.</p>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={voiceLibraryEnabled}
-                      disabled={!speakerModelQuery.data?.optedIn || !speakerModelQuery.data?.installed}
-                      onChange={(event) => setVoiceLibraryEnabled(event.target.checked)}
-                      className="mt-1 h-4 w-4 accent-primary"
-                      aria-label="Enable Voice Library for this meeting"
-                    />
-                  </div>
-                  {speakerModelQuery.data?.optedIn && !speakerModelQuery.data.installed && <Button type="button" size="sm" variant="outline" className="mt-3" disabled={speakerModelMutation.isPending} onClick={() => speakerModelMutation.mutate()}>
-                    {speakerModelMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Download className="mr-2 h-3.5 w-3.5" />}Install optional model
-                  </Button>}
-                  {!speakerModelQuery.data?.optedIn && <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">First confirm the biometric-processing opt-in in Settings.</p>}
-                  {(speakerProfilesQuery.data?.items.length ?? 0) >= 2 && <div className="mt-4 border-t border-border/60 pt-4">
-                    <p className="text-xs font-medium">Correct profile matches</p>
-                    <div className="mt-2 grid gap-2">
-                      <select aria-label="Profile to keep" value={mergeTargetProfileId} onChange={(event) => setMergeTargetProfileId(event.target.value)} className="h-9 rounded-lg border border-input bg-background px-2 text-xs">
-                        <option value="">Keep profile…</option>
-                        {speakerProfilesQuery.data?.items.map((profile) => <option key={profile.id} value={profile.id}>{profile.displayName} · {profile.sampleCount}</option>)}
-                      </select>
-                      <select aria-label="Profile to merge" value={mergeSourceProfileId} onChange={(event) => setMergeSourceProfileId(event.target.value)} className="h-9 rounded-lg border border-input bg-background px-2 text-xs">
-                        <option value="">Merge profile…</option>
-                        {speakerProfilesQuery.data?.items.filter((profile) => profile.id !== mergeTargetProfileId).map((profile) => <option key={profile.id} value={profile.id}>{profile.displayName} · {profile.sampleCount}</option>)}
-                      </select>
-                      <Button type="button" size="sm" variant="outline" disabled={!mergeTargetProfileId || !mergeSourceProfileId || mergeTargetProfileId === mergeSourceProfileId || mergeProfilesMutation.isPending} onClick={() => mergeProfilesMutation.mutate()}>Merge</Button>
-                    </div>
-                    <p className="mt-2 text-[11px] leading-4 text-muted-foreground">The kept profile is recomputed deterministically from its bounded local observations.</p>
-                  </div>}
-                  </div>
-                </details>
+                  {!finalProviderCapability?.batchDiarization && <p className="mt-2 text-[11px] leading-4 text-muted-foreground">For meetings over 60 minutes, choose a transcription option that includes speaker names.</p>}
                 <div className="mt-4 flex flex-col gap-2">
                   <Button
                     type="button"
@@ -2031,7 +2021,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
             <div className="flex h-full items-center justify-center text-center"><div><AlertTriangle className="mx-auto mb-3 h-8 w-8 text-destructive" /><p className="font-medium">Meeting could not be loaded.</p></div></div>
           ) : (
             <div className="flex h-full min-h-0 flex-col">
-              <header className="flex flex-col gap-4 border-b border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+              <header className="flex flex-col gap-4 border-b border-border/60 px-5 py-5 sm:flex-row sm:items-center sm:justify-between md:px-6 lg:px-7">
                 <div className="min-w-0">
                   <Button
                     type="button"
@@ -2043,7 +2033,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     <ChevronLeft className="mr-1 h-3.5 w-3.5" />All meetings
                   </Button>
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="truncate text-xl font-semibold tracking-[-0.02em]">{detail.title}</h2>
+                    <h2 className="truncate font-heading text-[22px] font-semibold tracking-[-0.025em] md:text-[24px]">{detail.title}</h2>
                     <Badge variant="outline" className={stateTone(detail.state)}>{stateLabel(detail.state)}</Badge>
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">Started {formatMoment(detail.startedAt || detail.createdAt)}</p>
@@ -2053,7 +2043,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   {detail.state === "ready" && <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button type="button" variant="outline" className="h-9 active:scale-[0.97]">
-                        <Download className="mr-2 h-3.5 w-3.5" />Export<ChevronDown className="ml-2 h-3.5 w-3.5 text-muted-foreground" />
+                        <Download className="mr-2 h-3.5 w-3.5" />Save or share<ChevronDown className="ml-2 h-3.5 w-3.5 text-muted-foreground" />
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="min-w-52">
@@ -2069,7 +2059,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                             });
                           }}
                         >
-                          <FileText className="mr-2 h-3.5 w-3.5" />{format.toUpperCase()}
+                          <FileText className="mr-2 h-3.5 w-3.5" />Save {format === "docx" ? "Word document" : format === "md" ? "Markdown" : format.toUpperCase()}
                         </DropdownMenuItem>
                       ))}
                       <DropdownMenuSeparator />
@@ -2087,6 +2077,41 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 </div>
               </header>
 
+              {lastExport && (
+                <div className="border-b border-emerald-300/60 bg-emerald-500/10 px-5 py-3 text-emerald-950 dark:text-emerald-100 sm:px-6" role="status">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 items-start gap-3">
+                      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold">
+                          {lastExport.desktop
+                            ? `Saved in ${meetingExportFolderName(lastExport.directory)}`
+                            : "Download started"}
+                        </p>
+                        <p className="mt-0.5 truncate text-xs opacity-80" title={lastExport.desktop ? lastExport.path : lastExport.filename}>
+                          {lastExport.desktop ? lastExport.path : `${lastExport.filename} · Check your browser's Downloads folder`}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
+                      {lastExport.desktop && (
+                        <>
+                          <Button type="button" size="sm" variant="outline" className="h-8 bg-background/70 active:scale-[0.97]" onClick={() => void runSavedExportAction("open")}>
+                            <FileText className="mr-2 h-3.5 w-3.5" />Open file
+                          </Button>
+                          <Button type="button" size="sm" variant="outline" className="h-8 bg-background/70 active:scale-[0.97]" onClick={() => void runSavedExportAction("reveal")}>
+                            <FolderOpen className="mr-2 h-3.5 w-3.5" />Open folder
+                          </Button>
+                        </>
+                      )}
+                      <Button type="button" size="icon" variant="ghost" className="h-8 w-8 active:scale-[0.97]" onClick={() => setLastExport(null)} aria-label="Dismiss saved export message">
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {(detail.state === "recording" || detail.state === "paused") && (
                 <div className="border-b border-border/60 bg-muted/20 px-5 py-3 sm:px-6">
                   <div className="grid gap-2 sm:grid-cols-2">
@@ -2098,18 +2123,20 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-300" />
                     <MeetingCheckpointStatus checkpoint={latestCheckpoint} expectedTrackCount={expectedCheckpointTrackCount} paused={detail.state === "paused"} />
                     {latestCheckpoint && <span aria-hidden="true">·</span>}
-                    {latestCheckpoint && <span>{latestCheckpoint.segmentCount} final segment{latestCheckpoint.segmentCount === 1 ? "" : "s"}</span>}
+                    {latestCheckpoint && <span>{detail.transcriptionMode === "live_final"
+                      ? `${latestCheckpoint.segmentCount} transcript part${latestCheckpoint.segmentCount === 1 ? "" : "s"} saved`
+                      : "Transcript starts after you stop"}</span>}
                   </div>
                   <div className="mt-2 space-y-2">{(["microphone", "system"] as const).map((source) => liveStatuses[source] && (
                     <div key={`${source}-${liveStatuses[source]!.status}`} role="status" className={`rounded-lg border px-3 py-2 text-xs ${liveStatuses[source]!.status === "recovered" ? "border-emerald-300/60 bg-emerald-500/10 text-emerald-900 dark:text-emerald-100" : "border-amber-300/60 bg-amber-500/10 text-amber-900 dark:text-amber-100"}`}>
-                      {source === "microphone" ? "Microphone" : "System audio"} live transcription {liveStatuses[source]!.status === "reconnecting" ? "lost its provider connection and is reconnecting. Durable audio recording continues." : liveStatuses[source]!.status === "degraded" ? "preview is falling behind and may omit captions. Durable audio recording continues without dropping frames." : "reconnected. Final transcription will recover from the local audio."}{liveStatuses[source]!.reconnectCount > 0 ? ` Attempt ${liveStatuses[source]!.reconnectCount}.` : ""}
+                      {source === "microphone" ? "Microphone" : "System audio"}: {liveStatuses[source]!.status === "reconnecting" ? "live text is temporarily offline and reconnecting. Audio recording continues safely." : liveStatuses[source]!.status === "degraded" ? "live text may miss words for a moment. Audio recording continues safely." : "live text is back. The final transcript will be created from saved audio."}{liveStatuses[source]!.reconnectCount > 0 ? ` Attempt ${liveStatuses[source]!.reconnectCount}.` : ""}
                     </div>
                   ))}</div>
                 </div>
               )}
 
               {(["stopping", "finalizing", "analyzing"] as MeetingState[]).includes(detail.state) && <div className="mt-4 rounded-xl border border-border/60 bg-muted/35 px-4 py-3" role="status">
-                <div className="flex items-center justify-between gap-3 text-xs"><span className="font-medium">{meetingProgress?.status || (detail.state === "analyzing" ? "Building cited meeting intelligence" : "Finalizing saved audio")}</span><span className="tabular-nums text-muted-foreground">{Math.round((meetingProgress?.progress ?? 0) * 100)}%</span></div>
+                <div className="flex items-center justify-between gap-3 text-xs"><span className="font-medium">{detail.state === "analyzing" ? "Creating summary, decisions, and action items" : detail.state === "stopping" ? "Finishing the recording safely" : "Creating the final transcript from saved audio"}</span><span className="tabular-nums text-muted-foreground">{Math.round((meetingProgress?.progress ?? 0) * 100)}%</span></div>
                 <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((meetingProgress?.progress ?? 0) * 100)}><div className="h-full origin-left rounded-full bg-primary transition-transform duration-200 motion-reduce:transition-none" style={{ transform: `scaleX(${meetingProgress?.progress ?? 0})` }} /></div>
               </div>}
 
@@ -2118,7 +2145,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   <p>{detail.errorMessage}</p>
                   {detail.state === "finalization_failed" && (
                     <label className="mt-3 block max-w-sm text-xs font-semibold">
-                      Final transcription route
+                      Try another transcription option
                       <select
                         value={retryFinalProvider}
                         onChange={(event) => setRetryFinalProvider(event.target.value)}
@@ -2131,7 +2158,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                         ))}
                       </select>
                       <span className="mt-1 block font-normal opacity-80">
-                        Choose another configured route when this recording exceeds the previous provider limit.
+                        Choose another available option if this recording is longer than the previous one supports.
                       </span>
                     </label>
                   )}
@@ -2154,7 +2181,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                         })}
                       >
                         {recoveryMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
-                        {detail.state === "analysis_failed" ? "Retry analysis" : "Finalize saved audio"}
+                        {detail.state === "analysis_failed" ? "Try meeting brief again" : "Create transcript from saved audio"}
                       </Button>
                       <Button type="button" size="sm" variant="ghost" disabled={recoveryMutation.isPending} onClick={() => recoveryMutation.mutate({ id: detail.id, action: "discard" })}>Discard</Button>
                     </div>
@@ -2214,7 +2241,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     <div className="max-w-3xl">
                       {workspaceView === "chat" ? (
                         <div className="space-y-4">
-                          <div><h3 className="text-sm font-semibold">Ask this meeting</h3><p className="mt-1 text-xs text-muted-foreground">Answers are grounded in the canonical transcript and retain segment citations.</p></div>
+                          <div><h3 className="text-sm font-semibold">Ask this meeting</h3><p className="mt-1 text-xs text-muted-foreground">Answers use only this meeting's final transcript. Click a source marker to jump to that moment.</p></div>
                           {chatAnswer && <div className="rounded-2xl bg-muted/55 p-4"><p className="whitespace-pre-wrap text-sm leading-7">{chatAnswer.content}</p>{chatAnswer.citations.length > 0 && <div className="mt-3 flex flex-wrap gap-1.5">{chatAnswer.citations.map((citation) => <button type="button" key={citation} onClick={() => seekCitation(citation)}><Badge variant="outline" className="font-mono text-[10px] hover:border-primary">{citation.slice(0, 8)}</Badge></button>)}</div>}</div>}
                           <Textarea value={chatQuestion} onChange={(event) => setChatQuestion(event.target.value)} placeholder="What did we decide about the launch?" rows={3} />
                           <Button disabled={!chatQuestion.trim() || chatMutation.isPending} onClick={() => chatMutation.mutate({ id: detail.id, question: chatQuestion })}>{chatMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Ask meeting</Button>
@@ -2223,7 +2250,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                         <div className="max-w-2xl"><h3 className="text-sm font-semibold">Meeting notes</h3><p className="mt-1 text-xs text-muted-foreground">Your notes remain separate from generated outputs.</p><Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Capture decisions and follow-ups..." rows={8} className="mt-4" />{detail.notes.filter((savedNote) => savedNote.id !== "workspace").map((savedNote) => <div key={savedNote.id} className="mt-3 rounded-xl bg-muted/55 p-3"><p className="text-xs font-medium text-primary">{formatOffset(savedNote.atMs)}</p><p className="mt-1 text-sm leading-6">{savedNote.body}</p></div>)}</div>
                       ) : !analysis ? (
                         <div className="flex min-h-64 items-center justify-center rounded-2xl border border-dashed border-border text-center text-sm text-muted-foreground">
-                          <div>{detail.state === "analyzing" ? <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin" /> : <AlertTriangle className="mx-auto mb-3 h-6 w-6" />}<p>{detail.state === "analyzing" ? "Building cited meeting intelligence…" : "Structured analysis is not available yet."}</p>{detail.state === "ready" && <Button type="button" size="sm" variant="outline" className="mt-4" disabled={analysisMutation.isPending || !hasCanonicalTranscript} onClick={generateAnalysis}>{analysisMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}Generate analysis</Button>}</div>
+                          <div>{detail.state === "analyzing" ? <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin" /> : <AlertTriangle className="mx-auto mb-3 h-6 w-6" />}<p>{detail.state === "analyzing" ? "Creating your meeting brief…" : "No meeting brief yet."}</p>{detail.state === "ready" && <Button type="button" size="sm" variant="outline" className="mt-4" disabled={analysisMutation.isPending || !hasCanonicalTranscript} onClick={generateAnalysis}>{analysisMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}Create meeting brief</Button>}</div>
                         </div>
                       ) : workspaceView === "overview" ? (
                         <div className="max-w-4xl">
@@ -2248,7 +2275,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   ) : <>
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-2"><Users className="h-4 w-4 text-muted-foreground" /><h3 className="text-sm font-semibold">Transcript</h3></div>
-                    <span className="text-xs text-muted-foreground">{transcriptSearch.trim() ? `${visibleTranscriptSegments.length} of ${groupedSegments.length} segments` : `${groupedSegments.length} segments`}</span>
+                    <span className="text-xs text-muted-foreground">{transcriptSearch.trim() ? `${visibleTranscriptSegments.length} of ${groupedSegments.length} parts` : `${groupedSegments.length} parts`}</span>
                   </div>
                   <label className="relative mb-4 block max-w-xl">
                     <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
@@ -2275,22 +2302,24 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                           }
                         }}
                       />
-                      {speaker.profileId && <button type="button" className="rounded px-1 text-[10px] text-muted-foreground hover:bg-background hover:text-foreground" disabled={splitSpeakerMutation.isPending} onClick={(event) => { event.preventDefault(); splitSpeakerMutation.mutate({ id: detail.id, speakerId: speaker.id }); }} title="Separate this speaker from the matched Voice Library profile">Separate</button>}
+                      {speaker.profileId && <button type="button" className="rounded px-1 text-[10px] text-muted-foreground hover:bg-background hover:text-foreground" disabled={splitSpeakerMutation.isPending} onClick={(event) => { event.preventDefault(); splitSpeakerMutation.mutate({ id: detail.id, speakerId: speaker.id }); }} title="Do not match this speaker to the saved voice">Wrong match</button>}
                     </label>)}
                   </div>}
                   <div>
                     {groupedSegments.length === 0 ? (
                       <div className="flex min-h-64 items-center justify-center rounded-2xl border border-dashed border-border text-center text-sm text-muted-foreground">
-                        <div><Waves className="mx-auto mb-3 h-7 w-7" /><p>{OPEN_STATES.has(detail.state) ? "Listening for speech…" : "No transcript segments are available."}</p></div>
+                        <div><Waves className="mx-auto mb-3 h-7 w-7" /><p>{OPEN_STATES.has(detail.state) ? detail.transcriptionMode === "final_only" ? "Recording safely. The transcript appears after you stop." : "Listening for speech…" : "No transcript is available."}</p></div>
                       </div>
                     ) : visibleTranscriptSegments.length === 0 ? (
                       <div className="flex min-h-48 items-center justify-center rounded-2xl border border-dashed border-border text-center text-sm text-muted-foreground">
-                        <div><Search className="mx-auto mb-3 h-6 w-6" /><p>No transcript segment matches “{transcriptSearch.trim()}”.</p></div>
+                        <div><Search className="mx-auto mb-3 h-6 w-6" /><p>No transcript text matches “{transcriptSearch.trim()}”.</p></div>
                       </div>
                     ) : <VirtualMeetingTranscript
+                      key={detail.id}
                       segments={visibleTranscriptSegments}
                       search={transcriptSearch}
                       hasPlayableAudio={hasPlayableAudio}
+                      isLive={detail.state === "recording" || detail.state === "paused"}
                       onPlay={playSegment}
                       canEdit={detail.state === "ready" && visibleTranscriptSegments.every((segment) => segment.revision === "canonical")}
                       savingSegmentId={segmentEditMutation.isPending ? segmentEditMutation.variables?.segment.id ?? "" : ""}
@@ -2301,7 +2330,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   </>}
                 </section>
 
-                <aside className="border-t border-border/60 bg-muted/15 px-5 py-5 lg:border-l lg:border-t-0">
+                <aside className="border-t border-border/60 bg-muted/15 px-5 py-5 2xl:border-l 2xl:border-t-0">
                   <div className="flex items-center gap-2"><NotebookPen className="h-4 w-4 text-muted-foreground" /><h3 className="text-sm font-semibold">Live notes</h3></div>
                   <div className="mt-3 space-y-2">
                     <Textarea value={note} onChange={(event) => { const body = event.target.value; setNote(body); noteDraftRef.current = { meetingId: selectedId, body: body.trim(), savedBody: noteDraftRef.current.savedBody }; }} placeholder="Capture decisions and follow-ups…" rows={5} />
@@ -2322,7 +2351,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     <div className="border-t border-border/60 p-3">
                       <div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-primary" /><h3 className="text-xs font-semibold">Models used</h3></div>
                       <dl className="mt-3 space-y-2 text-[11px]">
-                        <div className="flex items-start justify-between gap-3"><dt className="text-muted-foreground">Live transcript</dt><dd className="text-right font-mono">{detail.origin === "imported" ? "Not used (imported)" : detailLiveModel || detail.liveProvider}</dd></div>
+                        <div className="flex items-start justify-between gap-3"><dt className="text-muted-foreground">Live transcript</dt><dd className="text-right font-mono">{detail.origin === "imported" ? "Not used (imported)" : detail.transcriptionMode === "final_only" ? "Not used (transcript after meeting)" : detailLiveModel || detail.liveProvider}</dd></div>
                         <div className="flex items-start justify-between gap-3"><dt className="text-muted-foreground">Final transcript</dt><dd className="text-right font-mono">{detail.finalRoute?.model || detail.finalProvider}</dd></div>
                         <div className="flex items-start justify-between gap-3"><dt className="text-muted-foreground">Summary and actions</dt><dd className="break-all text-right font-mono">{detail.analysisModel}</dd></div>
                       </dl>
@@ -2375,7 +2404,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
           <DialogHeader>
             <DialogTitle>Import a meeting recording</DialogTitle>
             <DialogDescription>
-              Create a durable meeting workspace, then run final transcription, speaker separation, analysis, search, and playback on one shared timeline.
+              Create a meeting workspace with a transcript, speaker names, summary, search, and linked playback.
             </DialogDescription>
           </DialogHeader>
           {meetingImportCandidate && <div className="space-y-4">
@@ -2401,30 +2430,25 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               />
             </div>
             <div>
-              <label htmlFor="meeting-import-profile" className="text-xs font-medium text-muted-foreground">Transcription profile</label>
-              <select
-                id="meeting-import-profile"
-                value={meetingImportProfile?.id || ""}
-                disabled={meetingImportBusy}
-                onChange={(event) => setMeetingImportProfileId(event.target.value)}
-                className="mt-1.5 h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/20"
-              >
-                {(profilesQuery.data?.profiles ?? []).map((item) => <option key={item.id} value={item.id} disabled={!item.available}>{item.name}{item.available ? "" : " · unavailable"}</option>)}
-              </select>
-              {meetingImportProfile && <div className="mt-2 rounded-lg border border-border/55 px-3 py-2.5 text-xs leading-5">
-                <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">Final STT</span><span className="font-medium">{meetingImportProfile.stages.find((stage) => stage.id === "final")?.model || meetingImportProfile.finalProvider}</span></div>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-medium text-muted-foreground">Final transcript setting</p>
+                <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-[11px]" disabled={meetingImportBusy} onClick={openMeetingSettings}>Change in Settings</Button>
+              </div>
+              {meetingImportProfile && <div className="mt-1.5 rounded-lg border border-border/55 px-3 py-2.5 text-xs leading-5">
+                <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">Transcript service</span><span className="text-right font-medium">{meetingImportProfile.stages.find((stage) => stage.id === "final")?.provider || meetingImportProfile.finalProvider} · {meetingImportProfile.stages.find((stage) => stage.id === "final")?.model || meetingImportProfile.finalProvider}</span></div>
                 <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">Maximum duration</span><span className="font-medium">{meetingImportFinalProviderCapability?.maxDurationSeconds != null ? formatImportDuration(meetingImportFinalProviderCapability.maxDurationSeconds) : "No published duration limit"}</span></div>
-                <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">Speakers</span><span className="text-right font-medium">{profilesQuery.data?.providerCapabilities[meetingImportProfile.finalProvider]?.batchDiarization ? "Native when verified · local fallback otherwise" : "Local Sherpa-ONNX fallback"}</span></div>
+                <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">Speaker names</span><span className="text-right font-medium">{profilesQuery.data?.providerCapabilities[meetingImportProfile.finalProvider]?.batchDiarization ? "Included" : "Added on this device · up to 60 min"}</span></div>
                 <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">Language</span><span className="font-medium">{meetingImportProfile.language || "Auto"}</span></div>
+                <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">Estimated STT cost</span><span className="font-mono font-medium">{meetingImportProfile.costEstimate.singleTrackFinalPerAudioHour != null ? `~$${meetingImportProfile.costEstimate.singleTrackFinalPerAudioHour.toFixed(2)} / audio hour` : "Provider rate varies"}</span></div>
               </div>}
               {meetingImportExceedsProviderDuration && <div className="mt-2 rounded-lg border border-amber-300/60 bg-amber-500/10 px-3 py-2.5 text-xs leading-5 text-amber-900 dark:text-amber-100" role="alert">
-                This recording exceeds the selected final STT limit. Choose a compatible model in Settings before importing it.
+                This transcription option cannot process a recording this long. Choose another option in Meeting settings.
               </div>}
             </div>
             {meetingImportBusy && <div className="rounded-xl border border-border/65 bg-muted/25 px-4 py-3" role="status">
               <div className="flex items-center justify-between gap-3 text-xs"><span className="font-medium">{meetingImportProgress.stage}</span><span className="tabular-nums text-muted-foreground">{meetingImportProgress.percentage}%</span></div>
               <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={meetingImportProgress.percentage}><div className="h-full origin-left rounded-full bg-primary transition-transform duration-200 motion-reduce:transition-none" style={{ transform: `scaleX(${meetingImportProgress.percentage / 100})` }} /></div>
-              <p className="mt-2 text-xs text-muted-foreground">The source is copied into Scriber before final processing. Closing Scriber later will not discard an accepted import.</p>
+              <p className="mt-2 text-xs text-muted-foreground">Scriber first saves a safe local copy. After the upload finishes, you can close this window without losing the import.</p>
             </div>}
           </div>}
           <DialogFooter>
@@ -2504,7 +2528,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   })}
                 >
                   {exportMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Paperclip className="mr-2 h-4 w-4" />}
-                  Download email draft{emailAttachment ? ` + ${emailAttachment.toUpperCase()}` : ""}
+                  Save email draft{emailAttachment ? ` + ${emailAttachment.toUpperCase()}` : ""}
                 </Button>
               </div>
             </div>

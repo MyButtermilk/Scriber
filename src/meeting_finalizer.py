@@ -477,6 +477,7 @@ class MeetingFinalizer:
                 track_derivations = list(
                     self.artifact_store.list_track_derivations(attempt.id)
                 )
+        empty_sources: list[str] = []
         if recovered_stage is not None:
             canonical_units = list(recovered_stage.units)
         else:
@@ -555,9 +556,32 @@ class MeetingFinalizer:
                         source_track=source,
                         origin_ms=timeline_origin_ms,
                     )
-                    if not text or not provider_units:
+                    if not provider_units:
+                        if not text:
+                            # A canonical Meeting track may legitimately be
+                            # silent (for example, no remote participant audio
+                            # on the system loopback). Do not fabricate a
+                            # segment or fail the other track's valid speech.
+                            empty_sources.append(source)
+                            await progress(
+                                f"No {source} speech detected; continuing with other tracks",
+                                0.25 + (index + 1) * 0.25,
+                            )
+                            continue
                         raise ValueError(
-                            f"The final transcription provider returned no {source} speech."
+                            "The final transcription provider returned text but no usable "
+                            f"{source} transcript segments."
+                        )
+                    if not text:
+                        text = "\n".join(
+                            unit.text.strip()
+                            for unit in provider_units
+                            if unit.text.strip()
+                        ).strip()
+                    if not text:
+                        raise ValueError(
+                            "The final transcription provider returned unusable empty "
+                            f"{source} transcript segments."
                         )
                     track_result = self.artifact_store.persist_track_stage_result(
                         attempt.id,
@@ -650,7 +674,11 @@ class MeetingFinalizer:
                 )
 
         if not canonical_units:
-            raise ValueError("The final transcription provider returned no speech.")
+            empty_label = ", ".join(empty_sources) if empty_sources else "all available"
+            raise ValueError(
+                "The final transcription provider returned no speech on any canonical "
+                f"Meeting track ({empty_label})."
+            )
         echo_candidates = [
             {
                 "id": unit.provider_native_id or f"stage-{index}",

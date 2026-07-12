@@ -464,7 +464,7 @@ export default function DebugConsole() {
           <div className="debug-console-intro">
             <div className="debug-console-eyebrow">
               <span className="debug-console-eyebrow-line" />
-              System observability · 04
+              System observability · 05
             </div>
             <div className="debug-console-title-row">
               <div>

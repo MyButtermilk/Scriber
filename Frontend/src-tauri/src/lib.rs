@@ -1,6 +1,7 @@
 mod audio_devices;
 mod audio_frame_pipe;
 mod audio_sidecar_client;
+mod export_dialog;
 mod native_overlay;
 mod redaction;
 mod shell_ipc;
@@ -83,6 +84,12 @@ const SHELL_IPC_TOKEN_ENV: &str = "SCRIBER_SHELL_IPC_TOKEN";
 const SHELL_IPC_API_VERSION_ENV: &str = "SCRIBER_SHELL_IPC_API_VERSION";
 const DISABLE_HOTKEYS_ENV: &str = "SCRIBER_DISABLE_HOTKEYS";
 const TAURI_GLOBAL_HOTKEY_ENV: &str = "SCRIBER_TAURI_GLOBAL_HOTKEY";
+// Development builds intentionally use a separate mutex so installed Scriber
+// can remain open while the current source tree is being tested. Release builds
+// keep the stable product-wide mutex and still enforce exactly one instance.
+#[cfg(debug_assertions)]
+const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\ScriberDesktopSingleInstanceDebug";
+#[cfg(not(debug_assertions))]
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\ScriberDesktopSingleInstance";
 const AUTOSTART_REGISTRY_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const AUTOSTART_REGISTRY_VALUE: &str = "Scriber";
@@ -1123,6 +1130,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -1153,6 +1161,7 @@ pub fn run() {
         .manage(TrayState::default())
         .manage(NativeDeviceEventsState::new())
         .manage(ShellIpcState::new(shell_ipc_config, shell_ipc_handle))
+        .manage(export_dialog::MeetingExportRegistry::default())
         .manage(backend_manager)
         .setup(|app| {
             configure_desktop_shell(app)?;
@@ -1203,7 +1212,10 @@ pub fn run() {
             set_tray_recording_state,
             show_tray_panel,
             hide_tray_panel,
-            tray_action
+            tray_action,
+            export_dialog::save_meeting_export,
+            export_dialog::open_meeting_export,
+            export_dialog::reveal_meeting_export
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Scriber desktop shell");

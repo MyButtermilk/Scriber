@@ -28,6 +28,12 @@ def _bootstrap_runtime_env() -> None:
 
 _bootstrap_runtime_env()
 migrate_legacy_runtime_data()
+# Keep track of values supplied by the supervising process before loading the
+# writable runtime .env. Historical Scriber releases persisted their then-
+# current Soniox defaults there, so the source matters when upgrading them:
+# generated legacy defaults should follow the app, while an explicit process
+# override remains available for temporary provider compatibility.
+_PROCESS_ENV_KEYS_BEFORE_DOTENV = frozenset(os.environ)
 load_dotenv(env_path())
 
 # JSON settings file for complex values (multi-line prompts, etc.)
@@ -52,6 +58,34 @@ def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> 
     if not math.isfinite(value):
         value = default
     return max(minimum, min(maximum, value))
+
+
+def _versioned_model_env(
+    name: str,
+    default: str,
+    *,
+    legacy_dotenv_defaults: set[str] | frozenset[str],
+) -> str:
+    """Resolve a provider model while upgrading historical persisted defaults.
+
+    The app writes model defaults to its canonical ``.env`` file. Without a
+    migration, that turns an old release default into a permanent override on
+    every later release. Only known defaults loaded from that file are
+    upgraded. A non-empty value supplied by the parent process is intentional
+    and remains untouched, including an older model used as a short-lived
+    compatibility override.
+    """
+    raw = str(os.getenv(name, default) or "").strip()
+    if not raw:
+        os.environ[name] = default
+        return default
+    if (
+        name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV
+        and raw.casefold() in {value.casefold() for value in legacy_dotenv_defaults}
+    ):
+        os.environ[name] = default
+        return default
+    return raw
 
 
 def _atomic_write_text(path: str | Path, content: str) -> None:
@@ -94,6 +128,12 @@ _json_settings = _load_json_settings()
 class Config:
     DEFAULT_SONIOX_ASYNC_MODEL = "stt-async-v5"
     DEFAULT_SONIOX_RT_MODEL = "stt-rt-v5"
+    _LEGACY_DEFAULT_SONIOX_ASYNC_MODELS = {
+        "stt-async-preview",
+        "stt-async-v3",
+        "stt-async-v4",
+    }
+    _LEGACY_DEFAULT_SONIOX_RT_MODELS = {"stt-rt-v3", "stt-rt-v4"}
     DEFAULT_ASSEMBLYAI_ASYNC_MODEL = "universal-3-5-pro"
     DEFAULT_ASSEMBLYAI_RT_MODEL = "universal-3-5-pro"
 
@@ -122,8 +162,16 @@ class Config:
     HOTKEY = os.getenv("SCRIBER_HOTKEY", "ctrl+alt+s")
     DEFAULT_STT_SERVICE = os.getenv("SCRIBER_DEFAULT_STT", "soniox")
     SONIOX_MODE = os.getenv("SCRIBER_SONIOX_MODE", "realtime").lower()  # realtime | async
-    SONIOX_ASYNC_MODEL = os.getenv("SCRIBER_SONIOX_ASYNC_MODEL", DEFAULT_SONIOX_ASYNC_MODEL)
-    SONIOX_RT_MODEL = os.getenv("SCRIBER_SONIOX_RT_MODEL", DEFAULT_SONIOX_RT_MODEL)
+    SONIOX_ASYNC_MODEL = _versioned_model_env(
+        "SCRIBER_SONIOX_ASYNC_MODEL",
+        DEFAULT_SONIOX_ASYNC_MODEL,
+        legacy_dotenv_defaults=_LEGACY_DEFAULT_SONIOX_ASYNC_MODELS,
+    )
+    SONIOX_RT_MODEL = _versioned_model_env(
+        "SCRIBER_SONIOX_RT_MODEL",
+        DEFAULT_SONIOX_RT_MODEL,
+        legacy_dotenv_defaults=_LEGACY_DEFAULT_SONIOX_RT_MODELS,
+    )
     ASSEMBLYAI_ASYNC_MODEL = os.getenv("SCRIBER_ASSEMBLYAI_ASYNC_MODEL", DEFAULT_ASSEMBLYAI_ASYNC_MODEL)
     ASSEMBLYAI_RT_MODEL = os.getenv("SCRIBER_ASSEMBLYAI_RT_MODEL", DEFAULT_ASSEMBLYAI_RT_MODEL)
     MISTRAL_RT_MODEL = os.getenv("SCRIBER_MISTRAL_RT_MODEL", "voxtral-mini-2602")
@@ -338,6 +386,13 @@ ${output}"""
         or os.getenv("SCRIBER_MEETING_FINAL_PROVIDER")
         or "soniox_async"
     )
+    MEETING_TRANSCRIPTION_MODE = str(
+        _json_settings.get("meetingTranscriptionMode")
+        or os.getenv("SCRIBER_MEETING_TRANSCRIPTION_MODE")
+        or "live_final"
+    ).strip().lower()
+    if MEETING_TRANSCRIPTION_MODE not in {"live_final", "final_only"}:
+        MEETING_TRANSCRIPTION_MODE = "live_final"
     MEETING_ANALYSIS_MODEL = (
         _json_settings.get("meetingAnalysisModel")
         or os.getenv("SCRIBER_MEETING_ANALYSIS_MODEL")
@@ -445,6 +500,15 @@ ${output}"""
         cls.MEETING_FINAL_PROVIDER = provider.strip().lower()
         os.environ["SCRIBER_MEETING_FINAL_PROVIDER"] = cls.MEETING_FINAL_PROVIDER
         _json_settings["meetingFinalProvider"] = cls.MEETING_FINAL_PROVIDER
+
+    @classmethod
+    def set_meeting_transcription_mode(cls, mode: str) -> None:
+        normalized = str(mode or "").strip().lower()
+        if normalized not in {"live_final", "final_only"}:
+            raise ValueError("Meeting transcription mode must be live_final or final_only.")
+        cls.MEETING_TRANSCRIPTION_MODE = normalized
+        os.environ["SCRIBER_MEETING_TRANSCRIPTION_MODE"] = normalized
+        _json_settings["meetingTranscriptionMode"] = normalized
 
     @classmethod
     def set_meeting_analysis_model(cls, model: str) -> None:
@@ -655,6 +719,7 @@ ${output}"""
         add("SCRIBER_HOTKEY", cls.HOTKEY)
         add("SCRIBER_POST_PROCESSING_HOTKEY", cls.POST_PROCESSING_HOTKEY)
         add("SCRIBER_MEETING_HOTKEY", cls.MEETING_HOTKEY)
+        add("SCRIBER_MEETING_TRANSCRIPTION_MODE", cls.MEETING_TRANSCRIPTION_MODE)
         add("SCRIBER_MEETING_FINAL_PROVIDER", cls.MEETING_FINAL_PROVIDER)
         add("SCRIBER_MEETING_ANALYSIS_MODEL", cls.MEETING_ANALYSIS_MODEL)
         add("SCRIBER_MEETING_SMART_TURN_ENABLED", "1" if cls.MEETING_SMART_TURN_ENABLED else "0")
