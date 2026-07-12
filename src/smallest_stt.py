@@ -97,7 +97,8 @@ def format_smallest_utterances_to_scriber_text(utterances: list[dict[str, Any]])
         text = str(utterance.get("text") or utterance.get("transcript") or "").strip()
         if not text:
             continue
-        speaker_key = str(utterance.get("speaker") or "").strip()
+        speaker_value = utterance.get("speaker")
+        speaker_key = "" if speaker_value in (None, "") else str(speaker_value).strip()
         if not speaker_key:
             lines.append(text)
             continue

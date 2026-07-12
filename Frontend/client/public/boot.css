@@ -1,0 +1,117 @@
+:root {
+  color-scheme: light;
+  background: #f5f6f8;
+}
+
+:root.dark {
+  color-scheme: dark;
+  background: #202225;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #f5f6f8;
+}
+
+.dark body {
+  background: #202225;
+}
+
+.boot-shell {
+  box-sizing: border-box;
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 22px;
+  color: #16191f;
+  font-family: Inter, "Segoe UI", sans-serif;
+}
+
+.dark .boot-shell {
+  color: #f5f3ee;
+}
+
+.boot-brand {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+}
+
+.boot-mark {
+  box-sizing: border-box;
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(21, 25, 31, 0.1);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.7), 0 3px 12px rgba(21, 25, 31, 0.08);
+}
+
+.dark .boot-mark {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.09), 0 4px 16px rgba(0, 0, 0, 0.28);
+}
+
+.boot-logo {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+}
+
+.boot-logo-dark,
+.dark .boot-logo-light {
+  display: none;
+}
+
+.dark .boot-logo-dark {
+  display: block;
+}
+
+.boot-wordmark {
+  font-size: 25px;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+}
+
+.boot-progress {
+  width: 106px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(21, 25, 31, 0.1);
+}
+
+.dark .boot-progress {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.boot-progress span {
+  display: block;
+  width: 42%;
+  height: 100%;
+  border-radius: inherit;
+  background: #526fd4;
+  animation: boot-progress 1.2s cubic-bezier(0.32, 0.72, 0, 1) infinite alternate;
+}
+
+@keyframes boot-progress {
+  from { transform: translateX(-20%); }
+  to { transform: translateX(158%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-progress span {
+    animation: none;
+    transform: translateX(68%);
+  }
+}

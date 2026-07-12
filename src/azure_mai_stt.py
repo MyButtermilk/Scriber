@@ -295,6 +295,8 @@ async def transcribe_with_azure_mai(
     filename: str,
     content_type: str,
     language: Language | str | None,
+    model: str | None = None,
+    custom_vocab: str | None = None,
     on_progress: Callable[[str], None] | None = None,
     timeout_secs: float = 900.0,
 ) -> dict[str, Any]:
@@ -303,7 +305,11 @@ async def transcribe_with_azure_mai(
         f"https://{region}.api.cognitive.microsoft.com/"
         f"speechtotext/transcriptions:transcribe?api-version={_AZURE_MAI_API_VERSION}"
     )
-    definition = build_azure_mai_definition(language)
+    definition = build_azure_mai_definition(
+        language,
+        model=model,
+        custom_vocab=custom_vocab,
+    )
 
     data = aiohttp.FormData()
     data.add_field("audio", audio_source, filename=filename, content_type=content_type)
@@ -345,21 +351,30 @@ class AzureMaiTranscribeSTTService(STTService):
         speech_key: str,
         region: str,
         language: Language | str = "auto",
+        model: str | None = None,
+        custom_vocab: str | None = None,
         session: aiohttp.ClientSession | None = None,
         on_progress: Callable[[str], None] | None = None,
         audio_passthrough: bool = True,
     ) -> None:
         language_locales = azure_mai_language_locales(language)
+        selected_model = azure_mai_model(model)
         super().__init__(
             audio_passthrough=audio_passthrough,
             settings=STTSettings(
-                model=azure_mai_model(),
+                model=selected_model,
                 language=language_locales[0] if language_locales else None,
             ),
         )
         self._speech_key = speech_key
         self._region = validate_azure_mai_region(region)
         self._language = language or "auto"
+        self._model = selected_model
+        self._custom_vocab = (
+            str(custom_vocab)
+            if custom_vocab is not None
+            else str(getattr(Config, "CUSTOM_VOCAB", "") or "")
+        )
         self._session = session
         self._on_progress = on_progress
         self._buffer = self._create_buffer()
@@ -397,6 +412,8 @@ class AzureMaiTranscribeSTTService(STTService):
                 filename="audio.mp3",
                 content_type="audio/mpeg",
                 language=self._language,
+                model=self._model,
+                custom_vocab=self._custom_vocab,
                 on_progress=self._on_progress,
                 timeout_secs=900.0,
             )

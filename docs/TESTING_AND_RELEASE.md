@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-07-10
+Last verified: 2026-07-12
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -23,6 +23,13 @@ npm run check
 npm run build
 ```
 
+For the desktop development path, use `npm run tauri:dev` from `Frontend`.
+Tauri's `beforeDevCommand` runs `npm run dev:tauri`, which builds the current
+`scriber-audio-sidecar` before Vite starts. Cargo's package has
+`default-run = "scriber-desktop"`; do not bypass these contracts when checking
+the Meeting microphone/loopback route, because a stale debug sidecar can make
+that test disagree with the installed app.
+
 Rust:
 
 ```powershell
@@ -41,11 +48,23 @@ Frontend browser smoke:
 python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json --fast-tab-switch
 ```
 
+To retain settled screenshots of the primary transcription workspaces alongside
+the JSON evidence:
+
+```powershell
+python scripts\smoke_frontend_browser.py --routes "/,/youtube,/file" `
+  --evidence-dir output\playwright\transcription-smoke `
+  --output output\playwright\transcription-smoke\result.json
+```
+
 The smoke uses current Settings labels and credential dialogs, exercises real
 hotkey/mode/autostart persistence, and treats critical React console errors as
 failures. Its fast-tab gate also rejects any blank or loading sample while
 switching among primary tabs; keep this enabled when changing routing, lazy
 imports, layout remount behavior, Motion, or virtualized history.
+When an evidence directory is supplied, the smoke captures Live, YouTube, and
+File only after their finite entry animation settles and after resetting the
+workspace scroll position.
 
 ## Important Test Areas
 
@@ -95,6 +114,24 @@ Performance/packaging:
   release-only overrides such as `beforeBundleCommand = null`. This keeps fresh
   CI runners compatible with Tauri's early resource-path validation while preserving the checked-in
   `beforeBundleCommand` for direct developer `npm run tauri:build` workflows.
+- The same preparation builds the separate static
+  `scriber-diarization-sidecar`, stages it under
+  `backend\tools\diarization`, and generates its adjacent signed-build
+  manifest. `build_windows.ps1` always runs the stdlib-only staged resource
+  smoke; installer smoke repeats it against the installed resource tree. Both
+  reject digest/size drift, incompatible `--version` or `--self-test`, dynamic
+  Sherpa/ONNX/MSVC-runtime imports, and optional model files in the base app.
+
+Focused worker resource checks:
+
+```powershell
+python -m pytest tests\test_diarization_worker_manifest.py `
+  tests\test_diarization_worker_resource_smoke.py -q
+
+python scripts\smoke_diarization_worker_resource.py `
+  --root Frontend\src-tauri\target\release\backend `
+  --output tmp\diarization-worker-staged-smoke.json
+```
 - `requirements-base.txt` pins the Pipecat/provider SDK combination used by the
   frozen backend runtime import gate. Pipecat, Deepgram, Speechmatics RT, and
   `speechmatics-voice` must move together: unpinned Pipecat or provider SDK
@@ -177,6 +214,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
   -RunInstallerSupportBundleSmoke `
   -RunInstallerUninstallSmoke
 ```
+
+The build wrapper passes its resolved release Python executable into the
+installer smoke. Direct installer-smoke runs prefer `venv\Scripts\python.exe`
+and only fall back to `python` on `PATH` when that environment is absent. This
+keeps source-side smoke orchestration on the same pinned dependency set as the
+release build; the installed binaries and bundled media tools remain the
+artifacts under test.
 
 Real file/YouTube workflow smoke, when credentials and network are available:
 
@@ -746,8 +790,8 @@ misses for frontend dependencies, Rust build outputs, and backend sidecar
 scratch caches.
 
 The reusable FFmpeg Profile B artifact is published to the internal prerelease
-tag `ffmpeg-profile-b-n7.0-v2` as
-`scriber-ffmpeg-profile-b-n7.0-v2-Windows.zip`. That asset is not an app
+tag `ffmpeg-profile-b-n7.0-v3` as
+`scriber-ffmpeg-profile-b-n7.0-v3-Windows.zip`. That asset is not an app
 release. It is only a fallback source for future release builds when GitHub
 Actions cache scope isolation prevents a new tag from seeing a previously saved
 cache. Every restored copy is still validated with the Profile B manifest and
@@ -1198,3 +1242,241 @@ Installer speed evidence:
 These are evidence artifacts, not durable docs. Do not copy their full contents
 into permanent Markdown unless a concise current result belongs in
 `README.md` or `docs/PERFORMANCE_AND_PACKAGING.md`.
+
+## Meeting Workspace Gates
+
+Run the focused deterministic gates before the full suite:
+
+```powershell
+.\venv\Scripts\python.exe -m pytest tests/test_provider_transcript.py tests/test_meeting_finalizer.py tests/test_meeting_analysis.py tests/test_pipeline_stop.py tests/test_outlook_calendar.py tests/test_speaker_intelligence.py tests/data/test_meeting_store.py tests/data/test_audio_admission_store.py tests/test_meeting_api.py tests/test_web_api_lifecycle.py -q
+cd Frontend
+npm run check
+npx tsx --test client/src/lib/meeting-playback.test.ts
+cd src-tauri
+cargo test --bin scriber-audio-sidecar
+cargo test --lib
+```
+
+The Rust sidecar suite includes synthetic three-pipe meeting capture with shared
+sequence/timestamps, render-active raw-to-clean energy telemetry, and AEC unit
+tests for delayed echo attenuation plus double-talk preservation. Python gates
+cover the sanitized native-stop telemetry contract, exact provider-time normalization,
+chunk checksum/header quarantine, state recovery, PKCE/token redaction, speaker
+embedding bounds, and analysis contracts. These deterministic tests do not
+replace the physical Windows matrix listed in the roadmap. A signed release
+must also confirm that `THIRD_PARTY_NOTICES.md` is present in installed resources
+and that the optional WeSpeaker model is absent from the installer tree.
+The admission tests additionally use two independent controllers on one SQLite
+database: the losing controller must return 409 before native Shell IPC, an
+expired claim may be replaced, stale release cannot delete its successor,
+pause/resume retains Meeting ownership, and graceful shutdown removes it.
+The heartbeat race gate pre-transfers the pending claim before renewal and
+requires adoption of the newer generation; repeated Live Mic renewal failures
+must emergency-stop before the lease TTL can expire, and a lost Meeting claim
+must drive the capture watchdog to `capture_failed` without discarding completed
+chunks.
+
+Long-Meeting deterministic coverage uses exactly 600 30-second intervals, or
+18,000 seconds. Store tests prove schema-v3 base/delta recovery, a full base
+every twentieth sequence, per-source frontiers, bounded/linear payload growth,
+and recovery through a corrupt newest base using the redundant fallback.
+Analysis tests use a 600-segment five-hour fixture to prove the 48,000-character
+and 60-minute fast-path boundaries, 30,000-character and 30-minute map budgets,
+concurrency two, reduce fan-in three, persistent partial-cache reuse, scoped
+repair, valid citations, and monotonic progress. Finalizer/pipeline tests cover
+the 30-minute lease with five-minute heartbeat, duration-scaled upload/batch/poll
+timeouts, and equivalence of the timeline-sweep echo deduper to the prior exact
+overlap/similarity behavior. These are accelerated invariants, not a physical
+five-hour recording soak. Capability tests require five-hour support for the
+bounded Soniox, AssemblyAI, Azure MAI, and Local ONNX routes, explicitly keep
+the synchronous Deepgram route unverified, assert the model-aware
+Soniox/Voxtral/Gladia duration ceilings, reject known
+short/unverified whole-track routes, and verify that deduplicated chapters span
+all merged citations. Import and finalizer tests prove an over-limit Gladia
+track is rejected before normalization or any paid provider call.
+
+The installed synthetic Meeting audio gate traverses the real REST, private
+Shell IPC, Rust audio sidecar, three named frame pipes, Python level probe, and
+cleanup path. It emits deterministic non-user microphone/system signals only
+under explicit test flags and verifies that no audio is persisted or sent to a
+provider:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1 `
+  -ExePath Frontend\src-tauri\target\release\scriber-desktop.exe `
+  -VerifyMeetingAudioDeviceTest `
+  -VerifyAudioSidecarCleanup `
+  -OutputPath tmp\meeting-audio-device-e2e.json
+```
+
+For an installed-package build, add
+`-RunInstallerMeetingAudioDeviceTestSmoke` to `scripts\build_windows.ps1`.
+
+The desktop single-instance smoke also proves restore behavior, not merely
+process exclusion. `-VerifySingleInstance` requires the second process to exit
+without a new backend and the primary process to log
+`single-instance main-window restore requested`; this protects tray-hidden or
+temporarily invisible starts from becoming unreachable after a second launch.
+The main-window close contract additionally requires Alt+F4/title-bar close to
+hide rather than destroy the WebView, followed by a successful same-window
+restore from the tray-safe single-instance path.
+
+The real-browser frontend smoke includes a synthetic Meeting Workspace journey:
+consent/start, pause, resume, stop/finalization, canonical transcript rendering,
+MeetingAnalysisV1 generation, Action Item completion, speaker rename, Notes
+autosave, cited chat, confirmed webhook delivery, independent playback mute
+controls, a local-only microphone/loopback level test, visible live-provider
+reconnect/recovery, and successful
+JSON/Markdown/PDF/DOCX export requests. Long-duration UI gates preserve
+`H:MM:SS` offsets, explicit Start/End/Duration fields, timestamp seeking,
+checkpoint freshness, six-GiB storage readiness/estimated capacity, and narrow-
+width action reachability. The live-STT unit gate additionally
+forces send-side loss and repeated connection failures, proving one gap per
+outage, bounded retry, clean stop, and timeline continuation. A simulated
+`ENOSPC` writer additionally proves that an incomplete chunk is not persisted
+and that the recorder exposes `disk_full` to the capture watchdog. It is a
+UI/API-contract gate; it does not claim physical
+microphone, loopback, AEC, or provider evidence.
+Meeting interactions use real CDP pointer events after rendered/enabled,
+viewport, occlusion, and layout-stability checks; native file-input injection
+backs the import path. The gate must also enter Meetings after idle preloading
+so a flat active-Meeting cache response can never be mistaken for infinite
+history data.
+
+To capture reviewable UI evidence from that same deterministic journey:
+
+```powershell
+python scripts\smoke_frontend_browser.py --routes /meetings `
+  --output tmp\meeting-ui-screenshot-smoke.json `
+  --evidence-dir output\playwright\meeting-ui
+```
+
+This writes start/readiness, start/device-test, live/recovered, and
+post-analysis PNGs without
+using personal meetings, calendar data, audio, or provider credentials.
+Before React mounts, the same smoke blocks the main module once, seeds the
+stored dark theme, and captures `dark-boot-shell.png`. The gate requires the
+dark root class, a loaded/visible `favicon-dark.svg`, a hidden light logo, and
+the expected dark background/foreground contrast before continuing with the
+normal end-to-end journey.
+
+The native Tauri window starts hidden with a dark fallback background. React's
+saved-theme bridge applies the Windows chrome theme and then reveals the window;
+a bounded three-second fallback prevents an initialization error from leaving
+the app invisible. Verify cold dark-mode startup against the real release EXE,
+because the browser boot-shell screenshot cannot detect a native WebView frame
+shown before the document paints.
+
+The synthetic gates above are necessary but cannot promote Meetings by
+themselves. Prepare the real installed-app matrix with a specific installer:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_meeting_release_matrix.ps1 `
+  -PlanOnly `
+  -OutputDir tmp\meeting-release-matrix
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_meeting_release_matrix.ps1 `
+  -InitializeDrafts `
+  -InstallerPath Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.35_x64-setup.exe `
+  -OutputDir tmp\meeting-release-matrix
+```
+
+Initialization creates 19 `meeting-release-draft-*.json` files. Drafts are
+deliberately non-passing (`completed=false`, `operatorConfirmed=false`) and are
+never matched by the release validator. For each profile, run the named real
+scenario in the installed app, put redacted supporting files below the same
+evidence directory, record objective measurements, and save the completed copy
+as the corresponding `meeting-release-evidence-*.json` path from the runner
+plan. Every artifact path must be relative and carry a matching SHA-256.
+
+The technical privacy and regression areas are deliberately separate from the
+held voiceprint corpus, EU legal/privacy approval, and signed-release profile.
+This allows truthful incremental evidence without letting an unsigned build or
+missing legal review pass the full matrix. Collect the two locally automatable
+reports from the current installer with:
+
+```powershell
+python scripts\collect_meeting_support_bundle_evidence.py `
+  --installed-smoke tmp\meeting-support-installed-current.json `
+  --installer Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.35_x64-setup.exe `
+  --output-dir tmp\meeting-release-matrix-current `
+  --app-version 0.4.35
+
+python scripts\collect_meeting_regression_evidence.py `
+  --installer Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.35_x64-setup.exe `
+  --browser-smoke tmp\meeting-ui-current-smoke.json `
+  --build-timing Frontend\src-tauri\target\release\release-metadata\build-timing.json `
+  --installed-smoke tmp\meeting-support-installed-current.json `
+  --output-dir tmp\meeting-release-matrix-current `
+  --app-version 0.4.35 `
+  --python .\venv\Scripts\python.exe
+```
+
+The support collector accepts only the installed smoke's persisted structural
+privacy audit after the temporary ZIP has been deleted. The regression
+collector reruns Python, frontend, and both Rust suites and verifies the
+Meeting browser E2E, installer packaging phases, installed cleanup, and the
+real synthetic Mic/System/AEC frame-pipe gate. Both emit redacted summary
+artifacts rather than raw logs or personal paths. Reinitializing drafts with a
+new installer SHA archives mismatched drafts under `stale-drafts`; it never
+silently reuses them or overwrites completed evidence.
+
+Current local evidence for `v0.4.35` is under
+`tmp/meeting-release-matrix-current-62a141`. It is bound to the unsigned local
+installer SHA-256
+`62a141b5f805ae0a61c2ab555b89fd489f6415293854af23601983ddb18a6af8`.
+The partial validator accepts both completed technical reports with 1,670
+automated checks and zero support-bundle privacy findings. It intentionally
+does not satisfy physical Teams/Zoom/Meet audio routes, real Outlook accounts,
+the held voice corpus, EU privacy approval, long soaks, or signed release gates.
+
+The full matrix covers Teams Desktop, Zoom Desktop, Google Meet in Chrome, all
+five audio routes, echo/double-talk/noise/multiple-speaker conditions, provider
+and process recovery, corrupt-chunk and disk-full behavior, both Outlook account
+types and sync failure modes, a 60-minute recording, a two-hour stability soak,
+the held voiceprint corpus, support-bundle privacy, the separate EU voiceprint
+legal/privacy review, the existing regression suite, and signed release assets.
+It enforces the plan thresholds: start <= 3 seconds, live interim P95 <= 2
+seconds, measurable AEC reduction, no unmarked loss, exactly one gap per
+intentional reconnect/resume, and crash loss <= the open 30-second chunk.
+Those 60-minute/two-hour profiles remain the current minimum promotion matrix.
+Before advertising the new five-hour target as physically release-qualified,
+add an installed 18,000-second soak that records checkpoint age, process/handle
+and memory slopes, disk headroom/peak use, sidecar health, finalizer lease
+renewals, provider completion, playback seeking near hour boundaries, and
+canonical transcript/analysis integrity. Accelerated five-hour fixtures do not
+replace that evidence.
+
+For an AEC profile, first create a dedicated remote-only calibration capture
+session while system render audio is active, then pause once so its measurement
+is sealed in `captureMetadata.nativeStopSessions`. Resume for the conversational
+and double-talk portion. Record the calibration session's
+`aecMetrics.echoReductionDb` and `renderActiveDurationMs` in the profile evidence;
+do not interpret an entire mixed near-end conversation as echo-only reduction.
+
+Validate the completed bundle directly:
+
+```powershell
+python scripts\validate_meeting_release_matrix.py `
+  --input-dir tmp\meeting-release-matrix `
+  --expected-app-version 0.4.35 `
+  --output tmp\meeting-release-matrix\meeting-release-matrix-validation.json
+```
+
+Final hybrid readiness can make this matrix mandatory:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
+  -RequireMeetingReleaseMatrix `
+  -MeetingReleaseMatrixDir tmp\meeting-release-matrix `
+  -MeetingExpectedAppVersion 0.4.35 `
+  <other signed-release evidence arguments>
+```
+
+The aggregate stays red unless all reports share one app version and installer
+SHA-256 and prove both Authenticode validity and Tauri updater-signature
+verification. Matrix JSON must never contain audio, transcript text, tokens,
+raw endpoint IDs, webhook secrets, voiceprint BLOBs, embeddings, or personal
+data. `--allow-partial` and `--allow-unsigned-installer` exist only for focused
+diagnosis and incremental evidence inspection; neither proves full release
+readiness.

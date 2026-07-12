@@ -1,13 +1,12 @@
 import { useEffect, useState, useCallback, memo, useMemo, useRef, type CSSProperties } from "react";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
-import { Mic, Globe, Loader2, LayoutGrid, LayoutList } from "lucide-react";
+import { Mic, Globe, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
 import { PageIntro } from "@/components/page-intro";
-import { TranscriptHistorySearch } from "@/components/transcript-history-search";
+import { TranscriptionHistoryToolbar } from "@/components/transcription-history-toolbar";
 import { useLocation } from "wouter";
 import type { BackendStateResponse } from "@/lib/api-types";
 
@@ -96,31 +95,33 @@ const TranscriptCard = memo(function TranscriptCard({
         className={`live-recording-card perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} group h-full cursor-pointer rounded-[20px] p-4 transform-gpu ${deletingClasses}`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
-        role="button"
-        tabIndex={0}
-        aria-label={`Open recording from ${timeLabel}: ${visibleSnippet}`}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onNavigate(item.id);
-          }
-        }}
       >
           {viewMode === "list" ? (
             // List View
-            <div className="flex min-h-[72px] items-center justify-between gap-4">
+            <div className="flex min-h-[72px] flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
               <div className="flex min-w-0 flex-1 items-center gap-4">
                 <div className="live-recording-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] text-primary">
                   <Mic className="h-[18px] w-[18px] stroke-[1.65px]" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h3 className="line-clamp-2 font-heading text-[14px] font-medium leading-[1.4] text-foreground transition-colors duration-300 group-hover:text-primary">{visibleSnippet}</h3>
+                  <h3>
+                    <button
+                      type="button"
+                      className="line-clamp-2 min-h-11 w-full rounded-sm text-left font-heading text-[14px] font-medium leading-[1.4] text-foreground outline-none transition-colors duration-200 group-hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60 sm:min-h-0"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onNavigate(item.id);
+                      }}
+                    >
+                      {visibleSnippet}
+                    </button>
+                  </h3>
                   <p className="mt-1.5 truncate text-[11.5px] text-muted-foreground">
                     {timeLabel} • {formatDurationLikeYoutube(item.duration)} • {item.language || "Unknown language"}
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center justify-end gap-1">
                 <CopyActionButton
                   onClick={(e) => onCopy(e, item.id)}
                   disabled={isCopying}
@@ -168,7 +169,18 @@ const TranscriptCard = memo(function TranscriptCard({
                   </div>
                 </div>
               </div>
-              <h3 className="mb-5 line-clamp-3 min-h-[58px] font-heading text-[14px] font-medium leading-[1.45] text-foreground transition-colors duration-300 group-hover:text-primary">{visibleSnippet}</h3>
+              <h3 className="mb-5 min-h-[58px]">
+                <button
+                  type="button"
+                  className="line-clamp-3 min-h-11 w-full rounded-sm text-left font-heading text-[14px] font-medium leading-[1.45] text-foreground outline-none transition-colors duration-200 group-hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60 sm:min-h-0"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onNavigate(item.id);
+                  }}
+                >
+                  {visibleSnippet}
+                </button>
+              </h3>
               <div className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-foreground/[0.06] pt-3 text-[11px] text-muted-foreground">
                 <span>{formatDurationLikeYoutube(item.duration)}</span>
                 <span className="inline-flex items-center gap-1.5 font-medium"><Globe className="h-3 w-3 stroke-[1.65px]" /> {item.language || "Unknown"}</span>
@@ -189,6 +201,7 @@ interface AudioVisualizerProps {
 interface GlossyMicButtonProps {
   isActive: boolean;
   disabled?: boolean;
+  busy?: boolean;
   label: string;
   audioLevelRef: React.MutableRefObject<number>;
   onToggle: () => void;
@@ -337,6 +350,7 @@ const AudioVisualizer = memo(function AudioVisualizer({
 const GlossyMicButton = memo(function GlossyMicButton({
   isActive,
   disabled = false,
+  busy = false,
   label,
   audioLevelRef,
   onToggle,
@@ -424,6 +438,7 @@ const GlossyMicButton = memo(function GlossyMicButton({
             className="glossy-mic-central-button"
             onClick={onToggle}
             disabled={disabled}
+            aria-busy={busy}
             aria-label={label}
           >
             <span className="glossy-mic-layer glossy-mic-idle-layer" />
@@ -468,6 +483,7 @@ export default function LiveMic() {
   const [finalText, setFinalText] = useState("");
   const [interimText, setInterimText] = useState("");
   const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
+  const [toggleAction, setToggleAction] = useState<"start" | "stop" | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const deletingRef = useRef<string | null>(null);
@@ -496,6 +512,8 @@ export default function LiveMic() {
   });
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const audioLevelRef = useRef(0);
+  const recordingStartedAtMsRef = useRef<number | null>(null);
+  const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const transcriptsQueryKey = useMemo(
     () => transcriptHistoryQueryKey("mic", debouncedSearch),
     [debouncedSearch],
@@ -544,18 +562,28 @@ export default function LiveMic() {
     return () => controller.abort();
   }, [refreshVisualizerBarCount]);
 
-  // Mock timer
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isRecording) {
-      interval = setInterval(() => {
-        setElapsed(e => e + 1);
-      }, 1000);
-    } else {
-      setElapsed(0);
+    if (!isRecording) return;
+    if (recordingStartedAtMsRef.current === null) {
+      recordingStartedAtMsRef.current = Date.now();
     }
-    return () => clearInterval(interval);
+    const syncElapsed = () => {
+      const startedAt = recordingStartedAtMsRef.current ?? Date.now();
+      setElapsed(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    };
+    syncElapsed();
+    const interval = window.setInterval(syncElapsed, 500);
+    return () => window.clearInterval(interval);
   }, [isRecording]);
+
+  useEffect(() => {
+    if (!isRecording || !transcriptScrollRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const transcript = transcriptScrollRef.current;
+      if (transcript) transcript.scrollTop = transcript.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [finalText, interimText, isRecording]);
 
   const applyInputWarning = useCallback((message: unknown, code: unknown, actions: unknown) => {
     const normalizedMessage = String(message || "").trim();
@@ -589,6 +617,16 @@ export default function LiveMic() {
     );
     setRecordingState(nextState);
     setIsRecording(nextState === "recording");
+    if (nextState === "recording") {
+      const current = state.current as Record<string, unknown> | null | undefined;
+      const rawStartedAt = String(current?.processingStartedAt || current?.createdAt || "");
+      const startedAtMs = Date.parse(rawStartedAt);
+      if (Number.isFinite(startedAtMs)) {
+        recordingStartedAtMsRef.current = startedAtMs;
+      } else if (recordingStartedAtMsRef.current === null) {
+        recordingStartedAtMsRef.current = Date.now();
+      }
+    }
     if (nextState !== "recording") {
       audioLevelRef.current = 0;
     }
@@ -679,6 +717,8 @@ export default function LiveMic() {
           activeSessionIdRef.current = msgSessionId;
         }
         audioLevelRef.current = 0;
+        recordingStartedAtMsRef.current = Date.now();
+        setElapsed(0);
         setRecordingState("initializing");
         setIsRecording(false);
         setStatus("Preparing microphone...");
@@ -774,16 +814,24 @@ export default function LiveMic() {
   }, [applyBackendStateSnapshot, hasActiveSession, isConnected]);
 
   const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
     const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    const clock = `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+    return hours > 0 ? `${hours.toString().padStart(2, "0")}:${clock}` : clock;
   };
 
   const handleToggle = async () => {
     if (toggleRequestInFlightRef.current) return;
     toggleRequestInFlightRef.current = true;
+    const action = hasActiveSession ? "stop" : "start";
+    setToggleAction(action);
+    if (action === "start") {
+      recordingStartedAtMsRef.current = Date.now();
+      setElapsed(0);
+    }
     try {
-      const endpoint = hasActiveSession ? "/api/live-mic/stop" : "/api/live-mic/start";
+      const endpoint = action === "stop" ? "/api/live-mic/stop" : "/api/live-mic/start";
       const res = await fetchWithTimeout(
         apiUrl(endpoint),
         { method: "POST", credentials: "include" },
@@ -812,6 +860,7 @@ export default function LiveMic() {
       });
     } finally {
       toggleRequestInFlightRef.current = false;
+      setToggleAction(null);
     }
   };
 
@@ -901,7 +950,11 @@ export default function LiveMic() {
     queryClient.prefetchQuery({ queryKey: ["/api/transcripts", id] });
   }, [queryClient]);
 
-  const stageStatusLabel = isRecording
+  const stageStatusLabel = toggleAction === "start"
+    ? "Starting"
+    : toggleAction === "stop"
+      ? "Stopping"
+      : isRecording
     ? "Listening"
     : isPreparing
       ? "Preparing microphone"
@@ -911,20 +964,27 @@ export default function LiveMic() {
           ? "Ready"
           : "Offline";
 
-  const stageStatusHint = isRecording
+  const stageStatusHint = toggleAction === "start"
+    ? "Connecting to your input device"
+    : toggleAction === "stop"
+      ? "Saving your recording"
+      : isRecording
     ? "Tap the microphone to stop"
     : isPreparing
       ? "Connecting to your input device"
       : isTranscribing
         ? "Finalizing your transcript"
-        : "Tap the microphone to start";
+        : isConnected
+          ? "Press the microphone to start"
+          : "Reconnecting to Scriber";
 
   return (
     <div className="live-mic-page mx-auto w-full max-w-[1320px] px-4 py-5 md:px-6 md:py-6">
       <PageIntro
         eyebrow="Voice capture · 01"
         title="Live transcription"
-        description="Record a thought, meeting note, or longer dictation and see the transcript as it arrives."
+        description="Capture thoughts or longer dictation and watch the transcript appear as you speak."
+        sticky={false}
       />
 
       <div className="space-y-7">
@@ -936,7 +996,7 @@ export default function LiveMic() {
                 className={`h-2 w-2 rounded-full ${
                   isRecording
                     ? "bg-red-500 shadow-[0_0_0_4px_rgba(239,68,68,0.12)]"
-                    : isPreparing || isTranscribing
+                    : toggleAction !== null || isPreparing || isTranscribing
                       ? "bg-amber-400"
                       : isConnected
                         ? "bg-emerald-500"
@@ -951,9 +1011,14 @@ export default function LiveMic() {
               {/* Controls */}
               <GlossyMicButton
                 isActive={isMicCaptureActive}
-                disabled={isTranscribing}
+                disabled={isTranscribing || toggleAction !== null || (!isConnected && !hasActiveSession)}
+                busy={toggleAction !== null || isPreparing || isTranscribing}
                 label={
-                  isTranscribing
+                  toggleAction === "start"
+                    ? "Starting recording"
+                    : toggleAction === "stop"
+                      ? "Stopping recording"
+                      : isTranscribing
                     ? "Transcribing recording"
                     : hasActiveSession
                       ? "Stop recording"
@@ -975,8 +1040,12 @@ export default function LiveMic() {
           <div className="live-mic-transcript-deck flex min-w-0 flex-col p-5 md:p-6 lg:p-7">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h2 className="font-heading text-[18px] font-semibold tracking-[-0.015em] text-foreground">Live transcript</h2>
-                <p className="mt-1 text-[11.5px] leading-4 text-muted-foreground">Speech appears here while you record.</p>
+                <h2 className="font-heading text-[18px] font-semibold tracking-[-0.015em] text-foreground">
+                  {!hasActiveSession && finalText ? "Last transcript" : "Live transcript"}
+                </h2>
+                <p className="mt-1 text-[11.5px] leading-4 text-muted-foreground">
+                  {!hasActiveSession && finalText ? "Saved to Recent recordings." : "Speech appears here while you record."}
+                </p>
               </div>
               {(isPreparing || isTranscribing) && (
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-[10.5px] font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
@@ -988,17 +1057,21 @@ export default function LiveMic() {
 
             {/* Live Text Output - Debossed status well for unified design */}
             <div className="live-mic-transcript-well flex min-h-[140px] flex-1 items-center p-5 text-left md:min-h-[168px] md:p-6">
-              <p className="sr-only" aria-live="assertive" aria-atomic="true">
+              <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
                 {isRecording
-                  ? `Recording started. Elapsed ${formatTime(elapsed)}.`
+                  ? "Recording started."
                   : isPreparing
                     ? "Preparing microphone."
                     : isTranscribing
                       ? "Transcribing recording."
                       : "Recording stopped."}
               </p>
-              <div className="relative z-10 w-full" aria-live="polite" aria-atomic="true">
-                {isRecording ? (
+              <div
+                ref={transcriptScrollRef}
+                className="relative z-10 max-h-[228px] w-full overflow-y-auto overscroll-contain pr-1"
+                aria-label={!hasActiveSession && finalText ? "Last saved transcript" : "Live transcript"}
+              >
+                {isRecording || finalText || interimText ? (
                   <p className="max-w-[70ch] text-[17px] font-medium leading-relaxed md:text-[19px]">
                     {(finalText || interimText) ? (
                       <>
@@ -1007,8 +1080,10 @@ export default function LiveMic() {
                           <span className="text-muted-foreground italic">{finalText ? ' ' : ''}{interimText}</span>
                         )}
                       </>
-                    ) : (
+                    ) : isRecording ? (
                       <span className="text-foreground/90">{status || "Listening"}...</span>
+                    ) : (
+                      <span className="text-muted-foreground">No speech was detected.</span>
                     )}
                   </p>
                 ) : isPreparing || isTranscribing ? (
@@ -1023,7 +1098,7 @@ export default function LiveMic() {
             </div>
 
             {isRecording && inputWarning && (
-              <div className="mt-3 space-y-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-200">
+              <div className="mt-3 space-y-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-200" role="alert">
                 <p>{inputWarning}</p>
                 {inputWarningActions.length > 0 && (
                   <div className="flex flex-wrap gap-2">
@@ -1057,35 +1132,19 @@ export default function LiveMic() {
 
         {/* History Section */}
         <section className="live-mic-history space-y-4 pb-2">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <h2 className="font-heading text-[20px] font-semibold tracking-[-0.02em] text-foreground">Recent recordings</h2>
-              <p className="mt-1 text-[12px] leading-4 text-muted-foreground">Search, copy, or reopen your latest dictations.</p>
-            </div>
-            <div className="flex w-full items-center gap-2 sm:w-auto">
-              <TranscriptHistorySearch
-                value={searchQuery}
-                onChange={setSearchQuery}
-                placeholder="Search recordings..."
-                ariaLabel="Search recording history"
-                clearLabel="Clear recording search"
-                className="sm:w-[340px] lg:w-[400px]"
-              />
-              <ToggleGroup
-                type="single"
-                value={viewMode}
-                onValueChange={(val) => val && setViewMode(val as "list" | "grid")}
-                className="live-mic-view-toggle shrink-0 rounded-[13px] p-1"
-              >
-                <ToggleGroupItem value="list" aria-label="List view" className="h-10 w-10 rounded-[10px] p-0 transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]">
-                  <LayoutList className="h-4 w-4" />
-                </ToggleGroupItem>
-                <ToggleGroupItem value="grid" aria-label="Grid view" className="h-10 w-10 rounded-[10px] p-0 transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]">
-                  <LayoutGrid className="h-4 w-4" />
-                </ToggleGroupItem>
-              </ToggleGroup>
-            </div>
-          </div>
+          <TranscriptionHistoryToolbar
+            title="Recent recordings"
+            description="Search, copy, or reopen your latest dictations."
+            total={transcriptsQuery.total}
+            itemLabel={transcriptsQuery.total === 1 ? "recording" : "recordings"}
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="Search recordings..."
+            searchAriaLabel="Search recording history"
+            clearSearchLabel="Clear recording search"
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
+          />
 
           {transcriptsQuery.isLoading ? (
             <SkeletonList count={3} variant={viewMode} />

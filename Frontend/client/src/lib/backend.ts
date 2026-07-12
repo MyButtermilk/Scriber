@@ -56,6 +56,7 @@ export interface DesktopHotkeyStatus {
   available: boolean;
   hotkey: string;
   postProcessingHotkey?: string;
+  meetingHotkey?: string;
   mode: string;
   message: string;
   captureSuspended: boolean;

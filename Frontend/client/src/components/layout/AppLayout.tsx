@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Mic, Settings, Youtube, FolderOpen, Menu, Search, Terminal } from "lucide-react";
+import { CalendarClock, Mic, Settings, Youtube, FolderOpen, Menu, Search, Terminal } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SidebarSearch } from "@/components/ui/sidebar-search";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { useState, useEffect, useCallback, lazy, Suspense, useRef } from "react";
 import { preloadRouteChunk } from "@/lib/route-preload";
+import { BrandMark } from "@/components/BrandMark";
+import { ActiveMeetingPill } from "@/components/meeting/ActiveMeetingPill";
 
 const CommandPalette = lazy(async () => {
   const module = await import("@/components/CommandPalette");
@@ -62,6 +64,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
 
   const tabs = [
     { href: "/", icon: Mic, label: "Live Mic" },
+    { href: "/meetings", icon: CalendarClock, label: "Meetings" },
     { href: "/youtube", icon: Youtube, label: "YouTube" },
     { href: "/file", icon: FolderOpen, label: "File" },
     { href: "/debug", icon: Terminal, label: "Console" },
@@ -106,7 +109,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
   );
 
   return (
-    <div className="min-h-screen md:h-screen overflow-hidden bg-sidebar font-sans flex flex-col">
+    <div className="min-h-[100dvh] md:h-[100dvh] overflow-hidden bg-sidebar font-sans flex flex-col">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-[60] rounded-md bg-background px-3 py-2 text-sm text-foreground shadow-md"
@@ -115,6 +118,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
       </a>
 
       <DesktopTitleBar />
+      <ActiveMeetingPill />
 
       <div className="min-h-0 flex-1 overflow-hidden bg-sidebar flex flex-col md:flex-row">
         {/* Mobile Header */}
@@ -130,7 +134,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
                 <SheetTitle className="sr-only">Main navigation</SheetTitle>
                 <div className="flex h-full flex-col">
                   <div className="px-4 pt-5 pb-3 flex items-center gap-2.5">
-                    <img src="/favicon.svg" alt="Scriber" className="w-7 h-7" />
+                    <BrandMark className="h-9 w-9" />
                     <span className="font-heading font-semibold text-lg text-foreground tracking-tight">Scriber</span>
                   </div>
                   <div className="px-3 pb-3">
@@ -143,7 +147,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
                 </div>
               </SheetContent>
             </Sheet>
-            <img src="/favicon.svg" alt="" className="h-6 w-6" aria-hidden="true" />
+            <BrandMark className="h-8 w-8" decorative />
             <span className="font-heading text-base font-semibold tracking-tight">Scriber</span>
           </div>
           <div className="flex items-center gap-1">
@@ -165,7 +169,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
         <aside className="hidden md:flex w-60 md:w-64 shrink-0 flex-col">
           {/* Logo and Branding */}
           <div className="px-4 pt-5 pb-3 flex items-center gap-2.5">
-            <img src="/favicon.svg" alt="Scriber" className="w-7 h-7" />
+            <BrandMark className="h-9 w-9" />
             <span className="font-heading font-semibold text-lg text-foreground tracking-tight">Scriber</span>
           </div>
 
@@ -184,11 +188,11 @@ export function AppLayout({ children, path }: AppLayoutProps) {
         </aside>
 
         {/* Main Content Area */}
-        <main id="main-content" className="min-h-0 flex-1 flex flex-col pb-3 md:py-3 md:pr-3">
+        <main id="main-content" className="min-h-0 min-w-0 flex-1 flex flex-col pb-3 md:py-3 md:pr-3">
           {/* Content panel - rounded, inset within the sidebar-colored background */}
-          <div className="flex-1 overflow-hidden md:bg-card md:rounded-xl md:neu-panel-inset">
-            <div ref={scrollContainerRef} className="h-full overflow-y-auto" data-app-scroll-container="true">
-              <div className="min-h-full">
+          <div className="min-w-0 flex-1 overflow-hidden md:bg-card md:rounded-xl md:neu-panel-inset">
+            <div ref={scrollContainerRef} className="h-full min-w-0 overflow-y-auto overflow-x-hidden" data-app-scroll-container="true">
+              <div className="min-h-full min-w-0">
                 {children}
               </div>
             </div>

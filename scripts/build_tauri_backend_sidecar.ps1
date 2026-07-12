@@ -11,7 +11,7 @@ Typical flow:
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -InstallPyInstaller -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -UseProfileBFfmpeg -ValidateSlimMediaTools -ReuseSidecarIfUnchanged -CopyToTauriRelease
-  powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -UseProfileBFfmpeg -ValidateSlimMediaTools -ReuseSidecarIfUnchanged -BundleRustAudioSidecar -CopyToTauriRelease
+  powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -UseProfileBFfmpeg -ValidateSlimMediaTools -ReuseSidecarIfUnchanged -BundleRustAudioSidecar -BundleRustDiarizationSidecar -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -UseGyanFfmpegEssentials -ValidateSlimMediaTools -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -SkipBundledFfprobe -CopyToTauriRelease
   powershell -ExecutionPolicy Bypass -File scripts\build_tauri_backend_sidecar.ps1 -BundleMediaTools -ValidateSlimMediaTools -MediaToolsDir path\to\slim-ffmpeg -CopyToTauriRelease
@@ -36,6 +36,10 @@ param(
     [switch]$ReuseSidecarIfUnchanged,
     [string]$SidecarCacheRoot = "",
     [switch]$BundleRustAudioSidecar,
+    [switch]$BundleRustDiarizationSidecar,
+    [string]$RustDiarizationSidecarCacheRoot = "",
+    [string]$SherpaOnnxArchiveCacheRoot = "",
+    [string]$RustDiarizationTargetRoot = "",
     [switch]$RustAudioIsolatedTarget,
     [switch]$LocalPyInstallerNoClean,
     [switch]$CopyToTauriRelease
@@ -279,6 +283,7 @@ function Get-SidecarFlagState {
         skipBundledFfprobe = [bool]$SkipBundledFfprobe
         validateSlimMediaTools = [bool]$ValidateSlimMediaTools
         bundleRustAudioSidecar = [bool]$BundleRustAudioSidecar
+        bundleRustDiarizationSidecar = [bool]$BundleRustDiarizationSidecar
         pyInstallerClean = -not [bool]$LocalPyInstallerNoClean
         rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
     }
@@ -476,6 +481,7 @@ function Get-RustAudioSidecarInputManifest {
         "Frontend\src-tauri\build.rs",
         "Frontend\src-tauri\src\audio_sidecar.rs",
         "Frontend\src-tauri\src\audio_frame_pipe.rs",
+        "Frontend\src-tauri\src\meeting_aec.rs",
         "Frontend\src-tauri\src\redaction.rs"
     )
     $knownPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -546,7 +552,11 @@ function Copy-RustAudioSidecarToTauriRelease {
     if ((Test-Path -LiteralPath $cacheExe -PathType Leaf) -and (Test-Path -LiteralPath $cacheManifestPath -PathType Leaf)) {
         try {
             $cacheManifest = Get-Content -LiteralPath $cacheManifestPath -Raw | ConvertFrom-Json
-            $cacheHit = ([string]$cacheManifest.cacheKey) -eq $cacheKey
+            $cacheHit = (
+                ([string]$cacheManifest.cacheKey) -eq $cacheKey -and
+                [string]$cacheManifest.executableSha256 -eq (Get-Sha256Hex -Path $cacheExe) -and
+                [int64]$cacheManifest.executableLength -eq [int64](Get-Item -LiteralPath $cacheExe).Length
+            )
         } catch {
             $cacheHit = $false
         }
@@ -573,6 +583,8 @@ function Copy-RustAudioSidecarToTauriRelease {
         $cacheManifestPayload = [ordered]@{
             apiVersion = "1"
             cacheKey = $cacheKey
+            executableSha256 = Get-Sha256Hex -Path $cacheExe
+            executableLength = [int64](Get-Item -LiteralPath $cacheExe).Length
             inputManifest = $inputManifest
         }
         $cacheManifestPayload | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $cacheManifestPath -Encoding utf8
@@ -585,6 +597,10 @@ function Copy-RustAudioSidecarToTauriRelease {
     New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
     $targetExe = Join-Path $targetDir $exeName
     $targetCopied = Copy-FileIfChanged -SourcePath $cacheExe -TargetPath $targetExe
+    & $targetExe --self-test | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Rust audio sidecar self-test failed for packaged executable."
+    }
 
     if (Test-Path -LiteralPath $staleResourceDir -PathType Container) {
         foreach ($staleItem in Get-ChildItem -LiteralPath $staleResourceDir -Force -ErrorAction SilentlyContinue) {
@@ -633,12 +649,370 @@ function Copy-RustAudioSidecarToTauriRelease {
     }
 }
 
+function Get-RustDiarizationSidecarInputManifest {
+    param([string]$Root)
+
+    $relativePaths = @(
+        "native\scriber-diarization-sidecar\.cargo\config.toml",
+        "native\scriber-diarization-sidecar\Cargo.toml",
+        "native\scriber-diarization-sidecar\Cargo.lock",
+        "native\scriber-diarization-sidecar\build.rs",
+        "native\scriber-diarization-sidecar\src",
+        "scripts\write_diarization_worker_manifest.py"
+    )
+    return [ordered]@{
+        apiVersion = "1"
+        target = "x86_64-pc-windows-msvc"
+        cacheContract = "static-sherpa-worker-v1"
+        sherpaOnnx = [ordered]@{
+            version = "1.13.3"
+            archiveName = "sherpa-onnx-v1.13.3-win-x64-static-MT-Release-lib.tar.bz2"
+            archiveSha256 = "f6555701d6397d74f1302b0666a661f32708b599a14a5fde80835d4902fcd315"
+        }
+        files = Get-InputFileEntries -Root $Root -RelativePaths $relativePaths
+    }
+}
+
+function Get-RustDiarizationSidecarCacheKey {
+    param([string]$Root)
+
+    $inputManifest = Get-RustDiarizationSidecarInputManifest -Root $Root
+    $inputManifestJson = $inputManifest | ConvertTo-Json -Depth 8 -Compress
+    return Get-StringSha256 -Value $inputManifestJson
+}
+
+function Invoke-BoundedDownload {
+    param(
+        [string]$Uri,
+        [string]$OutputPath,
+        [int64]$MaxBytes
+    )
+
+    Add-Type -AssemblyName System.Net.Http
+    $handler = [System.Net.Http.HttpClientHandler]::new()
+    $handler.AllowAutoRedirect = $true
+    $client = [System.Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [System.TimeSpan]::FromMinutes(10)
+    $client.DefaultRequestHeaders.UserAgent.ParseAdd("Scriber-release-builder/1")
+    $response = $null
+    $inputStream = $null
+    $outputStream = $null
+    try {
+        $response = $client.GetAsync(
+            $Uri,
+            [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
+        ).GetAwaiter().GetResult()
+        [void]$response.EnsureSuccessStatusCode()
+        $contentLength = $response.Content.Headers.ContentLength
+        if ($null -ne $contentLength -and [int64]$contentLength -gt $MaxBytes) {
+            throw "Download exceeds the configured size ceiling."
+        }
+        $inputStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $outputStream = [System.IO.File]::Open(
+            $OutputPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        $buffer = New-Object byte[] (1024 * 1024)
+        [int64]$total = 0
+        while (($read = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $total += $read
+            if ($total -gt $MaxBytes) {
+                throw "Download exceeds the configured size ceiling."
+            }
+            $outputStream.Write($buffer, 0, $read)
+        }
+        $outputStream.Flush($true)
+    } finally {
+        if ($outputStream) { $outputStream.Dispose() }
+        if ($inputStream) { $inputStream.Dispose() }
+        if ($response) { $response.Dispose() }
+        $client.Dispose()
+        $handler.Dispose()
+    }
+}
+
+function Get-SherpaOnnxStaticArchive {
+    param(
+        [string]$Root,
+        [string]$CacheRoot
+    )
+
+    $archiveName = "sherpa-onnx-v1.13.3-win-x64-static-MT-Release-lib.tar.bz2"
+    $archiveUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.3/$archiveName"
+    $expectedSha256 = "f6555701d6397d74f1302b0666a661f32708b599a14a5fde80835d4902fcd315"
+    $maxArchiveBytes = 128MB
+    Assert-UnderRoot -Root $Root -Path $CacheRoot -Label "Sherpa-ONNX archive cache"
+    New-Item -ItemType Directory -Force -Path $CacheRoot | Out-Null
+    $archivePath = Join-Path $CacheRoot $archiveName
+    $cacheHit = $false
+
+    if (Test-Path -LiteralPath $archivePath -PathType Leaf) {
+        $archiveItem = Get-Item -LiteralPath $archivePath
+        if ($archiveItem.Length -le $maxArchiveBytes -and (Get-Sha256Hex -Path $archivePath) -eq $expectedSha256) {
+            $cacheHit = $true
+        } else {
+            Assert-UnderRoot -Root $CacheRoot -Path $archivePath -Label "Invalid Sherpa-ONNX archive cache file"
+            Remove-Item -LiteralPath $archivePath -Force
+        }
+    }
+
+    if (-not $cacheHit) {
+        $partialPath = Join-Path $CacheRoot ("$archiveName.part-" + $PID)
+        Assert-UnderRoot -Root $CacheRoot -Path $partialPath -Label "Sherpa-ONNX partial archive"
+        try {
+            if (Test-Path -LiteralPath $partialPath -PathType Leaf) {
+                Remove-Item -LiteralPath $partialPath -Force
+            }
+            Write-Host "Downloading pinned Sherpa-ONNX 1.13.3 static archive."
+            Invoke-BoundedDownload -Uri $archiveUrl -OutputPath $partialPath -MaxBytes $maxArchiveBytes
+            $partialItem = Get-Item -LiteralPath $partialPath
+            if ($partialItem.Length -gt $maxArchiveBytes) {
+                throw "Sherpa-ONNX static archive exceeds the pinned size ceiling."
+            }
+            $actualSha256 = Get-Sha256Hex -Path $partialPath
+            if ($actualSha256 -ne $expectedSha256) {
+                throw "Sherpa-ONNX static archive checksum mismatch."
+            }
+            Move-Item -LiteralPath $partialPath -Destination $archivePath
+        } finally {
+            if (Test-Path -LiteralPath $partialPath -PathType Leaf) {
+                Remove-Item -LiteralPath $partialPath -Force
+            }
+        }
+    }
+
+    $archiveItem = Get-Item -LiteralPath $archivePath
+    $archiveManifest = [ordered]@{
+        apiVersion = "1"
+        source = $archiveUrl
+        fileName = $archiveName
+        sha256 = $expectedSha256
+        length = [int64]$archiveItem.Length
+    }
+    $archiveManifestPath = Join-Path $CacheRoot "sherpa-onnx-archive-manifest.json"
+    $archiveManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $archiveManifestPath -Encoding utf8
+    return [ordered]@{
+        cacheHit = $cacheHit
+        cacheRoot = $CacheRoot
+        archivePath = $archivePath
+        manifestPath = $archiveManifestPath
+        source = $archiveUrl
+        fileName = $archiveName
+        sha256 = $expectedSha256
+        length = [int64]$archiveItem.Length
+    }
+}
+
+function Invoke-DiarizationWorkerResourceSmoke {
+    param(
+        [string]$Root,
+        [string]$Python,
+        [string]$ResourceRoot
+    )
+
+    $smokeScript = Join-Path $Root "scripts\smoke_diarization_worker_resource.py"
+    if (-not (Test-Path -LiteralPath $smokeScript -PathType Leaf)) {
+        throw "Missing diarization worker resource smoke: $smokeScript"
+    }
+    $smokeJson = & $Python $smokeScript --root $ResourceRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "Diarization worker resource smoke failed."
+    }
+    try {
+        $smoke = ($smokeJson | Out-String).Trim() | ConvertFrom-Json
+    } catch {
+        throw "Diarization worker resource smoke returned invalid JSON."
+    }
+    if (-not $smoke.ok) {
+        throw "Diarization worker resource smoke did not report ok=true."
+    }
+    return $smoke
+}
+
+function Copy-RustDiarizationSidecarToBackend {
+    param(
+        [string]$Root,
+        [string]$Python,
+        [string]$BackendDir,
+        [string]$WorkerCacheRoot,
+        [string]$ArchiveCacheRoot,
+        [string]$CargoTargetRoot
+    )
+
+    if (-not ($IsWindows -or $env:OS -eq "Windows_NT")) {
+        throw "The release diarization worker currently supports Windows x64 only."
+    }
+    Assert-UnderRoot -Root $Root -Path $BackendDir -Label "Diarization backend resource target"
+    Assert-UnderRoot -Root $Root -Path $WorkerCacheRoot -Label "Rust diarization sidecar cache"
+    Assert-UnderRoot -Root $Root -Path $ArchiveCacheRoot -Label "Sherpa-ONNX archive cache"
+    Assert-UnderRoot -Root $Root -Path $CargoTargetRoot -Label "Rust diarization cargo target"
+
+    $crateDir = Join-Path $Root "native\scriber-diarization-sidecar"
+    $manifestWriter = Join-Path $Root "scripts\write_diarization_worker_manifest.py"
+    $exeName = "scriber-diarization-sidecar.exe"
+    $workerManifestName = "scriber-diarization-sidecar.manifest.json"
+    $cacheResourceRoot = Join-Path $WorkerCacheRoot "backend"
+    $cacheResourceDir = Join-Path $cacheResourceRoot "tools\diarization"
+    $cacheExe = Join-Path $cacheResourceDir $exeName
+    $cacheWorkerManifest = Join-Path $cacheResourceDir $workerManifestName
+    $cacheManifestPath = Join-Path $WorkerCacheRoot "diarization-sidecar-cache-manifest.json"
+    $buildMetadataPath = Join-Path $WorkerCacheRoot "diarization-sidecar-build-metadata.json"
+    $inputManifest = Get-RustDiarizationSidecarInputManifest -Root $Root
+    $inputManifestJson = $inputManifest | ConvertTo-Json -Depth 8 -Compress
+    $cacheKey = Get-StringSha256 -Value $inputManifestJson
+    $cacheHit = $false
+    $cachedBuildMetadata = $null
+
+    if (
+        (Test-Path -LiteralPath $cacheExe -PathType Leaf) -and
+        (Test-Path -LiteralPath $cacheWorkerManifest -PathType Leaf) -and
+        (Test-Path -LiteralPath $cacheManifestPath -PathType Leaf) -and
+        (Test-Path -LiteralPath $buildMetadataPath -PathType Leaf)
+    ) {
+        try {
+            $cacheManifest = Get-Content -LiteralPath $cacheManifestPath -Raw | ConvertFrom-Json
+            $cachedBuildMetadata = Get-Content -LiteralPath $buildMetadataPath -Raw | ConvertFrom-Json
+            $cachedArchive = Get-ObjectPropertyValue -Object $cachedBuildMetadata -Name "archive"
+            $cacheHit = (
+                ([string]$cacheManifest.cacheKey) -eq $cacheKey -and
+                ([string]$cachedBuildMetadata.cacheKey) -eq $cacheKey -and
+                ([string](Get-ObjectPropertyValue -Object $cachedArchive -Name "sha256")) -eq "f6555701d6397d74f1302b0666a661f32708b599a14a5fde80835d4902fcd315"
+            )
+            if ($cacheHit) {
+                Invoke-DiarizationWorkerResourceSmoke -Root $Root -Python $Python -ResourceRoot $cacheResourceRoot | Out-Null
+            }
+        } catch {
+            Write-Host "Ignoring invalid Rust diarization sidecar cache."
+            $cacheHit = $false
+            $cachedBuildMetadata = $null
+        }
+    }
+
+    $archive = $null
+    $rustcVersion = $null
+    $cargoVersion = $null
+    if (-not $cacheHit) {
+        $archive = Get-SherpaOnnxStaticArchive -Root $Root -CacheRoot $ArchiveCacheRoot
+        $rustcVersion = (& rustc -Vv 2>$null) -join "`n"
+        if ($LASTEXITCODE -ne 0 -or -not $rustcVersion) {
+            throw "rustc is required to build the diarization worker."
+        }
+        $cargoVersion = (& cargo -V 2>$null) -join "`n"
+        if ($LASTEXITCODE -ne 0 -or -not $cargoVersion) {
+            throw "cargo is required to build the diarization worker."
+        }
+
+        $oldArchiveDir = $env:SHERPA_ONNX_ARCHIVE_DIR
+        $env:SHERPA_ONNX_ARCHIVE_DIR = $ArchiveCacheRoot
+        Push-Location $crateDir
+        try {
+            & cargo build --release --locked --target-dir $CargoTargetRoot
+            $cargoExitCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+            if ($null -eq $oldArchiveDir) {
+                Remove-Item Env:SHERPA_ONNX_ARCHIVE_DIR -ErrorAction SilentlyContinue
+            } else {
+                $env:SHERPA_ONNX_ARCHIVE_DIR = $oldArchiveDir
+            }
+        }
+        if ($cargoExitCode -ne 0) {
+            throw "Rust diarization sidecar build failed with exit code $cargoExitCode."
+        }
+
+        $sourceExe = Join-Path $CargoTargetRoot "release\$exeName"
+        if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
+            throw "Rust diarization sidecar executable was not found: $sourceExe"
+        }
+        New-Item -ItemType Directory -Force -Path $cacheResourceDir | Out-Null
+        Copy-FileIfChanged -SourcePath $sourceExe -TargetPath $cacheExe | Out-Null
+        & $Python $manifestWriter --executable $cacheExe --output $cacheWorkerManifest
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $cacheWorkerManifest -PathType Leaf)) {
+            throw "Diarization worker build attestation generation failed."
+        }
+        foreach ($staleItem in Get-ChildItem -LiteralPath $cacheResourceDir -Force -ErrorAction SilentlyContinue) {
+            if ($staleItem.Name -notin @($exeName, $workerManifestName)) {
+                Assert-UnderRoot -Root $cacheResourceDir -Path $staleItem.FullName -Label "Stale diarization cache resource"
+                Remove-Item -LiteralPath $staleItem.FullName -Recurse -Force
+            }
+        }
+        $cacheSmoke = Invoke-DiarizationWorkerResourceSmoke -Root $Root -Python $Python -ResourceRoot $cacheResourceRoot
+        $cacheManifestPayload = [ordered]@{
+            apiVersion = "1"
+            generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+            cacheKey = $cacheKey
+            inputManifest = $inputManifest
+        }
+        $cacheManifestPayload | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $cacheManifestPath -Encoding utf8
+        $cachedBuildMetadata = [ordered]@{
+            apiVersion = "1"
+            generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+            cacheKey = $cacheKey
+            rustc = $rustcVersion
+            cargo = $cargoVersion
+            archive = [ordered]@{
+                source = $archive.source
+                fileName = $archive.fileName
+                sha256 = $archive.sha256
+                length = $archive.length
+                cacheHitDuringWorkerBuild = [bool]$archive.cacheHit
+            }
+            worker = [ordered]@{
+                sha256 = Get-Sha256Hex -Path $cacheExe
+                length = [int64](Get-Item -LiteralPath $cacheExe).Length
+            }
+            smoke = $cacheSmoke
+        }
+        $cachedBuildMetadata | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $buildMetadataPath -Encoding utf8
+    }
+
+    $targetResourceDir = Join-Path $BackendDir "tools\diarization"
+    $sync = Sync-DirectoryContents -SourceDir $cacheResourceDir -TargetDir $targetResourceDir -TargetLabel "Diarization backend resource target"
+    $targetExe = Join-Path $targetResourceDir $exeName
+    $targetManifest = Join-Path $targetResourceDir $workerManifestName
+    $targetSmoke = Invoke-DiarizationWorkerResourceSmoke -Root $Root -Python $Python -ResourceRoot $BackendDir
+    if ($null -eq $cachedBuildMetadata -and (Test-Path -LiteralPath $buildMetadataPath -PathType Leaf)) {
+        $cachedBuildMetadata = Get-Content -LiteralPath $buildMetadataPath -Raw | ConvertFrom-Json
+    }
+    $archiveBuildInput = if ($archive) { $archive } else { Get-ObjectPropertyValue -Object $cachedBuildMetadata -Name "archive" }
+
+    return [ordered]@{
+        targetDir = $targetResourceDir
+        targetExe = $targetExe
+        targetManifest = $targetManifest
+        sha256 = Get-Sha256Hex -Path $targetExe
+        length = [int64](Get-Item -LiteralPath $targetExe).Length
+        manifestSha256 = Get-Sha256Hex -Path $targetManifest
+        manifestLength = [int64](Get-Item -LiteralPath $targetManifest).Length
+        cacheHit = $cacheHit
+        cacheKey = $cacheKey
+        cacheRoot = $WorkerCacheRoot
+        archiveCacheRoot = $ArchiveCacheRoot
+        archive = [ordered]@{
+            source = Get-ObjectPropertyValue -Object $archiveBuildInput -Name "source"
+            fileName = Get-ObjectPropertyValue -Object $archiveBuildInput -Name "fileName"
+            sha256 = Get-ObjectPropertyValue -Object $archiveBuildInput -Name "sha256"
+            length = Get-ObjectPropertyValue -Object $archiveBuildInput -Name "length"
+            verifiedDuringWorkerBuild = $true
+            requiredForCurrentBuild = -not $cacheHit
+            cacheHitForCurrentBuild = if ($archive) { [bool]$archive.cacheHit } else { $null }
+        }
+        cargoTargetDir = $CargoTargetRoot
+        buildMetadataPath = $buildMetadataPath
+        sync = $sync
+        smoke = $targetSmoke
+    }
+}
+
 function Test-SidecarTargetCurrent {
     param(
         [string]$TargetDir,
         [string]$ExpectedCacheKey,
         [object]$ExpectedFlags,
-        [string]$ExpectedRustAudioCacheKey
+        [string]$ExpectedRustAudioCacheKey,
+        [string]$ExpectedRustDiarizationCacheKey
     )
 
     $metadataPath = Join-Path $TargetDir "sidecar-build-metadata.json"
@@ -670,6 +1044,13 @@ function Test-SidecarTargetCurrent {
     if (-not (Test-Path -LiteralPath $sidecarExe -PathType Leaf)) {
         return $false
     }
+    $sidecarIdentity = Get-ObjectPropertyValue -Object $metadata -Name "sidecar"
+    if (
+        [string](Get-ObjectPropertyValue -Object $sidecarIdentity -Name "sha256") -ne (Get-Sha256Hex -Path $sidecarExe) -or
+        [int64](Get-ObjectPropertyValue -Object $sidecarIdentity -Name "length") -ne [int64](Get-Item -LiteralPath $sidecarExe).Length
+    ) {
+        return $false
+    }
     foreach ($requiredPath in @("_internal\onnxruntime", "_internal\onnxruntime\capi")) {
         if (-not (Test-Path -LiteralPath (Join-Path $TargetDir $requiredPath))) {
             return $false
@@ -696,7 +1077,34 @@ function Test-SidecarTargetCurrent {
             return $false
         }
         $rustAudio = Get-ObjectPropertyValue -Object $metadata -Name "rustAudioSidecarCopied"
-        if (-not $ExpectedRustAudioCacheKey -or [string](Get-ObjectPropertyValue -Object $rustAudio -Name "cacheKey") -ne $ExpectedRustAudioCacheKey) {
+        $rustAudioExe = Join-Path $releaseDir $exeName
+        if (
+            -not $ExpectedRustAudioCacheKey -or
+            [string](Get-ObjectPropertyValue -Object $rustAudio -Name "cacheKey") -ne $ExpectedRustAudioCacheKey -or
+            [string](Get-ObjectPropertyValue -Object $rustAudio -Name "sha256") -ne (Get-Sha256Hex -Path $rustAudioExe) -or
+            [int64](Get-ObjectPropertyValue -Object $rustAudio -Name "length") -ne [int64](Get-Item -LiteralPath $rustAudioExe).Length
+        ) {
+            return $false
+        }
+    }
+    if ($BundleRustDiarizationSidecar) {
+        $diarizationDir = Join-Path $TargetDir "tools\diarization"
+        $diarizationExe = Join-Path $diarizationDir "scriber-diarization-sidecar.exe"
+        $diarizationManifest = Join-Path $diarizationDir "scriber-diarization-sidecar.manifest.json"
+        if (
+            -not (Test-Path -LiteralPath $diarizationExe -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $diarizationManifest -PathType Leaf)
+        ) {
+            return $false
+        }
+        $rustDiarization = Get-ObjectPropertyValue -Object $metadata -Name "rustDiarizationSidecarCopied"
+        if (
+            -not $ExpectedRustDiarizationCacheKey -or
+            [string](Get-ObjectPropertyValue -Object $rustDiarization -Name "cacheKey") -ne $ExpectedRustDiarizationCacheKey -or
+            [string](Get-ObjectPropertyValue -Object $rustDiarization -Name "sha256") -ne (Get-Sha256Hex -Path $diarizationExe) -or
+            [int64](Get-ObjectPropertyValue -Object $rustDiarization -Name "length") -ne [int64](Get-Item -LiteralPath $diarizationExe).Length -or
+            [string](Get-ObjectPropertyValue -Object $rustDiarization -Name "manifestSha256") -ne (Get-Sha256Hex -Path $diarizationManifest)
+        ) {
             return $false
         }
     }
@@ -713,6 +1121,7 @@ function Write-SidecarBuildMetadata {
         [object]$PreparedMediaTools,
         [object[]]$MediaToolsCopied,
         [object]$RustAudioSidecarCopied,
+        [object]$RustDiarizationSidecarCopied,
         [string]$CopiedTo,
         [bool]$TargetCurrent = $false
     )
@@ -723,6 +1132,10 @@ function Write-SidecarBuildMetadata {
         generatedAt = (Get-Date).ToUniversalTime().ToString("o")
         sidecarDir = $SidecarDir
         sidecarExe = $SidecarExe
+        sidecar = [ordered]@{
+            sha256 = Get-Sha256Hex -Path $SidecarExe
+            length = [int64](Get-Item -LiteralPath $SidecarExe).Length
+        }
         copiedToTauriRelease = $CopiedTo
         targetCurrent = [bool]$TargetCurrent
         cache = [ordered]@{
@@ -737,12 +1150,14 @@ function Write-SidecarBuildMetadata {
             skipBundledFfprobe = [bool]$SkipBundledFfprobe
             validateSlimMediaTools = [bool]$ValidateSlimMediaTools
             bundleRustAudioSidecar = [bool]$BundleRustAudioSidecar
+            bundleRustDiarizationSidecar = [bool]$BundleRustDiarizationSidecar
             pyInstallerClean = -not [bool]$LocalPyInstallerNoClean
             rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
         }
         preparedMediaTools = $PreparedMediaTools
         mediaToolsCopied = $MediaToolsCopied
         rustAudioSidecarCopied = $RustAudioSidecarCopied
+        rustDiarizationSidecarCopied = $RustDiarizationSidecarCopied
         totalDurationMs = [int64]$script:BuildTimingStarted.ElapsedMilliseconds
         phases = @($script:BuildTimingPhases)
     }
@@ -979,7 +1394,7 @@ function Test-ScriberFfmpegCapabilities {
     param([string]$Path)
 
     $encoders = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-encoders") -Label "ffmpeg encoder list"
-    foreach ($encoder in @("libopus", "libmp3lame", "pcm_s16le")) {
+    foreach ($encoder in @("flac", "libopus", "libmp3lame", "pcm_s16le")) {
         Assert-MediaToolOutputContains -Output $encoders -Needle $encoder -Label "encoder"
     }
 
@@ -994,13 +1409,48 @@ function Test-ScriberFfmpegCapabilities {
     }
 
     $muxers = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-muxers") -Label "ffmpeg muxer list"
-    foreach ($muxer in @("webm", "mp3", "s16le")) {
+    foreach ($muxer in @("flac", "matroska", "ogg", "webm", "mp3", "s16le")) {
         Assert-MediaToolOutputContains -Output $muxers -Needle $muxer -Label "muxer"
     }
 
     $protocols = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-protocols") -Label "ffmpeg protocol list"
     foreach ($protocol in @("file", "pipe")) {
         Assert-MediaToolOutputContains -Output $protocols -Needle $protocol -Label "protocol"
+    }
+
+    $filters = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-filters") -Label "ffmpeg filter list"
+    foreach ($filter in @("adelay", "aformat", "amix", "anull", "aresample", "pan")) {
+        Assert-MediaToolOutputContains -Output $filters -Needle $filter -Label "filter"
+    }
+}
+
+function Invoke-ScriberFfmpegFixtureSmoke {
+    param(
+        [string]$FfmpegPath,
+        [string]$FfprobePath,
+        [string]$Label = "packaged"
+    )
+
+    $smoke = Join-Path $RepoRoot "scripts\ffmpeg\smoke_profile_b_fixtures.py"
+    if (-not (Test-Path -LiteralPath $smoke -PathType Leaf)) {
+        throw "Missing FFmpeg fixture smoke: $smoke"
+    }
+    $safeLabel = ($Label -replace '[^A-Za-z0-9_.-]', '-')
+    $report = Join-Path $WorkRoot "ffmpeg-profile-b-$safeLabel-smoke.json"
+    $arguments = @(
+        $smoke,
+        "--ffmpeg", $FfmpegPath,
+        "--meeting-only",
+        "--output", $report,
+        "--duration-sec", "0.25",
+        "--timeout-sec", "30"
+    )
+    if ($FfprobePath) {
+        $arguments += @("--ffprobe", $FfprobePath, "--require-ffprobe")
+    }
+    & $PythonPath @arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "FFmpeg fixture smoke failed for the exact $Label binary. See: $report"
     }
 }
 
@@ -1089,6 +1539,10 @@ function Copy-MediaTools {
     }
 
     if ($ValidateSlimBundle) {
+        Invoke-ScriberFfmpegFixtureSmoke `
+            -FfmpegPath $copiedFfmpeg `
+            -FfprobePath $copiedFfprobe `
+            -Label "copied"
         $profileManifestPath = Join-Path $toolsTarget "ffmpeg-profile-manifest.json"
         Invoke-ScriberFfmpegProfileManifest -FfmpegPath $copiedFfmpeg -FfprobePath $copiedFfprobe -OutputPath $profileManifestPath
         $copied += $profileManifestPath
@@ -1123,9 +1577,21 @@ if (-not $WorkRoot) {
 if (-not $SidecarCacheRoot) {
     $SidecarCacheRoot = Join-Path $RepoRoot "build\tauri-sidecar-cache"
 }
+if (-not $RustDiarizationSidecarCacheRoot) {
+    $RustDiarizationSidecarCacheRoot = Join-Path $RepoRoot "build\rust-diarization-sidecar-cache"
+}
+if (-not $SherpaOnnxArchiveCacheRoot) {
+    $SherpaOnnxArchiveCacheRoot = Join-Path $RepoRoot "build\sherpa-onnx-archive-cache"
+}
+if (-not $RustDiarizationTargetRoot) {
+    $RustDiarizationTargetRoot = Join-Path $RepoRoot "build\rust-diarization-sidecar-target"
+}
 $DistRoot = Convert-ToFullPath -Path $DistRoot
 $WorkRoot = Convert-ToFullPath -Path $WorkRoot
 $SidecarCacheRoot = Convert-ToFullPath -Path $SidecarCacheRoot
+$RustDiarizationSidecarCacheRoot = Convert-ToFullPath -Path $RustDiarizationSidecarCacheRoot
+$SherpaOnnxArchiveCacheRoot = Convert-ToFullPath -Path $SherpaOnnxArchiveCacheRoot
+$RustDiarizationTargetRoot = Convert-ToFullPath -Path $RustDiarizationTargetRoot
 if ($MediaToolsDir) {
     $MediaToolsDir = (Resolve-Path $MediaToolsDir).Path
 }
@@ -1134,6 +1600,9 @@ $SpecPath = Join-Path $RepoRoot "packaging\scriber-backend.spec"
 Assert-UnderRoot -Root $RepoRoot -Path $DistRoot -Label "DistRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $WorkRoot -Label "WorkRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $SidecarCacheRoot -Label "SidecarCacheRoot"
+Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationSidecarCacheRoot -Label "RustDiarizationSidecarCacheRoot"
+Assert-UnderRoot -Root $RepoRoot -Path $SherpaOnnxArchiveCacheRoot -Label "SherpaOnnxArchiveCacheRoot"
+Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationTargetRoot -Label "RustDiarizationTargetRoot"
 
 if (-not (Test-Path $SpecPath)) {
     throw "Missing PyInstaller spec: $SpecPath"
@@ -1169,15 +1638,21 @@ if ($UseProfileBFfmpeg -and -not $MediaToolsDir) {
                 ) {
                     $script:PreparedProfileBReport = $existingReport
                     $script:PreparedProfileBMediaToolsDir = (Resolve-Path $existingMediaToolsDir).Path
+                    Test-MediaToolExecutable -Path (Join-Path $script:PreparedProfileBMediaToolsDir "ffmpeg.exe") -Name "Cached Profile B ffmpeg"
+                    Test-MediaToolExecutable -Path (Join-Path $script:PreparedProfileBMediaToolsDir "ffprobe.exe") -Name "Cached Profile B ffprobe"
+                    Test-ScriberFfmpegCapabilities -Path (Join-Path $script:PreparedProfileBMediaToolsDir "ffmpeg.exe")
                     $script:PreparedProfileBReused = $true
                 }
             } catch {
-                Write-Host "Ignoring unreadable Profile B build report: $profileReportPath"
+                Write-Host "Ignoring stale or unusable Profile B build report: $profileReportPath ($($_.Exception.Message))"
+                $script:PreparedProfileBReport = $null
+                $script:PreparedProfileBMediaToolsDir = ""
+                $script:PreparedProfileBReused = $false
             }
         }
 
         if (-not $script:PreparedProfileBMediaToolsDir) {
-            & $profileBuildScript -RepoRoot $RepoRoot -BuildRoot $profileBuildRoot -InstallDependencies
+            & $profileBuildScript -RepoRoot $RepoRoot -BuildRoot $profileBuildRoot -PythonExe $PythonPath -InstallDependencies
             if ($LASTEXITCODE -ne 0) {
                 throw "FFmpeg Profile B build failed with exit code $LASTEXITCODE."
             }
@@ -1194,6 +1669,7 @@ if ($UseProfileBFfmpeg -and -not $MediaToolsDir) {
 
         Test-MediaToolExecutable -Path (Join-Path $script:PreparedProfileBMediaToolsDir "ffmpeg.exe") -Name "Profile B ffmpeg"
         Test-MediaToolExecutable -Path (Join-Path $script:PreparedProfileBMediaToolsDir "ffprobe.exe") -Name "Profile B ffprobe"
+        Test-ScriberFfmpegCapabilities -Path (Join-Path $script:PreparedProfileBMediaToolsDir "ffmpeg.exe")
     }
     $preparedMediaTools = [ordered]@{
         ok = $true
@@ -1276,6 +1752,7 @@ if ($cacheEnabled) {
     $cachedSidecarExe = Join-Path $cachedSidecarDir "scriber-backend.exe"
     $expectedFlags = Get-SidecarFlagState
     $expectedRustAudioCacheKey = if ($BundleRustAudioSidecar) { Get-RustAudioSidecarCacheKey -Root $RepoRoot } else { "" }
+    $expectedRustDiarizationCacheKey = if ($BundleRustDiarizationSidecar) { Get-RustDiarizationSidecarCacheKey -Root $RepoRoot } else { "" }
     if ($CopyToTauriRelease) {
         $targetDir = Join-Path $RepoRoot "Frontend\src-tauri\target\release\backend"
         Invoke-TimedStep -Label "sidecar-target-current-check" -Command {
@@ -1283,7 +1760,8 @@ if ($cacheEnabled) {
                 -TargetDir $targetDir `
                 -ExpectedCacheKey $cacheKey `
                 -ExpectedFlags $expectedFlags `
-                -ExpectedRustAudioCacheKey $expectedRustAudioCacheKey
+                -ExpectedRustAudioCacheKey $expectedRustAudioCacheKey `
+                -ExpectedRustDiarizationCacheKey $expectedRustDiarizationCacheKey
         }
         if ($script:SidecarTargetCurrent) {
             $cacheHit = $true
@@ -1298,6 +1776,24 @@ if ($cacheEnabled) {
                 $mediaToolsCopied = @(Get-ChildItem -LiteralPath $toolsDir -File | Select-Object -ExpandProperty FullName)
             }
             $targetMetadata = Get-Content -LiteralPath (Join-Path $targetDir "sidecar-build-metadata.json") -Raw | ConvertFrom-Json
+            Invoke-FrozenBackendRuntimeImportCheck -SidecarExe $sidecarExe -SidecarDir $sidecarDir -LogRoot $WorkRoot
+            if ($BundleRustAudioSidecar) {
+                $targetAudioExeName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "scriber-audio-sidecar.exe" } else { "scriber-audio-sidecar" }
+                $targetAudioExe = Join-Path (Split-Path -Parent $targetDir) $targetAudioExeName
+                & $targetAudioExe --self-test | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Target-current Rust audio sidecar self-test failed."
+                }
+            }
+            if ($BundleMediaTools -or $MediaToolsDir) {
+                $targetFfmpeg = Join-Path $targetDir "tools\ffmpeg\ffmpeg.exe"
+                $targetFfprobe = Join-Path $targetDir "tools\ffmpeg\ffprobe.exe"
+                Test-ScriberFfmpegCapabilities -Path $targetFfmpeg
+                Invoke-ScriberFfmpegFixtureSmoke `
+                    -FfmpegPath $targetFfmpeg `
+                    -FfprobePath $(if (Test-Path -LiteralPath $targetFfprobe -PathType Leaf) { $targetFfprobe } else { "" }) `
+                    -Label "target-current"
+            }
             $metadataPath = Write-SidecarBuildMetadata `
                 -SidecarDir $sidecarDir `
                 -SidecarExe $sidecarExe `
@@ -1307,6 +1803,7 @@ if ($cacheEnabled) {
                 -PreparedMediaTools $preparedMediaTools `
                 -MediaToolsCopied $mediaToolsCopied `
                 -RustAudioSidecarCopied $targetMetadata.rustAudioSidecarCopied `
+                -RustDiarizationSidecarCopied $targetMetadata.rustDiarizationSidecarCopied `
                 -CopiedTo $targetDir `
                 -TargetCurrent $true
 
@@ -1320,13 +1817,28 @@ if ($cacheEnabled) {
                 targetCurrent = $true
                 mediaToolsCopied = $mediaToolsCopied
                 rustAudioSidecarCopied = $targetMetadata.rustAudioSidecarCopied
+                rustDiarizationSidecarCopied = $targetMetadata.rustDiarizationSidecarCopied
                 sidecarBuildMetadata = $metadataPath
                 copiedToTauriRelease = $targetDir
             } | ConvertTo-Json -Compress
             return
         }
     }
-    if ((Test-Path -LiteralPath $cachedSidecarExe -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $cacheDir "cache-manifest.json") -PathType Leaf)) {
+    $backendCacheValid = $false
+    $backendCacheManifestPath = Join-Path $cacheDir "cache-manifest.json"
+    if ((Test-Path -LiteralPath $cachedSidecarExe -PathType Leaf) -and (Test-Path -LiteralPath $backendCacheManifestPath -PathType Leaf)) {
+        try {
+            $backendCacheManifest = Get-Content -LiteralPath $backendCacheManifestPath -Raw | ConvertFrom-Json
+            $backendCacheValid = (
+                [string]$backendCacheManifest.cacheKey -eq $cacheKey -and
+                [string]$backendCacheManifest.sidecarSha256 -eq (Get-Sha256Hex -Path $cachedSidecarExe) -and
+                [int64]$backendCacheManifest.sidecarLength -eq [int64](Get-Item -LiteralPath $cachedSidecarExe).Length
+            )
+        } catch {
+            $backendCacheValid = $false
+        }
+    }
+    if ($backendCacheValid) {
         Invoke-TimedStep -Label "sidecar-cache-restore" -Command {
             Copy-DirectoryContents -SourceDir $cachedSidecarDir -TargetDir (Join-Path $DistRoot "scriber-backend") -TargetLabel "Restored sidecar dist target"
         }
@@ -1412,6 +1924,8 @@ if ($cacheEnabled -and -not $cacheHit) {
             apiVersion = "1"
             generatedAt = (Get-Date).ToUniversalTime().ToString("o")
             cacheKey = $cacheKey
+            sidecarSha256 = Get-Sha256Hex -Path $cachedSidecarExe
+            sidecarLength = [int64](Get-Item -LiteralPath $cachedSidecarExe).Length
             inputManifest = $script:SidecarInputManifest
         }
         $cacheManifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $cacheDir "cache-manifest.json") -Encoding utf8
@@ -1421,6 +1935,7 @@ if ($cacheEnabled -and -not $cacheHit) {
 $copiedTo = $null
 $metadataPath = $null
 $rustAudioSidecarCopied = $null
+$rustDiarizationSidecarCopied = $null
 
 if ($CopyToTauriRelease) {
     Invoke-TimedStep -Label "copy-to-tauri-release" -Command {
@@ -1438,6 +1953,20 @@ if ($BundleRustAudioSidecar) {
     $rustAudioSidecarCopied = $script:RustAudioSidecarCopied
 }
 
+if ($BundleRustDiarizationSidecar) {
+    Invoke-TimedStep -Label "rust-diarization-sidecar-build" -Command {
+        $diarizationBackendDir = if ($script:CopiedToTauriRelease) { $script:CopiedToTauriRelease } else { $sidecarDir }
+        $script:RustDiarizationSidecarCopied = Copy-RustDiarizationSidecarToBackend `
+            -Root $RepoRoot `
+            -Python $PythonPath `
+            -BackendDir $diarizationBackendDir `
+            -WorkerCacheRoot $RustDiarizationSidecarCacheRoot `
+            -ArchiveCacheRoot $SherpaOnnxArchiveCacheRoot `
+            -CargoTargetRoot $RustDiarizationTargetRoot
+    }
+    $rustDiarizationSidecarCopied = $script:RustDiarizationSidecarCopied
+}
+
 if ($CopyToTauriRelease) {
     $metadataPath = Write-SidecarBuildMetadata `
         -SidecarDir $sidecarDir `
@@ -1448,6 +1977,7 @@ if ($CopyToTauriRelease) {
         -PreparedMediaTools $preparedMediaTools `
         -MediaToolsCopied $mediaToolsCopied `
         -RustAudioSidecarCopied $rustAudioSidecarCopied `
+        -RustDiarizationSidecarCopied $rustDiarizationSidecarCopied `
         -CopiedTo $copiedTo
     if (Test-Path -LiteralPath $copiedTo -PathType Container) {
         Copy-Item -LiteralPath $metadataPath -Destination (Join-Path $copiedTo "sidecar-build-metadata.json") -Force
@@ -1462,6 +1992,7 @@ if ($CopyToTauriRelease) {
         -PreparedMediaTools $preparedMediaTools `
         -MediaToolsCopied $mediaToolsCopied `
         -RustAudioSidecarCopied $rustAudioSidecarCopied `
+        -RustDiarizationSidecarCopied $rustDiarizationSidecarCopied `
         -CopiedTo $copiedTo
 }
 
@@ -1474,6 +2005,7 @@ if ($CopyToTauriRelease) {
     cacheKey = $cacheKey
     mediaToolsCopied = $mediaToolsCopied
     rustAudioSidecarCopied = $rustAudioSidecarCopied
+    rustDiarizationSidecarCopied = $rustDiarizationSidecarCopied
     sidecarBuildMetadata = $metadataPath
     copiedToTauriRelease = $copiedTo
 } | ConvertTo-Json -Compress

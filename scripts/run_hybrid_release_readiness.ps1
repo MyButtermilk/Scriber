@@ -13,6 +13,10 @@ param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string]$HardwareInputDir = "tmp\hybrid-baseline",
     [string]$MatrixValidationOutput = "",
+    [string]$MeetingReleaseMatrixDir = "",
+    [string]$MeetingMatrixValidationOutput = "",
+    [string]$MeetingExpectedAppVersion = "",
+    [switch]$RequireMeetingReleaseMatrix,
     [switch]$RunReleaseBuild,
     [string[]]$ReleaseBuildBundles = @("nsis"),
     [string]$ReleaseBuildReleaseBaseUrl = "",
@@ -235,6 +239,24 @@ if (-not $MatrixValidationOutput) {
 } else {
     $MatrixValidationOutput = Convert-ToFullPath -Path $MatrixValidationOutput -Root $RepoRoot
 }
+if (-not $MeetingReleaseMatrixDir) {
+    $MeetingReleaseMatrixDir = Join-Path $HardwareInputDir "meeting-release-matrix"
+} else {
+    $MeetingReleaseMatrixDir = Convert-ToFullPath -Path $MeetingReleaseMatrixDir -Root $RepoRoot
+}
+if (-not $MeetingMatrixValidationOutput) {
+    $MeetingMatrixValidationOutput = Join-Path $MeetingReleaseMatrixDir "meeting-release-matrix-validation.json"
+} else {
+    $MeetingMatrixValidationOutput = Convert-ToFullPath -Path $MeetingMatrixValidationOutput -Root $RepoRoot
+}
+if (-not $MeetingExpectedAppVersion) {
+    $versionSource = Get-Content (Join-Path $RepoRoot "src\version.py") -Raw
+    $versionMatch = [regex]::Match($versionSource, '__version__\s*=\s*"([^"]+)"')
+    if (-not $versionMatch.Success) {
+        throw "Could not read Meeting expected app version from src\version.py."
+    }
+    $MeetingExpectedAppVersion = $versionMatch.Groups[1].Value
+}
 if (-not $UpdaterPublicationReport) {
     $UpdaterPublicationReport = Join-Path $HardwareInputDir "updater-publication.json"
 } else {
@@ -393,6 +415,12 @@ $matrixArgs = @(
     $HardwareInputDir,
     "--output",
     $MatrixValidationOutput
+)
+$meetingMatrixArgs = @(
+    "scripts\validate_meeting_release_matrix.py",
+    "--input-dir", $MeetingReleaseMatrixDir,
+    "--expected-app-version", $MeetingExpectedAppVersion,
+    "--output", $MeetingMatrixValidationOutput
 )
 $effectiveRequireRustEndpointInventory = [bool]($RequireRustEndpointInventory -or $effectiveRequireRustAudioSidecarSmoke -or $effectiveRequireRustAudioAppPrewarmSmoke)
 if ($effectiveRequireRustEndpointInventory) {
@@ -763,6 +791,15 @@ $readinessArgs = @(
     "--output",
     $OutputPath
 )
+if ($RequireMeetingReleaseMatrix -or (Test-Path -LiteralPath $MeetingReleaseMatrixDir -PathType Container)) {
+    $readinessArgs += @(
+        "--meeting-release-matrix-dir", $MeetingReleaseMatrixDir,
+        "--expected-app-version", $MeetingExpectedAppVersion
+    )
+}
+if ($RequireMeetingReleaseMatrix) {
+    $readinessArgs += "--require-meeting-release-matrix"
+}
 if ($effectiveRequireRustAudioSidecarSmoke -or $RunRustAudioSidecarSmoke -or $UseExistingRustAudioSidecarReport) {
     $readinessArgs += @("--rust-audio-sidecar-report", $RustAudioSidecarReport)
 }
@@ -1030,6 +1067,17 @@ $requiredEvidence = @(
         notes = "The Authenticode report must include the release artifact names from latest.json, not only an unrelated signed executable."
     },
     [pscustomobject]@{
+        name = "meetingReleaseMatrix"
+        required = [bool]$RequireMeetingReleaseMatrix
+        external = $true
+        producer = "scripts\run_meeting_release_matrix.ps1 over real installed Teams, Zoom, Meet, hardware, Outlook, failure, privacy, and soak evidence"
+        validator = "scripts\validate_meeting_release_matrix.py"
+        inputDir = $MeetingReleaseMatrixDir
+        output = $MeetingMatrixValidationOutput
+        expectedAppVersion = $MeetingExpectedAppVersion
+        notes = "Full release evidence must be bound to one signed installer SHA-256 and include Authenticode, Tauri updater signature, legal/privacy review, 60-minute recording, two-hour soak, and all real-world Meeting scenarios. Drafts never count."
+    },
+    [pscustomobject]@{
         name = "hybridReleaseReadinessAggregate"
         required = $true
         external = $false
@@ -1050,6 +1098,10 @@ $plan = [pscustomobject]@{
     releaseBuildRequireAuthenticodeSignature = [bool]$ReleaseBuildRequireAuthenticodeSignature
     hardwareInputDir = $HardwareInputDir
     matrixValidationOutput = $MatrixValidationOutput
+    meetingReleaseMatrixDir = $MeetingReleaseMatrixDir
+    meetingMatrixValidationOutput = $MeetingMatrixValidationOutput
+    meetingExpectedAppVersion = $MeetingExpectedAppVersion
+    requireMeetingReleaseMatrix = [bool]$RequireMeetingReleaseMatrix
     mediaPreparationReport = $MediaPreparationReport
     mediaToolsDir = $MediaToolsDir
     runtimeDependencyFootprintReport = $RuntimeDependencyFootprintReport
@@ -1134,6 +1186,10 @@ $plan = [pscustomobject]@{
         [pscustomobject]@{
             name = "microphoneMatrixValidation"
             command = $(if ($RunMicrophoneHardwareMatrix) { "powershell " + (Convert-ToDisplayCommand -CommandArgs $microphoneMatrixRunnerArgs) + "; python " + (Convert-ToDisplayCommand -CommandArgs $matrixArgs) } else { "python " + (Convert-ToDisplayCommand -CommandArgs $matrixArgs) })
+        },
+        [pscustomobject]@{
+            name = "meetingReleaseMatrixValidation"
+            command = $(if ($RequireMeetingReleaseMatrix -or (Test-Path -LiteralPath $MeetingReleaseMatrixDir -PathType Container)) { "python " + (Convert-ToDisplayCommand -CommandArgs $meetingMatrixArgs) } else { "not requested" })
         },
         [pscustomobject]@{
             name = "updaterPublicationVerification"
@@ -1222,6 +1278,12 @@ try {
 
     Invoke-Checked -Label "Physical microphone matrix validation" -Command {
         python @matrixArgs
+    }
+
+    if ($RequireMeetingReleaseMatrix -or (Test-Path -LiteralPath $MeetingReleaseMatrixDir -PathType Container)) {
+        Invoke-Checked -Label "Meeting release matrix validation" -Command {
+            python @meetingMatrixArgs
+        }
     }
 
     if ($UseExistingUpdaterPublicationReport) {
@@ -1349,6 +1411,7 @@ try {
     ok = $true
     planPath = $planPath
     matrixValidationOutput = $MatrixValidationOutput
+    meetingMatrixValidationOutput = $MeetingMatrixValidationOutput
     mediaPreparationReport = $MediaPreparationReport
     runtimeDependencyFootprintReport = $RuntimeDependencyFootprintReport
     rustAudioSidecarReport = $RustAudioSidecarReport

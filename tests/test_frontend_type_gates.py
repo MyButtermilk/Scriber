@@ -166,6 +166,15 @@ def test_frontend_uses_current_svg_logo_asset() -> None:
     favicon_svg = (REPO_ROOT / "Frontend" / "client" / "public" / "favicon.svg").read_text(
         encoding="utf-8"
     )
+    dark_favicon_svg = (
+        REPO_ROOT / "Frontend" / "client" / "public" / "favicon-dark.svg"
+    ).read_text(encoding="utf-8")
+    brand_mark_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "BrandMark.tsx"
+    ).read_text(encoding="utf-8")
+    layout_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "layout" / "AppLayout.tsx"
+    ).read_text(encoding="utf-8")
 
     assert 'type="image/svg+xml"' in index_html
     assert 'href="/favicon.svg"' in index_html
@@ -173,6 +182,14 @@ def test_frontend_uses_current_svg_logo_asset() -> None:
     assert 'viewBox="5 99.4 118 76"' in favicon_svg
     assert "#253037" in favicon_svg
     assert "#CFAF6A" in favicon_svg
+    assert 'viewBox="5 99.4 118 76"' in dark_favicon_svg
+    assert "#F2F0EB" in dark_favicon_svg
+    assert "#CFAF6A" in dark_favicon_svg
+    assert 'src="/favicon.svg"' in brand_mark_source
+    assert 'src="/favicon-dark.svg"' in brand_mark_source
+    assert "dark:hidden" in brand_mark_source
+    assert "dark:block" in brand_mark_source
+    assert layout_source.count("<BrandMark") == 3
 
 
 def test_settings_microphones_use_shared_api_types() -> None:
@@ -451,7 +468,7 @@ def test_onnx_progress_only_updates_the_selected_quantization() -> None:
 
     assert "quantization?: string;" in websocket_source
     assert "msg.quantization !== onnxQuantization" in settings_source
-    assert "[loadOnnxModels, onnxQuantization, selectedDeviceId, toast]" in settings_source
+    assert "[loadOnnxModels, onnxQuantization, queryClient, selectedDeviceId, toast]" in settings_source
 
 
 def test_primary_page_intros_share_responsive_full_width_layout() -> None:
@@ -463,9 +480,9 @@ def test_primary_page_intros_share_responsive_full_width_layout() -> None:
         for page in ("LiveMic.tsx", "Youtube.tsx", "FileTranscribe.tsx", "Settings.tsx")
     }
 
-    assert 'className="mt-3 w-full text-[13px]' in component_source
-    assert "max-w-[62ch]" not in component_source
-    assert '"transcription-intro sticky top-0 z-20' in component_source
+    assert 'className="mt-3 max-w-[65ch] text-pretty text-[13px]' in component_source
+    assert "sticky = true" in component_source
+    assert 'sticky ? "sticky top-0 z-20" : "relative z-0"' in component_source
     assert "bottomContent" in component_source
     assert 'title="Settings"' in page_sources["Settings.tsx"]
     assert 'eyebrow="Workspace controls · 04"' in page_sources["Settings.tsx"]
@@ -475,6 +492,8 @@ def test_primary_page_intros_share_responsive_full_width_layout() -> None:
     for source in page_sources.values():
         assert 'from "@/components/page-intro"' in source
         assert "<PageIntro" in source
+    for page in ("LiveMic.tsx", "Youtube.tsx", "FileTranscribe.tsx"):
+        assert "sticky={false}" in page_sources[page]
 
 
 def test_settings_section_navigation_accounts_for_sticky_header() -> None:
@@ -513,6 +532,9 @@ def test_primary_history_search_fields_share_sidebar_inset_design() -> None:
     sidebar_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "ui" / "sidebar-search.tsx"
     ).read_text(encoding="utf-8")
+    toolbar_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "transcription-history-toolbar.tsx"
+    ).read_text(encoding="utf-8")
     page_sources = [
         (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page).read_text(encoding="utf-8")
         for page in ("LiveMic.tsx", "Youtube.tsx", "FileTranscribe.tsx")
@@ -523,9 +545,11 @@ def test_primary_history_search_fields_share_sidebar_inset_design() -> None:
     assert "neu-kbd" not in component_source
     assert 'type="search"' in component_source
     assert "transcript-history-search" in component_source
+    assert 'from "@/components/transcript-history-search"' in toolbar_source
+    assert "<TranscriptHistorySearch" in toolbar_source
     for source in page_sources:
-        assert 'from "@/components/transcript-history-search"' in source
-        assert "<TranscriptHistorySearch" in source
+        assert 'from "@/components/transcription-history-toolbar"' in source
+        assert "<TranscriptionHistoryToolbar" in source
         assert "transcription-search relative" not in source
         assert "live-mic-search relative" not in source
 
@@ -869,6 +893,8 @@ def test_desktop_chrome_is_dom_rendered_without_duplicate_branding() -> None:
     css = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
 
     assert tauri_config["app"]["windows"][0]["decorations"] is False
+    assert tauri_config["app"]["windows"][0]["visible"] is False
+    assert tauri_config["app"]["windows"][0]["backgroundColor"] == "#202225"
     permissions = set(tauri_capabilities["permissions"])
     assert "core:window:allow-close" in permissions
     assert "core:window:allow-minimize" in permissions
@@ -1217,3 +1243,110 @@ def test_native_recording_overlay_uses_fixed_size_state_layers() -> None:
     assert "overlayMode" in source
     assert "let reconnectTimer: number | null = null;" in source
     assert "reconnectTimer = window.setTimeout(connect, 750);" in source
+
+
+def test_meeting_states_suppress_update_prompts_and_drive_tray_state() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
+
+    assert 'if (msg.type === "meeting_state")' in source
+    assert '["starting", "recording", "paused", "stopping", "finalizing", "analyzing"]' in source
+    assert 'mode: `meeting-${meetingState}`' in source
+
+
+def test_meeting_workspace_uses_focus_canvas_and_gpu_only_live_progress() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Ready the room" in source
+    assert "Long-session readiness" in source
+    assert "Ready for up to 5 hours" in source
+    assert "What matters now" in source
+    assert "Key outcome" in source
+    assert "Render-active attenuation" in source
+    assert "Render-aware AEC3" in source
+    assert "I confirm I am permitted to record" not in source
+    assert "Recording conversations without permission" not in source
+    assert "consentConfirmed: true" not in source
+    assert "h-auto min-h-9 w-full whitespace-normal" in source
+    assert 'className="sr-only">Meeting workspace' in source
+    assert "<PageIntro" not in source
+    assert "transition-[width]" not in source
+    assert "transition-transform" in source
+    assert "motion-reduce:transition-none" in source
+    assert 'segment.revision === "canonical"' in source
+    assert 'if (!hasCanonicalTranscript)' in source
+    assert "TERMINAL_MEETING_STATES.has(message.meeting.state)" in source
+    assert "Delete this meeting?" in source
+    assert "deleteMeetingMutation" in source
+    assert "neu-nav-active" in source
+    assert "Soniox Realtime" not in source  # Provider/model labels come from the backend contract.
+    assert "selectedProfile.stages" in source
+    assert "Models used" in source
+    assert "playLoadedAudio" in source
+    assert "Test tone played" in source
+
+
+def test_meeting_workspace_reconciles_after_backend_websocket_restart() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "const meetingWsHasConnectedRef = useRef(false);" in source
+    assert "const meetingWsWasConnectedRef = useRef(false);" in source
+    assert "const { isConnected } = useSharedWebSocket(handleWsMessage);" in source
+    assert "isConnected && meetingWsHasConnectedRef.current && !meetingWsWasConnectedRef.current" in source
+    assert "invalidateMeetings(selectedId || undefined);" in source
+
+
+def test_meeting_workspace_scopes_drafts_playback_and_imports_to_durable_state() -> None:
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+        encoding="utf-8"
+    )
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'setChatQuestion("");' in meetings
+    assert "variables.id !== selectedId" in meetings
+    assert 'setTranscriptSearch("");' in meetings
+    assert "noteDraftRef.current" in meetings
+    assert "draft.body !== draft.savedBody" in meetings
+    assert 'body: draft.body' in meetings
+    assert "availablePlaybackSources" in meetings
+    assert "Audio is no longer retained" in meetings
+    assert "meetingImportsQuery.data?.items.find" in meetings
+    assert 'job.meetingId' in meetings
+    assert 'queryKey: ["/api/meetings/speaker-profiles"]' in meetings
+    assert 'onClick={() => setVoiceLibraryDeleteOpen(true)}' in settings
+    assert "Delete the entire Voice Library?" in settings
+    assert "Delete this voice profile?" in settings
+    assert "voiceLibraryDeletePending" in settings
+
+
+def test_meeting_workspace_guards_async_state_and_touch_delete_controls() -> None:
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "min-[1100px]:pointer-events-none" in meetings
+    assert "min-[1100px]:group-hover:pointer-events-auto" in meetings
+    assert "h-11 w-11" in meetings
+    assert 'scope: { id: "meeting-action-item-updates" }' in meetings
+    assert 'key={`${item.id}:${item.updatedAt}`}' in meetings
+    assert "applyMeetingActionItem(queryClient, variables.id, item);" in meetings
+    assert 'queryKey: ["/api/meetings", variables.id, "deliveries"]' in meetings
+
+
+def test_boot_shell_applies_theme_before_react_and_uses_contrasting_logo() -> None:
+    index = (REPO_ROOT / "Frontend" / "client" / "index.html").read_text(encoding="utf-8")
+    theme = (REPO_ROOT / "Frontend" / "client" / "public" / "boot-theme.js").read_text(encoding="utf-8")
+    css = (REPO_ROOT / "Frontend" / "client" / "public" / "boot.css").read_text(encoding="utf-8")
+
+    assert '<script src="/boot-theme.js"></script>' in index
+    assert '<div class="boot-shell"' in index
+    assert 'src="/favicon-dark.svg"' in index
+    assert 'window.localStorage.getItem("scriber-theme")' in theme
+    assert 'document.documentElement.classList.toggle("dark", dark)' in theme
+    assert ".dark .boot-logo-dark" in css
+    assert "prefers-reduced-motion: reduce" in css

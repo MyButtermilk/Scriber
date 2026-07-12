@@ -24,10 +24,19 @@ class YouTubeDownloadError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class YouTubeCaptionCue:
+    start_ms: int
+    end_ms: int
+    text: str
+    alignment_quality: str = "provider_segment"
+
+
+@dataclass(frozen=True)
 class YouTubeTranscript:
     text: str
     language: str
     is_automatic: bool
+    cues: tuple[YouTubeCaptionCue, ...] = ()
 
 
 _AUDIO_ONLY_FORMAT = "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio"
@@ -237,10 +246,222 @@ def _caption_text_from_vtt_bytes(payload: bytes) -> str:
     return "\n".join(lines).strip()
 
 
-def _parse_caption_payload(payload: bytes, extension: str) -> str:
-    if extension.lower() == "json3":
-        return _caption_text_from_json3_bytes(payload)
-    return _caption_text_from_vtt_bytes(payload)
+def _caption_milliseconds(value: Any, *, allow_zero: bool) -> int | None:
+    """Parse an upstream millisecond value without accepting booleans/NaN."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        milliseconds = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not (milliseconds >= 0.0 and milliseconds < float("inf")):
+        return None
+    rounded = int(round(milliseconds))
+    if rounded < 0 or (rounded == 0 and not allow_zero):
+        return None
+    return rounded
+
+
+def _clean_caption_cue_text(value: str) -> str:
+    """Normalize transport markup while retaining the spoken word order."""
+    cleaned_lines = [
+        _clean_caption_text(line)
+        for line in str(value or "").splitlines()
+    ]
+    return " ".join(line for line in cleaned_lines if line).strip()
+
+
+def _normalize_caption_cues(
+    cues: list[YouTubeCaptionCue],
+) -> tuple[YouTubeCaptionCue, ...]:
+    """Apply only conservative, local rolling-caption normalization.
+
+    YouTube automatic captions can repeat an immediately preceding overlapping
+    cue, or extend it with a literal suffix. Exact duplicates may be coalesced;
+    an exact-prefix extension may have only that prefix removed. Both operations
+    are marked estimated because the resulting text/timing is synthesized.
+    Time-separated repetitions are deliberately preserved.
+    """
+    normalized: list[YouTubeCaptionCue] = []
+    for cue in cues:
+        if cue.end_ms <= cue.start_ms or not cue.text:
+            continue
+        if not normalized:
+            normalized.append(cue)
+            continue
+
+        previous = normalized[-1]
+        overlaps = cue.start_ms < previous.end_ms
+        if overlaps and cue.text == previous.text:
+            normalized[-1] = YouTubeCaptionCue(
+                start_ms=min(previous.start_ms, cue.start_ms),
+                end_ms=max(previous.end_ms, cue.end_ms),
+                text=previous.text,
+                # Coalescing changes both the provider's segmentation and its
+                # timing boundary, so the merged cue is derived evidence.
+                alignment_quality="estimated",
+            )
+            continue
+
+        if overlaps and cue.text.startswith(previous.text):
+            suffix = cue.text[len(previous.text) :]
+            # Requiring literal whitespace prevents unsafe transformations such
+            # as treating "I" as the rolling prefix of "I'm".
+            if suffix and suffix[0].isspace():
+                suffix = suffix.strip()
+                if suffix:
+                    cue = YouTubeCaptionCue(
+                        start_ms=cue.start_ms,
+                        end_ms=cue.end_ms,
+                        text=suffix,
+                        alignment_quality="estimated",
+                    )
+
+        normalized.append(cue)
+    return tuple(normalized)
+
+
+def _caption_cues_from_json3_bytes(payload: bytes) -> tuple[YouTubeCaptionCue, ...]:
+    try:
+        data = json.loads(payload.decode("utf-8-sig", errors="replace"))
+    except (json.JSONDecodeError, UnicodeError):
+        return ()
+    events = data.get("events") if isinstance(data, dict) else None
+    if not isinstance(events, list):
+        return ()
+
+    pending: list[tuple[int, int | None, str]] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        start_ms = _caption_milliseconds(event.get("tStartMs"), allow_zero=True)
+        if start_ms is None:
+            continue
+        segments = event.get("segs")
+        if not isinstance(segments, list):
+            continue
+        raw_text = "".join(
+            str(segment.get("utf8") or "")
+            for segment in segments
+            if isinstance(segment, dict)
+        )
+        text = _clean_caption_cue_text(raw_text)
+        if not text:
+            continue
+        duration_ms = _caption_milliseconds(
+            event.get("dDurationMs"),
+            allow_zero=False,
+        )
+        pending.append((start_ms, duration_ms, text))
+
+    cues: list[YouTubeCaptionCue] = []
+    for index, (start_ms, duration_ms, text) in enumerate(pending):
+        quality = "provider_segment"
+        if duration_ms is not None:
+            end_ms = start_ms + duration_ms
+        else:
+            end_ms = next(
+                (
+                    next_start
+                    for next_start, _next_duration, _next_text in pending[index + 1 :]
+                    if next_start > start_ms
+                ),
+                None,
+            )
+            if end_ms is None:
+                continue
+            quality = "estimated"
+        if end_ms <= start_ms:
+            continue
+        cues.append(
+            YouTubeCaptionCue(
+                start_ms=start_ms,
+                end_ms=end_ms,
+                text=text,
+                alignment_quality=quality,
+            )
+        )
+    return _normalize_caption_cues(cues)
+
+
+_VTT_TIMESTAMP_RE = re.compile(
+    r"^(?:(?P<hours>\d{1,3}):)?(?P<minutes>\d{2}):(?P<seconds>\d{2})[.,](?P<milliseconds>\d{3})$"
+)
+
+
+def _vtt_timestamp_milliseconds(value: str) -> int | None:
+    match = _VTT_TIMESTAMP_RE.fullmatch(value.strip())
+    if match is None:
+        return None
+    hours = int(match.group("hours") or 0)
+    minutes = int(match.group("minutes"))
+    seconds = int(match.group("seconds"))
+    milliseconds = int(match.group("milliseconds"))
+    if minutes >= 60 or seconds >= 60:
+        return None
+    return (((hours * 60) + minutes) * 60 + seconds) * 1000 + milliseconds
+
+
+def _caption_cues_from_vtt_bytes(payload: bytes) -> tuple[YouTubeCaptionCue, ...]:
+    lines = payload.decode("utf-8-sig", errors="replace").splitlines()
+    cues: list[YouTubeCaptionCue] = []
+    index = 0
+    in_metadata_block = False
+    while index < len(lines):
+        timing_line = lines[index].strip()
+        if in_metadata_block:
+            in_metadata_block = bool(timing_line)
+            index += 1
+            continue
+        if timing_line.startswith(("NOTE", "STYLE", "REGION")):
+            in_metadata_block = True
+            index += 1
+            continue
+        if "-->" not in timing_line:
+            index += 1
+            continue
+
+        start_token, end_and_settings = timing_line.split("-->", 1)
+        end_tokens = end_and_settings.strip().split()
+        start_ms = _vtt_timestamp_milliseconds(start_token)
+        end_ms = _vtt_timestamp_milliseconds(end_tokens[0]) if end_tokens else None
+
+        index += 1
+        text_lines: list[str] = []
+        while index < len(lines):
+            stripped = lines[index].strip()
+            if not stripped:
+                index += 1
+                break
+            if "-->" in stripped:
+                # A malformed missing separator must not swallow the next cue.
+                break
+            text_lines.append(stripped)
+            index += 1
+
+        text = _clean_caption_cue_text("\n".join(text_lines))
+        if start_ms is None or end_ms is None or end_ms <= start_ms or not text:
+            continue
+        cues.append(
+            YouTubeCaptionCue(
+                start_ms=start_ms,
+                end_ms=end_ms,
+                text=text,
+            )
+        )
+    return _normalize_caption_cues(cues)
+
+
+def _parse_caption_payload(
+    payload: bytes,
+    extension: str,
+) -> tuple[YouTubeCaptionCue, ...]:
+    extension = extension.strip().lower()
+    if extension == "json3":
+        return _caption_cues_from_json3_bytes(payload)
+    if extension == "vtt":
+        return _caption_cues_from_vtt_bytes(payload)
+    return ()
 
 
 async def download_youtube_transcript(
@@ -298,16 +519,18 @@ async def download_youtube_transcript(
                 payload = response.read(_MAX_CAPTION_BYTES + 1)
             if len(payload) > _MAX_CAPTION_BYTES:
                 raise YouTubeDownloadError("YouTube caption track is unexpectedly large")
-            text = _parse_caption_payload(
+            cues = _parse_caption_payload(
                 payload,
                 str(caption_format.get("ext") or "vtt"),
             )
-            if not text.strip():
+            if not cues:
                 return None
+            text = "\n".join(cue.text for cue in cues).strip()
             return YouTubeTranscript(
                 text=text,
                 language=language,
                 is_automatic=automatic,
+                cues=cues,
             )
 
     try:

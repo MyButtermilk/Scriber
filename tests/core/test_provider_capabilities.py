@@ -1,7 +1,11 @@
 from src.core.provider_capabilities import (
     get_capabilities,
     injects_immediately_in_live_mode,
+    meeting_max_duration_seconds,
     supports_direct_file_upload,
+    supports_batch_diarization,
+    supports_five_hour_meeting,
+    supports_word_timestamps,
 )
 
 
@@ -52,3 +56,42 @@ def test_provider_capabilities_injection_flags():
     assert injects_immediately_in_live_mode("openai") is False
     assert injects_immediately_in_live_mode("openai_async") is False
     assert get_capabilities("unknown-provider").supports_live_streaming is False
+
+
+def test_batch_capabilities_describe_the_active_request_and_normalizer_contract():
+    # The shared ``soniox`` key still uses async upload for File/YouTube, so it
+    # must not accidentally route those jobs through the local diarizer.
+    assert supports_batch_diarization("soniox") is True
+    assert supports_word_timestamps("soniox") is True
+
+    assert supports_word_timestamps("smallest_async") is True
+    assert supports_word_timestamps("assemblyai") is True
+    assert supports_word_timestamps("deepgram_async") is True
+    assert supports_word_timestamps("speechmatics_async") is True
+    assert supports_word_timestamps("openai_async") is True
+
+    # These active adapters request/normalize provider-level intervals only.
+    for provider in ("mistral", "mistral_async", "azure_mai", "gladia", "gladia_async"):
+        assert supports_word_timestamps(provider) is False
+
+
+def test_five_hour_meeting_capability_tracks_the_implemented_transport_route():
+    assert all(
+        supports_five_hour_meeting(provider)
+        for provider in (
+            "soniox", "soniox_async", "assemblyai", "azure_mai", "onnx_local",
+        )
+    )
+    assert meeting_max_duration_seconds("soniox_async") == 18_000
+    assert meeting_max_duration_seconds("mistral_async") == 10_800
+    assert meeting_max_duration_seconds("mistral_async", "voxtral-mini-2507") == 1_800
+    assert meeting_max_duration_seconds("gladia_async") == 8_100
+    assert meeting_max_duration_seconds("deepgram_async") is None
+    assert all(
+        not supports_five_hour_meeting(provider)
+        for provider in (
+            "smallest", "smallest_async", "openai_async", "gemini_stt",
+            "mistral_async", "gladia_async", "deepgram_async", "speechmatics_async",
+            "groq", "unknown-provider",
+        )
+    )

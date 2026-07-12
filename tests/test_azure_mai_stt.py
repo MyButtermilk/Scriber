@@ -13,8 +13,10 @@ from src.azure_mai_stt import (
     azure_mai_transcript_payload_to_text,
     build_azure_mai_definition,
     prepared_azure_mai_audio_file,
+    transcribe_with_azure_mai,
     validate_azure_mai_region,
 )
+from src.config import Config
 
 
 def test_azure_mai_region_defaults_to_northeurope():
@@ -87,6 +89,53 @@ def test_azure_mai_phrase_list_uses_custom_vocab_for_transcribe_15():
         custom_vocab="Contoso, Jessie",
     )
     assert "phraseList" not in old_model_definition
+
+
+@pytest.mark.asyncio
+async def test_azure_mai_request_uses_explicit_frozen_model_and_vocab(monkeypatch):
+    monkeypatch.setattr(Config, "AZURE_MAI_MODEL", "changed-after-route-freeze")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Changed term")
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return '{"combinedPhrases":[{"text":"done"}]}'
+
+    class Session:
+        def __init__(self):
+            self.posts = []
+
+        def post(self, url, **kwargs):
+            self.posts.append((url, kwargs))
+            return Response()
+
+    session = Session()
+    payload = await transcribe_with_azure_mai(
+        session=session,
+        speech_key="key",
+        region="northeurope",
+        audio_source=b"audio",
+        filename="audio.mp3",
+        content_type="audio/mpeg",
+        language="de-DE",
+        model="mai-transcribe-1.5",
+        custom_vocab="Frozen term",
+    )
+
+    fields = {
+        str(field[0].get("name")): field[2]
+        for field in session.posts[0][1]["data"]._fields
+    }
+    assert payload["combinedPhrases"][0]["text"] == "done"
+    assert '"model": "mai-transcribe-1.5"' in fields["definition"]
+    assert '"phrases": ["Frozen term"]' in fields["definition"]
 
 
 def test_azure_mai_transcript_payload_to_text_prefers_combined_phrases():

@@ -89,6 +89,8 @@ def test_tauri_csp_restricts_webview_to_local_backend_and_assets() -> None:
     assert "data:" in directives["font-src"]
     assert "data:" in directives["media-src"]
     assert "blob:" in directives["media-src"]
+    assert "http://127.0.0.1:*" in directives["media-src"]
+    assert "http://localhost:*" in directives["media-src"]
     assert "ipc:" in directives["connect-src"]
     assert "http://ipc.localhost" in directives["connect-src"]
     assert "http://127.0.0.1:*" in directives["connect-src"]
@@ -154,6 +156,7 @@ def test_tauri_bundle_only_carries_approved_resource_directories() -> None:
     assert "externalBin" not in config.get("bundle", {})
     assert config["bundle"]["resources"] == {
         "target/release/backend/": "backend/",
+        "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
     }
 
 

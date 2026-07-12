@@ -106,7 +106,11 @@ def format_mistral_segments_with_speakers(segments: list[dict[str, Any]]) -> str
         return ""
 
     has_speakers = any(
-        isinstance(seg, dict) and (seg.get("speaker_id") or seg.get("speaker"))
+        isinstance(seg, dict)
+        and (
+            seg.get("speaker_id") not in (None, "")
+            or seg.get("speaker") not in (None, "")
+        )
         for seg in segments
     )
     if not has_speakers:
@@ -114,16 +118,21 @@ def format_mistral_segments_with_speakers(segments: list[dict[str, Any]]) -> str
             str(seg.get("text", "")).strip() for seg in segments if isinstance(seg, dict)
         ).strip()
 
-    blocks: list[tuple[str, list[str]]] = []
+    speaker_map: dict[str, int] = {}
+    blocks: list[tuple[int, list[str]]] = []
     for seg in segments:
         if not isinstance(seg, dict):
             continue
-        speaker = str(seg.get("speaker_id") or seg.get("speaker") or "unknown").strip()
+        speaker_value = seg.get("speaker_id")
+        if speaker_value in (None, ""):
+            speaker_value = seg.get("speaker")
+        speaker = "unknown" if speaker_value in (None, "") else str(speaker_value).strip()
+        speaker_num = speaker_map.setdefault(speaker, len(speaker_map) + 1)
         text = str(seg.get("text") or "").strip()
         if not text:
             continue
-        if not blocks or blocks[-1][0] != speaker:
-            blocks.append((speaker, [text]))
+        if not blocks or blocks[-1][0] != speaker_num:
+            blocks.append((speaker_num, [text]))
         else:
             blocks[-1][1].append(text)
 

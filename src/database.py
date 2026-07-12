@@ -83,6 +83,7 @@ def _get_connection() -> sqlite3.Connection:
         # Enable WAL mode for better concurrent read performance
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
         _thread_local.conn = conn
         # Track all connections for cleanup on exit
         with _connections_lock:

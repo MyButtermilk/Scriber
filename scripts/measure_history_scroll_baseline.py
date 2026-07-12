@@ -338,7 +338,13 @@ class CdpClient:
             raise RuntimeError(f"CDP {method} failed: {response['error']}")
         return response.get("result", {})
 
-    async def evaluate(self, expression: str, *, timeout: float = 20.0) -> Any:
+    async def evaluate(
+        self,
+        expression: str,
+        *,
+        timeout: float = 20.0,
+        user_gesture: bool = False,
+    ) -> Any:
         result = await self.call(
             "Runtime.evaluate",
             {
@@ -346,6 +352,7 @@ class CdpClient:
                 "awaitPromise": True,
                 "returnByValue": True,
                 "timeout": int(timeout * 1000),
+                "userGesture": bool(user_gesture),
             },
             timeout=timeout + 5,
         )

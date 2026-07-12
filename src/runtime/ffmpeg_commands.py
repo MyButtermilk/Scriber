@@ -49,6 +49,114 @@ def webm_opus_transcode_args(
     ]
 
 
+def meeting_multitrack_flac_args(
+    ffmpeg: str,
+    microphone_clean_path: str | Path,
+    system_path: str | Path,
+    target_path: str | Path,
+    *,
+    microphone_raw_path: str | Path | None = None,
+) -> list[str]:
+    """Create independently addressable mic-clean/system and optional mic-raw FLAC tracks."""
+    paths: list[tuple[str | Path, str]] = []
+    if microphone_raw_path is not None:
+        paths.append((microphone_raw_path, "Microphone raw"))
+    paths.extend([(microphone_clean_path, "Microphone clean"), (system_path, "System audio")])
+    return meeting_lossless_archive_args(ffmpeg, paths, target_path)
+
+
+def meeting_lossless_archive_args(
+    ffmpeg: str,
+    tracks: list[tuple[str | Path, str]],
+    target_path: str | Path,
+    *,
+    stream_copy: bool = False,
+) -> list[str]:
+    """Create a Matroska/FLAC archive with one addressable stream per source."""
+    if not tracks:
+        raise ValueError("A meeting archive requires at least one audio track.")
+    inputs: list[str] = []
+    maps: list[str] = []
+    metadata: list[str] = []
+    for index, (path, title) in enumerate(tracks):
+        inputs.extend(["-i", _path_arg(path)])
+        maps.extend(["-map", f"{index}:a:0"])
+        metadata.extend([f"-metadata:s:a:{index}", f"title={title}"])
+    return [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        *inputs, *maps, "-c:a", "copy" if stream_copy else "flac",
+        *metadata, "-f", "matroska",
+        _path_arg(target_path),
+    ]
+
+
+def lossless_flac_track_args(
+    ffmpeg: str,
+    source_path: str | Path,
+    target_path: str | Path,
+) -> list[str]:
+    """Encode one canonical meeting PCM track as a lossless FLAC working file."""
+    return [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-i", _path_arg(source_path), "-map", "0:a:0", "-vn",
+        "-c:a", "flac", "-ar", "16000", "-ac", "1", "-f", "flac",
+        _path_arg(target_path),
+    ]
+
+
+def meeting_opus_mix_args(
+    ffmpeg: str,
+    microphone_path: str | Path,
+    system_path: str | Path,
+    target_path: str | Path,
+) -> list[str]:
+    return meeting_opus_playback_args(
+        ffmpeg,
+        [microphone_path, system_path],
+        target_path,
+    )
+
+
+def meeting_opus_playback_args(
+    ffmpeg: str,
+    source_paths: list[str | Path],
+    target_path: str | Path,
+    *,
+    timeline_origins_ms: list[int] | None = None,
+) -> list[str]:
+    """Create a mono Opus playback derivative from one or more source tracks."""
+    if not source_paths:
+        raise ValueError("Meeting playback requires at least one audio track.")
+    origins = list(timeline_origins_ms or [0] * len(source_paths))
+    if len(origins) != len(source_paths):
+        raise ValueError("Meeting playback requires one timeline origin per source track.")
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in origins):
+        raise ValueError("Meeting playback timeline origins must be non-negative milliseconds.")
+    inputs: list[str] = []
+    for path in source_paths:
+        inputs.extend(["-i", _path_arg(path)])
+    delay_filters = [
+        f"[{index}:a]adelay={origin}:all=1[a{index}]"
+        for index, origin in enumerate(origins)
+    ]
+    if len(source_paths) == 1:
+        filter_graph = delay_filters[0]
+        output_label = "[a0]"
+    else:
+        labels = "".join(f"[a{index}]" for index in range(len(source_paths)))
+        filter_graph = ";".join([
+            *delay_filters,
+            f"{labels}amix=inputs={len(source_paths)}:duration=longest:normalize=0[a]",
+        ])
+        output_label = "[a]"
+    return [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        *inputs, "-filter_complex", filter_graph, "-map", output_label,
+        "-c:a", "libopus", "-b:a", "64k", "-ar", "16000", "-ac", "1",
+        _path_arg(target_path),
+    ]
+
+
 def mp3_transcode_args(
     ffmpeg: str,
     source_path: str | Path,

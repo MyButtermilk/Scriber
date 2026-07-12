@@ -625,48 +625,55 @@ fn collect_native_capture_endpoint_inventory_impl() -> Result<Value, String> {
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|err| format!("MMDeviceEnumerator creation failed: {err}"))?;
-        let default_console_hash = default_capture_endpoint_hash(&enumerator, eConsole);
-        let default_communications_hash =
-            default_capture_endpoint_hash(&enumerator, eCommunications);
-        let collection = unsafe { enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) }
-            .map_err(|err| format!("WASAPI endpoint enumeration failed: {err}"))?;
-        let count = unsafe { collection.GetCount() }
-            .map_err(|err| format!("WASAPI endpoint count failed: {err}"))?;
         let mut endpoints = Vec::new();
-        for index in 0..count {
-            let device = unsafe { collection.Item(index) }
-                .map_err(|err| format!("WASAPI endpoint item {index} failed: {err}"))?;
-            let endpoint_id = unsafe { device_id_string(&device) };
-            let endpoint_id_hash = hash_endpoint_id(&endpoint_id);
-            if endpoint_id_hash.is_empty() {
-                continue;
+        let mut capture_count = 0u32;
+        for (flow, flow_name) in [(eCapture, "capture"), (eRender, "render")] {
+            let default_console_hash = default_endpoint_hash(&enumerator, flow, eConsole);
+            let default_communications_hash =
+                default_endpoint_hash(&enumerator, flow, eCommunications);
+            let collection = unsafe { enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE) }
+                .map_err(|err| format!("WASAPI {flow_name} endpoint enumeration failed: {err}"))?;
+            let count = unsafe { collection.GetCount() }
+                .map_err(|err| format!("WASAPI {flow_name} endpoint count failed: {err}"))?;
+            if flow_name == "capture" {
+                capture_count = count;
             }
-            let friendly_name = endpoint_friendly_name(&device).unwrap_or_default();
-            if friendly_name.trim().is_empty() {
-                continue;
+            for index in 0..count {
+                let device = unsafe { collection.Item(index) }.map_err(|err| {
+                    format!("WASAPI {flow_name} endpoint item {index} failed: {err}")
+                })?;
+                let endpoint_id = unsafe { device_id_string(&device) };
+                let endpoint_id_hash = hash_endpoint_id(&endpoint_id);
+                if endpoint_id_hash.is_empty() {
+                    continue;
+                }
+                let friendly_name = endpoint_friendly_name(&device).unwrap_or_default();
+                if friendly_name.trim().is_empty() {
+                    continue;
+                }
+                let mut default_roles = Vec::new();
+                if default_console_hash.as_deref() == Some(endpoint_id_hash.as_str()) {
+                    default_roles.push("console");
+                }
+                if default_communications_hash.as_deref() == Some(endpoint_id_hash.as_str()) {
+                    default_roles.push("communications");
+                }
+                endpoints.push(json!({
+                    "endpointIdHash": endpoint_id_hash,
+                    "friendlyName": bounded_hint_string(friendly_name, ""),
+                    "flow": flow_name,
+                    "state": "active",
+                    "isDefault": !default_roles.is_empty(),
+                    "defaultRoles": default_roles,
+                }));
             }
-            let mut default_roles = Vec::new();
-            if default_console_hash.as_deref() == Some(endpoint_id_hash.as_str()) {
-                default_roles.push("console");
-            }
-            if default_communications_hash.as_deref() == Some(endpoint_id_hash.as_str()) {
-                default_roles.push("communications");
-            }
-            endpoints.push(json!({
-                "endpointIdHash": endpoint_id_hash,
-                "friendlyName": bounded_hint_string(friendly_name, ""),
-                "flow": "capture",
-                "state": "active",
-                "isDefault": !default_roles.is_empty(),
-                "defaultRoles": default_roles,
-            }));
         }
         Ok(native_endpoint_inventory_payload(
             true,
             "",
             "",
             endpoints,
-            Some(count),
+            Some(capture_count),
             started.elapsed().as_secs_f64() * 1000.0,
         ))
     })();
@@ -698,6 +705,10 @@ fn native_endpoint_inventory_payload(
     active_capture_endpoint_count: Option<u32>,
     duration_ms: f64,
 ) -> Value {
+    let active_render_endpoint_count = endpoints
+        .iter()
+        .filter(|endpoint| endpoint.get("flow").and_then(Value::as_str) == Some("render"))
+        .count();
     json!({
         "engine": "rust-wasapi",
         "inventoryKind": "wasapi-capture-endpoints",
@@ -706,6 +717,7 @@ fn native_endpoint_inventory_payload(
         "errorCode": if error_code.is_empty() { Value::Null } else { Value::String(error_code.to_string()) },
         "errorMessage": if error_message.is_empty() { Value::Null } else { Value::String(error_message.to_string()) },
         "activeCaptureEndpointCount": active_capture_endpoint_count,
+        "activeRenderEndpointCount": active_render_endpoint_count,
         "endpointCount": endpoints.len(),
         "endpoints": endpoints,
         "inventoryDurationMs": duration_ms,
@@ -870,8 +882,12 @@ fn wave_format_payload(format: &WAVEFORMATEX) -> Value {
 }
 
 #[cfg(windows)]
-fn default_capture_endpoint_hash(enumerator: &IMMDeviceEnumerator, role: ERole) -> Option<String> {
-    let device = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, role) }.ok()?;
+fn default_endpoint_hash(
+    enumerator: &IMMDeviceEnumerator,
+    flow: EDataFlow,
+    role: ERole,
+) -> Option<String> {
+    let device = unsafe { enumerator.GetDefaultAudioEndpoint(flow, role) }.ok()?;
     let endpoint_id = unsafe { device_id_string(&device) };
     let endpoint_id_hash = hash_endpoint_id(&endpoint_id);
     if endpoint_id_hash.is_empty() {
@@ -1319,14 +1335,24 @@ mod tests {
             true,
             "",
             "",
-            vec![serde_json::json!({
-                "endpointIdHash": endpoint_hash,
-                "friendlyName": "Default Mic",
-                "flow": "capture",
-                "state": "active",
-                "isDefault": true,
-                "defaultRoles": ["console"],
-            })],
+            vec![
+                serde_json::json!({
+                    "endpointIdHash": endpoint_hash,
+                    "friendlyName": "Default Mic",
+                    "flow": "capture",
+                    "state": "active",
+                    "isDefault": true,
+                    "defaultRoles": ["console"],
+                }),
+                serde_json::json!({
+                    "endpointIdHash": "render-hash",
+                    "friendlyName": "Default Speakers",
+                    "flow": "render",
+                    "state": "active",
+                    "isDefault": true,
+                    "defaultRoles": ["console"],
+                }),
+            ],
             Some(1),
             1.5,
         );
@@ -1334,9 +1360,11 @@ mod tests {
         assert_eq!(payload["source"], "rust-wasapi");
         assert_eq!(payload["inventoryKind"], "wasapi-capture-endpoints");
         assert_eq!(payload["available"], true);
-        assert_eq!(payload["endpointCount"], 1);
+        assert_eq!(payload["endpointCount"], 2);
+        assert_eq!(payload["activeRenderEndpointCount"], 1);
         assert_eq!(payload["endpoints"][0]["endpointIdHash"], endpoint_hash);
         assert_eq!(payload["endpoints"][0]["friendlyName"], "Default Mic");
+        assert_eq!(payload["endpoints"][1]["flow"], "render");
         assert!(payload["endpoints"][0].get("endpointId").is_none());
         assert!(!payload.to_string().contains(raw_endpoint));
     }

@@ -27,6 +27,7 @@ export function DeleteActionButton({
       type="button"
       className={cn("delete-pill", size === "sm" && "delete-pill--sm", className)}
       onClick={onClick}
+      onKeyDown={(event) => event.stopPropagation()}
       disabled={disabled}
       data-label={label}
       aria-label={ariaLabel}

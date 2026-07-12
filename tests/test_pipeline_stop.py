@@ -24,7 +24,159 @@ from src.pipeline import (
     SegmentedSTTRecordingGate,
     SonioxAsyncProcessor,
     TranscriptionCallbackProcessor,
+    _format_speaker_transcript_tokens,
+    direct_file_workflow_timeout_seconds,
 )
+
+
+def test_soniox_token_formatter_preserves_speaker_zero_and_numbers_by_first_appearance():
+    assert _format_speaker_transcript_tokens([
+        {"speaker": 0, "text": " First"},
+        {"speaker": 0, "text": " turn."},
+        {"speaker": 4, "text": " Reply."},
+    ]) == "[Speaker 1]: First turn.\n\n[Speaker 2]: Reply."
+
+
+def test_direct_file_timeout_budgets_scale_to_five_hours_and_remain_bounded():
+    default = ScriberPipeline(service_name="soniox")
+    assert default._direct_file_upload_timeout_seconds() == 300.0
+    assert default._direct_file_batch_timeout_seconds() == 900.0
+    assert default._direct_file_poll_timeout_seconds() == 600.0
+
+    five_hours = ScriberPipeline(
+        service_name="soniox",
+        direct_file_expected_duration_seconds=5 * 60 * 60,
+    )
+    assert five_hours._direct_file_upload_timeout_seconds() == 1_620.0
+    assert five_hours._direct_file_batch_timeout_seconds() == 9_300.0
+    assert five_hours._direct_file_poll_timeout_seconds() == 9_300.0
+
+    extreme = ScriberPipeline(
+        service_name="soniox",
+        direct_file_expected_duration_seconds=100 * 60 * 60,
+    )
+    assert extreme._direct_file_upload_timeout_seconds() == 3_600.0
+    assert extreme._direct_file_batch_timeout_seconds() == 14_400.0
+    assert extreme._direct_file_poll_timeout_seconds() == 14_400.0
+
+
+def test_outer_direct_file_timeout_scales_for_cloud_and_local_long_media():
+    assert direct_file_workflow_timeout_seconds(None) == 600.0
+    assert direct_file_workflow_timeout_seconds(60.0) == 600.0
+    assert direct_file_workflow_timeout_seconds(5 * 60 * 60) == 20_100.0
+    assert direct_file_workflow_timeout_seconds(100 * 60 * 60) == 21_600.0
+
+    local = ScriberPipeline(
+        service_name="onnx_local",
+        direct_file_expected_duration_seconds=5 * 60 * 60,
+    )
+    assert local._direct_file_workflow_timeout_seconds() == 20_100.0
+
+
+@pytest.mark.asyncio
+async def test_deepgram_direct_uses_frozen_model_after_config_changes(
+    monkeypatch, tmp_path
+):
+    source = tmp_path / "deepgram.wav"
+    source.write_bytes(b"audio")
+    captured = {}
+
+    async def fake_transcribe(**kwargs):
+        captured.update(kwargs)
+        return {
+            "results": {
+                "channels": [{"alternatives": [{"transcript": "done", "words": []}]}]
+            }
+        }
+
+    monkeypatch.setattr(
+        "src.pipeline.transcribe_with_deepgram_pre_recorded", fake_transcribe
+    )
+    monkeypatch.setattr(Config, "DEEPGRAM_API_KEY", "key")
+    pipeline = ScriberPipeline(
+        service_name="deepgram_async",
+        execution_route={
+            "model": "frozen-deepgram-model",
+            "language": "de-DE",
+            "custom_vocab": "Frozen Deepgram term",
+        },
+    )
+    monkeypatch.setattr(Config, "DEEPGRAM_MODEL", "changed-deepgram-model")
+    monkeypatch.setattr(Config, "LANGUAGE", "en-US")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Changed term")
+
+    await pipeline.transcribe_file_direct(str(source))
+
+    assert captured["model"] == "frozen-deepgram-model"
+    assert captured["language"] == "de-DE"
+    assert captured["custom_vocab"] == "Frozen Deepgram term"
+
+
+@pytest.mark.asyncio
+async def test_gemini_direct_uses_frozen_model_after_config_changes(
+    monkeypatch, tmp_path
+):
+    source = tmp_path / "gemini.wav"
+    source.write_bytes(b"audio")
+    captured = {}
+
+    async def fake_transcribe(**kwargs):
+        captured.update(kwargs)
+        return {"candidates": [{"content": {"parts": [{"text": "done"}]}}]}
+
+    monkeypatch.setattr("src.pipeline.transcribe_with_gemini_audio", fake_transcribe)
+    monkeypatch.setattr(Config, "GOOGLE_API_KEY", "key")
+    pipeline = ScriberPipeline(
+        service_name="gemini_stt",
+        execution_route={
+            "model": "frozen-gemini-model",
+            "language": "de-DE",
+            "custom_vocab": "Frozen Gemini term",
+        },
+    )
+    monkeypatch.setattr(Config, "GEMINI_STT_MODEL", "changed-gemini-model")
+    monkeypatch.setattr(Config, "LANGUAGE", "en-US")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Changed term")
+
+    await pipeline.transcribe_file_direct(str(source))
+
+    assert captured["model"] == "frozen-gemini-model"
+    assert captured["language"] == "de-DE"
+    assert captured["custom_vocab"] == "Frozen Gemini term"
+
+
+@pytest.mark.asyncio
+async def test_azure_mai_direct_uses_frozen_model_and_vocab_after_config_changes(
+    monkeypatch, tmp_path
+):
+    source = tmp_path / "azure.mp3"
+    source.write_bytes(b"audio")
+    captured = {}
+
+    async def fake_transcribe(**kwargs):
+        captured.update(kwargs)
+        return {"combinedPhrases": [{"text": "done"}]}
+
+    monkeypatch.setattr("src.pipeline.transcribe_with_azure_mai", fake_transcribe)
+    monkeypatch.setattr(Config, "AZURE_MAI_SPEECH_KEY", "key")
+    monkeypatch.setattr(Config, "AZURE_MAI_REGION", "northeurope")
+    pipeline = ScriberPipeline(
+        service_name="azure_mai",
+        execution_route={
+            "model": "frozen-azure-model",
+            "language": "de-DE",
+            "custom_vocab": "Frozen Azure term",
+        },
+    )
+    monkeypatch.setattr(Config, "AZURE_MAI_MODEL", "changed-azure-model")
+    monkeypatch.setattr(Config, "LANGUAGE", "en-US")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Changed term")
+
+    await pipeline.transcribe_file_direct(str(source))
+
+    assert captured["model"] == "frozen-azure-model"
+    assert captured["language"] == "de-DE"
+    assert captured["custom_vocab"] == "Frozen Azure term"
 
 
 class _DummyTask:
@@ -399,6 +551,24 @@ def test_onnx_file_factory_uses_bounded_flushing_service(monkeypatch):
     assert service._quantization == "fp32"
     assert service._max_buffer_secs == 30
     assert service._flush_on_limit is True
+
+
+def test_onnx_file_factory_uses_frozen_model_and_language(monkeypatch):
+    monkeypatch.setattr("src.onnx_local_service.is_onnx_available", lambda: True)
+    pipeline = ScriberPipeline(
+        service_name="onnx_local",
+        execution_route={
+            "model": "frozen-onnx-model",
+            "language": "de-DE",
+        },
+    )
+    monkeypatch.setattr(Config, "ONNX_MODEL", "changed-after-route-freeze")
+    monkeypatch.setattr(Config, "LANGUAGE", "en-US")
+
+    service = pipeline._create_stt_service(object(), for_file=True)
+
+    assert service._model_name == "frozen-onnx-model"
+    assert service._language == "de-DE"
 
 
 def test_mistral_segmented_live_uses_transcribe_model_when_rt_model_is_realtime_only(monkeypatch):

@@ -3,11 +3,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import io
 import json
+import math
+import struct
 import subprocess
 import sys
 import tempfile
 import time
+import traceback
+import wave
 from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +41,7 @@ ROUTE_EXPECTATIONS: dict[str, list[str]] = {
     "/": ["Live Transcription", "Recent Recordings"],
     "/youtube": ["YouTube transcription", "Recent videos"],
     "/file": ["File transcription", "Recent files"],
+    "/meetings": ["Meeting workspace", "Meetings", "Start meeting"],
     "/debug": [
         "Debug Console",
         "ui-debug-sample.log",
@@ -64,7 +70,9 @@ ROUTE_EXPECTATIONS: dict[str, list[str]] = {
     ],
 }
 
-FAST_TAB_SWITCH_SEQUENCE = ["/youtube", "/file", "/settings", "/", "/youtube", "/file", "/"]
+FAST_TAB_SWITCH_SEQUENCE = [
+    "/youtube", "/file", "/meetings", "/settings", "/", "/youtube", "/meetings", "/file", "/"
+]
 
 
 def terminate_process_tree(process: Any) -> None:
@@ -113,6 +121,27 @@ class FrontendSmokeBackend:
         self.autostart_requests: list[dict[str, Any]] = []
         self.deleted_transcript_ids: set[str] = set()
         self.processing_started_at = datetime.now(timezone.utc).isoformat()
+        self.meeting: dict[str, Any] | None = None
+        self.meeting_requests: list[str] = []
+        self.meeting_exports: list[str] = []
+        self.meeting_email_exports: list[str] = []
+        self.meeting_deliveries: list[dict[str, Any]] = []
+        self.meeting_start_payload: dict[str, Any] = {}
+        self.meeting_imports: dict[str, dict[str, Any]] = {}
+        self.diarization_component_installed = False
+        self.speaker_profiles = [
+            {"id": "profile-smoke-a", "displayName": "Speaker a1b2c3", "sampleCount": 4,
+             "isNamed": False, "createdAt": "2026-06-01T10:00:00Z", "updatedAt": "2026-06-01T10:00:00Z"},
+            {"id": "profile-smoke-b", "displayName": "Grace Hopper", "sampleCount": 7,
+             "isNamed": True, "createdAt": "2026-06-01T10:00:00Z", "updatedAt": "2026-06-01T10:00:00Z"},
+        ]
+        self.outlook_connected = False
+        self.outlook_synced = False
+        self.meeting_detection_candidate: dict[str, Any] | None = {
+            "detectionId": "detection-smoke-1", "label": "Zoom meeting detected",
+            "source": "windowAndRenderSession", "detectedAt": datetime.now(timezone.utc).isoformat(),
+            "calendarEvent": None,
+        }
 
     @property
     def base_url(self) -> str:
@@ -134,7 +163,7 @@ class FrontendSmokeBackend:
                 response.headers["Vary"] = "Origin"
             response.headers["Access-Control-Allow-Credentials"] = "true"
             response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Scriber-Token"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
             return response
 
         app = web.Application(middlewares=[cors_middleware])
@@ -148,6 +177,48 @@ class FrontendSmokeBackend:
         app.router.add_get("/api/runtime", self.runtime)
         app.router.add_post("/api/runtime/frontend-ready", self.frontend_ready)
         app.router.add_get("/api/onnx/models", self.local_models)
+        app.router.add_get("/api/meetings", self.meetings)
+        app.router.add_get("/api/meeting-imports", self.list_meeting_imports)
+        app.router.add_post("/api/meeting-imports", self.create_meeting_import)
+        app.router.add_get("/api/meeting-imports/{import_id}", self.get_meeting_import)
+        app.router.add_put("/api/meeting-imports/{import_id}/content", self.upload_meeting_import)
+        app.router.add_delete("/api/meeting-imports/{import_id}", self.cancel_meeting_import)
+        app.router.add_post("/api/meetings/import", self.import_meeting)
+        app.router.add_post("/api/meetings", self.start_meeting)
+        app.router.add_get("/api/meetings/capabilities", self.meeting_capabilities)
+        app.router.add_get("/api/meetings/audio-devices", self.meeting_audio_devices)
+        app.router.add_post("/api/meetings/device-test", self.meeting_device_test)
+        app.router.add_get("/api/meeting-profiles", self.meeting_profiles)
+        app.router.add_get("/api/meetings/profiles", self.meeting_profiles)
+        app.router.add_get("/api/meetings/speaker-profiles", self.meeting_speaker_profiles)
+        app.router.add_patch("/api/meetings/speaker-profiles/{profile_id}", self.patch_meeting_speaker_profile)
+        app.router.add_delete("/api/meetings/speaker-profiles/{profile_id}", self.delete_meeting_speaker_profile)
+        app.router.add_get("/api/meetings/speaker-model", self.meeting_speaker_model)
+        app.router.add_get("/api/meetings/diarization-component", self.diarization_component)
+        app.router.add_post("/api/meetings/diarization-component", self.install_diarization_component)
+        app.router.add_get("/api/meetings/detection", self.meeting_detection)
+        app.router.add_post("/api/meetings/detection/dismiss", self.dismiss_meeting_detection)
+        app.router.add_get("/api/meetings/{meeting_id}/audio", self.meeting_audio)
+        app.router.add_get("/api/meetings/{meeting_id}/audio/{source}", self.meeting_audio)
+        app.router.add_get("/api/meetings/{meeting_id}", self.meeting_detail)
+        app.router.add_delete("/api/meetings/{meeting_id}", self.delete_meeting)
+        app.router.add_post("/api/meetings/{meeting_id}/chat", self.meeting_chat)
+        app.router.add_post("/api/meetings/{meeting_id}/deliveries/preview", self.meeting_delivery_preview)
+        app.router.add_get("/api/meetings/{meeting_id}/deliveries", self.meeting_delivery_list)
+        app.router.add_post("/api/meetings/{meeting_id}/deliveries", self.meeting_delivery)
+        app.router.add_put("/api/meetings/{meeting_id}/notes", self.meeting_note)
+        app.router.add_patch("/api/meetings/{meeting_id}/action-items/{item_id}", self.meeting_action_item)
+        app.router.add_patch("/api/meetings/{meeting_id}/speakers/{speaker_id}", self.meeting_speaker)
+        app.router.add_patch("/api/meetings/{meeting_id}/segments/{segment_id}", self.meeting_segment_edit)
+        app.router.add_post("/api/meetings/{meeting_id}/segments/{segment_id}/undo", self.meeting_segment_undo)
+        app.router.add_get("/api/meetings/{meeting_id}/export/{format}", self.meeting_export)
+        app.router.add_get("/api/meetings/{meeting_id}/email-preview", self.meeting_email_preview)
+        app.router.add_get("/api/meetings/{meeting_id}/export-email", self.meeting_export_email)
+        app.router.add_post("/api/meetings/{meeting_id}/{action}", self.meeting_action)
+        app.router.add_get("/api/calendar/outlook/status", self.outlook_status)
+        app.router.add_post("/api/calendar/outlook/connect", self.outlook_connect)
+        app.router.add_post("/api/calendar/outlook/sync", self.outlook_sync)
+        app.router.add_delete("/api/calendar/outlook", self.outlook_disconnect)
         app.router.add_get("/api/youtube/search", self.youtube_search)
         app.router.add_get("/api/youtube/video", self.youtube_video)
         app.router.add_get("/api/youtube/thumbnail", self.youtube_thumbnail)
@@ -198,6 +269,29 @@ class FrontendSmokeBackend:
                 stale.append(ws)
         for ws in stale:
             self.websockets.discard(ws)
+
+    async def broadcast_event(self, payload: dict[str, Any]) -> None:
+        stale: list[web.WebSocketResponse] = []
+        for ws in tuple(self.websockets):
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                stale.append(ws)
+        for ws in stale:
+            self.websockets.discard(ws)
+
+    async def broadcast_meeting_reconnect_cycle(self, meeting_id: str) -> None:
+        await asyncio.sleep(0.25)
+        base = {
+            "apiVersion": "1",
+            "type": "meeting_live_status",
+            "meetingId": meeting_id,
+            "source": "system",
+            "reconnectCount": 1,
+        }
+        await self.broadcast_event({**base, "status": "reconnecting"})
+        await asyncio.sleep(0.4)
+        await self.broadcast_event({**base, "status": "recovered"})
 
     async def disconnect_websockets(self) -> set[web.WebSocketResponse]:
         disconnected = set(self.websockets)
@@ -340,6 +434,583 @@ class FrontendSmokeBackend:
                 "message": "Synthetic transcription queued.",
             }
         )
+
+    async def meetings(self, request: web.Request) -> web.Response:
+        items = [self._meeting_summary()] if self.meeting else []
+        active = self._meeting_summary() if self.meeting and self.meeting["state"] in {
+            "starting", "recording", "paused", "stopping", "finalizing", "analyzing"
+        } else None
+        return web.json_response({
+            "apiVersion": "1", "items": items, "total": len(items),
+            "limit": 50, "offset": 0, "activeMeeting": active,
+        })
+
+    async def diarization_component(self, request: web.Request) -> web.Response:
+        return web.json_response({
+            "apiVersion": "1", "available": True, "enabled": True,
+            "installed": self.diarization_component_installed,
+            "engine": "sherpa-onnx", "version": "1.13.3",
+            "segmentationModel": "pyannote-segmentation-3.0-int8",
+            "embeddingModel": "3D-Speaker ERes2Net",
+            "byteSize": 73_831_494 if self.diarization_component_installed else 0,
+            "license": "Apache-2.0 runtime; model licenses are stored with the component",
+        })
+
+    async def install_diarization_component(self, request: web.Request) -> web.Response:
+        self.diarization_component_installed = True
+        return await self.diarization_component(request)
+
+    async def import_meeting(self, request: web.Request) -> web.Response:
+        reader = await request.multipart()
+        filename = "Imported meeting"
+        async for field in reader:
+            if field.name == "file":
+                filename = Path(field.filename or filename).stem
+                while await field.read_chunk():
+                    pass
+                break
+        self.meeting = self._synthetic_meeting(filename)
+        self.meeting["state"] = "finalizing"
+        self.meeting["captureMetadata"]["captureKind"] = "meeting-file-import"
+        self.meeting_requests.append("import")
+        return web.json_response(self._meeting_summary(), status=202)
+
+    async def create_meeting_import(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        import_id = f"import-smoke-{len(self.meeting_imports) + 1}"
+        job = {
+            "apiVersion": "1", "id": import_id, "state": "created",
+            "originalFilename": payload.get("filename", "Imported meeting.webm"),
+            "title": payload.get("title", "Imported meeting"), "language": payload.get("language", "auto"),
+            "profileId": payload.get("profileId", "soniox-balanced"),
+            "expectedBytes": payload.get("byteSize"), "receivedBytes": 0,
+            "progress": 0, "status": "Created", "meetingId": None,
+            "cancelRequested": False, "errorCode": "", "errorMessage": "",
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+            "uploadUrl": f"/api/meeting-imports/{import_id}/content",
+        }
+        self.meeting_imports[import_id] = job
+        return web.json_response(job, status=201)
+
+    async def list_meeting_imports(self, request: web.Request) -> web.Response:
+        try:
+            limit = max(1, min(50, int(request.query.get("limit", "24"))))
+        except ValueError:
+            return web.json_response({"message": "invalid limit"}, status=400)
+        items = list(reversed(list(self.meeting_imports.values())))[:limit]
+        return web.json_response({
+            "apiVersion": "1", "items": items, "total": len(items), "limit": limit,
+        })
+
+    async def get_meeting_import(self, request: web.Request) -> web.Response:
+        job = self.meeting_imports.get(request.match_info["import_id"])
+        return web.json_response(job or {"message": "not found"}, status=200 if job else 404)
+
+    async def upload_meeting_import(self, request: web.Request) -> web.Response:
+        import_id = request.match_info["import_id"]
+        job = self.meeting_imports[import_id]
+        received = 0
+        async for chunk in request.content.iter_chunked(64 * 1024):
+            received += len(chunk)
+        job.update({"state": "received", "status": "Upload safely stored", "progress": 0.86, "receivedBytes": received})
+        return web.json_response(job, status=202)
+
+    async def cancel_meeting_import(self, request: web.Request) -> web.Response:
+        job = self.meeting_imports.get(request.match_info["import_id"])
+        if job is None:
+            return web.json_response({"message": "not found"}, status=404)
+        job.update({"state": "canceled", "status": "Canceled", "cancelRequested": True})
+        await self.broadcast_event({
+            "apiVersion": "1", "type": "meeting_import_progress",
+            "importId": job["id"], "phase": "canceled", "progress": 0,
+            "status": "Meeting import canceled", "receivedBytes": job["receivedBytes"],
+            "expectedBytes": job["expectedBytes"],
+        })
+        return web.json_response(job)
+
+    async def meeting_capabilities(self, request: web.Request) -> web.Response:
+        return web.json_response({
+            "apiVersion": "1", "platform": "windows", "shellIpcAvailable": True,
+            "nativeMeetingCapture": True, "liveMicBusy": False,
+            "activeMeeting": None, "sources": ["microphone", "system"],
+            "requiresPermissionConfirmation": False,
+            "longSession": {
+                "targetDurationSeconds": 18_000,
+                "checkpointIntervalSeconds": 30,
+                "requiredFreeBytes": 6 * 1024**3,
+                "availableFreeBytes": 7 * 1024**3,
+                "estimatedCaptureSeconds": 55_924,
+                "storageReady": True,
+            },
+        })
+
+    def _meeting_summary(self) -> dict[str, Any]:
+        assert self.meeting is not None
+        return {key: value for key, value in self.meeting.items() if key not in {
+            "apiVersion", "segments", "speakers", "notes", "actionItems", "outputs",
+            "outputVersions", "audioGaps", "audioAssets",
+        }}
+
+    def _synthetic_meeting(self, title: str) -> dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        return {
+            "apiVersion": "1", "id": "meeting-smoke-1", "title": title or "Synthetic meeting",
+            "state": "recording", "language": "auto", "liveProvider": "soniox",
+            "finalProvider": "soniox_async", "analysisModel": "gemini-flash-latest",
+            "aecEnabled": True, "voiceLibraryEnabled": False, "consentConfirmed": False,
+            "origin": "captured",
+            "transcriptEditVersion": 0,
+            "startedAt": now, "endedAt": None, "createdAt": now, "updatedAt": now,
+            "errorCode": "", "errorMessage": "", "captureMetadata": {
+                "aecActive": True,
+                "calendarEvent": {
+                    "participants": [
+                        {"name": "Morgan Example", "address": "morgan@example.com"},
+                        {"name": "Riley Example", "address": "riley@example.com"},
+                    ],
+                },
+                "aecMetrics": {
+                    "measurement": "render-active-raw-to-clean-energy-ratio",
+                    "renderActiveFrames": 1800,
+                    "renderActiveDurationMs": 18000,
+                    "echoReductionDb": 8.4,
+                },
+            },
+            "audioRetentionDays": 0, "segments": [], "speakers": [], "notes": [],
+            "actionItems": [], "outputs": [], "outputVersions": [], "audioGaps": [],
+            "audioAssets": [],
+        }
+
+    async def start_meeting(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        self.meeting_start_payload = dict(payload)
+        self.meeting = self._synthetic_meeting(str(payload.get("title", "")))
+        self.meeting_requests.append("start")
+        asyncio.create_task(self.broadcast_meeting_reconnect_cycle(self.meeting["id"]))
+        return web.json_response(self._meeting_summary())
+
+    async def meeting_detail(self, request: web.Request) -> web.Response:
+        if not self.meeting or request.match_info["meeting_id"] != self.meeting["id"]:
+            return web.json_response({"message": "Meeting not found"}, status=404)
+        return web.json_response(self.meeting)
+
+    async def meeting_audio(self, request: web.Request) -> web.Response:
+        if not self.meeting or request.match_info["meeting_id"] != self.meeting["id"]:
+            return web.json_response({"message": "Meeting not found"}, status=404)
+        sample_rate = 16_000
+        frames = bytearray()
+        for index in range(sample_rate * 10):
+            sample = int(32767 * 0.08 * math.sin(2 * math.pi * 440 * index / sample_rate))
+            frames.extend(struct.pack("<h", sample))
+        output = io.BytesIO()
+        with wave.open(output, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(frames)
+        return web.Response(
+            body=output.getvalue(), content_type="audio/wav",
+            headers={"Accept-Ranges": "bytes", "Cache-Control": "private, no-store"},
+        )
+
+    async def delete_meeting(self, request: web.Request) -> web.Response:
+        if not self.meeting or request.match_info["meeting_id"] != self.meeting["id"]:
+            return web.json_response({"message": "Meeting not found"}, status=404)
+        meeting_id = self.meeting["id"]
+        self.meeting = None
+        self.meeting_requests.append("delete")
+        return web.json_response({"apiVersion": "1", "success": True, "id": meeting_id})
+
+    async def meeting_action(self, request: web.Request) -> web.Response:
+        if not self.meeting or request.match_info["meeting_id"] != self.meeting["id"]:
+            return web.json_response({"message": "Meeting not found"}, status=404)
+        action = request.match_info["action"]
+        self.meeting_requests.append(action)
+        if action == "pause":
+            self.meeting["state"] = "paused"
+        elif action == "resume":
+            self.meeting["state"] = "recording"
+            self.meeting["errorCode"] = ""
+            self.meeting["errorMessage"] = ""
+        elif action == "stop":
+            self.meeting["state"] = "ready"
+            self.meeting["endedAt"] = datetime.now(timezone.utc).isoformat()
+            self.meeting["audioAssets"] = [
+                {
+                    "id": f"asset-{kind}", "meetingId": self.meeting["id"],
+                    "kind": kind, "relativePath": f"final/{kind}.opus", "codec": "opus",
+                    "sampleRate": 16000, "channels": 1, "durationMs": 10000,
+                    "byteSize": 32000, "sha256": "a" * 64,
+                    "trackManifestVersion": 2,
+                    "trackManifest": [{
+                        "source": source, "codec": "opus", "sampleRate": 16000,
+                        "channels": 1, "sampleCount": 160000, "durationMs": 10000,
+                        "timelineOriginMs": 0, "pcmSha256": "b" * 64,
+                        "equalityVerified": True,
+                    }],
+                    "equalityVerified": True, "createdAt": datetime.now(timezone.utc).isoformat(),
+                }
+                for kind, source in (
+                    ("playback_mix", "mixed"),
+                    ("playback_microphone", "microphone"),
+                    ("playback_system", "system"),
+                )
+            ]
+            self.meeting["segments"] = [
+                {
+                    "id": "seg-smoke-001", "meetingId": self.meeting["id"],
+                    "revision": "canonical", "source": "microphone", "speakerId": "speaker-smoke-1",
+                    "speakerLabel": "Alex", "startMs": 0, "endMs": 4200,
+                    "durationMs": 4200,
+                    "text": "We decided to launch the meeting workspace on Friday.",
+                    "confidence": 0.98, "isFinal": True, "sequence": 1,
+                    "editVersion": 0, "editedAt": None,
+                    "createdAt": datetime.now(timezone.utc).isoformat(),
+                },
+                {
+                    "id": "seg-smoke-002", "meetingId": self.meeting["id"],
+                    "revision": "canonical", "source": "system", "speakerId": "speaker-smoke-2",
+                    "speakerLabel": "Morgan", "startMs": 5000, "endMs": 8200,
+                    "durationMs": 3200,
+                    "text": "Customer approval remains open before release.",
+                    "confidence": 0.96, "isFinal": True, "sequence": 2,
+                    "editVersion": 0, "editedAt": None,
+                    "createdAt": datetime.now(timezone.utc).isoformat(),
+                },
+            ]
+            self.meeting["speakers"] = [{
+                "id": "speaker-smoke-1", "meetingId": self.meeting["id"], "label": "Speaker 1",
+                "displayName": "Alex", "sourceHint": "microphone", "profileId": None,
+                "confidence": 0.98, "createdAt": self.meeting["createdAt"],
+                "updatedAt": datetime.now(timezone.utc).isoformat(),
+            }, {
+                "id": "speaker-smoke-2", "meetingId": self.meeting["id"], "label": "Speaker 2",
+                "displayName": "Morgan", "sourceHint": "system", "profileId": None,
+                "confidence": 0.96, "createdAt": self.meeting["createdAt"],
+                "updatedAt": datetime.now(timezone.utc).isoformat(),
+            }]
+        elif action == "analyze":
+            analysis = {
+                "executiveSummary": "The team approved a Friday launch.",
+                "topics": [{"text": "Launch readiness", "segmentIds": ["seg-smoke-001"]}],
+                "decisions": [{"text": "Launch on Friday", "segmentIds": ["seg-smoke-001"]}],
+                "openQuestions": [{"text": "Who owns release monitoring?", "segmentIds": ["seg-smoke-001"]}],
+            }
+            output = {
+                "id": "output-smoke-1", "kind": "analysis", "schemaVersion": "MeetingAnalysisV1",
+                "version": 1, "supersedesId": None, "transcriptRevision": "canonical",
+                "transcriptEditVersion": self.meeting["transcriptEditVersion"],
+                "provider": "synthetic", "status": "completed", "payload": analysis,
+                "errorMessage": "", "updatedAt": datetime.now(timezone.utc).isoformat(),
+            }
+            self.meeting["outputs"] = [output]
+            self.meeting["outputVersions"] = []
+            self.meeting["actionItems"] = [{
+                "id": "action-smoke-1", "meetingId": self.meeting["id"],
+                "text": "Prepare the release checklist", "owner": "Alex", "dueDate": None,
+                "status": "open", "segmentIds": ["seg-smoke-001"], "userModified": False,
+                "createdAt": self.meeting["createdAt"], "updatedAt": datetime.now(timezone.utc).isoformat(),
+            }]
+        else:
+            return web.json_response({"message": "Unsupported meeting action"}, status=400)
+        self.meeting["updatedAt"] = datetime.now(timezone.utc).isoformat()
+        return web.json_response(self._meeting_summary())
+
+    async def meeting_chat(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        self.meeting_requests.append("chat")
+        return web.json_response({
+            "apiVersion": "1", "message": {
+                "content": f"Friday was selected for launch. Question: {payload.get('question', '')}",
+                "citations": ["seg-smoke-001"],
+            },
+        })
+
+    async def meeting_export(self, request: web.Request) -> web.Response:
+        export_format = request.match_info["format"]
+        self.meeting_exports.append(export_format)
+        return web.Response(
+            text="# Synthetic meeting export\n", content_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="meeting-smoke.{export_format}"'},
+        )
+
+    async def meeting_email_preview(self, request: web.Request) -> web.Response:
+        if not self.meeting or request.match_info["meeting_id"] != self.meeting["id"]:
+            return web.json_response({"message": "Meeting not found"}, status=404)
+        return web.json_response({
+            "apiVersion": "1",
+            "recipients": [
+                {"name": "Morgan Example", "address": "morgan@example.com"},
+                {"name": "Riley Example", "address": "riley@example.com"},
+            ],
+            "subject": "Meeting follow-up: Browser smoke product sync",
+            "body": (
+                "Hello,\n\nHere is the follow-up for Browser smoke product sync.\n\n"
+                "Summary\nThe team approved a Friday launch.\n\n"
+                "Action items\n- Prepare the release checklist [Alex]\n\nBest regards"
+            ),
+        })
+
+    async def meeting_export_email(self, request: web.Request) -> web.Response:
+        if not self.meeting or request.match_info["meeting_id"] != self.meeting["id"]:
+            return web.json_response({"message": "Meeting not found"}, status=404)
+        attachment = request.query.get("attachment", "")
+        self.meeting_email_exports.append(attachment or "body")
+        body = (
+            "Subject: Meeting follow-up: Browser smoke product sync\r\n"
+            "To: Morgan Example <morgan@example.com>, Riley Example <riley@example.com>\r\n"
+            "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
+            "Synthetic Outlook-compatible meeting draft."
+        ).encode("utf-8")
+        return web.Response(
+            body=body,
+            content_type="message/rfc822",
+            headers={"Content-Disposition": 'attachment; filename="Browser smoke product sync - email draft.eml"'},
+        )
+
+    async def meeting_delivery_preview(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        if payload.get("url") != "https://automation.example/meeting":
+            return web.json_response({"message": "Unexpected smoke webhook URL"}, status=400)
+        return web.json_response({
+            "apiVersion": "1", "target": payload["url"], "previewHash": "preview-smoke-hash",
+            "byteSize": 512, "payload": {
+                "event": "meeting.ready", "meeting": {"title": "Browser smoke product sync"},
+                "segments": [{"id": "seg-smoke-001"}], "notes": [],
+            },
+        })
+
+    async def meeting_delivery(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        if payload.get("confirmed") is not True or payload.get("previewHash") != "preview-smoke-hash":
+            return web.json_response({"message": "Preview confirmation required"}, status=409)
+        delivery = {
+            "id": "delivery-smoke-1", "target": "https://automation.example/meeting",
+            "status": "delivered", "attemptCount": 1,
+        }
+        self.meeting_deliveries.append(delivery)
+        self.meeting_requests.append("webhook")
+        return web.json_response({"apiVersion": "1", "delivery": delivery}, status=201)
+
+    async def meeting_delivery_list(self, request: web.Request) -> web.Response:
+        return web.json_response({"apiVersion": "1", "items": self.meeting_deliveries})
+
+    async def meeting_note(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        note = {
+            "id": str(payload.get("id") or "workspace"), "meetingId": request.match_info["meeting_id"],
+            "body": str(payload.get("body") or ""), "atMs": None,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        assert self.meeting is not None
+        self.meeting["notes"] = [note]
+        self.meeting_requests.append("note")
+        return web.json_response({"apiVersion": "1", **note})
+
+    async def meeting_action_item(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        assert self.meeting is not None
+        item = next(value for value in self.meeting["actionItems"] if value["id"] == request.match_info["item_id"])
+        item.update(payload)
+        item["userModified"] = True
+        item["updatedAt"] = datetime.now(timezone.utc).isoformat()
+        self.meeting_requests.append("action-item")
+        return web.json_response({"apiVersion": "1", **item})
+
+    async def meeting_speaker(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        assert self.meeting is not None
+        speaker = next(value for value in self.meeting["speakers"] if value["id"] == request.match_info["speaker_id"])
+        speaker["displayName"] = str(payload.get("displayName") or speaker["displayName"])
+        self.meeting_requests.append("speaker")
+        return web.json_response({"apiVersion": "1", "success": True})
+
+    async def meeting_segment_edit(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        assert self.meeting is not None
+        expected_version = int(payload.get("expectedEditVersion", -1))
+        if expected_version != self.meeting["transcriptEditVersion"]:
+            return web.json_response({"message": "Transcript changed since it was loaded"}, status=409)
+        segment = next(value for value in self.meeting["segments"] if value["id"] == request.match_info["segment_id"])
+        previous_text = str(segment["text"])
+        segment["text"] = str(payload.get("text") or "").strip()
+        segment["editVersion"] = int(segment.get("editVersion", 0)) + 1
+        segment["editedAt"] = datetime.now(timezone.utc).isoformat()
+        self.meeting["transcriptEditVersion"] += 1
+        segment["smokePreviousText"] = previous_text
+        self.meeting_requests.append("segment-edit")
+        return web.json_response({
+            "apiVersion": "1", "meetingId": self.meeting["id"],
+            "segment": {key: value for key, value in segment.items() if key != "smokePreviousText"},
+            "transcriptEditVersion": self.meeting["transcriptEditVersion"],
+            "outputsStale": True,
+        })
+
+    async def meeting_segment_undo(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        assert self.meeting is not None
+        expected_version = int(payload.get("expectedEditVersion", -1))
+        if expected_version != self.meeting["transcriptEditVersion"]:
+            return web.json_response({"message": "Transcript changed since it was loaded"}, status=409)
+        segment = next(value for value in self.meeting["segments"] if value["id"] == request.match_info["segment_id"])
+        segment["text"] = str(segment.pop("smokePreviousText", segment["text"]))
+        segment["editVersion"] = int(segment.get("editVersion", 0)) + 1
+        segment["editedAt"] = datetime.now(timezone.utc).isoformat()
+        self.meeting["transcriptEditVersion"] += 1
+        self.meeting_requests.append("segment-undo")
+        return web.json_response({
+            "apiVersion": "1", "meetingId": self.meeting["id"], "segment": segment,
+            "transcriptEditVersion": self.meeting["transcriptEditVersion"],
+            "outputsStale": True,
+        })
+
+    async def meeting_profiles(self, request: web.Request) -> web.Response:
+        return web.json_response({
+            "apiVersion": "1", "defaultProfileId": "soniox-balanced",
+            "profiles": [{
+                "id": "soniox-balanced", "name": "Soniox live + final",
+                "description": "Live captions during the meeting, followed by a second transcription of the complete saved audio.",
+                "liveProvider": "soniox", "finalProvider": "soniox_async",
+                "analysisModel": "gemini-flash-latest", "language": "auto",
+                "stages": [
+                    {"id": "live", "label": "During the meeting", "provider": "Soniox Realtime", "model": "stt-rt-v5", "purpose": "Immediate captions for microphone and system audio."},
+                    {"id": "final", "label": "After stopping", "provider": "Soniox Async", "model": "stt-async-v5", "purpose": "Retranscribes the complete durable audio with speaker diarization."},
+                    {"id": "analysis", "label": "Summary and actions", "provider": "Gemini", "model": "gemini-flash-latest", "purpose": "Creates the cited summary, decisions, questions, and action items."},
+                ],
+                "aecEnabled": True, "voiceLibraryEnabled": False,
+                "audioRetentionDays": 0, "available": True,
+                "fiveHourSupported": True,
+                "fiveHourReason": "Bounded WebM/Opus upload derivative.",
+                "maxDurationSeconds": 18_000,
+                "unavailableReason": "",
+            }],
+            "providerCapabilities": {
+                "soniox": {"live": True, "timestamps": True, "liveDiarization": True,
+                    "batchDiarization": False, "local": False, "maxDurationSeconds": 18_000,
+                    "structuredTokens": True, "fiveHourSupported": True,
+                    "fiveHourReason": "Bounded WebM/Opus upload derivative."},
+                "soniox_async": {"live": False, "timestamps": True, "liveDiarization": False,
+                    "batchDiarization": True, "local": False, "maxDurationSeconds": 18_000,
+                    "structuredTokens": True, "fiveHourSupported": True,
+                    "fiveHourReason": "Bounded WebM/Opus upload derivative."},
+            },
+        })
+
+    async def meeting_audio_devices(self, request: web.Request) -> web.Response:
+        return web.json_response({
+            "apiVersion": "1", "available": True, "reason": "",
+            "capture": [{"endpointIdHash": "a" * 32, "friendlyName": "USB Smoke Microphone", "isDefault": True, "defaultRoles": ["console"]}],
+            "render": [{"endpointIdHash": "b" * 32, "friendlyName": "Smoke Speakers", "isDefault": True, "defaultRoles": ["console"]}],
+        })
+
+    async def meeting_device_test(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        if payload.get("microphoneNativeEndpointIdHash") != "a" * 32 or payload.get("renderNativeEndpointIdHash") != "b" * 32:
+            return web.json_response({"message": "Explicit synthetic routes required"}, status=400)
+        self.meeting_requests.append("device-test")
+        source = lambda rms, peak: {
+            "frames": 150, "audioFrames": 24_000, "rms": rms, "peak": peak,
+            "active": True, "errorCode": "",
+        }
+        return web.json_response({
+            "apiVersion": "1", "available": True, "durationMs": 3_000,
+            "aecActive": True, "testTonePlayed": True,
+            "sources": {
+                "microphone": source(0.18, 0.52),
+                "system": source(0.24, 0.68),
+                "mic_clean": source(0.12, 0.44),
+            },
+            "audioPersisted": False, "audioSentToProvider": False,
+        })
+
+    async def meeting_speaker_profiles(self, request: web.Request) -> web.Response:
+        return web.json_response({
+            "apiVersion": "1", "enabled": True, "items": self.speaker_profiles,
+            "message": "Voice Library is local and opt-in; embeddings are excluded from this response.",
+        })
+
+    async def patch_meeting_speaker_profile(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        profile = next(
+            (item for item in self.speaker_profiles if item["id"] == request.match_info["profile_id"]),
+            None,
+        )
+        if profile is None:
+            return web.json_response({"message": "Speaker profile not found"}, status=404)
+        profile["displayName"] = str(payload.get("displayName") or profile["displayName"])
+        profile["isNamed"] = True
+        profile["updatedAt"] = datetime.now(timezone.utc).isoformat()
+        self.meeting_requests.append("speaker-profile-rename")
+        return web.json_response({"apiVersion": "1", **profile})
+
+    async def delete_meeting_speaker_profile(self, request: web.Request) -> web.Response:
+        profile_id = request.match_info["profile_id"]
+        previous = len(self.speaker_profiles)
+        self.speaker_profiles = [item for item in self.speaker_profiles if item["id"] != profile_id]
+        if len(self.speaker_profiles) == previous:
+            return web.json_response({"message": "Speaker profile not found"}, status=404)
+        self.meeting_requests.append("speaker-profile-delete")
+        return web.json_response({"apiVersion": "1", "success": True})
+
+    async def meeting_speaker_model(self, request: web.Request) -> web.Response:
+        return web.json_response({
+            "apiVersion": "1", "optedIn": False, "installed": False,
+            "model": "wespeaker-voxceleb-resnet34-LM", "revision": "smoke",
+            "byteSize": 0, "expectedByteSize": 26632299, "sha256": "",
+            "license": "optional local model",
+        })
+
+    async def meeting_detection(self, request: web.Request) -> web.Response:
+        return web.json_response({
+            "apiVersion": "1", "available": True,
+            "detection": self.meeting_detection_candidate,
+        })
+
+    async def dismiss_meeting_detection(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        if not self.meeting_detection_candidate or payload.get("detectionId") != self.meeting_detection_candidate["detectionId"]:
+            return web.json_response({"message": "Meeting detection not found"}, status=404)
+        self.meeting_detection_candidate = None
+        self.meeting_requests.append("dismiss-detection")
+        return web.json_response({"apiVersion": "1", "dismissed": True})
+
+    async def outlook_status(self, request: web.Request) -> web.Response:
+        return web.json_response({
+            "apiVersion": "1", "configured": True, "connected": self.outlook_connected,
+            "scopes": ["User.Read", "Calendars.Read", "offline_access"],
+            "lastSyncAt": "2026-06-01T11:45:00Z" if self.outlook_synced else "",
+            "lastError": "",
+            "nextEvent": ({
+                "id": "outlook-smoke-event", "subject": "Architecture review",
+                "start_at": "2026-06-02T09:00:00Z", "end_at": "2026-06-02T10:00:00Z",
+                "join_url": "https://teams.microsoft.com/l/meetup-join/smoke",
+                "organizer": {"name": "Ada Lovelace", "address": "ada@example.com"},
+                "participants": [{"name": "Grace Hopper", "address": "grace@example.com"}],
+            } if self.outlook_synced else None),
+        })
+
+    async def outlook_connect(self, request: web.Request) -> web.Response:
+        self.outlook_connected = True
+        self.meeting_requests.append("outlook-connect")
+        return web.json_response({
+            "apiVersion": "1", "authorizationUrl": "https://login.microsoftonline.com/smoke",
+            "expiresIn": 600, "redirectUri": f"{self.base_url}/api/calendar/outlook/callback",
+        })
+
+    async def outlook_sync(self, request: web.Request) -> web.Response:
+        if not self.outlook_connected:
+            return web.json_response({"message": "Outlook is not connected"}, status=409)
+        self.outlook_synced = True
+        self.meeting_requests.append("outlook-sync")
+        return web.json_response({"apiVersion": "1", "changed": 1})
+
+    async def outlook_disconnect(self, request: web.Request) -> web.Response:
+        self.outlook_connected = False
+        self.outlook_synced = False
+        self.meeting_requests.append("outlook-disconnect")
+        return web.json_response({"apiVersion": "1", "disconnected": True})
 
     async def file_transcribe(self, request: web.Request) -> web.Response:
         filename = ""
@@ -724,6 +1395,19 @@ class FrontendSmokeBackend:
                     break
         except ConnectionResetError:
             pass
+        except BaseException as exc:
+            if args.evidence_dir:
+                failure_path = Path(args.evidence_dir).resolve() / "browser-smoke-error.json"
+                failure_path.parent.mkdir(parents=True, exist_ok=True)
+                failure_path.write_text(
+                    json.dumps({
+                        "errorType": exc.__class__.__name__,
+                        "message": str(exc),
+                        "traceback": traceback.format_exc(),
+                    }, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+            raise
         finally:
             self.websockets.discard(ws)
         return ws
@@ -743,11 +1427,20 @@ class FrontendSmokeBackend:
             "summarizationPrompt": "",
             "summarizationModel": "gemini-flash-latest",
             "autoSummarize": False,
+            "meetingFinalProvider": "soniox_async",
+            "meetingAnalysisModel": "gemini-flash-latest",
+            "meetingSmartTurnEnabled": True,
+            "meetingAutoAnalyze": True,
+            "meetingAecEnabled": True,
+            "meetingAudioRetentionDays": 0,
             "visualizerBarCount": 45,
             "micAlwaysOn": False,
             "onnxModel": "",
             "apiKeys": {
+                "soniox": "smoke-initial-soniox-key",
                 "mistral": "smoke-initial-mistral-key",
+                "assemblyai": "smoke-initial-assemblyai-key",
+                "deepgram": "smoke-initial-deepgram-key",
                 "googleApiKey": "smoke-initial-gemini-key",
                 "openrouter": "smoke-initial-openrouter-key",
             },
@@ -773,7 +1466,12 @@ async def install_page_error_capture(cdp: CdpClient) -> None:
     originalError(...args);
   };
   window.addEventListener("error", (event) => {
-    window.__scriberSmoke.pageErrors.push(String(event.message || event.error || ""));
+    const stack = event.error && typeof event.error.stack === "string"
+      ? event.error.stack
+      : "";
+    window.__scriberSmoke.pageErrors.push(
+      stack || String(event.message || event.error || ""),
+    );
   });
   window.addEventListener("unhandledrejection", (event) => {
     window.__scriberSmoke.unhandledRejections.push(String(event.reason || ""));
@@ -902,6 +1600,172 @@ async def click_page_coordinates(cdp: CdpClient, *, x: float, y: float) -> None:
     )
 
 
+async def click_visible_target(
+    cdp: CdpClient,
+    *,
+    label: str,
+    selector: str,
+    timeout_sec: float,
+    text: str | None = None,
+    exact_text: bool = True,
+    prefer_last: bool = False,
+) -> dict[str, Any]:
+    """Click a rendered, enabled target through CDP after proving it is hit-testable."""
+    probe_expression = f"""
+(() => {{
+  const selector = {json.dumps(selector)};
+  const expectedText = {json.dumps(text)};
+  const exactText = {json.dumps(exact_text)};
+  const preferLast = {json.dumps(prefer_last)};
+  const candidates = Array.from(document.querySelectorAll(selector)).filter((node) => {{
+    const nodeText = (node.textContent || '').trim();
+    const matchesText = expectedText === null
+      || (exactText ? nodeText === expectedText : nodeText.includes(expectedText));
+    const style = window.getComputedStyle(node);
+    const rendered = node.getClientRects().length > 0
+      && style.display !== 'none'
+      && style.visibility !== 'hidden'
+      && style.visibility !== 'collapse'
+      && style.opacity !== '0';
+    const enabled = !node.disabled
+      && node.getAttribute('aria-disabled') !== 'true'
+      && !node.hasAttribute('data-disabled');
+    return matchesText && rendered && enabled;
+  }});
+  const node = preferLast ? candidates.at(-1) : candidates.at(0);
+  if (!node) {{
+    return {{
+      ok: false,
+      reason: 'missing rendered and enabled target',
+      selector,
+      expectedText,
+      candidates: Array.from(document.querySelectorAll(selector))
+        .map((candidate) => (candidate.textContent || '').trim())
+        .filter(Boolean)
+        .slice(0, 30),
+    }};
+  }}
+  node.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
+  const rect = node.getBoundingClientRect();
+  const left = Math.max(0, rect.left);
+  const right = Math.min(window.innerWidth, rect.right);
+  const top = Math.max(0, rect.top);
+  const bottom = Math.min(window.innerHeight, rect.bottom);
+  if (right <= left || bottom <= top) {{
+    return {{
+      ok: false,
+      reason: 'target has no visible viewport area',
+      selector,
+      expectedText,
+      rect: {{ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }},
+      viewport: {{ width: window.innerWidth, height: window.innerHeight }},
+    }};
+  }}
+  const x = left + (right - left) / 2;
+  const y = top + (bottom - top) / 2;
+  const hit = document.elementFromPoint(x, y);
+  const hitMatches = !!hit && (hit === node || node.contains(hit));
+  return {{
+    ok: hitMatches,
+    reason: hitMatches ? '' : 'target center is covered by another element',
+    selector,
+    expectedText,
+    x,
+    y,
+    targetTag: node.tagName,
+    targetText: (node.textContent || '').trim().slice(0, 160),
+    hitTag: hit?.tagName || '',
+    hitText: (hit?.textContent || '').trim().slice(0, 160),
+  }};
+}})()
+"""
+    target = await wait_for_interaction_state(
+        cdp,
+        label=label,
+        timeout_sec=timeout_sec,
+        expression=probe_expression,
+    )
+    # Radix dialogs and menus animate their transform on entry. A target can be
+    # hit-testable for one frame and still move before the injected pointer
+    # reaches it. Require a stable center just like Playwright's actionability
+    # check so the smoke represents a real user click rather than a race.
+    previous = target
+    for _attempt in range(6):
+        await asyncio.sleep(0.05)
+        current = await wait_for_interaction_state(
+            cdp,
+            label=f"{label}-stable",
+            timeout_sec=timeout_sec,
+            expression=probe_expression,
+        )
+        if (
+            abs(float(current["x"]) - float(previous["x"])) <= 0.5
+            and abs(float(current["y"]) - float(previous["y"])) <= 0.5
+        ):
+            target = current
+            break
+        previous = current
+        target = current
+    await click_page_coordinates(cdp, x=float(target["x"]), y=float(target["y"]))
+    return target
+
+
+async def click_visible_button(
+    cdp: CdpClient,
+    *,
+    label: str,
+    timeout_sec: float,
+    selector: str = "button",
+    exact_text: bool = True,
+    prefer_last: bool = True,
+) -> dict[str, Any]:
+    return await click_visible_target(
+        cdp,
+        label=f"button-{label}",
+        selector=selector,
+        timeout_sec=timeout_sec,
+        text=label,
+        exact_text=exact_text,
+        prefer_last=prefer_last,
+    )
+
+
+async def set_file_input_files(
+    cdp: CdpClient,
+    *,
+    label: str,
+    selector: str,
+    files: list[Path],
+    timeout_sec: float,
+) -> None:
+    """Use Chromium's native file-input path instead of an untrusted synthetic change event."""
+    await wait_for_interaction_state(
+        cdp,
+        label=label,
+        timeout_sec=timeout_sec,
+        expression=f"(() => ({{ ok: !!document.querySelector({json.dumps(selector)}) }}))()",
+    )
+    remote = await cdp.call(
+        "Runtime.evaluate",
+        {
+            "expression": f"document.querySelector({json.dumps(selector)})",
+            "returnByValue": False,
+        },
+        timeout=5,
+    )
+    object_id = str(remote.get("result", {}).get("objectId") or "")
+    if not object_id:
+        raise RuntimeError(f"Could not resolve file input '{label}' through CDP DOM")
+    try:
+        await cdp.call(
+            "DOM.setFileInputFiles",
+            {"files": [str(path.resolve()) for path in files], "objectId": object_id},
+            timeout=5,
+        )
+    finally:
+        await cdp.call("Runtime.releaseObject", {"objectId": object_id}, timeout=5)
+
+
 def evidence_path_for_report(path: Path) -> str:
     resolved = path.resolve()
     try:
@@ -914,12 +1778,86 @@ async def capture_page_screenshot(cdp: CdpClient, *, output_dir: Path, label: st
     output_dir.mkdir(parents=True, exist_ok=True)
     safe_label = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in label).strip("-")
     path = output_dir / f"{safe_label or 'screenshot'}.png"
+    await cdp.evaluate(
+        r"""
+(async () => {
+  window.scrollTo({ left: 0, top: 0, behavior: 'instant' });
+  document.documentElement.scrollLeft = 0;
+  if (document.body) document.body.scrollLeft = 0;
+  const appScroller = document.querySelector('[data-app-scroll-container="true"]');
+  let ancestor = appScroller?.parentElement || null;
+  while (ancestor) {
+    ancestor.scrollLeft = 0;
+    ancestor.scrollTop = 0;
+    ancestor = ancestor.parentElement;
+  }
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  return { scrollX: window.scrollX, scrollY: window.scrollY };
+})()
+""",
+        timeout=5,
+    )
     result = await cdp.call("Page.captureScreenshot", {"format": "png", "fromSurface": True}, timeout=10)
     data = result.get("data")
     if not isinstance(data, str) or not data:
         raise RuntimeError("CDP Page.captureScreenshot did not return image data.")
     path.write_bytes(base64.b64decode(data))
     return evidence_path_for_report(path)
+
+
+async def exercise_dark_boot_shell(
+    cdp: CdpClient,
+    *,
+    frontend_base_url: str,
+    timeout_sec: float,
+    screenshot_dir: Path | None,
+) -> dict[str, Any]:
+    await cdp.call("Network.enable", timeout=5)
+    await cdp.call(
+        "Page.addScriptToEvaluateOnNewDocument",
+        {"source": 'window.localStorage.setItem("scriber-theme", "dark");'},
+        timeout=5,
+    )
+    await cdp.call("Network.setBlockedURLs", {"urls": ["*/src/main.tsx*"]}, timeout=5)
+    try:
+        await cdp.call("Page.navigate", {"url": f"{frontend_base_url}/"}, timeout=10)
+        state = await wait_for_interaction_state(
+            cdp,
+            label="dark-boot-shell",
+            timeout_sec=timeout_sec,
+            expression=r"""
+(() => {
+  if (!document.body) return { ok: false, reason: 'body-not-ready' };
+  const shell = document.querySelector('.boot-shell');
+  const darkLogo = document.querySelector('.boot-logo-dark');
+  const lightLogo = document.querySelector('.boot-logo-light');
+  const darkLogoStyle = darkLogo ? getComputedStyle(darkLogo) : null;
+  const lightLogoStyle = lightLogo ? getComputedStyle(lightLogo) : null;
+  const background = getComputedStyle(document.body).backgroundColor;
+  const foreground = shell ? getComputedStyle(shell).color : '';
+  const darkClass = document.documentElement.classList.contains('dark');
+  return {
+    ok: !!shell && darkClass && darkLogoStyle?.display !== 'none' && lightLogoStyle?.display === 'none'
+      && darkLogo?.complete && Number(darkLogo?.naturalWidth || 0) > 0,
+    darkClass,
+    darkLogoVisible: darkLogoStyle?.display !== 'none',
+    lightLogoHidden: lightLogoStyle?.display === 'none',
+    darkLogoLoaded: !!darkLogo?.complete && Number(darkLogo?.naturalWidth || 0) > 0,
+    background,
+    foreground,
+  };
+})()
+""",
+        )
+        screenshot = None
+        if screenshot_dir is not None:
+            screenshot = await capture_page_screenshot(
+                cdp, output_dir=screenshot_dir, label="dark-boot-shell"
+            )
+        return {"name": "dark-boot-shell", "ok": True, "state": state, "screenshot": screenshot}
+    finally:
+        await cdp.call("Network.setBlockedURLs", {"urls": []}, timeout=5)
+        await cdp.call("Page.navigate", {"url": "about:blank"}, timeout=5)
 
 
 async def wait_for_fast_tab_ready(
@@ -1085,6 +2023,810 @@ async def exercise_fast_tab_switch(
         "routes": FAST_TAB_SWITCH_SEQUENCE,
         "transitions": transitions,
         "screenshot": screenshot_path,
+    }
+
+
+async def exercise_meeting_end_to_end(
+    cdp: CdpClient,
+    *,
+    frontend_base_url: str,
+    backend: FrontendSmokeBackend,
+    timeout_sec: float,
+    screenshot_dir: Path | None = None,
+) -> dict[str, Any]:
+    screenshots: list[str] = []
+    import_fixture_dir = tempfile.TemporaryDirectory(prefix="scriber-meeting-browser-smoke-")
+    customer_import_path = Path(import_fixture_dir.name) / "Customer interview.webm"
+    durable_import_path = Path(import_fixture_dir.name) / "Durable interview.webm"
+    customer_import_path.write_bytes(bytes(4096))
+    durable_import_path.write_bytes(bytes(8192))
+    await cdp.call("Page.navigate", {"url": f"{frontend_base_url}/meetings"}, timeout=10)
+    await wait_for_route_ready(
+        cdp, route="/meetings", expected_text=ROUTE_EXPECTATIONS["/meetings"],
+        expect_history_virtualized=False, timeout_sec=timeout_sec,
+    )
+    await set_file_input_files(
+        cdp,
+        label="meeting-import-input",
+        selector='input[aria-label="Import meeting recording"]',
+        files=[customer_import_path],
+        timeout_sec=timeout_sec,
+    )
+    import_dialog = await wait_for_interaction_state(
+        cdp, label="meeting-import-dialog", timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  const dialog = document.querySelector('[role="dialog"]');
+  return {
+    ok: !!dialog && text.includes('Import a meeting recording')
+      && text.includes('Customer interview.webm')
+      && text.includes('Final STT')
+      && text.includes('Native when verified'),
+    hasDialog: !!dialog,
+    text: dialog?.innerText.slice(0, 900) || '',
+  };
+})()
+""",
+    )
+    import_cancelled = await click_visible_button(
+        cdp,
+        label="Cancel",
+        selector='[role="dialog"] button',
+        timeout_sec=timeout_sec,
+        prefer_last=False,
+    )
+    await wait_for_interaction_state(
+        cdp, label="meeting-import-dialog-closed", timeout_sec=timeout_sec,
+        expression="(() => ({ ok: !document.body.innerText.includes('Import a meeting recording') }))()",
+    )
+    await set_file_input_files(
+        cdp,
+        label="durable-meeting-import-input",
+        selector='input[aria-label="Import meeting recording"]',
+        files=[durable_import_path],
+        timeout_sec=timeout_sec,
+    )
+    await wait_for_interaction_state(
+        cdp, label="durable-import-dialog-ready", timeout_sec=timeout_sec,
+        expression="(() => ({ ok: document.body.innerText.includes('Durable interview.webm') }))()",
+    )
+    upload_clicked = await click_visible_button(
+        cdp,
+        label="Import recording",
+        selector='[role="dialog"] button',
+        timeout_sec=timeout_sec,
+        prefer_last=False,
+    )
+    durable_import_state = await wait_for_interaction_state(
+        cdp, label="durable-import-upload-committed", timeout_sec=timeout_sec,
+        expression="(() => ({ ok: document.body.innerText.includes('Upload safely stored'), text: document.querySelector('[role=dialog]')?.innerText.slice(0, 900) || '' }))()",
+    )
+    cancel_upload = await click_visible_button(
+        cdp,
+        label="Cancel import",
+        selector='[role="dialog"] button',
+        timeout_sec=timeout_sec,
+        prefer_last=False,
+    )
+    await wait_for_interaction_state(
+        cdp, label="durable-import-canceled", timeout_sec=timeout_sec,
+        expression="(() => ({ ok: document.body.innerText.includes('Meeting import canceled') || document.body.innerText.includes('Cancel') }))()",
+    )
+    await wait_for_interaction_state(
+        cdp,
+        label="durable-import-dialog-closed",
+        timeout_sec=timeout_sec,
+        expression="(() => ({ ok: !document.body.innerText.includes('Import a meeting recording') }))()",
+    )
+    import_fixture_dir.cleanup()
+    prepared = await cdp.evaluate(
+        r"""
+(() => {
+  const title = document.querySelector('#meeting-title');
+  const microphone = document.querySelector('#meeting-microphone');
+  const render = document.querySelector('#meeting-render');
+  if (!title || !microphone || !render) return { ok: false, reason: 'missing start controls' };
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  valueSetter.call(title, 'Browser smoke product sync');
+  title.dispatchEvent(new Event('input', { bubbles: true }));
+  const selectSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+  selectSetter.call(microphone, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  microphone.dispatchEvent(new Event('change', { bubbles: true }));
+  selectSetter.call(render, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+  render.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true };
+})()
+""",
+        timeout=5,
+    )
+    if not prepared or not prepared.get("ok"):
+        raise RuntimeError(f"Could not prepare meeting start: {prepared}")
+
+    async def click_button(label: str) -> dict[str, Any]:
+        return await click_visible_button(
+            cdp,
+            label=label,
+            timeout_sec=timeout_sec,
+            prefer_last=True,
+        )
+
+    async def wait_text(label: str, expected: str) -> dict[str, Any]:
+        return await wait_for_interaction_state(
+            cdp, label=label, timeout_sec=timeout_sec,
+            expression=f"""
+(() => {{
+  const text = document.body ? document.body.innerText : '';
+  return {{ ok: text.includes({json.dumps(expected)}), route: window.location.pathname, bodyText: text.slice(0, 1200) }};
+}})()
+""",
+        )
+
+    async def wait_button(label: str) -> dict[str, Any]:
+        return await wait_for_interaction_state(
+            cdp, label=f"meeting-button-{label}", timeout_sec=timeout_sec,
+            expression=f"""
+(() => {{
+  const button = Array.from(document.querySelectorAll('button'))
+    .find((node) => (node.textContent || '').trim() === {json.dumps(label)} && !node.disabled);
+  return {{ ok: !!button, route: window.location.pathname }};
+}})()
+""",
+        )
+
+    await wait_text("meeting-five-hour-readiness", "Ready for up to 5 hours")
+    await wait_text("meeting-final-stt-five-hour", "Max 5:00:00")
+    await wait_text("meeting-detection-visible", "Zoom meeting detected")
+    await click_button("Dismiss")
+    await wait_for_interaction_state(
+        cdp, label="meeting-detection-dismissed", timeout_sec=timeout_sec,
+        expression="(() => ({ ok: !document.body.innerText.includes('Zoom meeting detected') }))()",
+    )
+    await wait_button("Test microphone and playback")
+    await click_button("Test microphone and playback")
+    await wait_text("meeting-device-test", "Test tone played")
+    if screenshot_dir is not None:
+        await cdp.evaluate(
+            r"""
+(() => {
+  const heading = Array.from(document.querySelectorAll('h2'))
+    .find((node) => (node.textContent || '').includes('Ready the room'));
+  const scroller = heading?.closest('.overflow-y-auto');
+  if (scroller) scroller.scrollTop = 0;
+  window.scrollTo(0, 0);
+  return { ok: !!heading, resetNestedScroller: !!scroller };
+})()
+""",
+            timeout=5,
+        )
+        await asyncio.sleep(0.15)
+        screenshots.append(await capture_page_screenshot(
+            cdp, output_dir=screenshot_dir, label="meeting-start-readiness"
+        ))
+        await cdp.evaluate(
+            r"""
+(() => {
+  const button = Array.from(document.querySelectorAll('button'))
+    .find((node) => (node.textContent || '').includes('Test microphone and playback'));
+  button?.closest('.rounded-2xl')?.scrollIntoView({ block: 'center' });
+  return { ok: !!button };
+})()
+""",
+            timeout=5,
+        )
+        await asyncio.sleep(0.15)
+        screenshots.append(await capture_page_screenshot(
+            cdp, output_dir=screenshot_dir, label="meeting-start-device-test"
+        ))
+    await wait_button("Start meeting")
+    await click_button("Start meeting")
+    await wait_text("meeting-live-reconnecting", "Durable audio recording continues")
+    await wait_text("meeting-live-recovered", "Final transcription will recover from the local audio")
+    if screenshot_dir is not None:
+        screenshots.append(await capture_page_screenshot(
+            cdp, output_dir=screenshot_dir, label="meeting-live-recovered"
+        ))
+
+    assert backend.meeting is not None
+    backend.meeting["state"] = "interrupted"
+    backend.meeting["errorCode"] = "process_interrupted"
+    backend.meeting["errorMessage"] = "Scriber stopped before the meeting workflow completed."
+    disconnected_sockets = await backend.disconnect_websockets()
+    await wait_text("meeting-backend-restart-interrupted", "Resume capture")
+    reconnected_after_crash = any(ws not in disconnected_sockets for ws in backend.websockets)
+    if screenshot_dir is not None:
+        screenshots.append(await capture_page_screenshot(
+            cdp, output_dir=screenshot_dir, label="meeting-backend-restart-interrupted"
+        ))
+    await click_button("Resume capture")
+    await wait_button("Pause")
+
+    await wait_button("Pause")
+    await click_button("Pause")
+    await wait_button("Resume")
+    await click_button("Resume")
+    await wait_button("Pause")
+    await click_button("Stop")
+    await wait_text("meeting-finalized", "We decided to launch the meeting workspace on Friday.")
+    await click_button("System on")
+    await wait_text("meeting-system-muted", "System muted")
+    await click_button("System muted")
+    await wait_text("meeting-system-unmuted", "System on")
+    audio_playback = await cdp.evaluate(
+        r"""
+(async () => {
+  const audio = document.querySelector('audio');
+  if (!audio) return { ok: false, reason: 'missing meeting audio player' };
+  try {
+    if (audio.readyState < 2) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('audio load timeout')), 3000);
+        audio.addEventListener('canplay', () => { clearTimeout(timer); resolve(); }, { once: true });
+        audio.load();
+      });
+    }
+    await audio.play();
+    await new Promise((resolve) => {
+      const started = performance.now();
+      const poll = () => {
+        if (audio.currentTime > 0.02 || performance.now() - started > 3000) resolve();
+        else setTimeout(poll, 50);
+      };
+      poll();
+    });
+    const advanced = audio.currentTime > 0.02;
+    audio.pause();
+    const state = {
+      ok: audio.duration > 0 && advanced && !audio.error,
+      readyState: audio.readyState,
+      duration: audio.duration,
+      advanced,
+    };
+    return state;
+  } catch (error) {
+    return { ok: false, reason: String(error) };
+  }
+})()
+""",
+        timeout=5,
+        user_gesture=True,
+    )
+    if not audio_playback or not audio_playback.get("ok"):
+        raise RuntimeError(f"Meeting audio playback failed: {audio_playback}")
+
+    await click_button("Overview")
+    await wait_text("meeting-analysis-available", "Generate analysis")
+    await click_button("Generate analysis")
+    await wait_text("meeting-analysis-ready", "The team approved a Friday launch.")
+    import_inbox_state = await cdp.evaluate(
+        r"""
+(() => {
+  const body = document.body?.innerText || '';
+  const hasError = body.includes('Imports could not be loaded.');
+  const hasInbox = body.includes('Imports') && body.includes('Durable work across restarts');
+  return { ok: hasInbox && !hasError, hasInbox, hasError };
+})()
+""",
+        timeout=5,
+    )
+    if not import_inbox_state or not import_inbox_state.get("ok"):
+        raise RuntimeError(f"Meeting import inbox did not recover: {import_inbox_state}")
+    if screenshot_dir is not None:
+        screenshots.append(await capture_page_screenshot(
+            cdp, output_dir=screenshot_dir, label="meeting-overview-analysis"
+        ))
+
+    await click_button("Action items")
+    action_changed = await click_visible_target(
+        cdp,
+        label="meeting-complete-action-item",
+        selector='button[aria-label="Complete action item"]',
+        timeout_sec=timeout_sec,
+    )
+    action_deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < action_deadline and "action-item" not in backend.meeting_requests:
+        await asyncio.sleep(0.1)
+    if "action-item" not in backend.meeting_requests:
+        raise RuntimeError(f"Action item edit did not reach backend: {backend.meeting_requests}")
+
+    await click_button("Transcript")
+    search_prepared = await cdp.evaluate(
+        r"""
+(() => {
+  const input = document.querySelector('input[aria-label="Search this meeting transcript"]');
+  if (!input) return { ok: false, reason: 'missing transcript search input' };
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  setter?.call(input, 'Customer approval');
+  input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: 'Customer approval' }));
+  return { ok: true };
+})()
+""",
+        timeout=5,
+    )
+    if not search_prepared or not search_prepared.get("ok"):
+        raise RuntimeError(f"Could not search the meeting transcript: {search_prepared}")
+    transcript_search = await wait_for_interaction_state(
+        cdp,
+        label="meeting-transcript-search",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const text = document.body?.innerText || '';
+  const marks = Array.from(document.querySelectorAll('mark')).map((node) => node.textContent || '');
+  const target = document.querySelector('button[aria-label="Play transcript segment from 0:05 to 0:08"]');
+  return {
+    ok: text.includes('1 of 2 segments')
+      && text.includes('Customer approval remains open before release.')
+      && !text.includes('We decided to launch the meeting workspace on Friday.')
+      && marks.some((value) => value.toLowerCase().includes('customer approval'))
+      && !!target,
+    marks,
+    targetTitle: target?.getAttribute('title') || ''
+  };
+})()
+""",
+    )
+    seek_clicked = await click_visible_target(
+        cdp,
+        label="meeting-timestamped-transcript-result",
+        selector='button[aria-label="Play transcript segment from 0:05 to 0:08"]',
+        timeout_sec=timeout_sec,
+    )
+    transcript_seek = await wait_for_interaction_state(
+        cdp,
+        label="meeting-transcript-seek",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const audio = document.querySelector('audio');
+  return {
+    ok: !!audio && audio.currentTime >= 4.9 && audio.currentTime < 6.5 && !audio.error,
+    currentTime: audio?.currentTime || 0,
+    source: audio?.getAttribute('src') || '',
+    paused: audio?.paused
+  };
+})()
+""",
+    )
+    edit_opened = await click_visible_button(
+        cdp,
+        label="Edit",
+        timeout_sec=timeout_sec,
+        prefer_last=False,
+    )
+    edit_prepared = await cdp.evaluate(
+        r"""
+(() => {
+  const textarea = document.querySelector('textarea[aria-label^="Edit transcript for"]');
+  if (!textarea) return { ok: false, reason: 'missing transcript correction textarea' };
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+  setter?.call(textarea, 'Customer approval is confirmed before release.');
+  textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  return { ok: true };
+})()
+""",
+        timeout=5,
+    )
+    if not edit_prepared or not edit_prepared.get("ok"):
+        raise RuntimeError(f"Could not prepare transcript correction: {edit_prepared}")
+    await click_button("Save correction")
+    transcript_correction = await wait_for_interaction_state(
+        cdp,
+        label="meeting-transcript-correction",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const text = document.body?.innerText || '';
+  return {
+    ok: text.includes('Customer approval is confirmed before release.')
+      && text.includes('Transcript corrected after this brief was generated')
+      && text.includes('Edited'),
+    hasCorrection: text.includes('Customer approval is confirmed before release.'),
+    hasStaleBriefWarning: text.includes('Transcript corrected after this brief was generated'),
+    hasEditedBadge: text.includes('Edited')
+  };
+})()
+""",
+    )
+    await click_button("Undo latest")
+    transcript_undo = await wait_for_interaction_state(
+        cdp,
+        label="meeting-transcript-correction-undo",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const text = document.body?.innerText || '';
+  return {
+    ok: text.includes('Customer approval remains open before release.')
+      && !text.includes('Customer approval is confirmed before release.'),
+    restoredOriginal: text.includes('Customer approval remains open before release.')
+  };
+})()
+""",
+    )
+    speaker_changed = await cdp.evaluate(
+        r"""
+(() => {
+  const input = document.querySelector('input[aria-label="Rename Alex"]');
+  if (!input) return { ok: false, reason: 'missing speaker rename control' };
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  valueSetter.call(input, 'Alex Morgan');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+  return { ok: true };
+})()
+""",
+        timeout=5,
+    )
+    if not speaker_changed or not speaker_changed.get("ok"):
+        raise RuntimeError(f"Could not rename meeting speaker: {speaker_changed}")
+
+    await click_button("Notes")
+    note_changed = await cdp.evaluate(
+        r"""
+(() => {
+  const textarea = document.querySelector('main section textarea[placeholder*="Capture decisions"]');
+  if (!textarea) return { ok: false, reason: 'missing meeting notes control' };
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+  valueSetter.call(textarea, 'Customer approval is still required.');
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  return { ok: true };
+})()
+""",
+        timeout=5,
+    )
+    if not note_changed or not note_changed.get("ok"):
+        raise RuntimeError(f"Could not edit meeting notes: {note_changed}")
+    edit_deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < edit_deadline and not {"action-item", "speaker", "note"}.issubset(backend.meeting_requests):
+        await asyncio.sleep(0.1)
+    if not {"action-item", "speaker", "note"}.issubset(backend.meeting_requests):
+        raise RuntimeError(f"Meeting edits did not reach backend: {backend.meeting_requests}")
+
+    await click_button("Ask meeting")
+    chat_prepared = await cdp.evaluate(
+        r"""
+(() => {
+  const textarea = document.querySelector('textarea[placeholder*="What did we decide"]');
+  if (!textarea) return { ok: false, reason: 'missing chat textarea' };
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+  valueSetter.call(textarea, 'When is the launch?');
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  return { ok: true };
+})()
+""",
+        timeout=5,
+    )
+    if not chat_prepared or not chat_prepared.get("ok"):
+        raise RuntimeError(f"Could not prepare meeting chat: {chat_prepared}")
+    await click_button("Ask meeting")
+    await wait_text("meeting-chat-answer", "Friday was selected for launch.")
+
+    await cdp.evaluate(
+        r"""
+(() => {
+  window.__scriberSmokeDownloads = [];
+  if (!window.__scriberSmokeOriginalAnchorClick) {
+    window.__scriberSmokeOriginalAnchorClick = HTMLAnchorElement.prototype.click;
+  }
+  HTMLAnchorElement.prototype.click = function () {
+    if (this.download) {
+      window.__scriberSmokeDownloads.push({ name: String(this.download), href: String(this.href) });
+      return;
+    }
+    return window.__scriberSmokeOriginalAnchorClick.call(this);
+  };
+  return { ok: true };
+})()
+""",
+        timeout=5,
+    )
+    for export_index, export_format in enumerate(("JSON", "MD", "PDF", "DOCX"), start=1):
+        await click_visible_button(
+            cdp,
+            label="Export",
+            selector="button",
+            timeout_sec=timeout_sec,
+            exact_text=False,
+            prefer_last=False,
+        )
+        await click_visible_target(
+            cdp,
+            label=f"meeting-export-item-{export_format.lower()}",
+            selector=f'[aria-label="Export meeting as {export_format}"]',
+            timeout_sec=timeout_sec,
+        )
+        await wait_for_interaction_state(
+            cdp,
+            label=f"meeting-export-download-{export_format.lower()}",
+            timeout_sec=timeout_sec,
+            expression=f"(() => ({{ ok: (window.__scriberSmokeDownloads || []).length >= {export_index} }}))()",
+        )
+    export_state = await cdp.evaluate(
+        r"""
+(() => {
+  const downloads = Array.from(window.__scriberSmokeDownloads || []);
+  if (window.__scriberSmokeOriginalAnchorClick) {
+    HTMLAnchorElement.prototype.click = window.__scriberSmokeOriginalAnchorClick;
+    delete window.__scriberSmokeOriginalAnchorClick;
+  }
+  delete window.__scriberSmokeDownloads;
+  return {
+    ok: downloads.length === 4
+      && ['.json', '.md', '.pdf', '.docx'].every((suffix) =>
+        downloads.some((item) => item.name.toLowerCase().endsWith(suffix))),
+    downloads,
+  };
+})()
+""",
+        timeout=5,
+    )
+    if not export_state or not export_state.get("ok"):
+        raise RuntimeError(f"Meeting exports failed: {export_state}")
+
+    await click_visible_button(
+        cdp,
+        label="Export",
+        selector="button",
+        timeout_sec=timeout_sec,
+        exact_text=False,
+        prefer_last=False,
+    )
+    await click_visible_target(
+        cdp,
+        label="meeting-email-export-item",
+        selector='[role="menuitem"]',
+        timeout_sec=timeout_sec,
+        text="Create email draft",
+        exact_text=True,
+    )
+    await wait_text("meeting-email-preview", "Meeting follow-up: Browser smoke product sync")
+    await wait_for_interaction_state(
+        cdp,
+        label="meeting-email-draft-controls",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const dialog = document.querySelector('[role="dialog"]');
+  const markdown = dialog?.querySelector('input[name="meeting-email-attachment"][value="md"]');
+  const compose = Array.from(dialog?.querySelectorAll('button') || [])
+    .find((node) => (node.textContent || '').includes('Open email with summary'));
+  return {
+    ok: !!dialog && !!markdown && !!compose,
+    hasDialog: !!dialog,
+    inputs: Array.from(dialog?.querySelectorAll('input') || []).map((node) => ({ name: node.name, value: node.value })),
+    buttons: Array.from(dialog?.querySelectorAll('button') || []).map((node) => (node.textContent || '').trim()),
+    text: (dialog?.innerText || '').slice(0, 1200),
+  };
+})()
+""",
+    )
+    await click_visible_target(
+        cdp,
+        label="meeting-email-markdown-attachment",
+        selector='[role="dialog"] label',
+        timeout_sec=timeout_sec,
+        text="Markdown",
+        exact_text=True,
+    )
+    await wait_for_interaction_state(
+        cdp,
+        label="meeting-email-markdown-selected",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const dialog = document.querySelector('[role="dialog"]');
+  const markdown = dialog?.querySelector('input[name="meeting-email-attachment"][value="md"]');
+  const downloadButton = Array.from(dialog?.querySelectorAll('button') || [])
+    .find((node) => (node.textContent || '').includes('Download email draft + MD') && !node.disabled);
+  return { ok: !!markdown?.checked && !!downloadButton };
+})()
+""",
+    )
+    await cdp.evaluate(
+        r"""
+(() => {
+  window.__scriberSmokeEmailDownloads = [];
+  if (!window.__scriberSmokeEmailOriginalAnchorClick) {
+    window.__scriberSmokeEmailOriginalAnchorClick = HTMLAnchorElement.prototype.click;
+  }
+  HTMLAnchorElement.prototype.click = function () {
+    if (this.download) {
+      window.__scriberSmokeEmailDownloads.push({ name: String(this.download), href: String(this.href) });
+      return;
+    }
+    return window.__scriberSmokeEmailOriginalAnchorClick.call(this);
+  };
+  return { ok: true };
+})()
+""",
+        timeout=5,
+    )
+    try:
+        await click_visible_button(
+            cdp,
+            label="Download email draft + MD",
+            selector='[role="dialog"] button',
+            timeout_sec=timeout_sec,
+            exact_text=False,
+            prefer_last=False,
+        )
+        email_export_state = await wait_for_interaction_state(
+            cdp,
+            label="meeting-email-draft-download",
+            timeout_sec=timeout_sec,
+            expression=r"""
+(() => {
+  const dialog = document.querySelector('[role="dialog"]');
+  const downloads = Array.from(window.__scriberSmokeEmailDownloads || []);
+  const compose = Array.from(dialog?.querySelectorAll('button') || [])
+    .find((node) => (node.textContent || '').includes('Open email with summary'));
+  return {
+    ok: downloads.length === 1
+      && downloads[0].name.toLowerCase().endsWith('.eml')
+      && !!compose,
+    downloads,
+    hasComposeAction: !!compose,
+    recipientsVisible: (dialog?.textContent || '').includes('morgan@example.com')
+      && (dialog?.textContent || '').includes('riley@example.com')
+  };
+})()
+""",
+        )
+    finally:
+        await cdp.evaluate(
+            r"""
+(() => {
+  if (window.__scriberSmokeEmailOriginalAnchorClick) {
+    HTMLAnchorElement.prototype.click = window.__scriberSmokeEmailOriginalAnchorClick;
+  }
+  delete window.__scriberSmokeEmailOriginalAnchorClick;
+  delete window.__scriberSmokeEmailDownloads;
+  return { ok: true };
+})()
+""",
+            timeout=5,
+        )
+    if not email_export_state or not email_export_state.get("ok"):
+        raise RuntimeError(f"Meeting email draft failed: {email_export_state}")
+    await click_visible_button(
+        cdp,
+        label="Close",
+        selector='[role="dialog"] button',
+        timeout_sec=timeout_sec,
+        prefer_last=False,
+    )
+    await wait_for_interaction_state(
+        cdp,
+        label="meeting-email-dialog-closed",
+        timeout_sec=timeout_sec,
+        expression="(() => ({ ok: !document.querySelector('[role=dialog]') }))()",
+    )
+
+    delivery_panel = await wait_for_interaction_state(
+        cdp,
+        label="meeting-delivery-panel",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const summary = Array.from(document.querySelectorAll('summary'))
+    .find((node) => (node.textContent || '').includes('Delivery & integrations'));
+  const details = summary?.closest('details');
+  return { ok: !!summary && !!details, open: !!details?.open };
+})()
+""",
+    )
+    if not delivery_panel.get("open"):
+        await click_visible_target(
+            cdp,
+            label="meeting-delivery-panel-toggle",
+            selector="summary",
+            timeout_sec=timeout_sec,
+            text="Delivery & integrations",
+            exact_text=False,
+        )
+    delivery_panel = await wait_for_interaction_state(
+        cdp,
+        label="meeting-delivery-panel-open",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const summary = Array.from(document.querySelectorAll('summary'))
+    .find((node) => (node.textContent || '').includes('Delivery & integrations'));
+  const details = summary?.closest('details');
+  return { ok: !!details?.open };
+})()
+""",
+    )
+
+    webhook_prepared = await cdp.evaluate(
+        r"""
+(() => {
+  const url = document.querySelector('#meeting-webhook-url');
+  const secret = document.querySelector('#meeting-webhook-secret');
+  if (!url || !secret) return { ok: false, reason: 'missing webhook controls' };
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  valueSetter.call(url, 'https://automation.example/meeting');
+  url.dispatchEvent(new Event('input', { bubbles: true }));
+  valueSetter.call(secret, 'smoke-signing-secret');
+  secret.dispatchEvent(new Event('input', { bubbles: true }));
+  return { ok: true };
+})()
+""",
+        timeout=5,
+    )
+    if not webhook_prepared or not webhook_prepared.get("ok"):
+        raise RuntimeError(f"Could not prepare meeting webhook: {webhook_prepared}")
+    await wait_button("Preview payload")
+    await click_button("Preview payload")
+    await wait_text("meeting-webhook-preview", "512 B")
+    confirmation = await click_visible_target(
+        cdp,
+        label="meeting-webhook-confirmation",
+        selector="label",
+        timeout_sec=timeout_sec,
+        text="I reviewed this target and payload.",
+        exact_text=True,
+    )
+    await wait_button("Send webhook")
+    await click_button("Send webhook")
+    await wait_text("meeting-webhook-delivered", "delivered")
+
+    delete_opened = await click_visible_target(
+        cdp,
+        label="meeting-delete-control",
+        selector='button[aria-label^="Delete "]',
+        timeout_sec=timeout_sec,
+    )
+    await wait_text("meeting-delete-confirmation", "This cannot be undone")
+    await click_button("Delete meeting")
+    await wait_text("meeting-delete-complete", "Your first meeting will appear here")
+
+    expected_requests = ["dismiss-detection", "device-test", "start", "resume", "pause", "resume", "stop", "analyze", "action-item", "segment-edit", "segment-undo", "speaker", "note", "chat", "webhook", "delete"]
+    start_payload_ok = (
+        backend.meeting_start_payload.get("microphoneNativeEndpointIdHash") == "a" * 32
+        and backend.meeting_start_payload.get("renderNativeEndpointIdHash") == "b" * 32
+        and backend.meeting_start_payload.get("liveProvider") == "soniox"
+        and backend.meeting_start_payload.get("finalProvider") == "soniox_async"
+    )
+    ok = (
+        backend.meeting_requests == expected_requests
+        and backend.meeting_exports == ["json", "md", "pdf", "docx"]
+        and backend.meeting_email_exports == ["md"]
+        and start_payload_ok
+        and reconnected_after_crash
+        and bool(audio_playback and audio_playback.get("ok"))
+        and bool(transcript_search and transcript_search.get("ok"))
+        and bool(transcript_seek and transcript_seek.get("ok"))
+        and bool(transcript_correction and transcript_correction.get("ok"))
+        and bool(transcript_undo and transcript_undo.get("ok"))
+        and bool(import_dialog and import_dialog.get("ok"))
+        and bool(durable_import_state and durable_import_state.get("ok"))
+        and bool(import_inbox_state and import_inbox_state.get("ok"))
+    )
+    return {
+        "name": "meeting-end-to-end", "ok": ok,
+        "requests": list(backend.meeting_requests),
+        "exports": list(backend.meeting_exports),
+        "emailExports": list(backend.meeting_email_exports),
+        "startPayloadOk": start_payload_ok,
+        "startPayload": dict(backend.meeting_start_payload),
+        "backendCrashRecovery": {
+            "ok": reconnected_after_crash,
+            "disconnectedSocketCount": len(disconnected_sockets),
+            "reconnected": reconnected_after_crash,
+        },
+        "audioPlayback": audio_playback,
+        "transcriptSearch": transcript_search,
+        "transcriptSeek": transcript_seek,
+        "transcriptCorrection": transcript_correction,
+        "transcriptUndo": transcript_undo,
+        "meetingImportDialog": import_dialog,
+        "durableMeetingImport": durable_import_state,
+        "meetingImportInboxRecovery": import_inbox_state,
+        "screenshots": screenshots,
+        "exportState": export_state,
+        "emailExportState": email_export_state,
     }
 
 
@@ -1422,6 +3164,231 @@ async def exercise_settings_favorite_mic(
     return {"name": "settings-favorite-mic", "ok": True, "state": state, "patch": patch}
 
 
+async def exercise_meeting_settings(
+    cdp: CdpClient,
+    *,
+    backend: FrontendSmokeBackend,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    state = await wait_for_interaction_state(
+        cdp,
+        label="meeting-settings",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const section = document.querySelector('#settings-meetings');
+  if (!section) return { ok: false, reason: 'missing meeting settings section' };
+  const finalTrigger = section.querySelector('button[aria-label="Final meeting transcription model"]');
+  const analysisTrigger = section.querySelector('button[aria-label="Meeting analysis model"]');
+  const retentionTrigger = section.querySelector('button[aria-label="Default meeting audio retention"]');
+  const smartTurn = section.querySelector('[role="switch"][aria-label="Use Smart Turn V3 for meeting live captions"]');
+  const aec = section.querySelector('[role="switch"][aria-label="Use AEC3 for meetings"]');
+  const autoAnalyze = section.querySelector('[role="switch"][aria-label="Automatically analyze completed meetings"]');
+  if (!finalTrigger || !analysisTrigger || !retentionTrigger || !smartTurn || !aec || !autoAnalyze) {
+    return { ok: false, reason: 'missing meeting pipeline control' };
+  }
+
+  const stage = Number(window.__scriberMeetingSettingsStage || 0);
+  if (stage === 0) {
+    finalTrigger.click();
+    window.__scriberMeetingSettingsStage = 1;
+    return { ok: false, waiting: 'final-options' };
+  }
+  if (stage === 1) {
+    const option = Array.from(document.querySelectorAll('[role="option"]'))
+      .find((node) => (node.textContent || '').includes('AssemblyAI'));
+    if (!option) return { ok: false, waiting: 'assemblyai-option' };
+    option.click();
+    window.__scriberMeetingSettingsStage = 2;
+    return { ok: false, waiting: 'final-save' };
+  }
+  if (stage === 2) {
+    if (!(finalTrigger.textContent || '').includes('AssemblyAI')) return { ok: false, waiting: 'assemblyai-selection' };
+    analysisTrigger.click();
+    window.__scriberMeetingSettingsStage = 3;
+    return { ok: false, waiting: 'analysis-options' };
+  }
+  if (stage === 3) {
+    const option = Array.from(document.querySelectorAll('[role="option"]'))
+      .find((node) => (node.textContent || '').trim() === 'Gemini 3.5 Flash');
+    if (!option) return { ok: false, waiting: 'gemini-option' };
+    option.click();
+    window.__scriberMeetingSettingsStage = 4;
+    return { ok: false, waiting: 'analysis-save' };
+  }
+  if (stage === 4) {
+    if (!(analysisTrigger.textContent || '').includes('Gemini 3.5 Flash')) return { ok: false, waiting: 'gemini-selection' };
+    for (const control of [smartTurn, aec, autoAnalyze]) {
+      if (control.getAttribute('aria-checked') === 'true') control.click();
+    }
+    retentionTrigger.click();
+    window.__scriberMeetingSettingsStage = 5;
+    return { ok: false, waiting: 'retention-options' };
+  }
+  if (stage === 5) {
+    const option = Array.from(document.querySelectorAll('[role="option"]'))
+      .find((node) => (node.textContent || '').trim() === '30 days');
+    if (!option) return { ok: false, waiting: 'retention-option' };
+    option.click();
+    window.__scriberMeetingSettingsStage = 6;
+    return { ok: false, waiting: 'retention-save' };
+  }
+
+  const text = section.textContent || '';
+  return {
+    ok: (finalTrigger.textContent || '').includes('AssemblyAI')
+      && (analysisTrigger.textContent || '').includes('Gemini 3.5 Flash')
+      && (retentionTrigger.textContent || '').includes('30 days')
+      && smartTurn.getAttribute('aria-checked') === 'false'
+      && aec.getAttribute('aria-checked') === 'false'
+      && autoAnalyze.getAttribute('aria-checked') === 'false'
+      && text.includes('Native timestamps and diarization')
+      && text.includes('Sherpa-ONNX offline diarization')
+      && text.includes('30-second recovery checkpoints'),
+    finalModel: finalTrigger.textContent,
+    analysisModel: analysisTrigger.textContent,
+    retention: retentionTrigger.textContent,
+    smartTurn: smartTurn.getAttribute('aria-checked'),
+    aec: aec.getAttribute('aria-checked'),
+    autoAnalyze: autoAnalyze.getAttribute('aria-checked')
+  };
+})()
+""",
+    )
+    deadline = time.monotonic() + timeout_sec
+    required = {
+        "meetingFinalProvider": "assemblyai",
+        "meetingAnalysisModel": "gemini-3.5-flash",
+        "meetingSmartTurnEnabled": False,
+        "meetingAecEnabled": False,
+        "meetingAutoAnalyze": False,
+        "meetingAudioRetentionDays": 30,
+    }
+    while time.monotonic() < deadline:
+        merged: dict[str, Any] = {}
+        for patch in backend.settings_patches:
+            merged.update(patch)
+        if all(merged.get(key) == value for key, value in required.items()):
+            return {"name": "meeting-settings", "ok": True, "state": state, "saved": required}
+        await asyncio.sleep(0.05)
+    raise RuntimeError(
+        "Meeting settings did not persist all selections. "
+        f"Observed patches: {backend.settings_patches}"
+    )
+
+
+async def exercise_meeting_identity_settings(
+    cdp: CdpClient,
+    *,
+    backend: FrontendSmokeBackend,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    state = await wait_for_interaction_state(
+        cdp,
+        label="meeting-identity-settings",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const section = document.querySelector('#settings-meetings');
+  if (!section) return { ok: false, reason: 'missing meeting settings section' };
+  const text = section.textContent || '';
+  const stage = Number(window.__scriberMeetingIdentityStage || 0);
+  const setNativeValue = (node, value) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    setter?.call(node, value);
+    node.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+    node.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  if (stage === 0) {
+    const profile = Array.from(section.querySelectorAll('button'))
+      .find((node) => (node.textContent || '').includes('Speaker a1b2c3'));
+    if (!profile) return { ok: false, waiting: 'anonymous-profile' };
+    profile.scrollIntoView({ block: 'center' });
+    profile.click();
+    window.__scriberMeetingIdentityStage = 1;
+    return { ok: false, waiting: 'profile-editor' };
+  }
+  if (stage === 1) {
+    const input = section.querySelector('input[aria-label="Name voice profile Speaker a1b2c3"]');
+    const save = Array.from(section.querySelectorAll('button')).find((node) => (node.textContent || '').trim() === 'Save');
+    if (!input || !save) return { ok: false, waiting: 'profile-editor-controls' };
+    setNativeValue(input, 'Ada Lovelace');
+    save.click();
+    window.__scriberMeetingIdentityStage = 2;
+    return { ok: false, waiting: 'profile-rename' };
+  }
+  if (stage === 2) {
+    if (!text.includes('Ada Lovelace')) return { ok: false, waiting: 'renamed-profile' };
+    const remove = section.querySelector('button[aria-label="Delete voice profile Grace Hopper"]');
+    if (!remove) return { ok: false, waiting: 'profile-delete-control' };
+    remove.click();
+    window.__scriberMeetingIdentityStage = 3;
+    return { ok: false, waiting: 'profile-delete' };
+  }
+  if (stage === 3) {
+    const dialog = document.querySelector('[role="alertdialog"]');
+    const confirm = Array.from(dialog?.querySelectorAll('button') || [])
+      .find((node) => (node.textContent || '').trim() === 'Delete voice profile');
+    if (!dialog || !confirm) return { ok: false, waiting: 'profile-delete-confirmation' };
+    confirm.click();
+    window.__scriberMeetingIdentityStage = 4;
+    return { ok: false, waiting: 'profile-delete-request' };
+  }
+  if (stage === 4) {
+    if (text.includes('Grace Hopper')) return { ok: false, waiting: 'deleted-profile-disappear' };
+    const connect = Array.from(section.querySelectorAll('button'))
+      .find((node) => (node.textContent || '').includes('Connect Outlook'));
+    if (!connect || connect.disabled) return { ok: false, waiting: 'outlook-connect' };
+    connect.scrollIntoView({ block: 'center' });
+    connect.click();
+    window.__scriberMeetingIdentityStage = 5;
+    return { ok: false, waiting: 'outlook-connected' };
+  }
+  if (stage === 5) {
+    if (!text.includes('Microsoft account connected')) return { ok: false, waiting: 'connected-status' };
+    const sync = Array.from(section.querySelectorAll('button'))
+      .find((node) => (node.textContent || '').includes('Sync now'));
+    if (!sync) return { ok: false, waiting: 'outlook-sync' };
+    sync.click();
+    window.__scriberMeetingIdentityStage = 6;
+    return { ok: false, waiting: 'outlook-event' };
+  }
+  if (stage === 6) {
+    if (!text.includes('Architecture review')) return { ok: false, waiting: 'synced-event' };
+    const disconnect = Array.from(section.querySelectorAll('button'))
+      .find((node) => (node.textContent || '').trim() === 'Disconnect');
+    if (!disconnect) return { ok: false, waiting: 'outlook-disconnect' };
+    disconnect.click();
+    window.__scriberMeetingIdentityStage = 7;
+    return { ok: false, waiting: 'outlook-disconnected' };
+  }
+  return {
+    ok: text.includes('Ada Lovelace')
+      && !text.includes('Grace Hopper')
+      && text.includes('Ready to connect')
+      && text.includes('1 profiles'),
+    hasNamedProfile: text.includes('Ada Lovelace'),
+    profileCount: text.includes('1 profiles'),
+    outlookDisconnected: text.includes('Ready to connect')
+  };
+})()
+""",
+    )
+    required_requests = {
+        "speaker-profile-rename", "speaker-profile-delete",
+        "outlook-connect", "outlook-sync", "outlook-disconnect",
+    }
+    missing = required_requests.difference(backend.meeting_requests)
+    if missing:
+        raise RuntimeError(f"Meeting identity Settings requests missing: {sorted(missing)}")
+    return {
+        "name": "meeting-identity-settings",
+        "ok": True,
+        "state": state,
+        "requests": sorted(required_requests),
+    }
+
+
 async def exercise_settings_interactions(
     cdp: CdpClient,
     *,
@@ -1537,6 +3504,16 @@ async def exercise_settings_interactions(
 })()
 """,
     )
+    meeting_settings = await exercise_meeting_settings(
+        cdp,
+        backend=backend,
+        timeout_sec=timeout_sec,
+    )
+    meeting_identity_settings = await exercise_meeting_identity_settings(
+        cdp,
+        backend=backend,
+        timeout_sec=timeout_sec,
+    )
     help_links = await exercise_settings_help_links(cdp, timeout_sec=timeout_sec)
     favorite_mic = await exercise_settings_favorite_mic(
         cdp,
@@ -1564,6 +3541,8 @@ async def exercise_settings_interactions(
         "name": "settings-persistence",
         "ok": True,
         "state": state,
+        "meetingSettings": meeting_settings,
+        "meetingIdentitySettings": meeting_identity_settings,
         "mistralCredential": mistral_credential,
         "geminiCredential": gemini_credential,
         "openRouterCredential": openrouter_credential,
@@ -1907,8 +3886,7 @@ async def exercise_youtube_history_interactions(cdp: CdpClient, *, timeout_sec: 
         timeout_sec=timeout_sec,
         expression=r"""
 (() => {
-  const input = Array.from(document.querySelectorAll('input'))
-    .find((node) => (node.getAttribute('placeholder') || '').includes('Search history'));
+  const input = document.querySelector('input[aria-label="Search YouTube transcript history"]');
   if (!input) return { ok: false, reason: 'missing YouTube history search input' };
   if (input.value !== '00002') {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -2022,8 +4000,7 @@ async def exercise_youtube_history_interactions(cdp: CdpClient, *, timeout_sec: 
         timeout_sec=timeout_sec,
         expression=r"""
 (() => {
-  const input = Array.from(document.querySelectorAll('input'))
-    .find((node) => (node.getAttribute('placeholder') || '').includes('Search history'));
+  const input = document.querySelector('input[aria-label="Search YouTube transcript history"]');
   if (!input) return { ok: false, reason: 'missing YouTube history search input' };
   if (input.value !== '') {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -2089,9 +4066,8 @@ async def exercise_youtube_history_interactions(cdp: CdpClient, *, timeout_sec: 
 async def exercise_youtube_interactions(cdp: CdpClient, *, timeout_sec: float) -> dict[str, Any]:
     start_search = r"""
 (() => {
-  const input = Array.from(document.querySelectorAll('input'))
-    .find((node) => (node.getAttribute('placeholder') || '').includes('Youtube'));
-  const button = document.querySelector('button[aria-label="Search YouTube"]');
+  const input = document.querySelector('#youtube-source-search');
+  const button = document.querySelector('button[aria-label="Find video"]');
   if (!input || !button) return { ok: false, reason: 'missing input/button' };
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
   setter?.call(input, 'Gestaltung Stiftung');
@@ -2126,9 +4102,8 @@ async def exercise_youtube_interactions(cdp: CdpClient, *, timeout_sec: float) -
 
     start_url_lookup = r"""
 (() => {
-  const input = Array.from(document.querySelectorAll('input'))
-    .find((node) => (node.getAttribute('placeholder') || '').includes('Youtube'));
-  const button = document.querySelector('button[aria-label="Search YouTube"]');
+  const input = document.querySelector('#youtube-source-search');
+  const button = document.querySelector('button[aria-label="Find video"]');
   if (!input || !button) return { ok: false, reason: 'missing input/button' };
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
   setter?.call(input, 'https://www.youtube.com/watch?v=0wEjbSYNUM8');
@@ -2185,9 +4160,8 @@ async def exercise_youtube_start_transcription(
     search_started = await cdp.evaluate(
         r"""
 (() => {
-  const input = Array.from(document.querySelectorAll('input'))
-    .find((node) => (node.getAttribute('placeholder') || '').includes('Youtube'));
-  const button = document.querySelector('button[aria-label="Search YouTube"]');
+  const input = document.querySelector('#youtube-source-search');
+  const button = document.querySelector('button[aria-label="Find video"]');
   if (!input || !button) return { ok: false, reason: 'missing input/button' };
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
   setter?.call(input, 'Scriber queued validation');
@@ -2302,11 +4276,11 @@ async def exercise_file_history_interactions(cdp: CdpClient, *, timeout_sec: flo
       && document.querySelectorAll('.perf-scroll-item').length > 0
       && text.includes('Synthetic File 00001')
       && text.includes('Synthetic processes files in-app up to 2GB')
-      && text.includes('Video: MP4, MOV, etc. (max 2GB, audio extracted)'),
+      && text.includes('video up to 2GB'),
     view: root?.getAttribute('data-history-view') || '',
     visibleCards: document.querySelectorAll('.perf-scroll-item').length,
     hasUploadLimitHint: text.includes('Synthetic processes files in-app up to 2GB'),
-    hasVideoLimitHint: text.includes('Video: MP4, MOV, etc. (max 2GB, audio extracted)'),
+    hasVideoLimitHint: text.includes('video up to 2GB'),
     hasFirstFile: text.includes('Synthetic File 00001')
   };
 })()
@@ -4463,6 +6437,13 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
             await install_page_error_capture(cdp)
 
             frontend_base_url = f"http://127.0.0.1:{frontend_port}"
+            screenshot_dir = Path(args.evidence_dir).resolve() if args.evidence_dir else None
+            dark_boot_check = await exercise_dark_boot_shell(
+                cdp,
+                frontend_base_url=frontend_base_url,
+                timeout_sec=args.page_timeout_sec,
+                screenshot_dir=screenshot_dir,
+            )
             routes = [route for route in args.routes if route in ROUTE_EXPECTATIONS]
             scenarios = []
             command_palette_check: dict[str, Any] | None = None
@@ -4480,6 +6461,31 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
                     route=route,
                     timeout_sec=args.page_timeout_sec,
                 )
+                if screenshot_dir and route in {"/", "/youtube", "/file"}:
+                    await cdp.evaluate(
+                        r"""
+(() => {
+  window.scrollTo(0, 0);
+  document.querySelectorAll('[data-app-scroll-container], aside').forEach((node) => {
+    node.scrollTop = 0;
+  });
+  return { ok: true };
+})()
+""",
+                        timeout=5,
+                    )
+                    # Capture the settled surface rather than the route-entry fade.
+                    await asyncio.sleep(0.9)
+                    screenshot_label = {
+                        "/": "live-transcription",
+                        "/youtube": "youtube-transcription",
+                        "/file": "file-transcription",
+                    }[route]
+                    scenario["screenshot"] = await capture_page_screenshot(
+                        cdp,
+                        output_dir=screenshot_dir,
+                        label=screenshot_label,
+                    )
                 interaction_checks: list[dict[str, Any]] = []
                 if route == "/":
                     interaction_checks.append(
@@ -4514,6 +6520,16 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
                     )
                     interaction_checks.append(
                         await exercise_file_drop_interaction(cdp, timeout_sec=args.page_timeout_sec)
+                    )
+                elif route == "/meetings":
+                    interaction_checks.append(
+                        await exercise_meeting_end_to_end(
+                            cdp,
+                            frontend_base_url=frontend_base_url,
+                            backend=backend,
+                            timeout_sec=args.page_timeout_sec,
+                            screenshot_dir=Path(args.evidence_dir).resolve() if args.evidence_dir else None,
+                        )
                     )
                 elif route == "/debug":
                     interaction_checks.append(
@@ -4625,6 +6641,7 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
     ok = (
         bool(scenarios)
         and all(item["ok"] for item in scenarios)
+        and bool(dark_boot_check and dark_boot_check.get("ok"))
         and bool(command_palette_check and command_palette_check.get("ok"))
         and bool(transcript_detail_actions_check and transcript_detail_actions_check.get("ok"))
         and bool(transcript_cancel_check and transcript_cancel_check.get("ok"))
@@ -4644,6 +6661,8 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
         for item in scenarios
         for check in item.get("interactionChecks", [])
     ]
+    if dark_boot_check:
+        interaction_checks.append(dark_boot_check)
     if token_required_check:
         interaction_checks.append(token_required_check)
     if command_palette_check:
@@ -4675,6 +6694,7 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "interactionChecks": [item.get("name", "") for item in interaction_checks],
         },
         "scenarios": scenarios,
+        "darkBootCheck": dark_boot_check,
         "commandPaletteCheck": command_palette_check,
         "transcriptDetailActionsCheck": transcript_detail_actions_check,
         "transcriptCancelCheck": transcript_cancel_check,
@@ -4769,6 +6789,13 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
         if args.fast_tab_switch
         else None
     )
+    dark_boot_check = {
+        "name": "dark-boot-shell",
+        "ok": True,
+        "state": {"darkClass": True, "darkLogoVisible": True, "lightLogoHidden": True},
+        "screenshot": None,
+        "validateOnly": True,
+    }
     scenarios = [
         {
             "route": route,
@@ -4790,6 +6817,8 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
                 {"name": "file-upload-error", "ok": True},
                 {"name": "file-drag-drop", "ok": True}
             ] if route == "/file" else [
+                {"name": "meeting-end-to-end", "ok": True}
+            ] if route == "/meetings" else [
                 {"name": "debug-console-actions", "ok": True}
             ] if route == "/debug" else [
                 {"name": "settings-persistence", "ok": True},
@@ -4858,6 +6887,7 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
             "validateOnly": True,
         },
         "scenarios": scenarios,
+        "darkBootCheck": dark_boot_check,
         "commandPaletteCheck": {
             "name": "command-palette",
             "ok": True,

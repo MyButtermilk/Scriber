@@ -30,6 +30,7 @@ import {
 import LiveMic from "@/pages/LiveMic";
 import Youtube from "@/pages/Youtube";
 import FileTranscribe from "@/pages/FileTranscribe";
+import Meetings from "@/pages/Meetings";
 import Settings from "@/pages/Settings";
 const DebugConsole = lazy(() => import("@/pages/DebugConsole"));
 
@@ -61,6 +62,8 @@ function TabRoutes() {
       <Suspense fallback={<PageLoader />}>
         <Switch>
           <Route path="/" component={LiveMic} />
+          <Route path="/meetings/:id" component={Meetings} />
+          <Route path="/meetings" component={Meetings} />
           <Route path="/youtube" component={Youtube} />
           <Route path="/file" component={FileTranscribe} />
           <Route path="/debug" component={DebugConsole} />
@@ -205,11 +208,43 @@ function TranscriptHistoryInvalidationBridge() {
   return null;
 }
 
+function MeetingDetectionBridge() {
+  const [, setLocation] = useLocation();
+  const { toast } = useToast();
+  const seenRef = useRef<Set<string>>(new Set());
+
+  const handleWsMessage = useCallback((message: ScriberWebSocketMessage) => {
+    if (message.type !== "meeting_detected" || seenRef.current.has(message.detectionId)) return;
+    seenRef.current.add(message.detectionId);
+    if (message.source === "hotkey") {
+      setLocation(message.meetingId ? `/meetings/${message.meetingId}` : "/meetings");
+    }
+    toast({
+      title: message.meetingId ? "Meeting controls opened" : "Meeting recording requires confirmation",
+      description: message.label,
+      duration: 5000,
+      action: message.source === "hotkey" ? undefined : (
+        <ToastAction altText="Review meeting recording" onClick={() => setLocation("/meetings")}>
+          Review
+        </ToastAction>
+      ),
+    });
+  }, [setLocation, toast]);
+
+  useSharedWebSocket(handleWsMessage);
+  return null;
+}
+
 const DESKTOP_UPDATE_STARTUP_DELAY_MS = 12_000;
 const DESKTOP_UPDATE_BACKGROUND_POLL_MS = 6 * 60 * 60 * 1000;
 const SETTINGS_SECTION_REQUEST_KEY = "scriber:open-settings-section";
 
 function isBusyForUpdatePrompt(msg: ScriberWebSocketMessage): boolean | null {
+  if (msg.type === "meeting_state") {
+    return ["starting", "recording", "paused", "stopping", "finalizing", "analyzing"].includes(
+      String(msg.meeting.state || "").toLowerCase(),
+    );
+  }
   if (msg.type === "transcribing" || msg.type === "session_started") {
     return true;
   }
@@ -230,6 +265,16 @@ function isBusyForUpdatePrompt(msg: ScriberWebSocketMessage): boolean | null {
 function trayRecordingStateFromMessage(
   msg: ScriberWebSocketMessage,
 ): { active: boolean; mode: string } | null {
+  if (msg.type === "meeting_state") {
+    const meetingState = String(msg.meeting.state || "").toLowerCase();
+    if (["starting", "recording", "paused"].includes(meetingState)) {
+      return { active: true, mode: `meeting-${meetingState}` };
+    }
+    if (["stopping", "finalizing", "analyzing"].includes(meetingState)) {
+      return { active: false, mode: `meeting-${meetingState}` };
+    }
+    return { active: false, mode: "idle" };
+  }
   if (msg.type === "session_started") {
     return { active: true, mode: "initializing" };
   }
@@ -470,6 +515,7 @@ function RuntimeShell() {
     <WebSocketProvider path="/ws" autoReconnect={true} reconnectDelay={1000} enabled={websocketEnabled}>
       <RecordingErrorToastBridge />
       <TranscriptHistoryInvalidationBridge />
+      <MeetingDetectionBridge />
       <TrayRecordingStateBridge />
       <TauriNavigationBridge />
       <DesktopUpdateAutoCheckBridge />

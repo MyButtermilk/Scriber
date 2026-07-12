@@ -7,8 +7,9 @@ import tempfile
 import os
 import time
 import inspect
+import math
 import re
-from typing import Any, BinaryIO, Callable, Optional
+from typing import Any, BinaryIO, Callable, Mapping, Optional
 
 from loguru import logger
 
@@ -184,7 +185,8 @@ def _format_speaker_transcript_tokens(tokens: list[dict[str, Any]]) -> str:
     if not tokens:
         return ""
 
-    segments: list[tuple[str, str]] = []
+    segments: list[tuple[int, str]] = []
+    speaker_numbers: dict[str, int] = {}
     current_speaker: str | None = None
     current_text: list[str] = []
 
@@ -192,18 +194,20 @@ def _format_speaker_transcript_tokens(tokens: list[dict[str, Any]]) -> str:
         if not isinstance(token, dict):
             continue
         text = str(token.get("text") or "")
-        speaker = str(token.get("speaker") or "").strip()
+        speaker_value = token.get("speaker")
+        speaker = "" if speaker_value in (None, "") else str(speaker_value).strip()
 
         if speaker and speaker != current_speaker:
             if current_text and current_speaker:
-                segments.append((current_speaker, "".join(current_text).strip()))
+                segments.append((speaker_numbers[current_speaker], "".join(current_text).strip()))
             current_speaker = speaker
+            speaker_numbers.setdefault(speaker, len(speaker_numbers) + 1)
             current_text = [text]
         else:
             current_text.append(text)
 
     if current_text and current_speaker:
-        segments.append((current_speaker, "".join(current_text).strip()))
+        segments.append((speaker_numbers[current_speaker], "".join(current_text).strip()))
 
     if not segments:
         return "".join(str(t.get("text") or "") for t in tokens if isinstance(t, dict)).strip()
@@ -213,6 +217,40 @@ def _format_speaker_transcript_tokens(tokens: list[dict[str, Any]]) -> str:
         for speaker, text in segments
         if text
     )
+
+
+def direct_file_workflow_timeout_seconds(
+    expected_duration_seconds: float | None,
+    *,
+    minimum_seconds: float = 600.0,
+    maximum_seconds: float = 21_600.0,
+) -> float:
+    """Bound the outer file workflow while allowing long local inference.
+
+    Provider adapters retain tighter upload and polling budgets. The outer
+    owner also covers decoded-PCM routes such as local ONNX, so it allows a
+    little more than real time plus fixed setup/finalization overhead, capped at
+    six hours to retain deterministic cancellation.
+    """
+    try:
+        duration = float(expected_duration_seconds or 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if not math.isfinite(duration) or duration < 0.0:
+        duration = 0.0
+    try:
+        minimum = max(1.0, float(minimum_seconds))
+    except (TypeError, ValueError):
+        minimum = 600.0
+    if not math.isfinite(minimum):
+        minimum = 600.0
+    try:
+        maximum = max(minimum, float(maximum_seconds))
+    except (TypeError, ValueError):
+        maximum = max(minimum, 21_600.0)
+    if not math.isfinite(maximum):
+        maximum = max(minimum, 21_600.0)
+    return min(maximum, max(minimum, 300.0 + duration * 1.1))
 
 
 def _word_value(word: Any, key: str) -> Any:
@@ -258,7 +296,7 @@ def _format_deepgram_words_with_speakers(words: list[Any]) -> str:
 def _diarized_text_from_frame_result(result: Any) -> str:
     if isinstance(result, list):
         tokens = [token for token in result if isinstance(token, dict)]
-        if tokens and any(token.get("speaker") for token in tokens):
+        if tokens and any(token.get("speaker") not in (None, "") for token in tokens):
             return _format_speaker_transcript_tokens(tokens)
         return ""
 
@@ -1310,7 +1348,10 @@ class ScriberPipeline:
         on_error: Optional[Callable[[str], None]] = None,
         mic_prewarm_manager=None,
         enable_speaker_diarization: bool = False,
+        direct_file_speaker_diarization: bool | None = None,
         text_injection_enabled: bool = True,
+        execution_route: Mapping[str, Any] | None = None,
+        direct_file_expected_duration_seconds: float | None = None,
     ):
         self.service_name = service_name
         self.on_status_change = on_status_change
@@ -1324,7 +1365,27 @@ class ScriberPipeline:
         self.on_error = on_error
         self.mic_prewarm_manager = mic_prewarm_manager
         self.enable_speaker_diarization = bool(enable_speaker_diarization)
+        # Direct file jobs historically enable diarization by default. Meeting
+        # finalization overrides this per track so the single-user mic is plain
+        # while shared system audio remains diarized.
+        self.direct_file_speaker_diarization = (
+            True if direct_file_speaker_diarization is None
+            else bool(direct_file_speaker_diarization)
+        )
         self.text_injection_enabled = bool(text_injection_enabled)
+        # File/YouTube/meeting jobs pass a persisted immutable route here.  Live
+        # dictation intentionally keeps ``None`` and continues to read current
+        # settings at session start.
+        self.execution_route = dict(execution_route) if execution_route is not None else None
+        try:
+            expected_duration = float(direct_file_expected_duration_seconds or 0.0)
+        except (TypeError, ValueError):
+            expected_duration = 0.0
+        self.direct_file_expected_duration_seconds = (
+            expected_duration
+            if math.isfinite(expected_duration) and expected_duration > 0.0
+            else 0.0
+        )
         self.pipeline = None
         self.task = None
         self.runner = None
@@ -1336,6 +1397,52 @@ class ScriberPipeline:
         self._start_done = asyncio.Event()
         self._start_done.set()
         self._final_transcription_received = asyncio.Event()
+        # Provider-native timing/diarization data for meeting finalization.
+        # It remains process-local and is not exposed through the REST API.
+        self.last_structured_transcript_payload: dict[str, Any] | None = None
+
+    def _execution_value(self, key: str, fallback: Any) -> Any:
+        route = self.execution_route
+        if route is not None and key in route:
+            return route[key]
+        return fallback
+
+    def _execution_language(self) -> str:
+        return str(self._execution_value("language", Config.LANGUAGE) or "")
+
+    def _execution_selected_language(self) -> str | None:
+        value = self._execution_language().strip()
+        return None if not value or value.lower() == "auto" else value
+
+    def _execution_custom_vocab(self) -> str:
+        return str(self._execution_value("custom_vocab", Config.CUSTOM_VOCAB) or "")
+
+    def _execution_model(self, fallback: str) -> str:
+        value = str(self._execution_value("model", fallback) or "").strip()
+        return value or fallback
+
+    def _direct_file_batch_timeout_seconds(self) -> float:
+        """Bound a provider request/job budget while retaining the 15-minute floor."""
+        duration = self.direct_file_expected_duration_seconds
+        return min(14_400.0, max(900.0, 300.0 + duration * 0.5))
+
+    def _direct_file_upload_timeout_seconds(self) -> float:
+        """Allow long compressed meeting tracks to upload over modest connections."""
+        duration = self.direct_file_expected_duration_seconds
+        return min(3_600.0, max(300.0, 120.0 + duration / 12.0))
+
+    def _direct_file_poll_timeout_seconds(self) -> float:
+        """Bound asynchronous provider polling while supporting five-hour inputs."""
+        duration = self.direct_file_expected_duration_seconds
+        return min(14_400.0, max(600.0, 300.0 + duration * 0.5))
+
+    def _direct_file_workflow_timeout_seconds(
+        self, *, minimum_seconds: float = 600.0
+    ) -> float:
+        return direct_file_workflow_timeout_seconds(
+            self.direct_file_expected_duration_seconds,
+            minimum_seconds=minimum_seconds,
+        )
 
     def _record_terminal_error(self, error_msg: str) -> None:
         normalized = str(error_msg or "").strip()
@@ -1831,8 +1938,9 @@ class ScriberPipeline:
             logger.info("Using Gemini API audio transcription mode")
             return GeminiAsyncProcessor(
                 api_key=api_key,
-                language=Config.LANGUAGE,
-                custom_vocab=Config.CUSTOM_VOCAB,
+                model=self._execution_model(Config.GEMINI_STT_MODEL),
+                language=self._execution_language(),
+                custom_vocab=self._execution_custom_vocab(),
                 session=session,
                 on_progress=self.on_progress,
                 diarize=self.enable_speaker_diarization,
@@ -1888,7 +1996,7 @@ class ScriberPipeline:
                 **_filter_supported_kwargs(
                     settings_cls,
                     {
-                        "model": "nova-3",
+                        "model": self._execution_model(Config.DEEPGRAM_MODEL),
                         "language": _selected_language(),
                         "interim_results": True,
                         "smart_format": True,
@@ -1924,8 +2032,9 @@ class ScriberPipeline:
             logger.info("Using Deepgram async pre-recorded transcription mode")
             return DeepgramAsyncProcessor(
                 api_key=_get_api_key("deepgram"),
-                language=Config.LANGUAGE,
-                custom_vocab=Config.CUSTOM_VOCAB,
+                model=self._execution_model(Config.DEEPGRAM_MODEL),
+                language=self._execution_language(),
+                custom_vocab=self._execution_custom_vocab(),
                 session=session,
                 on_progress=self.on_progress,
                 diarize=self.enable_speaker_diarization,
@@ -1970,7 +2079,9 @@ class ScriberPipeline:
             return AzureMaiTranscribeSTTService(
                 speech_key=api_key,
                 region=validate_azure_mai_region(getattr(Config, "AZURE_MAI_REGION", None)),
-                language=Config.LANGUAGE,
+                language=self._execution_language(),
+                model=self._execution_model(Config.AZURE_MAI_MODEL),
+                custom_vocab=self._execution_custom_vocab(),
                 session=session,
                 on_progress=self.on_progress,
             )
@@ -2114,8 +2225,8 @@ class ScriberPipeline:
             from src.onnx_local_service import OnnxLocalBufferedSTTService
             if for_file:
                 return OnnxLocalBufferedSTTService(
-                    model_name=Config.ONNX_MODEL,
-                    language=Config.LANGUAGE,
+                    model_name=self._execution_model(Config.ONNX_MODEL),
+                    language=self._execution_language(),
                     quantization=Config.ONNX_QUANTIZATION,
                     sample_rate=Config.SAMPLE_RATE,
                     channels=Config.CHANNELS,
@@ -2470,6 +2581,17 @@ class ScriberPipeline:
                 ".aac": "audio/aac",
             }
             content_type = content_type_map.get(ext, mimetypes.guess_type(str(path))[0] or "application/octet-stream")
+            batch_timeout_seconds = self._direct_file_batch_timeout_seconds()
+            upload_timeout_seconds = self._direct_file_upload_timeout_seconds()
+            poll_timeout_seconds = self._direct_file_poll_timeout_seconds()
+            if self.direct_file_expected_duration_seconds:
+                logger.info(
+                    "Direct-file timeout budget: "
+                    f"duration={self.direct_file_expected_duration_seconds:.1f}s, "
+                    f"upload={upload_timeout_seconds:.1f}s, "
+                    f"batch={batch_timeout_seconds:.1f}s, "
+                    f"poll={poll_timeout_seconds:.1f}s"
+                )
 
             if self.service_name == "assemblyai":
                 api_key = Config.get_api_key("assemblyai")
@@ -2482,14 +2604,16 @@ class ScriberPipeline:
                             session=session,
                             api_key=api_key,
                             audio_source=f,
-                            language=Config.LANGUAGE,
-                            custom_vocab=Config.CUSTOM_VOCAB or "",
-                            speaker_labels=True,  # File/Youtube: diarization enabled
-                            model=Config.ASSEMBLYAI_ASYNC_MODEL,
+                            language=self._execution_language(),
+                            custom_vocab=self._execution_custom_vocab(),
+                            speaker_labels=self.direct_file_speaker_diarization,
+                            model=self._execution_model(Config.ASSEMBLYAI_ASYNC_MODEL),
                             on_progress=self.on_progress,
-                            timeout_secs=900.0,
+                            timeout_secs=batch_timeout_seconds,
+                            upload_timeout_secs=upload_timeout_seconds,
                         )
 
+                self.last_structured_transcript_payload = payload
                 text = assemblyai_transcript_payload_to_text(
                     payload,
                     prefer_speaker_labels=True,
@@ -2508,7 +2632,7 @@ class ScriberPipeline:
                     raise ValueError("Mistral API key is missing")
                 file_size = path.stat().st_size
 
-                language = Config.LANGUAGE if Config.LANGUAGE and Config.LANGUAGE != "auto" else None
+                language = self._execution_selected_language()
 
                 if self.on_progress:
                     self.on_progress("Uploading audio...")
@@ -2522,18 +2646,19 @@ class ScriberPipeline:
                         payload = await transcribe_with_mistral(
                             session=session,
                             api_key=api_key,
-                            model=Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602",
+                            model=self._execution_model(Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602"),
                             file_content=f,
                             filename=path.name,
                             content_type=content_type,
                             language=language,
-                            context_bias=Config.CUSTOM_VOCAB or "",
-                            diarize=True,
+                            context_bias=self._execution_custom_vocab(),
+                            diarize=self.direct_file_speaker_diarization,
                             timestamp_granularities=["segment"],
-                            timeout_secs=900,
+                            timeout_secs=batch_timeout_seconds,
                         )
 
                 text = str(payload.get("text") or "").strip()
+                self.last_structured_transcript_payload = payload
                 segments = payload.get("segments") if isinstance(payload.get("segments"), list) else []
                 if segments:
                     diarized = format_mistral_segments_with_speakers(
@@ -2561,13 +2686,14 @@ class ScriberPipeline:
                             session=session,
                             api_key=api_key,
                             audio_source=f,
-                            language=Config.LANGUAGE,
+                            language=self._execution_language(),
                             word_timestamps=True,
-                            diarize=True,
+                            diarize=self.direct_file_speaker_diarization,
                             on_progress=self.on_progress,
-                            timeout_secs=900.0,
+                            timeout_secs=batch_timeout_seconds,
                         )
 
+                self.last_structured_transcript_payload = payload
                 text = smallest_transcript_payload_to_text(
                     payload,
                     prefer_speaker_labels=True,
@@ -2593,13 +2719,15 @@ class ScriberPipeline:
                             audio_source=f,
                             filename=path.name,
                             content_type=content_type,
-                            language=Config.LANGUAGE,
-                            custom_vocab=Config.CUSTOM_VOCAB or "",
-                            diarize=True,
+                            model=self._execution_model(Config.DEEPGRAM_MODEL),
+                            language=self._execution_language(),
+                            custom_vocab=self._execution_custom_vocab(),
+                            diarize=self.direct_file_speaker_diarization,
                             on_progress=self.on_progress,
-                            timeout_secs=900.0,
+                            timeout_secs=batch_timeout_seconds,
                         )
 
+                self.last_structured_transcript_payload = payload
                 text = deepgram_transcript_payload_to_text(
                     payload,
                     prefer_speaker_labels=True,
@@ -2625,18 +2753,19 @@ class ScriberPipeline:
                             audio_source=f,
                             filename=path.name,
                             content_type=content_type,
-                            model=Config.OPENAI_STT_MODEL,
-                            language=Config.LANGUAGE,
-                            custom_vocab=Config.CUSTOM_VOCAB or "",
-                            diarize=True,
+                            model=self._execution_model(Config.OPENAI_STT_MODEL),
+                            language=self._execution_language(),
+                            custom_vocab=self._execution_custom_vocab(),
+                            diarize=self.direct_file_speaker_diarization,
                             on_progress=self.on_progress,
-                            timeout_secs=900.0,
+                            timeout_secs=batch_timeout_seconds,
                         )
 
                 text = openai_transcript_payload_to_text(
                     payload,
                     prefer_speaker_labels=True,
                 )
+                self.last_structured_transcript_payload = payload
                 if text and self.on_transcription:
                     logger.info(f"OpenAI direct transcription completed ({len(text)} chars)")
                     self.on_transcription(text, True)
@@ -2658,14 +2787,16 @@ class ScriberPipeline:
                             audio_source=f,
                             filename=path.name,
                             content_type=content_type,
-                            language=Config.LANGUAGE,
-                            custom_vocab=Config.CUSTOM_VOCAB or "",
-                            diarize=True,
+                            model=self._execution_model(Config.GEMINI_STT_MODEL),
+                            language=self._execution_language(),
+                            custom_vocab=self._execution_custom_vocab(),
+                            diarize=self.direct_file_speaker_diarization,
                             on_progress=self.on_progress,
-                            timeout_secs=900.0,
+                            timeout_secs=batch_timeout_seconds,
                         )
 
                 text = gemini_transcript_payload_to_text(payload)
+                self.last_structured_transcript_payload = payload
                 if text and self.on_transcription:
                     logger.info(f"Gemini direct transcription completed ({len(text)} chars)")
                     self.on_transcription(text, True)
@@ -2693,12 +2824,15 @@ class ScriberPipeline:
                                 audio_source=f,
                                 filename=upload_path.name,
                                 content_type=azure_mai_content_type(upload_path),
-                                language=Config.LANGUAGE,
+                                language=self._execution_language(),
+                                model=self._execution_model(Config.AZURE_MAI_MODEL),
+                                custom_vocab=self._execution_custom_vocab(),
                                 on_progress=self.on_progress,
-                                timeout_secs=900.0,
+                                timeout_secs=batch_timeout_seconds,
                             )
 
                 text = azure_mai_transcript_payload_to_text(payload)
+                self.last_structured_transcript_payload = payload
                 if text and self.on_transcription:
                     logger.info(f"Azure MAI direct transcription completed ({len(text)} chars)")
                     self.on_transcription(text, True)
@@ -2720,17 +2854,18 @@ class ScriberPipeline:
                             audio_source=f,
                             filename=path.name,
                             content_type=content_type,
-                            language=Config.LANGUAGE,
-                            custom_vocab=Config.CUSTOM_VOCAB or "",
-                            diarize=True,
+                            language=self._execution_language(),
+                            custom_vocab=self._execution_custom_vocab(),
+                            diarize=self.direct_file_speaker_diarization,
                             on_progress=self.on_progress,
-                            timeout_secs=900.0,
+                            timeout_secs=batch_timeout_seconds,
                         )
 
                 text = gladia_transcript_payload_to_text(
                     payload,
                     prefer_speaker_labels=True,
                 )
+                self.last_structured_transcript_payload = payload
                 if text and self.on_transcription:
                     logger.info(f"Gladia direct transcription completed ({len(text)} chars)")
                     self.on_transcription(text, True)
@@ -2752,17 +2887,18 @@ class ScriberPipeline:
                             audio_source=f,
                             filename=path.name,
                             content_type=content_type,
-                            language=Config.LANGUAGE,
-                            custom_vocab=Config.CUSTOM_VOCAB or "",
-                            diarize=True,
+                            language=self._execution_language(),
+                            custom_vocab=self._execution_custom_vocab(),
+                            diarize=self.direct_file_speaker_diarization,
                             on_progress=self.on_progress,
-                            timeout_secs=900.0,
+                            timeout_secs=batch_timeout_seconds,
                         )
 
                 text = speechmatics_transcript_payload_to_text(
                     payload,
                     prefer_speaker_labels=True,
                 )
+                self.last_structured_transcript_payload = payload
                 if text and self.on_transcription:
                     logger.info(f"Speechmatics direct transcription completed ({len(text)} chars)")
                     self.on_transcription(text, True)
@@ -2777,7 +2913,9 @@ class ScriberPipeline:
 
             headers = {"Authorization": f"Bearer {api_key}"}
             base_url = "https://api.soniox.com/v1"
-            model = Config.SONIOX_ASYNC_MODEL or Config.DEFAULT_SONIOX_ASYNC_MODEL
+            model = self._execution_model(
+                Config.SONIOX_ASYNC_MODEL or Config.DEFAULT_SONIOX_ASYNC_MODEL
+            )
             file_id = None
             transcription_id = None
 
@@ -2831,7 +2969,7 @@ class ScriberPipeline:
                             f"{base_url}/files",
                             data=data,
                             headers=headers,
-                            timeout=aiohttp.ClientTimeout(total=300),  # 5 min for large files
+                            timeout=aiohttp.ClientTimeout(total=upload_timeout_seconds),
                         ) as resp:
                             resp.raise_for_status()
                             file_id = (await read_response_json_limited(resp, 64 * 1024 * 1024))["id"]
@@ -2839,12 +2977,13 @@ class ScriberPipeline:
                     # Start transcription with speaker diarization enabled for file/youtube
                     payload = {"file_id": file_id, "model": model}
                     # Build proper context object if custom_vocab is provided
-                    if Config.CUSTOM_VOCAB:
-                        terms = [t.strip() for t in Config.CUSTOM_VOCAB.split(",") if t.strip()]
+                    custom_vocab = self._execution_custom_vocab()
+                    if custom_vocab:
+                        terms = [t.strip() for t in custom_vocab.split(",") if t.strip()]
                         if terms:
                             payload["context"] = {"terms": terms}
                     # Enable speaker diarization for file/youtube transcription
-                    payload["enable_speaker_diarization"] = True
+                    payload["enable_speaker_diarization"] = self.direct_file_speaker_diarization
 
                     async with session.post(
                         f"{base_url}/transcriptions",
@@ -2862,7 +3001,7 @@ class ScriberPipeline:
                     done_statuses = {"completed", "done", "succeeded", "success"}
                     error_statuses = {"error", "failed", "canceled", "cancelled"}
                     poll_start = asyncio.get_running_loop().time()
-                    poll_timeout = 600.0  # 10 minutes max
+                    poll_timeout = poll_timeout_seconds
                     poll_count = 0
 
                     while True:
@@ -2902,10 +3041,11 @@ class ScriberPipeline:
                     ) as r3:
                         r3.raise_for_status()
                         transcript_payload = await read_response_json_limited(r3, 64 * 1024 * 1024)
+                        self.last_structured_transcript_payload = transcript_payload
 
                         # Parse speaker diarization if available
                         tokens = transcript_payload.get("tokens", [])
-                        if tokens and any(t.get("speaker") for t in tokens):
+                        if tokens and any(t.get("speaker") not in (None, "") for t in tokens):
                             # Format with speaker labels
                             text = self._format_speaker_transcript(tokens)
                         else:

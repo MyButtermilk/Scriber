@@ -166,6 +166,7 @@ Add-ContentEntry -Entries $rustEntries -Path "Frontend/src-tauri/Cargo.toml" -Co
 Add-ContentEntry -Entries $rustEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
 Add-RawFileEntry -Entries $rustEntries -Path "Frontend/src-tauri/build.rs"
 Add-RawFileEntry -Entries $rustEntries -Path "Frontend/src-tauri/tauri.conf.json"
+Add-RawFileEntry -Entries $rustEntries -Path "THIRD_PARTY_NOTICES.md"
 Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/capabilities" -Filter "*.json"
 Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/icons" -Filter "*"
 Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/src" -Filter "*.rs"
@@ -178,11 +179,33 @@ foreach ($path in @(
     "Frontend/src-tauri/build.rs",
     "Frontend/src-tauri/src/audio_sidecar.rs",
     "Frontend/src-tauri/src/audio_frame_pipe.rs",
+    "Frontend/src-tauri/src/meeting_aec.rs",
     "Frontend/src-tauri/src/redaction.rs"
 )) {
     Add-RawFileEntry -Entries $rustAudioEntries -Path $path
 }
 Write-KeyFile -Name "rust-audio-sidecar.txt" -Entries $rustAudioEntries
+
+$rustDiarizationEntries = New-EntryList
+foreach ($path in @(
+    "native/scriber-diarization-sidecar/.cargo/config.toml",
+    "native/scriber-diarization-sidecar/Cargo.toml",
+    "native/scriber-diarization-sidecar/Cargo.lock",
+    "native/scriber-diarization-sidecar/build.rs",
+    "scripts/write_diarization_worker_manifest.py"
+)) {
+    Add-RawFileEntry -Entries $rustDiarizationEntries -Path $path
+}
+Add-FileGlobEntries -Entries $rustDiarizationEntries -Root "native/scriber-diarization-sidecar/src" -Filter "*.rs"
+$rustDiarizationEntries.Add("constant`ttarget`tx86_64-pc-windows-msvc")
+$rustDiarizationEntries.Add("constant`tcache-contract`tstatic-sherpa-worker-v1")
+$rustDiarizationEntries.Add("constant`tsherpa-archive-sha256`tf6555701d6397d74f1302b0666a661f32708b599a14a5fde80835d4902fcd315")
+Write-KeyFile -Name "rust-diarization-sidecar.txt" -Entries $rustDiarizationEntries
+
+$sherpaArchiveEntries = New-EntryList
+$sherpaArchiveEntries.Add("constant`tname`tsherpa-onnx-v1.13.3-win-x64-static-MT-Release-lib.tar.bz2")
+$sherpaArchiveEntries.Add("constant`tsha256`tf6555701d6397d74f1302b0666a661f32708b599a14a5fde80835d4902fcd315")
+Write-KeyFile -Name "sherpa-onnx-archive.txt" -Entries $sherpaArchiveEntries
 
 $backendEntries = New-EntryList
 foreach ($path in @(
@@ -195,6 +218,7 @@ foreach ($path in @(
     "Frontend/src-tauri/src/audio_sidecar.rs",
     "Frontend/src-tauri/src/audio_sidecar_client.rs",
     "Frontend/src-tauri/src/audio_frame_pipe.rs",
+    "Frontend/src-tauri/src/meeting_aec.rs",
     "Frontend/src-tauri/src/redaction.rs"
 )) {
     Add-RawFileEntry -Entries $backendEntries -Path $path
@@ -209,6 +233,6 @@ Add-FileGlobEntries -Entries $backendEntries -Root "src" -Filter "*.py" -Content
     }
     return $Content
 }
-$backendEntries.Add("constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v2")
-$backendEntries.Add("constant`tbackend-sidecar-flags`tBundleMediaTools;UseProfileB;ValidateSlim;BundleRustAudio")
+$backendEntries.Add("constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v3")
+$backendEntries.Add("constant`tbackend-sidecar-flags`tBundleMediaTools;UseProfileB;ValidateSlim;BundleRustAudio;BundleRustDiarization")
 Write-KeyFile -Name "backend-sidecar.txt" -Entries $backendEntries

@@ -19,12 +19,14 @@ tmp/
 /Frontend/src-tauri/target/release/backend/
 /Frontend/src-tauri/resources/audio-sidecar/*
 !/Frontend/src-tauri/resources/audio-sidecar/.gitkeep
+/native/scriber-diarization-sidecar/target/
 /deskscribe-parakeet-primeline-onnx/
 /sherpa-onnx-parakeet-primeline-de-int8/
 
 # Local build, browser, design, and performance artifacts
 /Scriber Install/
 /.playwright-mcp/
+/output/
 /.agents/
 /artifacts/
 /oracle-cache-investigation-*/

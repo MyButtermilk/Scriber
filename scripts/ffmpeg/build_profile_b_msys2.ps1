@@ -16,6 +16,7 @@ param(
     [string]$Msys2Root = "",
     [string]$SourceUrl = "https://git.ffmpeg.org/ffmpeg.git",
     [string]$GitRef = "n7.0",
+    [string]$PythonExe = "python",
     [int]$Jobs = 0,
     [switch]$InstallDependencies,
     [switch]$SkipClone,
@@ -234,7 +235,7 @@ function Invoke-PythonGate {
         [string]$Label
     )
 
-    & python @Arguments
+    & $PythonExe @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "$Label failed with exit code $LASTEXITCODE"
     }

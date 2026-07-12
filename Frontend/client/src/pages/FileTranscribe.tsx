@@ -1,11 +1,10 @@
 import { useCallback, useState, useEffect, memo, useMemo, useRef, useSyncExternalStore } from "react";
 import { useDropzone } from "react-dropzone";
-import { AlertCircle, UploadCloud, FileAudio, CheckCircle2, Loader2, XCircle, LayoutGrid, LayoutList, Square } from "lucide-react";
+import { AlertCircle, UploadCloud, FileAudio, CheckCircle2, Loader2, XCircle, Square, ArrowRight } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiUrl } from "@/lib/backend";
@@ -19,8 +18,8 @@ import { useUrlQueryState } from "@/hooks/use-url-query-state";
 import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
 import { PageIntro } from "@/components/page-intro";
+import { TranscriptionHistoryToolbar } from "@/components/transcription-history-toolbar";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
-import { TranscriptHistorySearch } from "@/components/transcript-history-search";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
 import {
   getFileUploadSnapshot,
@@ -96,23 +95,14 @@ const FileCard = memo(function FileCard({
   return (
     <div className="w-full">
       <Card
-        className={`file-history-card perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid h-[220px]" : ""} cursor-pointer rounded-[20px] p-4 group transform-gpu ${deletingClasses}`}
+        className={`file-history-card perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid min-h-[176px]" : ""} cursor-pointer rounded-[20px] p-4 group transform-gpu ${deletingClasses}`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
-        role="button"
-        tabIndex={0}
-        aria-label={`Open transcript ${item.title}`}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onNavigate(item.id);
-          }
-        }}
       >
         {viewMode === "list" ? (
           // List view
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 flex-1 items-center gap-4">
               <div className={`file-history-icon flex h-10 w-10 items-center justify-center rounded-[12px] ${historyStatus === 'failed' || historyStatus === 'summary_failed'
                 ? 'bg-red-50 dark:bg-red-900/20 text-red-600'
                 : historyStatus === 'processing'
@@ -123,8 +113,19 @@ const FileCard = memo(function FileCard({
                 }`}>
                 {historyStatus === 'failed' ? <XCircle className="w-5 h-5" /> : historyStatus === 'summary_failed' ? <AlertCircle className="w-5 h-5" /> : historyStatus === 'processing' ? <Loader2 className="w-5 h-5 animate-spin" /> : historyStatus === 'stopped' ? <Square className="w-5 h-5" /> : <FileAudio className="w-5 h-5" />}
               </div>
-              <div>
-                <h3 className="font-heading text-[14px] font-medium text-foreground transition-colors duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:text-primary">{item.title}</h3>
+              <div className="min-w-0 flex-1">
+                <h3>
+                  <button
+                    type="button"
+                    className="line-clamp-2 min-h-11 w-full rounded-sm text-left font-heading text-[14px] font-medium leading-[1.4] text-foreground outline-none transition-colors duration-200 group-hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60 sm:min-h-0"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onNavigate(item.id);
+                    }}
+                  >
+                    {item.title}
+                  </button>
+                </h3>
                 <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
                   {item.channel && <span>{item.channel}</span>}
                   {item.channel && <span>•</span>}
@@ -134,7 +135,7 @@ const FileCard = memo(function FileCard({
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               {historyStatus === 'processing' ? (
                 <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1">
                   <Loader2 className="w-3 h-3 animate-spin" />
@@ -206,13 +207,25 @@ const FileCard = memo(function FileCard({
                 ) : historyStatus === 'stopped' ? (
                   <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px]">Stopped</Badge>
                 ) : (
-                  <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">
+                  <div className="flex items-center gap-1 rounded-full bg-green-50 px-2 py-1 text-[10px] font-medium text-green-600 dark:bg-green-950/40 dark:text-green-300">
                     <CheckCircle2 className="w-3 h-3" />
+                    Ready
                   </div>
                 )}
               </div>
             </div>
-            <h3 className="mb-2 line-clamp-2 font-heading text-[14px] font-medium leading-[1.35] text-foreground transition-colors duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:text-primary">{item.title}</h3>
+            <h3 className="mb-2">
+              <button
+                type="button"
+                className="line-clamp-2 min-h-11 w-full rounded-sm text-left font-heading text-[14px] font-medium leading-[1.35] text-foreground outline-none transition-colors duration-200 group-hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60 sm:min-h-0"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onNavigate(item.id);
+                }}
+              >
+                {item.title}
+              </button>
+            </h3>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-auto">
               <span>{item.duration}</span>
               <span>•</span>
@@ -250,6 +263,7 @@ export default function FileTranscribe() {
   const { toast } = useToast();
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
+  const [dropError, setDropError] = useState("");
   const deletingRef = useRef<string | null>(null);
   const copyingRef = useRef<string | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
@@ -330,21 +344,28 @@ export default function FileTranscribe() {
     Number(fileUploadLimits?.compressionThresholdBytes) || DEFAULT_COMPRESSION_THRESHOLD_BYTES;
   const uploadHint = useMemo(() => {
     if (!fileUploadLimits) {
-      return "Audio: MP3, M4A, WAV (uploads over 50MB are auto-compressed to WebM) • Video: MP4, MOV, etc. (max 2GB, audio extracted)";
+      return "Audio and video up to 2GB · files over 50MB are optimized automatically";
     }
 
     const providerLabel = fileUploadLimits.providerLabel || "Selected provider";
     const compressionThresholdLabel = fileUploadLimits.compressionThresholdLabel || "50MB";
     const audioLimitLabel = fileUploadLimits.audioMaxLabel || "unknown";
-    const rawAudioIngestLabel = fileUploadLimits.rawAudioIngestMaxLabel || "2GB";
     const videoLimitLabel = fileUploadLimits.videoMaxLabel || "2GB";
 
     const audioHint = fileUploadLimits.usesDirectProviderLimit
-      ? `Audio: MP3, M4A, WAV (uploads over ${compressionThresholdLabel} are auto-compressed to WebM; ${providerLabel} max ${audioLimitLabel}, raw ingest ${rawAudioIngestLabel})`
-      : `Audio: MP3, M4A, WAV (uploads over ${compressionThresholdLabel} are auto-compressed to WebM; ${providerLabel} processes files in-app up to ${audioLimitLabel})`;
+      ? `${providerLabel} accepts audio up to ${audioLimitLabel}`
+      : `${providerLabel} processes files in-app up to ${audioLimitLabel}`;
 
-    return `${audioHint} • Video: MP4, MOV, etc. (max ${videoLimitLabel}, audio extracted)`;
+    return `${audioHint} · video up to ${videoLimitLabel} · files over ${compressionThresholdLabel} are optimized automatically`;
   }, [fileUploadLimits]);
+  const maxUploadBytes = useMemo(
+    () => Math.max(
+      Number(fileUploadLimits?.rawAudioIngestMaxBytes) || 0,
+      Number(fileUploadLimits?.videoMaxBytes) || 0,
+      2 * 1024 * 1024 * 1024,
+    ),
+    [fileUploadLimits],
+  );
 
   useTranscriptAutoRefresh({
     queryKey: transcriptsQueryKey,
@@ -504,6 +525,7 @@ export default function FileTranscribe() {
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0 && !isFileUploadActive()) {
+      setDropError("");
       uploadFiles(acceptedFiles);
     }
   }, [uploadFiles]);
@@ -515,7 +537,15 @@ export default function FileTranscribe() {
       "video/*": [".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"],
     },
     multiple: true,
+    maxSize: maxUploadBytes,
     disabled: isUploading,
+    onDropRejected: (rejections) => {
+      const first = rejections[0];
+      const reason = first?.errors?.[0]?.code === "file-too-large"
+        ? "This file is larger than the current 2GB ingest limit."
+        : "Choose a supported audio or video file.";
+      setDropError(first?.file?.name ? `${first.file.name}: ${reason}` : reason);
+    },
   });
 
   // Separate processing items from completed
@@ -527,7 +557,8 @@ export default function FileTranscribe() {
       <PageIntro
         eyebrow="Media import · 03"
         title="File transcription"
-        description="Bring in audio or video files and let Scriber prepare, transcribe, and organize them."
+        description="Drop in audio or video; Scriber prepares, transcribes, and organizes it."
+        sticky={false}
       />
 
       {/* Import workbench */}
@@ -535,13 +566,15 @@ export default function FileTranscribe() {
         {...getRootProps({
           role: "button",
           "aria-label": "Upload file for transcription",
+          "aria-describedby": "file-upload-formats file-upload-limits",
+          "aria-busy": isUploading,
         })}
         className={`file-upload-shell mb-7 cursor-pointer group
           ${isDragActive ? 'is-drag-active' : ''}
-          ${isUploading ? 'opacity-50 pointer-events-none' : ''}
+          ${isUploading ? 'is-uploading' : ''}
         `}
       >
-        <div className="file-upload-core flex flex-col items-center justify-center gap-4 p-8 text-center md:p-10">
+        <div className="file-upload-core flex flex-col items-center justify-center gap-4 p-6 text-center md:p-8">
         <input {...getInputProps()} />
         <div className={`file-upload-mark flex h-[72px] w-[72px] items-center justify-center rounded-full transition-transform duration-700 ease-[cubic-bezier(0.32,0.72,0,1)] ${isDragActive ? 'scale-110' : 'group-hover:scale-105'}`}>
           {isUploading ? (
@@ -553,8 +586,8 @@ export default function FileTranscribe() {
         <div className="space-y-1">
           {isUploading ? (
             <>
-              <p className="text-lg font-medium">{uploadStatusText || `Uploading ${uploadingFileName}...`}</p>
-              <Progress value={uploadProgress} className="h-2 w-48 mx-auto mt-2" />
+              <p className="text-pretty font-heading text-[17px] font-semibold">{uploadStatusText || `Uploading ${uploadingFileName}...`}</p>
+              <Progress value={uploadProgress} className="mx-auto mt-3 h-2 w-[min(18rem,70vw)]" />
               {uploadTotalFiles > 1 && (
                 <p className="text-xs text-muted-foreground mt-1">
                   {uploadFinishedFiles} of {uploadTotalFiles} files prepared
@@ -563,11 +596,23 @@ export default function FileTranscribe() {
             </>
           ) : (
             <>
-              <p className="font-heading text-[18px] font-medium tracking-[-0.015em]">Drop files here or click to browse</p>
-              <p className="text-[12px] leading-5 text-muted-foreground">{uploadHint}</p>
+              <p className="font-heading text-[19px] font-semibold tracking-[-0.02em]">Choose audio or video</p>
+              <p id="file-upload-formats" className="text-[12px] leading-5 text-muted-foreground">
+                MP3, M4A, WAV, FLAC, MP4, MOV and WebM · multiple files supported
+              </p>
+              <span className="file-upload-cta mt-2 inline-flex h-10 items-center gap-2 rounded-[11px] px-4 text-[12px] font-semibold text-primary">
+                <UploadCloud className="h-4 w-4" aria-hidden="true" />
+                Browse files
+              </span>
+              <p className="text-[11px] text-muted-foreground">or drop them anywhere in this panel</p>
             </>
           )}
         </div>
+        {dropError && !isUploading ? (
+          <div className="file-upload-error max-w-xl rounded-[12px] px-3 py-2 text-left text-[12px] leading-5 text-destructive" role="alert">
+            {dropError}
+          </div>
+        ) : null}
         {isUploading && uploadQueueItems.length > 1 && (
           <div className="w-full max-w-md space-y-2 text-left">
             {uploadQueueItems.map((item) => (
@@ -592,82 +637,75 @@ export default function FileTranscribe() {
           </div>
         )}
         {!isUploading && (
-          <div className="file-upload-formats mt-1 flex flex-wrap items-center justify-center gap-2 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-            <span>Audio</span><span aria-hidden="true">·</span><span>Video</span><span aria-hidden="true">·</span><span>Batch import</span>
-          </div>
+          <p id="file-upload-limits" className="file-upload-formats mt-1 max-w-3xl text-pretty text-[10.5px] leading-5 text-muted-foreground">
+            {uploadHint}
+          </p>
         )}
         </div>
       </div>
 
       {/* Processing Queue */}
       {processingItems.length > 0 && (
-        <div className="mb-6 space-y-4">
-          <div className="flex items-center justify-between px-1">
-            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Processing Queue</h3>
+        <section className="mb-7 space-y-3" aria-labelledby="file-processing-heading">
+          <div className="flex flex-wrap items-end justify-between gap-2 px-1">
+            <div>
+              <div className="flex items-center gap-2.5">
+                <h2 id="file-processing-heading" className="font-heading text-[17px] font-semibold tracking-[-0.015em]">Processing queue</h2>
+                <span className="transcription-history-count inline-flex h-6 min-w-6 items-center justify-center rounded-[8px] px-2 font-mono text-[10.5px] font-semibold tabular-nums text-muted-foreground">
+                  {processingItems.length}
+                </span>
+              </div>
+              <p className="mt-1 text-[12px] text-muted-foreground">You can leave this page while Scriber continues.</p>
+            </div>
           </div>
           {processingItems.map((item) => (
             <Card key={item.id} className="file-processing-card perf-scroll-item rounded-[20px] p-4">
-              <div className="flex items-center gap-4">
-                <div className="p-2 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-lg">
-                  <FileAudio className="w-5 h-5" />
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+                <div className="file-history-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] text-primary">
+                  <FileAudio className="h-5 w-5" aria-hidden="true" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="flex justify-between mb-1">
-                    <span className="font-medium text-sm truncate">{item.title}</span>
-                    <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1">
-                      <Loader2 className="w-3 h-3 animate-spin" />
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="min-w-0 flex-1 truncate font-heading text-[14px] font-medium">{item.title}</span>
+                    <Badge variant="outline" className="flex shrink-0 items-center gap-1 border-primary/20 bg-primary/[0.06] text-[10px] text-primary">
+                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
                       {item.step || "Processing"}
                     </Badge>
                   </div>
-                  <p className="text-xs text-muted-foreground">{item.channel || ""}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{item.channel || "Preparing your transcript"}</p>
                 </div>
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="text-muted-foreground hover:text-foreground"
+                  className="h-9 justify-center gap-2 self-stretch text-muted-foreground hover:text-foreground sm:self-auto"
                   type="button"
                   aria-label={`View transcript ${item.title}`}
                   onClick={() => setLocation(`/transcript/${item.id}`)}
                 >
                   View
+                  <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
                 </Button>
               </div>
             </Card>
           ))}
-        </div>
+        </section>
       )}
 
       {/* History */}
       <div className="transcription-history space-y-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 className="font-heading text-[20px] font-semibold tracking-[-0.02em]">Recent files</h2>
-            <p className="mt-1 text-[12px] text-muted-foreground">Search, copy, or reopen your imported transcripts.</p>
-          </div>
-          <div className="flex w-full items-center gap-2 sm:w-auto">
-            <TranscriptHistorySearch
-              value={searchQuery}
-              onChange={setSearchQuery}
-              placeholder="Search files..."
-              ariaLabel="Search file transcript history"
-              clearLabel="Clear file search"
-              className="sm:w-[340px] lg:w-[400px]"
-            />
-          <ToggleGroup
-            type="single"
-            value={viewMode}
-            onValueChange={(val) => val && setViewMode(val as "list" | "grid")}
-            className="transcription-view-toggle shrink-0 rounded-[13px] p-1"
-          >
-            <ToggleGroupItem value="list" aria-label="List view" className="h-10 w-10 rounded-[10px] p-0 transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]">
-              <LayoutList className="h-4 w-4" />
-            </ToggleGroupItem>
-            <ToggleGroupItem value="grid" aria-label="Grid view" className="h-10 w-10 rounded-[10px] p-0 transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]">
-              <LayoutGrid className="h-4 w-4" />
-            </ToggleGroupItem>
-          </ToggleGroup>
-          </div>
-        </div>
+        <TranscriptionHistoryToolbar
+          title="Recent files"
+          description="Search, copy, or reopen your imported transcripts."
+          total={transcriptsQuery.total}
+          itemLabel={transcriptsQuery.total === 1 ? "file" : "files"}
+          searchValue={searchQuery}
+          onSearchChange={setSearchQuery}
+          searchPlaceholder="Search files..."
+          searchAriaLabel="Search file transcript history"
+          clearSearchLabel="Clear file search"
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+        />
         {transcriptsQuery.isLoading ? (
           <SkeletonList count={3} variant={viewMode} />
         ) : transcriptsQuery.isError ? (

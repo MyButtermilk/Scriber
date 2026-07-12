@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-07-10
+Last verified: 2026-07-12
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -26,9 +26,9 @@ the user explicitly asks for a temporary investigation note.
 
 ## Product Snapshot
 
-- Scriber is an AI transcription app for live microphone dictation, YouTube
-  transcription, file transcription, transcript management, summaries, and
-  PDF/DOCX export.
+- Scriber is an AI transcription app for live microphone dictation, bot-free
+  meeting capture, YouTube transcription, file transcription, transcript
+  management, summaries, and PDF/DOCX export.
 - Primary desktop runtime: Tauri 2 shell, React frontend, Python backend sidecar.
 - Backend default: `127.0.0.1:8765`, implemented with `aiohttp`, WebSocket
   events, SQLite, Pipecat pipeline code, and provider adapters.
@@ -70,19 +70,26 @@ Backend and runtime:
 
 Frontend and shell:
 
-- `Frontend/client/src/App.tsx`: routes; the four primary user tabs are eager,
+- `Frontend/client/src/App.tsx`: routes; the five primary user tabs are eager,
   while Debug Console, transcript detail, and not-found surfaces remain lazy.
-- `Frontend/client/src/pages/`: Live Mic, YouTube, File, Settings, Debug Console,
-  Transcript Detail.
+- `Frontend/client/src/pages/`: Live Mic, Meetings, YouTube, File, Settings,
+  Debug Console, Transcript Detail.
 - `Frontend/client/src/contexts/WebSocketContext.tsx`: shared WebSocket.
 - `Frontend/client/src/lib/backend.ts`: backend URL and Tauri token bridge.
 - `Frontend/client/src/lib/api-types.ts`: shared REST-facing TS types.
+- `Frontend/client/src/components/transcription-history-toolbar.tsx`: shared
+  count/search/list-grid toolbar for Live Mic, YouTube, and File history.
 - `Frontend/client/src/index.css`: Tailwind v4 CSS-first design system.
 - `Frontend/src-tauri/src/audio_sidecar.rs`: separate Rust audio sidecar with
   `--self-test`, `--stdio` JSON-lines protocol, a test-only
   `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1` frame-pipe transport harness, and
   default WASAPI capture/prewarm support. It is bundled once as Tauri's
   install-root sidecar executable and is the standard live-mic capture engine.
+  Meeting capture uses one sidecar process for 48 kHz microphone plus loopback,
+  pinned AEC3 processing, and shared-timeline raw mic/system/clean mic pipes.
+  The token-protected Meeting device test must reuse this path, remain explicit
+  and local-only, return only bounded level/activity statistics, and always stop
+  its ephemeral sidecar capture without persisting or uploading PCM.
 - `Frontend/src-tauri/src/audio_sidecar_client.rs`: Tauri-side sidecar lookup,
   stdio JSON-lines client, and process lifecycle registry. It only uses
   allowlisted executable names, supports `SCRIBER_AUDIO_SIDECAR_EXE` for local
@@ -103,6 +110,10 @@ Packaging and scripts:
 - `scripts/build_tauri_backend_sidecar.ps1`: sidecar build, runtime import
   checks, media-tool bundling, optional cache reuse.
 - `scripts/build_windows.ps1`: Windows installer orchestration.
+- `native/scriber-diarization-sidecar/`: isolated, statically linked
+  Sherpa-ONNX worker; release preparation stages its attested EXE under backend
+  `tools/diarization`. Its worker cache and pinned Sherpa archive cache remain
+  separate from Tauri, audio-sidecar, and Python backend caches.
 - `scripts/ffmpeg/build_profile_b_msys2.ps1`: Profile B custom ffmpeg build.
 - `scripts/smoke_*.ps1` and `scripts/smoke_*.py`: installed app, desktop,
   frontend, media, and workflow gates.
@@ -110,6 +121,20 @@ Packaging and scripts:
   `scripts/build_windows.ps1` as an evidence producer, but it still requires
   real updater signing secrets, HTTPS publication, and Authenticode signing
   evidence for final readiness.
+- `scripts/run_meeting_release_matrix.ps1` creates non-passing operator drafts
+  for the real Teams/Zoom/Meet, route, failure, Outlook, privacy, and soak
+  matrix. `scripts/validate_meeting_release_matrix.py` accepts only completed
+  `meeting-release-evidence-*.json` reports whose relative supporting artifacts
+  exist and match their SHA-256. Final Meeting promotion must run hybrid
+  readiness with `-RequireMeetingReleaseMatrix`; never treat generated drafts,
+  partial validation, or unsigned validation as release evidence.
+- Meeting validation areas stay atomic. Support-bundle privacy and automated
+  regression evidence may be collected with
+  `scripts/collect_meeting_support_bundle_evidence.py` and
+  `scripts/collect_meeting_regression_evidence.py`; do not merge them with the
+  held voiceprint corpus, EU legal/privacy approval, or signed-release profile.
+  Collectors must emit redacted summaries, not raw logs, support ZIPs,
+  transcripts, audio, personal paths, or credentials.
 
 ## Non-Negotiable Contracts
 
@@ -128,10 +153,19 @@ Packaging and scripts:
   the runtime backend.
 - Rust owns Windows autostart, global hotkey registration, single-instance
   startup, tray/menu shell actions, and worker crash recovery. The supervisor
+  must keep the named single-instance restore event: a second launch exits
+  before backend/audio side effects but signals the primary instance to show,
+  unminimize, and focus its main window. A mutex-only early return is a UX
+  regression for tray-hidden starts.
   must also recover a managed process that stays alive but fails `/api/health`:
   allow the bounded unhealthy window (`SCRIBER_BACKEND_UNHEALTHY_TIMEOUT_MS`,
   30 seconds by default), then use the authenticated graceful shutdown path
   before the existing hard-termination fallback and restart it.
+- Closing the main window routes Scriber to the tray: intercept only the main
+  window's close request, prevent destruction, and hide it. Tray and
+  single-instance show actions must reveal that same WebView again; do not leave
+  a headless tray process whose main window no longer exists. Explicit tray
+  Quit and app exit still use the bounded graceful backend/audio cleanup path.
 - Rust registers both live-mic shortcuts. The normal hotkey must keep plain
   live dictation output. The post-processing hotkey must dispatch only to the
   dedicated live-mic post-processing endpoint and must not affect File or
@@ -190,6 +224,11 @@ Packaging and scripts:
   before escalating to process termination. Do not regress this to an
   immediate kill that can lose debounced settings or pending transcript writes.
 - Python owns recording state and provider work.
+- Local `npm run tauri:dev` must build the current `scriber-audio-sidecar`
+  before Vite starts. The Cargo package keeps
+  `default-run = "scriber-desktop"`. This prevents a stale debug sidecar or
+  Cargo's multiple-binary ambiguity from making the Meeting route test disagree
+  with installed capture behavior.
 
 ### REST and WebSocket Contracts
 
@@ -200,6 +239,12 @@ Packaging and scripts:
 - Add or update contract tests when changing payload shape.
 - Frontend REST consumers should use `Frontend/client/src/lib/api-types.ts`
   instead of ad hoc `any` boundaries.
+- Meeting segments treat `startMs`, `endMs`, and `durationMs` as one contract.
+  `durationMs` must equal `endMs - startMs` in REST and `meeting_segment`
+  events; transcript and citation controls must preserve timestamp seeking.
+- Meeting exports must use `src/meeting_export.py` as the shared template
+  boundary. Email headers must remain single-line and participant addresses
+  validated/deduplicated; body-only drafts must not claim an attachment exists.
 
 ### Microphone and Device Handling
 
@@ -220,6 +265,9 @@ Packaging and scripts:
 - Native endpoint IDs must stay private. Use hashed native endpoint IDs in
   diagnostics and prototype mapping; do not expose raw IMMDevice IDs as public
   microphone IDs or log fields.
+- Meeting device selection may expose native capture/render inventory only via
+  token-protected payloads containing friendly labels and hashed IDs. Never
+  expose raw capture or render IMMDevice endpoint IDs.
 - Rust/WASAPI is the default and only live microphone capture path. The old
   Python `sounddevice` capture and Python idle-prewarm path have been removed;
   `sounddevice` may still be used for device listing and PortAudio-to-native
@@ -227,6 +275,11 @@ Packaging and scripts:
 - `SCRIBER_AUDIO_ENGINE` is retained only as a backwards-compatible diagnostic
   input; it no longer selects Python capture. `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1`
   may run the sidecar's synthetic frame-pipe transport harness for tests only.
+  It remains silent unless test-only `SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL=1` is
+  also set; that mode emits deterministic system render, delayed microphone
+  echo, and independent near-end speech-like tones so the installed Meeting
+  device-test path can prove nonzero microphone/system/AEC-clean levels without
+  user audio.
   Normal WASAPI capture/prewarm is available without
   `SCRIBER_RUST_AUDIO_WASAPI_CAPTURE=1`; `SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE=1`
   exists for tests that need the unavailable path. Within a single sidecar
@@ -299,6 +352,10 @@ Packaging and scripts:
   the removed `pipecat.processors.user_idle_processor` module. The standard
   recording path uses bundled Silero VAD and ONNX runtimes without those
   heavyweight dependencies.
+- Meeting Smart Turn is an optional microphone-preview boundary refinement. It
+  may merge provider-final tokens while the local analyzer reports an
+  incomplete phrase, but must not gate durable audio, system-audio preview, or
+  canonical finalization. Failure must fall back to provider endpointing.
 - Soniox Async defaults to `stt-async-v5`. Keep
   `SCRIBER_SONIOX_ASYNC_MODEL` as an override for temporary compatibility, but
   do not restore `stt-async-v4` as the code default. Direct Soniox async upload
@@ -307,6 +364,16 @@ Packaging and scripts:
 - Soniox realtime live transcription defaults to `stt-rt-v5`. Keep
   `SCRIBER_SONIOX_RT_MODEL` as an override for temporary compatibility, but do
   not restore `stt-rt-v4` as the code default.
+- Meeting Soniox realtime uses two independent supervised streams. Provider
+  preview is best-effort: start Native Capture plus the durable recorder before
+  connecting live STT on initial start, every resume, and default-device
+  recovery. Missing credentials, provider initialization failures, and later
+  disconnects must leave capture in `recording` with a visible degraded preview,
+  not fail or backpressure the recorder. Retain bounded preview queues, one
+  `live_stt_reconnect` gap per outage, bounded exponential reconnect,
+  shared-timeline timestamp rebasing, and versioned `meeting_live_status`
+  reconnect/recovery/degraded events. Report the first preview-queue overflow
+  immediately; durable recorder loss must remain zero.
 - Live microphone transcription must not request or format provider speaker
   diarization. Keep `enable_speaker_diarization=False` for live pipelines so
   single-speaker dictation inserts plain text. File and YouTube jobs may enable
@@ -403,8 +470,201 @@ Packaging and scripts:
 
 - Runtime data belongs under `SCRIBER_DATA_DIR`, not the install directory.
 - Legacy runtime data migration must not overwrite existing app-data files.
+- Meeting capture rotates every source into 30-second WAV chunks. Publishing a
+  completed chunk must keep its `meeting_audio_chunks` row and the corresponding
+  checksum-protected `meeting_transcript_checkpoints` snapshot in one SQLite
+  transaction. Startup recovery may restore missing final live segments from
+  the newest valid snapshot, but must not overwrite rows that survived the
+  interruption or trust a snapshot whose SHA-256/count validation fails.
+- Meeting transcript checkpoints use schema v3. Every twentieth 30-second
+  sequence is a compact full base; intervening checkpoints are deltas with
+  per-source segment frontiers. Keep a redundant prior-base fallback so one
+  corrupt newest base does not discard the following durable deltas, and prune
+  superseded payload bodies to bounded tombstones while retaining their metadata
+  rows. Do not restore cumulative full-transcript payloads on every chunk; their
+  storage grows quadratically over long Meetings.
+- The filesystem side uses a recoverable two-phase commit: close/fsync/hash the
+  deterministic `.partial.wav`, persist a `prepared` row, atomically rename,
+  then mark `complete` together with its transcript checkpoint. Startup must
+  reconcile verified prepared partial/final combinations. Never create a
+  rowless final WAV in the new path; adopt legacy rowless finals only when
+  sequence, WAV shape, digest, and start offset are unambiguous. Checkpoints
+  carry per-source durable frontiers and may include a live segment only through
+  its own source's committed frontier.
+- Keep audio format layers separate. AEC3, Silero, Smart Turn, live STT, and
+  checkpoint capture use PCM. The verified long-lived archive is lossless
+  Matroska/FLAC; timeline-aligned mix, clean-microphone, and system Opus files
+  are playback derivatives, not canonical inference input. Persist and validate
+  an explicit source-to-stream manifest for multistream Matroska; its streams
+  are separate mono tracks and must never be described as one 2/3-channel
+  stream. System-only Meeting imports and mic-only capture remain valid archive
+  cases. Purge redundant WAVs only after canonical commit plus archive and all
+  required playback-derivative verification, using durable asset states. Every
+  lossless track manifest includes sample count and canonical decoded-PCM hash;
+  decode the archive track and prove both equal before marking it purge-safe.
+  An archive file hash plus ffprobe metadata alone is insufficient. Bound
+  finalization peak disk use by releasing each temporary PCM track before the
+  next is materialized. Retry/local ONNX may decode a required archive track to
+  a job-scoped temporary WAV. Do not make direct chunked WebM/Opus the default
+  without pre-skip/end-trim timeline tests and multilingual STT/speaker quality
+  evidence.
+- Provider upload encoding is independent of archive encoding. Meeting, File,
+  and YouTube must share the frozen route's transport preparation. Soniox async
+  may use a task-scoped WebM/Opus derivative for efficient upload, but that file
+  is deleted after provider release and never becomes canonical local evidence.
+- Successful local Meeting diarization is persisted separately from its provider
+  track result. Keep `transcription_track_derivations` immutable and bound to
+  the parent result digest plus frozen route/worker manifest; recovery must reuse
+  it without rerunning ONNX, and canonical inputs must include its provenance.
 - Support bundles must redact API keys, session tokens, bearer tokens, and known
   secret patterns.
+- Providers without native batch diarization use the optional, checksum-pinned
+  Sherpa-ONNX 1.13.3 component after STT when
+  `SPEAKER_DIARIZATION_FALLBACK_ENABLED` is active. Keep this one post-process
+  shared across File, YouTube audio, Meeting finalization, and Meeting file
+  imports. Align Sherpa turns to provider word timestamps when present and skip
+  it only when the active response parser produced real native speaker
+  intervals. The model/license component is an explicit post-install download
+  under `SCRIBER_DATA_DIR`; do not add PyTorch, Torchaudio, TorchCodec,
+  Lightning, or Pyannote's Python package to the base sidecar.
+- Provider timing/diarization capabilities are executable contracts, not
+  marketing metadata. Mark a provider as timestamp-capable only when the active
+  request asks for that response shape, `provider_transcript.py` normalizes it,
+  and a fixture test proves units plus speaker-zero handling. Canonical
+  anonymous provider and Sherpa speakers are numbered by chronological first
+  appearance. Persist whether alignment is exact-word, provider-segment, or
+  estimated; never present proportional plain-text distribution as exact.
+- Provider capability flags are preflight hints only. Post-response routing
+  uses normalized evidence bound to provider, exact model, requested response
+  shape, and parser version. Native diarization is proven only by successfully
+  parsed speaker-labelled intervals; a registry boolean must not suppress local
+  fallback when that evidence is absent.
+- File, YouTube audio/captions, captured Meetings, and imported Meetings must
+  converge on one transcript-artifact pipeline: frozen route plan and route
+  snapshot, durable normalized stage result, optional local diarization,
+  immutable canonical artifact, then UI/summary/export/legacy projections.
+  `transcripts.content` is compatibility output, never a second canonical truth.
+  Each canonical segment has stable identity, integer-millisecond start/end,
+  timing and speaker origin, and alignment quality. New citations bind both
+  artifact id and stable segment id.
+- Freeze provider, exact model, response shape, parser id/version, language,
+  timestamp/diarization request, and redacted request options for every attempt.
+  Route snapshots may persist a custom-vocabulary SHA-256/presence/count but
+  never its plaintext, API keys, bearer material, or signed URLs. Before the
+  first provider call, a vocabulary digest mismatch creates a new route/attempt
+  rather than mutating the old request; recovery from a durable stage result no
+  longer requires the vocabulary value.
+  Persist the validated normalized provider/caption result before optional local
+  diarization. Recovery after that checkpoint must not repeat the cloud call.
+  Meeting finalization persists microphone/system results independently in
+  `transcription_track_stage_results`; retry only missing tracks, then aggregate
+  them into the attempt StageResult and canonical artifact. Project canonical
+  artifact segment ids unchanged into `meeting_segments`.
+  Attempt transitions and canonical-head replacement use compare-and-swap state
+  versions; stale attempts become `superseded` and cannot overwrite newer work.
+- Stable fallback segment ids hash transcript id, source track, start/end,
+  canonical speaker key, and NFKC/whitespace-normalized text. Do not include the
+  artifact version. Parse timed YouTube JSON3/VTT cues as provider-segment
+  evidence; captions without valid times fall back to audio and captions never
+  prove audio speakers.
+- File/YouTube source audio is initially `processing_only`. Delete it only after
+  all task owners have released it, through a durable
+  `purge_pending -> purged` transition, and retain a non-sensitive asset
+  tombstone. Public transcript metadata must never expose absolute local paths.
+- Meeting live-STT timestamps use the sent-audio-to-Meeting-clock span map.
+  Backpressure may discard live preview frames while durable capture continues;
+  provider time is then discontinuous relative to the Meeting clock. Keep span
+  coalescing and boundary-aware mapping, and do not restore a single connection
+  offset for token timestamps.
+- Process-local Meeting task maps are not durable ownership. Finalization,
+  analysis, imports, and canonicalization use persisted attempt id, state
+  version, lease owner/expiry, and CAS. A losing attempt exits `superseded` and
+  never marks another owner failed. Reserve the local task slot before durable
+  state transition; cancellation must roll back or transfer to that reserved
+  task. Identity-check done callbacks before removing map entries.
+- Meeting finalization uses a 30-minute artifact-attempt lease renewed every
+  five minutes with bounded retries and cancellation-safe cleanup. Pass the
+  verified Meeting duration into the frozen provider route so upload, batch,
+  and poll timeouts scale for inputs up to 18,000 seconds while retaining hard
+  caps; do not regress to short fixed timeouts that expire during a valid
+  five-hour finalization. Five-hour readiness is also provider-route-specific:
+  expose it only when `supports_five_hour_meeting()` is true. The currently
+  bounded routes are Soniox/Soniox Async (task-scoped WebM/Opus), AssemblyAI
+  (2.2-GB upload boundary), Azure MAI (mono 64-kbit/s MP3), and Local ONNX (no
+  cloud upload). Soniox's fixed async and realtime duration ceiling is exactly
+  300 minutes, so do not imply support beyond the 18,000-second target. Gladia
+  pre-recorded is capped at 135 minutes. Voxtral Mini Transcribe 2 (`2602`) is
+  capped at three hours; retain the conservative 30-minute ceiling for the
+  older `2507` or unknown Mistral override. Deepgram accepts large files, but
+  Scriber's current synchronous `/v1/listen` request is not a verified
+  five-hour route until long inputs are safely chunked/merged or an asynchronous
+  transport is implemented. Do not show a green five-hour state for whole-track
+  routes whose size, duration, and processing-window boundaries have not been
+  proven.
+  Reject an imported or finalized track above a known hard duration before the
+  provider call, and keep the live UI's final-30-minute limit warning wired to
+  the same central capability.
+- Live Mic, Meeting start/resume, and Meeting device tests share one admission
+  lock plus persisted singleton audio claim. Claim before prewarm/device awaits
+  and recheck Meeting state under the lock. The persisted claim uses opaque ids,
+  a 60-second expiry, a 15-second heartbeat, and CAS-safe transfer/release.
+  Paused Meetings retain ownership; stop, terminal failure, watchdog failure,
+  and graceful shutdown release it. Do not let startup steal a still-valid
+  claim from another controller, and do not rely on `_is_listening` alone. A
+  heartbeat that races the pending-to-durable Meeting transfer must adopt the
+  newer same-controller generation. Foreign supersession must fail closed by
+  stopping Live Mic or routing the Meeting through its capture watchdog. Live
+  Mic must win the persisted claim before constructing its pipeline, and stop
+  must release the claim before clearing `_is_stopping`; otherwise a queued
+  toggle can leave a never-started pipeline behind.
+- Persisted attempt route values are authoritative for language and exact model.
+  Batch providers must not read mutable `Config.LANGUAGE` or model defaults for
+  queued/retried/recovered work once a RouteSnapshot exists.
+- Analysis output and derived automatic action items commit as one generation.
+  Remove absent unmodified rows on regeneration; preserve user-modified rows
+  only with explicit carried-user provenance. Automatic action ids must remain
+  stable across reordered model output by hashing normalized semantic content
+  plus citations; semantic/citation matching must retain user text, owner,
+  status, and due date without duplicating the regenerated item.
+- Meeting analysis keeps the single-call fast path only at or below 48,000
+  prompt characters and 60 minutes. Longer transcripts map stable chunks of at
+  most 30,000 characters and 30 minutes with concurrency two, then use a
+  deterministic hierarchical reduce with fan-in three. Persist map/reduce cache
+  entries by algorithm/schema/model/chunk digest, repair only the malformed
+  unit, and preserve exact segment citations and timestamp-derived chapter
+  boundaries. When equal chapters from different map chunks are deduplicated,
+  recompute their start/end from every merged citation before exposing playback
+  links.
+- The release local diarization implementation is a separate statically linked
+  Rust worker. Do not link Sherpa into the live audio sidecar or Tauri shell.
+  Ship the worker executable as a versioned resource of the signed Scriber
+  installer/updater under backend `tools/diarization`, beside its generated
+  build attestation; only both models and their licenses are an optional,
+  manifest/hash-verified download. Frozen Python accepts only that allowlisted
+  path. Never introduce a second remote executable download channel. Model
+  hashing/status work must not block the aiohttp event loop.
+- The pinned ERes2Net model provenance declares roughly 10,000 speakers of
+  16-kHz Chinese training audio. Do not infer multilingual quality from this
+  metadata. Release promotion needs held German, English, mixed-language,
+  accent, pitch-range, and overlap evidence; this is a quality gate, not legal
+  advice.
+- Keep the worker's two-hour/1-GiB limits as hard defense-in-depth ceilings,
+  not normal product eligibility. Local fallback is release-routed only through
+  60 minutes until the multilingual long-file matrix proves a higher bound.
+  An explicit expected speaker count may be passed to the worker; never derive
+  it automatically from Outlook attendance, and do not expose clustering
+  threshold as a normal user setting.
+- Meeting recording import is a Meeting workspace entry point, not a File-job
+  alias. Preserve both the sanitized original upload and normalized durable
+  system track, record their relative metadata, show the selected final STT and
+  diarization route before upload, and clean up both the Meeting row and folder
+  on pre-finalization failure. Keep upload cancellation and progress visible;
+  accepted imports must use the normal Meeting finalizer and retry states.
+  Persist `committing` with a preallocated Meeting ID before creating the
+  Meeting row or moving files; recovery must reuse that ID. Import cancellation
+  is allowed only through `waiting_for_workspace`. From `committing` onward the
+  Meeting workspace owns the artifacts, DELETE returns `409` plus `meetingId`,
+  and discard must reject while a finalizer/analysis task still owns files.
 - Post-processing diagnostics are redacted runtime metadata only. They may
   include model, prompt/output sizes, duration, status, and sanitized error type
   or message, but must never include raw transcript text or processed output.
@@ -427,17 +687,33 @@ Already implemented and should not be regressed:
 - Canvas/RAF waveform drawing instead of per-frame React state.
 - Buffered transcript appends for long live sessions.
 - Paginated transcript endpoints and virtualized history lists.
+- Meeting detail assembly validates existence once and reuses its SQLite
+  connection for related collections instead of repeating helper lookups.
+- The native 10-ms Meeting Mic/System/AEC relay reuses decode, clean-output,
+  downsample, and encoded PCM scratch buffers across frames.
+- Meeting checkpoint payload growth is linear/bounded through schema-v3
+  base/delta compaction and pruning; do not restore cumulative snapshots.
+- Long Meeting analysis is chunk-budgeted, concurrency-limited, hierarchically
+  reduced, and persistently cached. Meeting finalization renews its durable
+  lease, applies duration-scaled provider budgets, and deduplicates cross-track
+  echo with a timeline sweep instead of all mic-by-system pairs.
 - Coalesced `history_updated` events.
 - Chunked/offloaded upload writes and export/cleanup work where practical.
 - JobStore and latency metrics store connection reuse.
 - CORS origin decision cache.
-- Primary-tab code for Live Mic, YouTube, File, and Settings is loaded eagerly
+- Primary-tab code for Live Mic, Meetings, YouTube, File, and Settings is loaded eagerly
   in the local WebView. Do not restore route-level Suspense blanks for these
   tabs. `AppLayout` must use the existing Wouter router and must not wrap routed
   children in a second keyed Router that remounts the page on every tab change.
 - Frontend Motion packages stay on a React-19-compatible release. The real
   browser smoke treats `element.ref` compatibility warnings and blank samples
   during primary-tab switching as failures.
+- The compact active-Meeting response used by the global pill/idle preloader
+  and the paginated Meeting library have different TanStack Query cache shapes.
+  Keep the flat `['/api/meetings']` key separate from the infinite
+  `['/api/meetings', 'history']` key, and project Meeting WebSocket state into
+  both. Sharing one key crashes the Meetings tab when idle preload wins the
+  mount race.
 - Sidecar hash cache that avoids PyInstaller when inputs are unchanged.
   The sidecar cache key normalizes `src/version.py`, uses media-tool content
   hashes instead of timestamps, and must be computed before requiring
@@ -556,10 +832,12 @@ Already implemented and should not be regressed:
   `SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER=1` is explicitly set. Signed `v*`
   releases must always upload the installer executable and sibling `.sig`.
 - FFmpeg Profile B release builds restore from Actions cache first, then from
-  the internal reusable GitHub release artifact `ffmpeg-profile-b-n7.0-v2`, and
+  the internal reusable GitHub release artifact `ffmpeg-profile-b-n7.0-v3`, and
   rebuild through MSYS2 only when restored Profile B tools are absent or fail
   validation.
-- Profile B ffmpeg media tools, about `4.98 MiB` installed.
+- Profile B ffmpeg media tools, about `5.11 MiB` installed. Meeting
+  finalization requires the FLAC encoder, Matroska and Ogg muxers, and `amix`;
+  keep all four in the profile and fixture gate.
 
 ## Commands
 

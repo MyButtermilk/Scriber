@@ -62,6 +62,7 @@ param(
     [switch]$RunInstallerManualGlobalHotkeySmoke,
     [switch]$RunInstallerSupportBundleSmoke,
     [switch]$RunInstallerFrontendSmoke,
+    [switch]$RunInstallerMeetingAudioDeviceTestSmoke,
     [switch]$RunInstallerMediaPreparationSmoke,
     [switch]$RunInstallerRealMediaWorkflowSmoke,
     [string]$InstallerRealWorkflowYoutubeUrl = "https://www.youtube.com/watch?v=0wEjbSYNUM8",
@@ -101,6 +102,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$releasePython = Join-Path $RepoRoot "venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $releasePython -PathType Leaf)) {
+    $releasePython = (Get-Command python -ErrorAction Stop).Source
+}
 $script:BuildTimingStarted = [System.Diagnostics.Stopwatch]::StartNew()
 $script:BuildTimingPhases = [System.Collections.Generic.List[object]]::new()
 
@@ -140,6 +145,7 @@ function New-SidecarBuildScriptArguments {
         "-InstallPyInstaller",
         "-BundleMediaTools",
         "-BundleRustAudioSidecar",
+        "-BundleRustDiarizationSidecar",
         "-CopyToTauriRelease"
     )
     if ($SkipBundledFfprobe) {
@@ -449,19 +455,19 @@ if (-not (Test-Path (Join-Path $frontendRoot "package.json"))) {
 Invoke-Checked -Label "Version sync" -Command {
     Push-Location $RepoRoot
     try {
-        python scripts\sync_version.py
+        & $releasePython scripts\sync_version.py
     } finally {
         Pop-Location
     }
 }
 
-$currentVersion = (python -c "from scripts.create_release_metadata import read_version; print(read_version())").Trim()
+$currentVersion = (& $releasePython -c "from scripts.create_release_metadata import read_version; print(read_version())").Trim()
 
 if (-not $SkipChecks -and -not $SkipPythonTests) {
     Invoke-Checked -Label "Python tests" -Command {
         Push-Location $RepoRoot
         try {
-            python -m pytest -q
+            & $releasePython -m pytest -q
         } finally {
             Pop-Location
         }
@@ -518,7 +524,7 @@ try {
                 } else {
                     $configArgs += "--skip-updater-config"
                 }
-                python @configArgs
+                & $releasePython @configArgs
             } finally {
                 Pop-Location
             }
@@ -587,6 +593,21 @@ try {
         }
     }
 
+    $stagedDiarizationWorkerSmokePath = Join-Path $RepoRoot "build\tauri-release-config\diarization-worker-staged-smoke.json"
+    Invoke-Checked -Label "Diarization worker staged resource smoke" -Command {
+        Push-Location $RepoRoot
+        try {
+            if (Test-Path -LiteralPath $stagedDiarizationWorkerSmokePath -PathType Leaf) {
+                Remove-Item -LiteralPath $stagedDiarizationWorkerSmokePath -Force
+            }
+            & $releasePython scripts\smoke_diarization_worker_resource.py `
+                --root Frontend\src-tauri\target\release\backend `
+                --output $stagedDiarizationWorkerSmokePath | Out-Host
+        } finally {
+            Pop-Location
+        }
+    }
+
     if (-not $SkipSmoke) {
         Invoke-Checked -Label "Tauri release smoke" -Command {
             Push-Location $RepoRoot
@@ -605,11 +626,12 @@ try {
     $mediaPreparationSmokePath = Join-Path $metadataDir "media-preparation-smoke.json"
     $runtimeDependencyFootprintPath = Join-Path $metadataDir "runtime-dependency-footprint.json"
     $installedPackageSmokePath = Join-Path $metadataDir "installed-package-smoke.json"
+    $diarizationWorkerStagedSmokePath = Join-Path $metadataDir "diarization-worker-staged-smoke.json"
     $tauriBundleLogMetadataPath = Join-Path $metadataDir "tauri-windows-bundle.log"
     $tauriBundleLogSummaryPath = Join-Path $metadataDir "tauri-bundle-log-summary.json"
     $installedPackageSmokeTempPath = Join-Path $RepoRoot "tmp\installer-smoke\installed-package-smoke.json"
     $buildTimingPath = Join-Path $metadataDir "build-timing.json"
-    foreach ($staleReport in @($mediaPreparationSmokePath, $runtimeDependencyFootprintPath, $installedPackageSmokePath, $tauriBundleLogSummaryPath, $tauriBundleLogMetadataPath, $installedPackageSmokeTempPath)) {
+    foreach ($staleReport in @($mediaPreparationSmokePath, $runtimeDependencyFootprintPath, $installedPackageSmokePath, $diarizationWorkerStagedSmokePath, $tauriBundleLogSummaryPath, $tauriBundleLogMetadataPath, $installedPackageSmokeTempPath)) {
         if (Test-Path -LiteralPath $staleReport -PathType Leaf) {
             Remove-Item -LiteralPath $staleReport -Force
         }
@@ -629,6 +651,11 @@ try {
         path = $null
         generatedAt = $null
     }
+    if (-not (Test-Path -LiteralPath $stagedDiarizationWorkerSmokePath -PathType Leaf)) {
+        throw "Diarization worker staged smoke did not write expected report: $stagedDiarizationWorkerSmokePath"
+    }
+    New-Item -ItemType Directory -Force -Path $metadataDir | Out-Null
+    Copy-Item -LiteralPath $stagedDiarizationWorkerSmokePath -Destination $diarizationWorkerStagedSmokePath -Force
     if (Test-Path -LiteralPath $tauriBundleLogPath -PathType Leaf) {
         New-Item -ItemType Directory -Force -Path $metadataDir | Out-Null
         Copy-Item -LiteralPath $tauriBundleLogPath -Destination $tauriBundleLogMetadataPath -Force
@@ -681,7 +708,7 @@ try {
                 if (-not $SkipBundledFfprobe) {
                     $mediaSmokeArgs += "--require-ffprobe"
                 }
-                python @mediaSmokeArgs
+                & $releasePython @mediaSmokeArgs
                 if (-not (Test-Path -LiteralPath $mediaPreparationSmokePath -PathType Leaf)) {
                     throw "Media preparation smoke did not write expected report: $mediaPreparationSmokePath"
                 }
@@ -736,7 +763,7 @@ try {
                 if ($MaxPillowRuntimeDependencyMB -gt 0) {
                     $footprintArgs += @("--max-pillow-mb", $MaxPillowRuntimeDependencyMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
                 }
-                python @footprintArgs
+                & $releasePython @footprintArgs
                 if (-not (Test-Path -LiteralPath $runtimeDependencyFootprintPath -PathType Leaf)) {
                     throw "Runtime dependency footprint did not write expected report: $runtimeDependencyFootprintPath"
                 }
@@ -801,7 +828,7 @@ try {
                 foreach ($artifact in $artifacts) {
                     $metadataArgs += @("--artifact", $artifact)
                 }
-                python @metadataArgs
+                & $releasePython @metadataArgs
             } finally {
                 Pop-Location
             }
@@ -824,7 +851,7 @@ try {
                 } else {
                     $validationArgs += "--allow-local-urls"
                 }
-                python @validationArgs
+                & $releasePython @validationArgs
             } finally {
                 Pop-Location
             }
@@ -832,7 +859,7 @@ try {
 
     }
 
-    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerGlobalHotkeyRegistrationSmoke -or $RunInstallerGlobalHotkeySmoke -or $RunInstallerManualGlobalHotkeySmoke -or $RunInstallerSupportBundleSmoke -or $RunInstallerFrontendSmoke -or $RunInstallerMediaPreparationSmoke -or $RunInstallerRealMediaWorkflowSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLiveRecordingSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
+    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerGlobalHotkeyRegistrationSmoke -or $RunInstallerGlobalHotkeySmoke -or $RunInstallerManualGlobalHotkeySmoke -or $RunInstallerSupportBundleSmoke -or $RunInstallerFrontendSmoke -or $RunInstallerMeetingAudioDeviceTestSmoke -or $RunInstallerMediaPreparationSmoke -or $RunInstallerRealMediaWorkflowSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLiveRecordingSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
         Invoke-Checked -Label "Installed package smoke" -Command {
             Push-Location $RepoRoot
             try {
@@ -842,6 +869,10 @@ try {
                     "Bypass",
                     "-File",
                     "scripts\smoke_windows_installer.ps1",
+                    "-PythonExecutable",
+                    $releasePython,
+                    "-InstallerPath",
+                    $artifacts[0],
                     "-OutputPath",
                     $installedPackageSmokeTempPath
                 )
@@ -880,6 +911,9 @@ try {
                 }
                 if ($RunInstallerFrontendSmoke) {
                     $installerSmokeArgs += "-VerifyFrontend"
+                }
+                if ($RunInstallerMeetingAudioDeviceTestSmoke) {
+                    $installerSmokeArgs += "-VerifyMeetingAudioDeviceTest"
                 }
                 if ($RunInstallerMediaPreparationSmoke) {
                     $installerSmokeArgs += "-VerifyMediaPreparation"
@@ -1000,7 +1034,7 @@ try {
                 foreach ($artifact in $artifacts) {
                     $sizeReportArgs += @("--artifact", $artifact)
                 }
-                python @sizeReportArgs
+                & $releasePython @sizeReportArgs
             } finally {
                 Pop-Location
             }
@@ -1014,6 +1048,7 @@ try {
         fastLocalStagedApp = [bool]$FastLocalStagedApp
         installerBuilt = [bool]($artifacts.Count -gt 0)
         installerSmokeValidated = [bool]$installedPackageSmoke["ran"]
+        diarizationWorkerStagedSmokeValidated = $true
         nsisCompression = if ($NsisCompression) { $NsisCompression } else { "tauri-default" }
         localPyInstallerNoClean = [bool]$LocalPyInstallerNoClean
         rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
@@ -1033,6 +1068,7 @@ try {
         buildMode = $buildMode
         mediaPreparationSmoke = $mediaPreparationSmoke
         runtimeDependencyFootprint = $runtimeDependencyFootprint
+        diarizationWorkerStagedSmoke = $diarizationWorkerStagedSmokePath
         installedPackageSmoke = $installedPackageSmoke
     } | ConvertTo-Json -Compress
 } catch {

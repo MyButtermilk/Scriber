@@ -99,6 +99,13 @@ def test_format_assemblyai_utterances_to_scriber_text_maps_speakers():
     )
 
 
+def test_format_assemblyai_utterances_preserves_numeric_speaker_zero():
+    assert format_assemblyai_utterances_to_scriber_text([
+        {"speaker": 0, "text": "First"},
+        {"speaker": 1, "text": "Second"},
+    ]) == "[Speaker 1]: First\n\n[Speaker 2]: Second"
+
+
 def test_payload_to_text_prefers_diarized_output_when_requested():
     payload = {
         "text": "fallback plain text",
@@ -151,7 +158,32 @@ async def test_transcribe_with_assemblyai_pre_recorded_happy_path(monkeypatch):
     assert submit_json["speaker_labels"] is True
     assert submit_json["language_code"] == "nl"
     assert submit_json["keyterms_prompt"] == ["Alpha"]
+    assert session.post_calls[0][1]["timeout"].total == 300.0
     assert session.delete_calls[0][0].endswith("/transcript/tr_123")
+
+
+@pytest.mark.asyncio
+async def test_assemblyai_long_file_uses_explicit_upload_timeout():
+    session = _FakeSession(
+        post_responses=[
+            _FakeResponse(status=200, payload={"upload_url": "https://cdn.example/long.flac"}),
+            _FakeResponse(status=200, payload={"id": "tr_long"}),
+        ],
+        get_responses=[
+            _FakeResponse(status=200, payload={"status": "completed", "text": "complete"}),
+        ],
+    )
+
+    await transcribe_with_assemblyai_pre_recorded(
+        session=session,
+        api_key="test-key",
+        audio_source=b"long-audio-placeholder",
+        language="en",
+        timeout_secs=9_300.0,
+        upload_timeout_secs=1_620.0,
+    )
+
+    assert session.post_calls[0][1]["timeout"].total == 1_620.0
 
 
 @pytest.mark.asyncio
@@ -194,6 +226,7 @@ async def test_pipeline_direct_upload_assemblyai_uses_diarized_speaker_output(
         assert kwargs["language"] == "de"
         assert kwargs["custom_vocab"] == "Scriber,Pipecat"
         assert kwargs["model"] == "universal-3-5-pro"
+        assert kwargs["upload_timeout_secs"] == 300.0
         return {
             "status": "completed",
             "utterances": [
@@ -219,3 +252,39 @@ async def test_pipeline_direct_upload_assemblyai_uses_diarized_speaker_output(
         ("[Speaker 1]: Hallo\n\n[Speaker 2]: Guten Tag", True),
     ]
     assert "Completed" in progress
+
+
+@pytest.mark.asyncio
+async def test_pipeline_direct_upload_uses_frozen_execution_route_after_settings_change(
+    monkeypatch,
+    tmp_path,
+):
+    file_path = tmp_path / "queued.wav"
+    file_path.write_bytes(b"fake-audio")
+
+    async def _fake_transcribe(**kwargs):
+        assert kwargs["language"] == "de-DE"
+        assert kwargs["custom_vocab"] == "Frozen term"
+        assert kwargs["model"] == "frozen-model"
+        assert kwargs["speaker_labels"] is False
+        assert kwargs["timeout_secs"] == 9_300.0
+        assert kwargs["upload_timeout_secs"] == 1_620.0
+        return {"status": "completed", "text": "Ergebnis"}
+
+    monkeypatch.setattr("src.pipeline.transcribe_with_assemblyai_pre_recorded", _fake_transcribe)
+    monkeypatch.setattr(Config, "ASSEMBLYAI_API_KEY", "test-key")
+    pipeline = ScriberPipeline(
+        service_name="assemblyai",
+        direct_file_speaker_diarization=False,
+        direct_file_expected_duration_seconds=5 * 60 * 60,
+        execution_route={
+            "language": "de-DE",
+            "custom_vocab": "Frozen term",
+            "model": "frozen-model",
+        },
+    )
+    monkeypatch.setattr(Config, "LANGUAGE", "en-US")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Changed term")
+    monkeypatch.setattr(Config, "ASSEMBLYAI_ASYNC_MODEL", "changed-model")
+
+    await pipeline.transcribe_file_direct(str(file_path))

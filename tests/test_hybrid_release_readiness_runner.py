@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from src.version import __version__
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNNER_SCRIPT = REPO_ROOT / "scripts" / "run_hybrid_release_readiness.ps1"
@@ -79,6 +81,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     command_names = [entry["name"] for entry in payload["commands"]]
     assert command_names == [
         "microphoneMatrixValidation",
+        "meetingReleaseMatrixValidation",
         "updaterPublicationVerification",
         "mediaPreparationSmoke",
         "runtimeDependencyFootprint",
@@ -109,6 +112,7 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
         "tauriTextInjectionMatrix",
         "publishedUpdaterManifest",
         "authenticodeSignatures",
+        "meetingReleaseMatrix",
         "hybridReleaseReadinessAggregate",
     ]
     hardware_evidence = payload["requiredEvidence"][0]
@@ -205,29 +209,34 @@ def test_hybrid_release_readiness_runner_plan_only_writes_operator_plan(tmp_path
     authenticode_evidence = payload["requiredEvidence"][12]
     assert authenticode_evidence["expectedPublisher"] == "Scriber Publisher"
     assert authenticode_evidence["requireTimestamp"] is True
-    assert "validate_microphone_hardware_matrix.py" in payload["commands"][0]["command"]
-    assert "--require-device-refresh-evidence" not in payload["commands"][0]["command"]
-    assert "verify_tauri_updater_publication.py" in payload["commands"][1]["command"]
-    assert "smoke_media_preparation.py" in payload["commands"][2]["command"]
-    assert "--media-tools-dir" in payload["commands"][2]["command"]
-    assert "--require-ffprobe" in payload["commands"][2]["command"]
-    assert "analyze_backend_runtime_dependencies.py" in payload["commands"][3]["command"]
-    assert "--sidecar-dir" in payload["commands"][3]["command"]
-    assert "runtime-dependency-footprint.json" in payload["commands"][3]["command"]
-    assert payload["commands"][4]["command"] == "not requested"
-    assert payload["commands"][5]["command"] == "not requested"
-    assert payload["commands"][6]["command"] == "not requested"
-    assert payload["commands"][7]["command"] == "not requested"
-    assert payload["commands"][8]["command"] == "not requested"
-    assert payload["commands"][9]["command"] == "not requested"
-    assert payload["commands"][10]["command"] == "not requested"
-    assert "validate_windows_authenticode.ps1" in payload["commands"][11]["command"]
-    assert "validate_hybrid_release_readiness.py" in payload["commands"][12]["command"]
-    assert "--media-preparation-report" in payload["commands"][12]["command"]
-    assert "media-preparation-smoke.json" in payload["commands"][12]["command"]
-    assert "--runtime-dependency-footprint-report" in payload["commands"][12]["command"]
-    assert "runtime-dependency-footprint.json" in payload["commands"][12]["command"]
-    assert "--require-authenticode-timestamp" in payload["commands"][12]["command"]
+    commands = {entry["name"]: entry["command"] for entry in payload["commands"]}
+    assert "validate_microphone_hardware_matrix.py" in commands["microphoneMatrixValidation"]
+    assert "--require-device-refresh-evidence" not in commands["microphoneMatrixValidation"]
+    assert commands["meetingReleaseMatrixValidation"] == "not requested"
+    assert "verify_tauri_updater_publication.py" in commands["updaterPublicationVerification"]
+    assert "smoke_media_preparation.py" in commands["mediaPreparationSmoke"]
+    assert "--media-tools-dir" in commands["mediaPreparationSmoke"]
+    assert "--require-ffprobe" in commands["mediaPreparationSmoke"]
+    assert "analyze_backend_runtime_dependencies.py" in commands["runtimeDependencyFootprint"]
+    assert "--sidecar-dir" in commands["runtimeDependencyFootprint"]
+    assert "runtime-dependency-footprint.json" in commands["runtimeDependencyFootprint"]
+    for name in (
+        "rustAudioSidecarSmoke",
+        "rustAudioPrewarmSidecarSmoke",
+        "rustAudioAppPrewarmSmoke",
+        "recordingHotPathPythonRustComparison",
+        "installedLiveRecordingSmoke",
+        "tauriTextInjectionSmoke",
+        "tauriTextInjectionMatrix",
+    ):
+        assert commands[name] == "not requested"
+    assert "validate_windows_authenticode.ps1" in commands["authenticodeValidation"]
+    assert "validate_hybrid_release_readiness.py" in commands["hybridReleaseReadiness"]
+    assert "--media-preparation-report" in commands["hybridReleaseReadiness"]
+    assert "media-preparation-smoke.json" in commands["hybridReleaseReadiness"]
+    assert "--runtime-dependency-footprint-report" in commands["hybridReleaseReadiness"]
+    assert "runtime-dependency-footprint.json" in commands["hybridReleaseReadiness"]
+    assert "--require-authenticode-timestamp" in commands["hybridReleaseReadiness"]
     assert written == payload
 
 
@@ -1229,18 +1238,59 @@ def test_hybrid_release_readiness_runner_can_reuse_existing_external_reports(tmp
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert "reuse" in payload["commands"][1]["command"]
-    assert "updater-publication.json" in payload["commands"][1]["command"]
-    assert "reuse" in payload["commands"][2]["command"]
-    assert "media-preparation-smoke.json" in payload["commands"][2]["command"]
-    assert "reuse" in payload["commands"][3]["command"]
-    assert "runtime-dependency-footprint.json" in payload["commands"][3]["command"]
-    assert payload["commands"][4]["command"] == "not requested"
-    assert payload["commands"][5]["command"] == "not requested"
-    assert payload["commands"][6]["command"] == "not requested"
-    assert payload["commands"][7]["command"] == "not requested"
-    assert payload["commands"][8]["command"] == "not requested"
-    assert payload["commands"][9]["command"] == "not requested"
-    assert payload["commands"][10]["command"] == "not requested"
-    assert "reuse" in payload["commands"][11]["command"]
-    assert "authenticode.json" in payload["commands"][11]["command"]
+    commands = {entry["name"]: entry["command"] for entry in payload["commands"]}
+    assert commands["meetingReleaseMatrixValidation"] == "not requested"
+    assert "reuse" in commands["updaterPublicationVerification"]
+    assert "updater-publication.json" in commands["updaterPublicationVerification"]
+    assert "reuse" in commands["mediaPreparationSmoke"]
+    assert "media-preparation-smoke.json" in commands["mediaPreparationSmoke"]
+    assert "reuse" in commands["runtimeDependencyFootprint"]
+    assert "runtime-dependency-footprint.json" in commands["runtimeDependencyFootprint"]
+    for name in (
+        "rustAudioSidecarSmoke",
+        "rustAudioPrewarmSidecarSmoke",
+        "rustAudioAppPrewarmSmoke",
+        "recordingHotPathPythonRustComparison",
+        "installedLiveRecordingSmoke",
+        "tauriTextInjectionSmoke",
+        "tauriTextInjectionMatrix",
+    ):
+        assert commands[name] == "not requested"
+    assert "reuse" in commands["authenticodeValidation"]
+    assert "authenticode.json" in commands["authenticodeValidation"]
+
+
+def test_hybrid_plan_can_require_full_meeting_release_matrix(tmp_path: Path) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER_SCRIPT),
+        "-PlanOnly",
+        "-HardwareInputDir",
+        str(tmp_path),
+        "-RequireMeetingReleaseMatrix",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["requireMeetingReleaseMatrix"] is True
+    evidence = next(
+        item for item in payload["requiredEvidence"] if item["name"] == "meetingReleaseMatrix"
+    )
+    assert evidence["required"] is True
+    assert evidence["expectedAppVersion"] == __version__
+    command = next(
+        item["command"]
+        for item in payload["commands"]
+        if item["name"] == "meetingReleaseMatrixValidation"
+    )
+    assert "validate_meeting_release_matrix.py" in command
+    assert f"--expected-app-version {__version__}" in command
+    aggregate = next(
+        item["command"]
+        for item in payload["commands"]
+        if item["name"] == "hybridReleaseReadiness"
+    )
+    assert "--require-meeting-release-matrix" in aggregate

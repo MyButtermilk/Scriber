@@ -1,0 +1,22 @@
+3D-Speaker ERes2Net embedding model notice
+
+Artifact:
+3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
+
+Exact ModelScope source:
+https://modelscope.cn/models/iic/speech_eres2net_base_sv_zh-cn_3dspeaker_16k
+
+Model revision: v1.0.1
+Repository commit observed for this pinned provenance record:
+46215101b5c2ca4443163c8ced56147cc6f01908
+
+Training provenance declared by the model card:
+3D-Speaker dataset, approximately 10,000 speakers, 16 kHz Chinese audio.
+
+Source implementation:
+https://github.com/modelscope/3D-Speaker
+
+The exact ModelScope model card declares Apache License 2.0. A complete copy is
+installed as APACHE-2.0.txt. Scriber records and verifies this provenance
+notice independently from the model binary. Training provenance is a quality
+and evaluation consideration, not a legal conclusion.

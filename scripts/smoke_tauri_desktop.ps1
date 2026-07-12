@@ -38,7 +38,8 @@ With -VerifyRealMediaWorkflows, it runs real installed backend file and YouTube
 transcription workflows through the token-protected REST API and requires
 completed transcript plus summary evidence.
 With -VerifySingleInstance, it starts a second desktop process and verifies that
-the single-instance mutex makes it exit without spawning another backend worker.
+the single-instance mutex makes it exit without spawning another backend worker
+and signals the primary process to restore its main window.
 Use -SingleInstanceSecondArguments and -SingleInstanceForbiddenLogText to verify
 that malformed/sensitive second-launch input is blocked without runtime log leaks.
 With -VerifyAudioSidecarCleanup, it starts a same-install audio sidecar before
@@ -96,6 +97,7 @@ param(
     [switch]$WaitForManualGlobalHotkey,
     [switch]$VerifySupportBundle,
     [switch]$VerifyFrontend,
+    [switch]$VerifyMeetingAudioDeviceTest,
     [switch]$VerifyRealMediaWorkflows,
     [switch]$VerifySingleInstance,
     [string[]]$SingleInstanceSecondArguments = @(),
@@ -293,6 +295,65 @@ function Invoke-LiveMicStop {
         $headers["X-Scriber-Token"] = $Token
     }
     return Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/api/live-mic/stop" -Headers $headers -TimeoutSec 10
+}
+
+function Test-MeetingAudioDeviceTest {
+    param(
+        [int]$Port,
+        [string]$Token
+    )
+
+    $headers = @{ "Content-Type" = "application/json" }
+    if ($Token) {
+        $headers["X-Scriber-Token"] = $Token
+    }
+    $body = @{
+        durationMs = 1000
+        aecEnabled = $true
+        playTestTone = $false
+    } | ConvertTo-Json -Compress
+    $response = Invoke-RestMethod `
+        -Method Post `
+        -Uri "http://127.0.0.1:$Port/api/meetings/device-test" `
+        -Headers $headers `
+        -Body $body `
+        -TimeoutSec 15
+    if (-not $response.available -or -not $response.aecActive) {
+        throw "Synthetic Meeting audio device test did not report active AEC capture."
+    }
+    if ($response.audioPersisted -or $response.audioSentToProvider) {
+        throw "Meeting audio device test persisted or sent synthetic audio."
+    }
+    $summaries = [ordered]@{}
+    foreach ($source in @("microphone", "system", "mic_clean")) {
+        $level = $response.sources.$source
+        if (-not $level -or -not $level.active -or [int64]$level.frames -le 0 -or [int64]$level.audioFrames -le 0) {
+            throw "Synthetic Meeting audio source '$source' delivered no active frames."
+        }
+        if ([string]$level.errorCode) {
+            throw "Synthetic Meeting audio source '$source' reported $($level.errorCode)."
+        }
+        $summaries[$source] = [pscustomobject]@{
+            frames = [int64]$level.frames
+            audioFrames = [int64]$level.audioFrames
+            rms = [Math]::Round([double]$level.rms, 6)
+            peak = [Math]::Round([double]$level.peak, 6)
+            active = [bool]$level.active
+        }
+    }
+    if ([double]$summaries.microphone.peak -le 0 -or [double]$summaries.system.peak -le 0) {
+        throw "Synthetic Meeting microphone/system signals were silent."
+    }
+    return [pscustomobject]@{
+        verified = $true
+        transport = "tauri-shell-ipc-to-rust-sidecar-frame-pipes"
+        durationMs = [int]$response.durationMs
+        aecActive = [bool]$response.aecActive
+        testTonePlayed = [bool]$response.testTonePlayed
+        audioPersisted = [bool]$response.audioPersisted
+        audioSentToProvider = [bool]$response.audioSentToProvider
+        sources = [pscustomobject]$summaries
+    }
 }
 
 function Wait-BackendState {
@@ -1354,6 +1415,26 @@ function Test-SupportBundle {
 
         $zip = Read-ZipEntryText -Path $downloadPath
         $entrySet = @($zip.entries)
+        $meetingPrivacyFindings = [System.Collections.Generic.List[string]]::new()
+        $forbiddenSuffixes = @(".aac", ".bin", ".blob", ".db", ".db-shm", ".db-wal", ".flac", ".m4a", ".mp3", ".npy", ".npz", ".ogg", ".opus", ".pcm", ".sqlite", ".sqlite3", ".wav", ".webm")
+        $forbiddenMarkers = @("meeting_audio", "outlook_refresh_token", "speaker_observation", "speaker_profile", "transcript_export", "voice_embedding", "voiceprint", "webhook_secret")
+        foreach ($entryName in $entrySet) {
+            $normalizedEntry = ([string]$entryName).ToLowerInvariant()
+            foreach ($suffix in $forbiddenSuffixes) {
+                if ($normalizedEntry.EndsWith($suffix)) {
+                    [void]$meetingPrivacyFindings.Add("forbidden-suffix:$suffix")
+                }
+            }
+            foreach ($marker in $forbiddenMarkers) {
+                if ($normalizedEntry.Contains($marker)) {
+                    [void]$meetingPrivacyFindings.Add("forbidden-marker:$marker")
+                }
+            }
+        }
+        if ($meetingPrivacyFindings.Count -gt 0) {
+            $categories = @($meetingPrivacyFindings | Sort-Object -Unique)
+            throw "Support bundle contains Meeting-sensitive artifact categories: $($categories -join ', ')"
+        }
         foreach ($required in @("manifest.json", "runtime.json", "state.redacted.json", "audio-diagnostics.redacted.json", "environment.redacted.json", "config/env.redacted.txt", "logs/support-bundle-secret-smoke.log")) {
             if ($entrySet -notcontains $required) {
                 throw "Support bundle is missing required entry: $required"
@@ -1406,6 +1487,15 @@ function Test-SupportBundle {
             downloadBytes = [int64]$downloadItem.Length
             entryCount = [int]$entrySet.Count
             redactionVerified = $true
+            meetingPrivacy = [pscustomobject]@{
+                verified = $true
+                sensitiveFindingCount = 0
+                audioAbsent = $true
+                transcriptStoresAbsent = $true
+                outlookCredentialArtifactsAbsent = $true
+                webhookSecretArtifactsAbsent = $true
+                voiceprintArtifactsAbsent = $true
+            }
             nativeDeviceEvents = $nativeDeviceEvents
             rustAudioFallbackCircuit = $rustAudioFallbackCircuit
             requiredEntries = @(
@@ -2324,6 +2414,13 @@ function Test-SingleInstanceBlock {
         if (-not $logObserved) {
             throw "Single-instance mutex message was not observed in $shellLogPath."
         }
+        $restoreObserved = Wait-TextFileContains `
+            -Path $shellLogPath `
+            -Pattern "single-instance main-window restore requested" `
+            -DeadlineSec 5
+        if (-not $restoreObserved) {
+            throw "Single-instance main-window restore signal was not observed in $shellLogPath."
+        }
         $forbiddenLogFileCount = 0
         if ($ForbiddenLogText -and $ForbiddenLogText.Count -gt 0) {
             $logPaths = @(
@@ -2352,6 +2449,7 @@ function Test-SingleInstanceBlock {
             primaryStillRunning = -not $PrimaryAppProcess.HasExited
             shellLogPath = $shellLogPath
             shellLogObserved = $logObserved
+            mainWindowRestoreObserved = $restoreObserved
             forbiddenLogTextAbsent = if ($ForbiddenLogText -and $ForbiddenLogText.Count -gt 0) { $true } else { $null }
             forbiddenLogFileCount = $forbiddenLogFileCount
         }
@@ -2871,6 +2969,7 @@ $oldScriberInjectMethod = $env:SCRIBER_INJECT_METHOD
 $oldDisableTextInjection = $env:SCRIBER_DISABLE_TEXT_INJECTION
 $oldAudioEngine = $env:SCRIBER_AUDIO_ENGINE
 $oldRustSyntheticCapture = $env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE
+$oldRustSyntheticSignal = $env:SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL
 $oldRustWasapiCapture = $env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE
 $oldMicAlwaysOn = $env:SCRIBER_MIC_ALWAYS_ON
 $oldScriberAutoSummarize = $env:SCRIBER_AUTO_SUMMARIZE
@@ -2959,6 +3058,11 @@ if ($LiveRecordingRustAudioCaptureMode) {
         $env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = $null
     }
 }
+if ($VerifyMeetingAudioDeviceTest) {
+    $env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = "1"
+    $env:SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL = "1"
+    $env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = $null
+}
 if ($LiveRecordingMicAlwaysOn) {
     $env:SCRIBER_MIC_ALWAYS_ON = "1"
 }
@@ -2987,6 +3091,7 @@ $singleInstance = $null
 $audioSidecarCleanup = $null
 $strayAudioSidecar = $null
 $shellMenuSmoke = $null
+$meetingAudioDeviceTest = $null
 try {
     if ($VerifyAudioSidecarCleanup) {
         $audioSidecarProbePath = Resolve-InstalledAudioSidecarExe -InstallRoot $InstallRoot
@@ -3080,6 +3185,11 @@ try {
             -DeadlineSec 10 `
             -SecondArgumentList $SingleInstanceSecondArguments `
             -ForbiddenLogText $SingleInstanceForbiddenLogText
+    }
+    if ($VerifyMeetingAudioDeviceTest) {
+        $meetingAudioDeviceTest = Test-MeetingAudioDeviceTest `
+            -Port ([int]$listener.Port) `
+            -Token $SessionToken
     }
     $externalAttach = $null
     if ($AttachExternalBackend) {
@@ -3292,6 +3402,7 @@ try {
         portConflict = $portConflictResult
         legacyDataMigration = $legacyDataMigration
         frontend = $frontend
+        meetingAudioDeviceTest = $meetingAudioDeviceTest
         supportBundle = $supportBundle
         realMediaWorkflows = $realMediaWorkflows
         globalHotkey = $globalHotkey
@@ -3339,6 +3450,7 @@ try {
         portConflict = if ($portConflict) { [pscustomobject]$portConflict } else { $null }
         legacyDataMigration = $legacyDataMigration
         frontend = $frontend
+        meetingAudioDeviceTest = $meetingAudioDeviceTest
         supportBundle = $supportBundle
         realMediaWorkflows = $realMediaWorkflows
         globalHotkey = $globalHotkey
@@ -3435,6 +3547,7 @@ try {
     $env:SCRIBER_DISABLE_TEXT_INJECTION = $oldDisableTextInjection
     $env:SCRIBER_AUDIO_ENGINE = $oldAudioEngine
     $env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = $oldRustSyntheticCapture
+    $env:SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL = $oldRustSyntheticSignal
     $env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = $oldRustWasapiCapture
     $env:SCRIBER_MIC_ALWAYS_ON = $oldMicAlwaysOn
     $env:SCRIBER_AUTO_SUMMARIZE = $oldScriberAutoSummarize

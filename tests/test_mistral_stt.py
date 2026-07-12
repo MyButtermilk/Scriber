@@ -44,9 +44,16 @@ def test_format_mistral_segments_with_speakers_groups_contiguous_segments():
     )
 
     assert text == (
-        "[Speaker SPEAKER_00]: Hallo weiter\n\n"
-        "[Speaker SPEAKER_01]: Guten Tag"
+        "[Speaker 1]: Hallo weiter\n\n"
+        "[Speaker 2]: Guten Tag"
     )
+
+
+def test_format_mistral_segments_preserves_numeric_speaker_zero():
+    assert format_mistral_segments_with_speakers([
+        {"speaker": 0, "text": "First"},
+        {"speaker": 1, "text": "Second"},
+    ]) == "[Speaker 1]: First\n\n[Speaker 2]: Second"
 
 
 @pytest.mark.asyncio
@@ -79,4 +86,4 @@ async def test_mistral_async_processor_enables_diarization(monkeypatch):
     assert captured["diarize"] is True
     assert captured["timestamp_granularities"] == ["segment"]
     assert captured["language"] == "de"
-    assert text == "[Speaker SPEAKER_00]: Hallo\n\n[Speaker SPEAKER_01]: Antwort"
+    assert text == "[Speaker 1]: Hallo\n\n[Speaker 2]: Antwort"

@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   ArrowRight,
   BarChart3,
+  CalendarClock,
   Check,
   ChevronDown,
   Cloud,
@@ -23,6 +24,7 @@ import {
   Star,
   ToggleLeft,
   Trash2,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
@@ -31,7 +33,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
@@ -48,14 +55,18 @@ import { invalidateSettingsBootstrap, loadSettingsBootstrap } from "@/lib/settin
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import type {
   ApiMessageResponse,
+  DiarizationComponentStatus,
   LocalModelActionResponse,
   MicrophoneDevice,
   MicrophonesResponse,
   OnnxModelInfo,
   OnnxModelsResponse,
+  OutlookCalendarStatus,
+  SpeakerProfilesResponse,
   SettingsResponse,
   SettingsUpdatePayload,
 } from "@/lib/api-types";
+import { apiRequest } from "@/lib/queryClient";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
@@ -93,6 +104,7 @@ const LANGUAGE_OPTIONS = [
 const SETTINGS_SECTION_REQUEST_KEY = "scriber:open-settings-section";
 const SETTINGS_SECTION_IDS: Record<string, string> = {
   transcription: "settings-transcription",
+  meetings: "settings-meetings",
   providers: "settings-providers",
   apiKeys: "settings-api-keys",
   summarization: "settings-summaries",
@@ -540,6 +552,21 @@ const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
   { value: "deepgram-async", label: "Deepgram", detail: sttBenchmarkDetail(4.30, 5.2), group: "cloud_async", icon: "deepgram" },
   { value: "onnx_local", label: "Local ONNX", detail: "0,00€/h with model-dependent Error", group: "local" },
 ];
+
+const MEETING_FINAL_STT_OPTIONS = [
+  { value: "soniox_async", label: "Soniox Async", model: "stt-async-v5", credentialModel: "soniox-async", recommended: true, nativeDiarization: true, fiveHourSupported: true, detail: "Best continuity with Soniox live captions. Native timestamps and diarization. Fixed 300-minute maximum." },
+  { value: "assemblyai", label: "AssemblyAI", model: "Universal-3.5 Pro", credentialModel: "assemblyai", recommended: true, nativeDiarization: true, fiveHourSupported: true, detail: "Strong speaker utterances with native diarization and timestamps." },
+  { value: "mistral_async", label: "Mistral Voxtral", model: "Voxtral Mini Transcribe 2", credentialModel: "mistral-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Native diarization with timestamped segments, up to 3 hours per offline request." },
+  { value: "deepgram_async", label: "Deepgram", model: "Nova-3", credentialModel: "deepgram-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Word timestamps and speaker labels; up to 2 GB, but the current synchronous Scriber route is not verified for five-hour processing." },
+  { value: "gladia_async", label: "Gladia", model: "Pre-recorded", credentialModel: "gladia-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Native speaker utterances and timestamps, limited to 135 minutes per request." },
+  { value: "smallest_async", label: "Smallest AI", model: "Pulse batch", credentialModel: "smallest-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Native diarized utterances when available." },
+  { value: "speechmatics_async", label: "Speechmatics", model: "Batch", credentialModel: "speechmatics-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Native labeled batch diarization." },
+  { value: "openai_async", label: "OpenAI Batch", model: "gpt-4o-mini-transcribe", credentialModel: "openai-async", recommended: false, nativeDiarization: false, fiveHourSupported: false, detail: "Fast batch STT; Scriber aligns its timestamps with local Sherpa-ONNX speaker turns." },
+  { value: "gemini_stt", label: "Gemini STT", model: "Gemini audio", credentialModel: "gemini-stt", recommended: false, nativeDiarization: false, fiveHourSupported: false, detail: "Scriber adds local Sherpa-ONNX speaker turns after transcription." },
+  { value: "azure_mai", label: "Microsoft MAI", model: "mai-transcribe-1.5", credentialModel: "azure_mai", recommended: false, nativeDiarization: false, fiveHourSupported: true, detail: "Scriber adds local Sherpa-ONNX speaker turns after transcription." },
+  { value: "groq", label: "Groq Whisper", model: "whisper-large-v3-turbo", credentialModel: "groq", recommended: false, nativeDiarization: false, fiveHourSupported: false, detail: "Scriber adds local Sherpa-ONNX speaker turns after transcription." },
+  { value: "onnx_local", label: "Local ONNX STT", model: "Configured local model", credentialModel: "onnx_local", recommended: false, nativeDiarization: false, fiveHourSupported: true, detail: "Fully local STT with local Sherpa-ONNX speaker separation." },
+] as const;
 
 function parseGermanMetricNumber(value: string | undefined): number {
   if (!value) return Number.POSITIVE_INFINITY;
@@ -1025,6 +1052,7 @@ function ApiCredentialRow({
 }
 
 export default function Settings() {
+  const queryClient = useQueryClient();
   const [openAIKey, setOpenAIKey] = useState("");
   const [deepgramKey, setDeepgramKey] = useState("");
   const [assemblyAIKey, setAssemblyAIKey] = useState("");
@@ -1070,11 +1098,23 @@ export default function Settings() {
 
   const [hotkey, setHotkey] = useState("Ctrl + Shift + S");
   const [postProcessingHotkey, setPostProcessingHotkey] = useState("Ctrl + Shift + P");
+  const [meetingHotkey, setMeetingHotkey] = useState("Ctrl + Alt + M");
+  const [meetingFinalProvider, setMeetingFinalProvider] = useState("soniox_async");
+  const [meetingAnalysisModel, setMeetingAnalysisModel] = useState(DEFAULT_SUMMARIZATION_MODEL);
+  const [meetingSmartTurnEnabled, setMeetingSmartTurnEnabled] = useState(true);
+  const [meetingAutoAnalyze, setMeetingAutoAnalyze] = useState(true);
+  const [meetingAecEnabled, setMeetingAecEnabled] = useState(true);
+  const [meetingAudioRetentionDays, setMeetingAudioRetentionDays] = useState(0);
+  const [speakerDiarizationFallbackEnabled, setSpeakerDiarizationFallbackEnabled] = useState(true);
+  const [diarizationComponent, setDiarizationComponent] = useState<DiarizationComponentStatus | null>(null);
+  const [diarizationComponentPending, setDiarizationComponentPending] = useState(false);
   const [recordingMode, setRecordingMode] = useState("press_hold");
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
   const [isRecordingPostProcessingHotkey, setIsRecordingPostProcessingHotkey] = useState(false);
+  const [isRecordingMeetingHotkey, setIsRecordingMeetingHotkey] = useState(false);
   const hotkeyCaptureRef = useRef<HTMLDivElement | null>(null);
   const postProcessingHotkeyCaptureRef = useRef<HTMLDivElement | null>(null);
+  const meetingHotkeyCaptureRef = useRef<HTMLDivElement | null>(null);
   const { toast } = useToast();
   const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
   const savedKeyResetTimersRef = useRef<Map<string, number>>(new Map());
@@ -1089,6 +1129,9 @@ export default function Settings() {
   const [postProcessingModel, setPostProcessingModel] = useState(DEFAULT_POST_PROCESSING_MODEL);
   const [autoSummarize, setAutoSummarize] = useState(false);
   const [youtubePreferCaptions, setYoutubePreferCaptions] = useState(true);
+  const [voiceprintLibraryOptIn, setVoiceprintLibraryOptIn] = useState(false);
+  const [editingSpeakerProfileId, setEditingSpeakerProfileId] = useState("");
+  const [speakerProfileName, setSpeakerProfileName] = useState("");
   const [postProcessingEnabled, setPostProcessingEnabled] = useState(true);
   const [language, setLanguage] = useState("auto");
   const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
@@ -1107,6 +1150,9 @@ export default function Settings() {
   const [isMicDropdownOpen, setIsMicDropdownOpen] = useState(false);
   const [isLanguageDropdownOpen, setIsLanguageDropdownOpen] = useState(false);
   const [isTranscriptionModelDropdownOpen, setIsTranscriptionModelDropdownOpen] = useState(false);
+  const [speakerProfilePendingDelete, setSpeakerProfilePendingDelete] = useState<{ id: string; name: string } | null>(null);
+  const [voiceLibraryDeleteOpen, setVoiceLibraryDeleteOpen] = useState(false);
+  const [voiceLibraryDeletePending, setVoiceLibraryDeletePending] = useState(false);
 
   const [onnxAvailable, setOnnxAvailable] = useState<boolean | null>(null);
   const [onnxMessage, setOnnxMessage] = useState("");
@@ -1114,6 +1160,59 @@ export default function Settings() {
   const [onnxModel, setOnnxModel] = useState("");
   const [onnxQuantization, setOnnxQuantization] = useState("int8");
   const onnxModelActionInFlightRef = useRef<Set<string>>(new Set());
+
+  const speakerProfilesQuery = useQuery<SpeakerProfilesResponse>({
+    queryKey: ["/api/meetings/speaker-profiles"],
+    queryFn: async ({ signal }) => {
+      const response = await fetchWithTimeout(apiUrl("/api/meetings/speaker-profiles"), {
+        credentials: "include",
+        signal,
+      }, 10_000);
+      if (!response.ok) throw new Error(`Voice profiles unavailable (${response.status})`);
+      return response.json();
+    },
+  });
+  const outlookQuery = useQuery<OutlookCalendarStatus>({
+    queryKey: ["/api/calendar/outlook/status"],
+    queryFn: async ({ signal }) => {
+      const response = await fetchWithTimeout(apiUrl("/api/calendar/outlook/status"), {
+        credentials: "include",
+        signal,
+      }, 10_000);
+      if (!response.ok) throw new Error(`Outlook status unavailable (${response.status})`);
+      return response.json();
+    },
+    refetchInterval: (query) => query.state.data?.authorizationPending ? 2_000 : false,
+  });
+  const speakerProfileMutation = useMutation({
+    mutationFn: async ({ action, id, displayName }: { action: "rename" | "delete"; id: string; displayName?: string }) => {
+      const response = action === "delete"
+        ? await apiRequest("DELETE", `/api/meetings/speaker-profiles/${id}`)
+        : await apiRequest("PATCH", `/api/meetings/speaker-profiles/${id}`, { displayName });
+      return response.json();
+    },
+    onSuccess: (_result, variables) => {
+      setSpeakerProfilePendingDelete(null);
+      setEditingSpeakerProfileId("");
+      setSpeakerProfileName("");
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
+      toast({ title: variables.action === "delete" ? "Voice profile deleted" : "Voice profile named" });
+    },
+    onError: (error) => toast({ title: "Voice profile update failed", description: error.message, variant: "destructive" }),
+  });
+  const outlookMutation = useMutation({
+    mutationFn: async (action: "connect" | "sync" | "disconnect") => {
+      const response = action === "disconnect"
+        ? await apiRequest("DELETE", "/api/calendar/outlook")
+        : await apiRequest("POST", `/api/calendar/outlook/${action}`, action === "connect" ? { openBrowser: true } : undefined);
+      return response.json();
+    },
+    onSuccess: (_result, action) => {
+      void queryClient.invalidateQueries({ queryKey: ["/api/calendar/outlook/status"] });
+      toast({ title: action === "connect" ? "Continue in your browser" : action === "sync" ? "Outlook calendar synchronized" : "Outlook disconnected" });
+    },
+    onError: (error) => toast({ title: "Outlook action failed", description: error.message, variant: "destructive" }),
+  });
 
   useEffect(() => {
     return subscribeDesktopUpdateStatus(setDesktopUpdate);
@@ -1331,6 +1430,9 @@ export default function Settings() {
   })();
   const selectedPostProcessingModelOption =
     POST_PROCESSING_MODEL_OPTIONS.find((option) => option.value === postProcessingModel) ?? null;
+  const selectedMeetingFinalOption =
+    MEETING_FINAL_STT_OPTIONS.find((option) => option.value === meetingFinalProvider)
+    ?? MEETING_FINAL_STT_OPTIONS[0];
   const missingActiveCredentialRequirements = uniqueCredentialRequirements([
     missingSelectedCredentialRequirement,
     missingSummarizationCredentialRequirement,
@@ -1436,6 +1538,14 @@ export default function Settings() {
         setAutostartAvailable(autostart.available || false);
         setHotkey(settings.hotkey || settings.hotkeyRaw || "");
         setPostProcessingHotkey(settings.postProcessingHotkey || settings.postProcessingHotkeyRaw || "Ctrl + Shift + P");
+        setMeetingHotkey(settings.meetingHotkey || settings.meetingHotkeyRaw || "Ctrl + Alt + M");
+        setMeetingFinalProvider(settings.meetingFinalProvider || "soniox_async");
+        setMeetingAnalysisModel(settings.meetingAnalysisModel || settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL);
+        setMeetingSmartTurnEnabled(settings.meetingSmartTurnEnabled !== false);
+        setMeetingAutoAnalyze(settings.meetingAutoAnalyze !== false);
+        setMeetingAecEnabled(settings.meetingAecEnabled !== false);
+        setMeetingAudioRetentionDays(settings.meetingAudioRetentionDays ?? 0);
+        setSpeakerDiarizationFallbackEnabled(settings.speakerDiarizationFallbackEnabled !== false);
         setRecordingMode(settings.mode === "push_to_talk" ? "press_hold" : "start_stop");
         setSelectedDeviceId(settings.micDevice || "default");
         setLanguage(settings.language || "auto");
@@ -1447,6 +1557,7 @@ export default function Settings() {
         setPostProcessingModel(settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL);
         setAutoSummarize(settings.autoSummarize === true);
         setYoutubePreferCaptions(settings.youtubePreferCaptions !== false);
+        setVoiceprintLibraryOptIn(settings.voiceprintLibraryOptIn === true);
         setPostProcessingEnabled(settings.postProcessingEnabled !== false);
         setPostProcessingPrompt(settings.postProcessingPrompt || DEFAULT_POST_PROCESSING_PROMPT);
         const loadedVisualizerBarCount = normalizeVisualizerBarCount(settings.visualizerBarCount);
@@ -1745,6 +1856,17 @@ export default function Settings() {
     }
   }, []);
 
+  const handleMeetingHotkeyRecord = useCallback((event: HotkeyCaptureEvent) => {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    if (event.key === "Escape") {
+      setIsRecordingMeetingHotkey(false);
+      return;
+    }
+    const nextHotkey = hotkeyDisplayFromKeyboardEvent(event);
+    if (nextHotkey) setMeetingHotkey(nextHotkey);
+  }, []);
+
   useEffect(() => {
     if (!isRecordingHotkey) {
       return;
@@ -1790,6 +1912,23 @@ export default function Settings() {
       });
     };
   }, [handlePostProcessingHotkeyRecord, isRecordingPostProcessingHotkey]);
+
+  useEffect(() => {
+    if (!isRecordingMeetingHotkey) return;
+    void setGlobalHotkeyCaptureActive(true).catch((error) => {
+      console.debug("Could not suspend global hotkeys while recording meeting shortcut.", error);
+    });
+    const focusFrame = window.requestAnimationFrame(() => meetingHotkeyCaptureRef.current?.focus());
+    const handleWindowKeyDown = (event: KeyboardEvent) => handleMeetingHotkeyRecord(event);
+    window.addEventListener("keydown", handleWindowKeyDown, true);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("keydown", handleWindowKeyDown, true);
+      void setGlobalHotkeyCaptureActive(false).catch((error) => {
+        console.debug("Could not resume global hotkeys after recording meeting shortcut.", error);
+      });
+    };
+  }, [handleMeetingHotkeyRecord, isRecordingMeetingHotkey]);
 
   const handleMicDeviceChange = async (deviceId: string) => {
     const previousDeviceId = selectedDeviceId;
@@ -2131,6 +2270,44 @@ export default function Settings() {
     }
   };
 
+  const handleVoiceprintOptInChange = async (enabled: boolean) => {
+    const previousValue = voiceprintLibraryOptIn;
+    setVoiceprintLibraryOptIn(enabled);
+    try {
+      await updateSettings({ voiceprintLibraryOptIn: enabled });
+      toast({
+        title: "Saved",
+        description: enabled
+          ? "Local biometric voice profiles may now be created for meetings where Voice Library is enabled."
+          : "New voice-profile collection is disabled; existing profiles remain until deleted.",
+        duration: 3500,
+      });
+    } catch (e: any) {
+      setVoiceprintLibraryOptIn(previousValue);
+      toast({ title: "Save failed", description: String(e?.message || e), duration: 4000 });
+    }
+  };
+
+  const handleDeleteVoiceprintLibrary = async () => {
+    if (voiceLibraryDeletePending) return;
+    setVoiceLibraryDeletePending(true);
+    try {
+      const response = await fetchWithTimeout(apiUrl("/api/meetings/speaker-library"), {
+        method: "DELETE",
+        credentials: "include",
+      }, 15_000);
+      if (!response.ok) throw new Error(`Delete failed (${response.status})`);
+      setVoiceprintLibraryOptIn(false);
+      setVoiceLibraryDeleteOpen(false);
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
+      toast({ title: "Voice Library deleted", description: "The model and every stored voiceprint were removed.", duration: 3500 });
+    } catch (e: any) {
+      toast({ title: "Delete failed", description: String(e?.message || e), duration: 5000 });
+    } finally {
+      setVoiceLibraryDeletePending(false);
+    }
+  };
+
   const handlePostProcessingEnabledChange = async (enabled: boolean) => {
     const previousValue = postProcessingEnabled;
     setPostProcessingEnabled(enabled);
@@ -2222,6 +2399,80 @@ export default function Settings() {
       });
     } finally {
       setIsRecordingPostProcessingHotkey(false);
+    }
+  };
+
+  const handleSaveMeetingHotkey = async () => {
+    try {
+      const updated = await updateSettings({ meetingHotkey });
+      setMeetingHotkey(updated.meetingHotkey || meetingHotkey);
+      await setGlobalHotkeyCaptureActive(false);
+      const status = await refreshGlobalHotkey();
+      if (status?.meetingHotkey) setMeetingHotkey(status.meetingHotkey);
+      toast({ title: "Saved", description: "Meeting hotkey updated.", duration: 2000 });
+    } catch (e: any) {
+      toast({ title: "Meeting hotkey save failed", description: String(e?.message || e), duration: 5000 });
+    } finally {
+      setIsRecordingMeetingHotkey(false);
+    }
+  };
+
+  const updateMeetingPreferences = async (patch: SettingsUpdatePayload) => {
+    try {
+      const updated = await updateSettings(patch);
+      setMeetingFinalProvider(updated.meetingFinalProvider || meetingFinalProvider);
+      setMeetingAnalysisModel(updated.meetingAnalysisModel || meetingAnalysisModel);
+      setMeetingSmartTurnEnabled(updated.meetingSmartTurnEnabled !== false);
+      setMeetingAutoAnalyze(updated.meetingAutoAnalyze !== false);
+      setMeetingAecEnabled(updated.meetingAecEnabled !== false);
+      setMeetingAudioRetentionDays(updated.meetingAudioRetentionDays ?? meetingAudioRetentionDays);
+      setSpeakerDiarizationFallbackEnabled(updated.speakerDiarizationFallbackEnabled !== false);
+      await queryClient.invalidateQueries({ queryKey: ["/api/meeting-profiles"] });
+      toast({ title: "Meeting defaults saved", description: "New meetings will use this pipeline.", duration: 2200 });
+    } catch (error: any) {
+      toast({ title: "Meeting settings could not be saved", description: String(error?.message || error), duration: 5000 });
+      throw error;
+    }
+  };
+
+  const refreshDiarizationComponent = useCallback(async () => {
+    const response = await fetchWithTimeout(
+      apiUrl("/api/meetings/diarization-component"),
+      { credentials: "include" },
+      15_000,
+    );
+    if (!response.ok) throw new Error(`Component status failed (${response.status})`);
+    setDiarizationComponent(await response.json() as DiarizationComponentStatus);
+  }, []);
+
+  useEffect(() => {
+    void refreshDiarizationComponent().catch(() => setDiarizationComponent(null));
+  }, [refreshDiarizationComponent]);
+
+  const installDiarizationComponent = async () => {
+    setDiarizationComponentPending(true);
+    try {
+      const response = await fetchWithTimeout(
+        apiUrl("/api/meetings/diarization-component"),
+        { method: "POST", credentials: "include" },
+        600_000,
+      );
+      const payload = await response.json() as DiarizationComponentStatus & { message?: string };
+      if (!response.ok) throw new Error(payload.message || `Install failed (${response.status})`);
+      setDiarizationComponent(payload);
+      toast({
+        title: "Local speaker separation installed",
+        description: "Sherpa-ONNX is ready for STT models without native diarization.",
+        duration: 3500,
+      });
+    } catch (error: any) {
+      toast({
+        title: "Local speaker separation could not be installed",
+        description: String(error?.message || error),
+        duration: 6000,
+      });
+    } finally {
+      setDiarizationComponentPending(false);
     }
   };
 
@@ -2532,7 +2783,10 @@ export default function Settings() {
     if (msg.type === "onnx_models_updated") {
       loadOnnxModels();
     }
-  }, [loadOnnxModels, onnxQuantization, selectedDeviceId, toast]);
+    if (msg.type === "meeting_state" && ["ready", "capture_failed", "finalization_failed", "analysis_failed", "discarded"].includes(msg.meeting.state)) {
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
+    }
+  }, [loadOnnxModels, onnxQuantization, queryClient, selectedDeviceId, toast]);
 
   useSharedWebSocket(handleWsMessage);
 
@@ -2944,6 +3198,7 @@ export default function Settings() {
             <div className="flex w-max items-center gap-1 rounded-xl bg-slate-100/80 p-1 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.05)] dark:bg-slate-950/45">
               {[
                 { section: "transcription", href: "#settings-transcription", label: "Transcription", icon: Mic },
+                { section: "meetings", href: "#settings-meetings", label: "Meetings", icon: Users },
                 { section: "providers", href: "#settings-providers", label: "Providers", icon: Cloud },
                 { section: "apiKeys", href: "#settings-api-keys", label: "API keys", icon: Key },
                 { section: "summarization", href: "#settings-summaries", label: "Summarization", icon: Sparkles },
@@ -3152,6 +3407,52 @@ export default function Settings() {
               </Dialog>
                 </SettingLine>
 
+                <SettingLine label="Meeting hotkey" description="Opens meeting controls or the required recording confirmation.">
+                  <Dialog open={isRecordingMeetingHotkey} onOpenChange={setIsRecordingMeetingHotkey}>
+                    <DialogTrigger asChild>
+                      <Button variant="outline" className="h-8 w-[220px] max-w-full justify-start font-mono text-[11px]">
+                        <Keyboard className="mr-2 h-4 w-4 text-muted-foreground" />
+                        {meetingHotkey}
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="sm:max-w-[425px]">
+                      <DialogHeader>
+                        <DialogTitle>Meeting hotkey</DialogTitle>
+                        <DialogDescription>Press the shortcut that should open the meeting workspace.</DialogDescription>
+                      </DialogHeader>
+                      <div
+                        ref={meetingHotkeyCaptureRef}
+                        className="flex h-32 items-center justify-center rounded-lg border-2 border-dashed bg-secondary/20 outline-none transition-colors focus:border-primary focus:bg-primary/5"
+                        tabIndex={0}
+                        aria-label="Meeting hotkey capture area"
+                      >
+                        <p className="text-lg font-medium text-primary">{meetingHotkey}</p>
+                      </div>
+                      <div className="flex justify-end gap-2">
+                        <Button variant="ghost" onClick={() => setIsRecordingMeetingHotkey(false)}>Cancel</Button>
+                        <Button onClick={handleSaveMeetingHotkey}>Save</Button>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                </SettingLine>
+
+                <SettingLine
+                  label="Voice Library biometric opt-in"
+                  description="Optional local speaker identification. Voice embeddings are biometric data, remain on this device, and are excluded from exports and support bundles."
+                >
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <Button type="button" size="sm" variant="ghost" className="text-destructive hover:text-destructive" disabled={voiceLibraryDeletePending || speakerProfileMutation.isPending} onClick={() => setVoiceLibraryDeleteOpen(true)}>
+                      <Trash2 className="mr-1.5 h-3.5 w-3.5" />Delete library
+                    </Button>
+                    <Switch
+                      checked={voiceprintLibraryOptIn}
+                      disabled={voiceLibraryDeletePending}
+                      onCheckedChange={handleVoiceprintOptInChange}
+                      aria-label="Allow local biometric voice profile collection"
+                    />
+                  </div>
+                </SettingLine>
+
                 <SettingLine label="Visualizer bars" description={`Current count: ${visualizerBarCount}`}>
                   <div className="flex w-full items-center gap-2">
                     <BarChart3 className="h-4 w-4 shrink-0 text-slate-500" />
@@ -3181,6 +3482,282 @@ export default function Settings() {
             </SettingsSubsection>
 
             {livePostProcessingSettings}
+          </div>
+        </SectionPanel>
+
+        <SectionPanel
+          id="settings-meetings"
+          title="Meetings"
+          description="Set the default live, final, and intelligence pipeline for new meeting recordings. Existing meetings retain their original model snapshot."
+          icon={Users}
+          className="lg:col-span-2"
+        >
+          <div className="grid gap-3 lg:grid-cols-2">
+            <SettingsSubsection
+              title="Transcription pipeline"
+              description="Soniox handles live captions. The selected batch model rebuilds the final transcript from checkpointed audio."
+              icon={Mic}
+            >
+              <div className="divide-y divide-slate-200/80 dark:divide-slate-800">
+                <SettingLine label="Live captions" description="Low-latency microphone and system-audio streams.">
+                  <div className="text-right">
+                    <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">Soniox Realtime</p>
+                    <p className="font-mono text-[10.5px] text-slate-500">stt-rt-v5</p>
+                  </div>
+                </SettingLine>
+                <SettingLine label="Final transcript" description="Native speaker models are recommended; other models use the local fallback below.">
+                  <Select value={meetingFinalProvider} onValueChange={(value) => void updateMeetingPreferences({ meetingFinalProvider: value })}>
+                    <SelectTrigger className="h-9 w-[220px] max-w-full text-xs" aria-label="Final meeting transcription model">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {MEETING_FINAL_STT_OPTIONS.map((option) => {
+                        const unavailable = Boolean(missingCredentialReason(requiredCredentialForTranscriptionModel(option.credentialModel)));
+                        return (
+                          <SelectItem key={option.value} value={option.value} disabled={unavailable}>
+                            {option.recommended ? "Recommended: " : ""}{option.label} ({option.model})
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectContent>
+                  </Select>
+                </SettingLine>
+                <div className="py-3">
+                  <div className="rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">{selectedMeetingFinalOption.label}</p>
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
+                        {selectedMeetingFinalOption.recommended && <Badge variant="outline" className="text-[10px]">Recommended</Badge>}
+                        <Badge variant="outline" className={selectedMeetingFinalOption.fiveHourSupported ? "border-emerald-500/40 text-[10px] text-emerald-700 dark:text-emerald-300" : "text-[10px] text-slate-500"}>
+                          {selectedMeetingFinalOption.fiveHourSupported ? "5 h route" : "5 h not verified"}
+                        </Badge>
+                      </div>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">{selectedMeetingFinalOption.detail}</p>
+                    <p className="mt-1.5 font-mono text-[10.5px] text-slate-500 dark:text-slate-400">
+                      {selectedMeetingFinalOption.model}. {selectedMeetingFinalOption.nativeDiarization
+                        ? "Native timestamps and diarization."
+                        : "Local Sherpa-ONNX speaker alignment."} {selectedMeetingFinalOption.fiveHourSupported
+                          ? "Finalization transport is compatible with five-hour files."
+                          : "Use a 5 h route for very long meetings."}
+                    </p>
+                  </div>
+                </div>
+                <SettingLine label="Local speaker fallback" description="For File, YouTube, Meetings, and imported meeting recordings when STT has no native diarization.">
+                  <Switch
+                    checked={speakerDiarizationFallbackEnabled}
+                    onCheckedChange={(enabled) => void updateMeetingPreferences({ speakerDiarizationFallbackEnabled: enabled })}
+                    aria-label="Use local speaker diarization fallback"
+                  />
+                </SettingLine>
+                {speakerDiarizationFallbackEnabled && <div className="py-3">
+                  <div className="rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">Sherpa-ONNX offline diarization</p>
+                          <Badge variant="outline" className="text-[10px]">
+                            {diarizationComponent?.installed
+                              ? "Installed"
+                              : diarizationComponent?.workerReady === false
+                                ? "Unavailable in this build"
+                                : "Optional download"}
+                          </Badge>
+                        </div>
+                        <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">
+                          Pyannote 3.0 INT8 segmentation + 3D-Speaker embeddings + native clustering, locally for recordings up to 60 minutes. Choose native STT diarization for longer audio.
+                        </p>
+                      </div>
+                      {!diarizationComponent?.installed && <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={diarizationComponentPending || diarizationComponent?.available === false || diarizationComponent?.workerReady === false}
+                        onClick={() => void installDiarizationComponent()}
+                      >
+                        {diarizationComponentPending
+                          ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                          : <Download className="mr-2 h-3.5 w-3.5" />}
+                        Install component
+                      </Button>}
+                    </div>
+                    {diarizationComponent?.installed && <p className="mt-2 font-mono text-[10.5px] text-slate-500 dark:text-slate-400">
+                      v{diarizationComponent.version} · {(diarizationComponent.byteSize / 1_048_576).toFixed(1)} MB installed locally
+                    </p>}
+                    {!diarizationComponent?.installed && diarizationComponent?.workerReady === false && <p className="mt-2 text-[10.5px] leading-4 text-amber-700 dark:text-amber-300">
+                      This Scriber build does not contain the signed local worker. Choose native STT diarization until the app is updated.
+                    </p>}
+                  </div>
+                </div>}
+                <SettingLine label="Smart Turn V3" description="Keeps incomplete microphone phrases together when provider endpointing cuts them too early.">
+                  <Switch checked={meetingSmartTurnEnabled} onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingSmartTurnEnabled: enabled })} aria-label="Use Smart Turn V3 for meeting live captions" />
+                </SettingLine>
+                <SettingLine label="AEC3 echo control" description="Uses system audio as the render reference and keeps a raw microphone recovery track.">
+                  <Switch checked={meetingAecEnabled} onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingAecEnabled: enabled })} aria-label="Use AEC3 for meetings" />
+                </SettingLine>
+              </div>
+            </SettingsSubsection>
+
+            <SettingsSubsection
+              title="Meeting intelligence and durability"
+              description="Choose the model for cited summaries, decisions, action items, and meeting chat."
+              icon={Sparkles}
+            >
+              <div className="divide-y divide-slate-200/80 dark:divide-slate-800">
+                <SettingLine label="Analysis model" description="Used only after the canonical transcript is available.">
+                  <Select value={meetingAnalysisModel} onValueChange={(value) => void updateMeetingPreferences({ meetingAnalysisModel: value })}>
+                    <SelectTrigger className="h-9 w-[220px] max-w-full text-xs" aria-label="Meeting analysis model">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SUMMARIZATION_MODEL_OPTIONS.map((option) => (
+                        <SelectItem
+                          key={option.value}
+                          value={option.value}
+                          disabled={Boolean(missingCredentialReason(requiredCredentialForLanguageModel(option.value)))}
+                        >
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </SettingLine>
+                <SettingLine label="Generate automatically" description="Build the cited workspace after final transcription. Turn off to run analysis manually.">
+                  <Switch checked={meetingAutoAnalyze} onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingAutoAnalyze: enabled })} aria-label="Automatically analyze completed meetings" />
+                </SettingLine>
+                <SettingLine label="Local audio retention" description="Transcript, notes, and outputs remain after audio is purged.">
+                  <Select value={String(meetingAudioRetentionDays)} onValueChange={(value) => void updateMeetingPreferences({ meetingAudioRetentionDays: Number(value) })}>
+                    <SelectTrigger className="h-9 w-[180px] max-w-full text-xs" aria-label="Default meeting audio retention">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="0">Until deleted</SelectItem>
+                      <SelectItem value="7">7 days</SelectItem>
+                      <SelectItem value="30">30 days</SelectItem>
+                      <SelectItem value="90">90 days</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </SettingLine>
+                <div className="py-3">
+                  <div className="flex items-start gap-2.5 rounded-lg bg-slate-50 px-3 py-2.5 text-[11.5px] leading-4 text-slate-600 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60 dark:text-slate-300">
+                    <Shield className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-300" />
+                    <p><span className="font-semibold text-slate-950 dark:text-slate-100">30-second recovery checkpoints.</span> Each completed audio chunk commits an atomic, checksum-protected snapshot of all final live transcript segments.</p>
+                  </div>
+                </div>
+              </div>
+            </SettingsSubsection>
+
+            <SettingsSubsection
+              title="Voice profiles"
+              description="Review the local identities used to recognize recurring speakers across meetings."
+              icon={Users}
+            >
+              <div className="space-y-2.5">
+                <div className="flex items-start justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">
+                      {speakerProfilesQuery.data?.enabled ? "Recognition ready" : "Recognition inactive"}
+                    </p>
+                    <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">
+                      A name is applied automatically only after two independent high-confidence matches. Embeddings never leave this device.
+                    </p>
+                  </div>
+                  <Badge variant="outline" className="shrink-0 text-[10px]">
+                    {speakerProfilesQuery.data?.items.length ?? 0} profiles
+                  </Badge>
+                </div>
+                {speakerProfilesQuery.isLoading && <p className="px-1 text-[11px] text-slate-500">Loading local profiles…</p>}
+                {speakerProfilesQuery.isError && <p className="px-1 text-[11px] text-amber-700 dark:text-amber-300">Voice profiles could not be loaded.</p>}
+                {speakerProfilesQuery.data?.items.length === 0 && (
+                  <p className="rounded-lg border border-dashed border-slate-300 px-3 py-4 text-center text-[11px] text-slate-500 dark:border-slate-700">
+                    No voice profiles yet. Enable Voice Library for a meeting to create them locally.
+                  </p>
+                )}
+                {speakerProfilesQuery.data?.items.map((profile) => (
+                  <div key={profile.id} className="flex min-w-0 items-center gap-2 rounded-lg border border-slate-200/80 px-2.5 py-2 dark:border-slate-800">
+                    {editingSpeakerProfileId === profile.id ? (
+                      <Input
+                        autoFocus
+                        value={speakerProfileName}
+                        onChange={(event) => setSpeakerProfileName(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" && speakerProfileName.trim()) speakerProfileMutation.mutate({ action: "rename", id: profile.id, displayName: speakerProfileName });
+                          if (event.key === "Escape") setEditingSpeakerProfileId("");
+                        }}
+                        className="h-8 min-w-0 flex-1 text-xs"
+                        aria-label={`Name voice profile ${profile.displayName}`}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 rounded-md px-1 py-0.5 text-left transition-transform duration-150 active:scale-[0.98]"
+                        onClick={() => { setEditingSpeakerProfileId(profile.id); setSpeakerProfileName(profile.displayName); }}
+                        title="Rename voice profile"
+                      >
+                        <span className="block truncate text-xs font-semibold text-slate-950 dark:text-slate-100">{profile.displayName}</span>
+                        <span className="block text-[10.5px] text-slate-500">{profile.sampleCount} voice samples · {profile.isNamed ? "named" : "not named yet"}</span>
+                      </button>
+                    )}
+                    {editingSpeakerProfileId === profile.id && (
+                      <Button size="sm" className="h-8" disabled={!speakerProfileName.trim() || speakerProfileMutation.isPending} onClick={() => speakerProfileMutation.mutate({ action: "rename", id: profile.id, displayName: speakerProfileName })}>Save</Button>
+                    )}
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="h-8 w-8 shrink-0 text-slate-500 hover:text-destructive active:scale-[0.96]"
+                      disabled={speakerProfileMutation.isPending || voiceLibraryDeletePending}
+                      onClick={() => setSpeakerProfilePendingDelete({ id: profile.id, name: profile.displayName })}
+                      aria-label={`Delete voice profile ${profile.displayName}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </SettingsSubsection>
+
+            <SettingsSubsection
+              title="Outlook calendar"
+              description="Connect your Microsoft account for meeting titles, participants, join links, and addressed email drafts."
+              icon={CalendarClock}
+            >
+              <div className="space-y-3">
+                <div className="rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">
+                      {outlookQuery.data?.connected ? "Microsoft account connected" : outlookQuery.data?.configured ? "Ready to connect" : "App registration required"}
+                    </p>
+                    <Badge variant="outline" className="text-[10px]">
+                      {outlookQuery.data?.connected ? "Connected" : "Disconnected"}
+                    </Badge>
+                  </div>
+                  <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">
+                    {outlookQuery.data?.configured
+                      ? "Scriber requests read-only calendar access through Microsoft OAuth. Passwords and access tokens are never stored in the web frontend."
+                      : "This build has no Microsoft public-client ID. The release must include Scriber’s public Entra application ID before account connection can work."}
+                  </p>
+                  {outlookQuery.data?.lastSyncAt && <p className="mt-1.5 font-mono text-[10.5px] text-slate-500">Last sync · {formatUpdateTimestamp(outlookQuery.data.lastSyncAt)}</p>}
+                  {outlookQuery.data?.lastError && <p className="mt-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">Last sync failed: {outlookQuery.data.lastError}</p>}
+                </div>
+                {outlookQuery.data?.nextEvent && (
+                  <div className="rounded-lg border border-slate-200/80 px-3 py-2.5 dark:border-slate-800">
+                    <p className="truncate text-xs font-semibold text-slate-950 dark:text-slate-100">{outlookQuery.data.nextEvent.subject}</p>
+                    <p className="mt-1 text-[10.5px] text-slate-500">Next event · {formatUpdateTimestamp(outlookQuery.data.nextEvent.start_at)} · {outlookQuery.data.nextEvent.participants.length} participants</p>
+                  </div>
+                )}
+                <div className="flex flex-wrap justify-end gap-2">
+                  {outlookQuery.data?.connected ? <>
+                    <Button size="sm" variant="outline" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("sync")}><RefreshCw className="mr-1.5 h-3.5 w-3.5" />Sync now</Button>
+                    <Button size="sm" variant="ghost" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("disconnect")}>Disconnect</Button>
+                  </> : (
+                    <Button size="sm" disabled={!outlookQuery.data?.configured || outlookMutation.isPending} onClick={() => outlookMutation.mutate("connect")}>
+                      <ExternalLink className="mr-1.5 h-3.5 w-3.5" />Connect Outlook
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </SettingsSubsection>
           </div>
         </SectionPanel>
 
@@ -3555,6 +4132,50 @@ export default function Settings() {
           </div>
         </SectionPanel>
       </div>
+      <AlertDialog open={Boolean(speakerProfilePendingDelete)} onOpenChange={(open) => { if (!open) setSpeakerProfilePendingDelete(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this voice profile?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {speakerProfilePendingDelete?.name || "This speaker"} will no longer be recognized automatically in future meetings. Existing transcripts stay intact.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={speakerProfileMutation.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                if (speakerProfilePendingDelete) speakerProfileMutation.mutate({ action: "delete", id: speakerProfilePendingDelete.id });
+              }}
+            >
+              Delete voice profile
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={voiceLibraryDeleteOpen} onOpenChange={(open) => { if (!voiceLibraryDeletePending) setVoiceLibraryDeleteOpen(open); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete the entire Voice Library?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes every local biometric voice profile and the optional speaker model, then disables future collection. Existing meeting transcripts remain available.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={voiceLibraryDeletePending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={voiceLibraryDeletePending}
+              onClick={(event) => { event.preventDefault(); void handleDeleteVoiceprintLibrary(); }}
+            >
+              {voiceLibraryDeletePending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Delete entire library
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

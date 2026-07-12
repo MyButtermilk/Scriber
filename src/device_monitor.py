@@ -315,6 +315,7 @@ class DeviceMonitor:
         self._last_poll_refresh_at = 0.0
         self._last_event_refresh_at = 0.0
         self._last_devices_changed_at = 0.0
+        self._last_devices_changed_reason = ""
         self._last_native_hint_at = 0.0
         self._last_native_hint: dict[str, object] | None = None
 
@@ -348,6 +349,10 @@ class DeviceMonitor:
             return
         with self._state_lock:
             self._callbacks.append(callback)
+
+    def last_devices_changed_reason(self) -> str:
+        with self._state_lock:
+            return self._last_devices_changed_reason
 
     def on_portaudio_refresh_quiesce(
         self,
@@ -688,6 +693,7 @@ class DeviceMonitor:
         if changed:
             with self._state_lock:
                 self._last_devices_changed_at = now
+                self._last_devices_changed_reason = trigger
             logger.info(f"[DeviceMonitor] microphone list updated via {trigger}")
             self._notify_callbacks(devices)
         if refresh_portaudio:

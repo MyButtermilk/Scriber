@@ -29,9 +29,10 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     assert result.returncode == 0, result.stderr
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["ok"] is True
-    assert payload["summary"]["routeCount"] == 9
+    assert payload["summary"]["routeCount"] == 10
+    assert "/meetings" in payload["summary"]["routes"]
     assert payload["summary"]["criticalConsoleErrorCount"] == 0
-    assert payload["summary"]["interactionCheckCount"] == 18
+    assert payload["summary"]["interactionCheckCount"] == 19
     assert set(payload["summary"]["interactionChecks"]) == {
         "history-search-copy-navigation",
         "youtube-history-actions",
@@ -40,6 +41,7 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
         "file-history-actions",
         "file-upload-error",
         "file-drag-drop",
+        "meeting-end-to-end",
         "debug-console-actions",
         "settings-persistence",
         "settings-desktop-controls",
@@ -81,13 +83,15 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
         {"name": "file-upload-error", "ok": True},
         {"name": "file-drag-drop", "ok": True},
     ]
+    meetings = next(item for item in payload["scenarios"] if item["route"] == "/meetings")
+    assert meetings["interactionChecks"] == [{"name": "meeting-end-to-end", "ok": True}]
     assert payload["commandPaletteCheck"]["name"] == "command-palette"
     assert payload["transcriptDetailActionsCheck"]["name"] == "transcript-detail-actions"
     assert payload["transcriptCancelCheck"]["name"] == "transcript-cancel-action"
     assert payload["rapidThemeChangeCheck"]["name"] == "rapid-theme-change"
     assert payload["mobileNavigationCheck"]["name"] == "mobile-navigation"
     assert payload["mobileRouteLayoutsCheck"]["name"] == "mobile-route-layouts"
-    assert payload["mobileRouteLayoutsCheck"]["routeCount"] == 9
+    assert payload["mobileRouteLayoutsCheck"]["routeCount"] == 10
     assert payload["tokenRequiredCheck"]["name"] == "token-required-browser-state"
 
 
@@ -112,16 +116,18 @@ def test_frontend_browser_smoke_validate_only_can_include_fast_tab_switch(tmp_pa
     assert result.returncode == 0, result.stderr
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["ok"] is True
-    assert payload["summary"]["interactionCheckCount"] == 19
+    assert payload["summary"]["interactionCheckCount"] == 20
     assert "fast-tab-switch" in payload["summary"]["interactionChecks"]
     assert payload["fastTabSwitchCheck"]["name"] == "fast-tab-switch"
     assert payload["fastTabSwitchCheck"]["ok"] is True
     assert payload["fastTabSwitchCheck"]["routes"] == [
         "/youtube",
         "/file",
+        "/meetings",
         "/settings",
         "/",
         "/youtube",
+        "/meetings",
         "/file",
         "/",
     ]
@@ -170,6 +176,47 @@ def test_frontend_browser_smoke_exercises_fast_tab_switch() -> None:
     assert "\"fast-tab-switch\"" in script
 
 
+def test_frontend_browser_smoke_exercises_meeting_end_to_end() -> None:
+    script = (REPO_ROOT / "scripts" / "smoke_frontend_browser.py").read_text(encoding="utf-8")
+    pointer_helper_start = script.index("async def click_visible_target")
+    pointer_helper_end = script.index("\n\nasync def click_visible_button", pointer_helper_start)
+    pointer_helper = script[pointer_helper_start:pointer_helper_end]
+    meeting_flow_start = script.index("async def exercise_meeting_end_to_end")
+    meeting_flow_end = script.index("\n\nasync def ", meeting_flow_start + 1)
+    meeting_flow = script[meeting_flow_start:meeting_flow_end]
+
+    assert "exercise_meeting_end_to_end" in script
+    assert '"meeting-end-to-end"' in script
+    assert '"dark-boot-shell"' in script
+    assert 'window.localStorage.setItem("scriber-theme", "dark")' in script
+    assert '"*/src/main.tsx*"' in script
+    assert 'expected_requests = ["dismiss-detection", "device-test", "start", "resume", "pause", "resume", "stop", "analyze", "action-item", "segment-edit", "segment-undo", "speaker", "note", "chat", "webhook", "delete"]' in script
+    assert '"transcriptCorrection": transcript_correction' in script
+    assert '"transcriptUndo": transcript_undo' in script
+    assert "Export meeting as" in script
+    assert "microphoneNativeEndpointIdHash" in script
+    assert "renderNativeEndpointIdHash" in script
+    assert "broadcast_meeting_reconnect_cycle" in script
+    assert "meeting-live-reconnecting" in script
+    assert "meeting-live-recovered" in script
+    assert "meeting-backend-restart-interrupted" in script
+    assert 'backend.meeting["state"] = "interrupted"' in script
+    assert 'await click_button("Resume capture")' in script
+    assert '"backendCrashRecovery"' in script
+    assert "meeting-device-test" in script
+    assert "meeting-start-device-test" in script
+    assert "meeting-start-readiness" in script
+    assert "meeting-live-recovered" in script
+    assert "meeting-overview-analysis" in script
+    assert "document.elementFromPoint" in pointer_helper
+    assert "scrollIntoView" in pointer_helper
+    assert "await click_page_coordinates" in pointer_helper
+    assert "target center is covered by another element" in pointer_helper
+    assert '"DOM.setFileInputFiles"' in script
+    assert meeting_flow.count("await click_visible_button(") + meeting_flow.count("await click_visible_target(") >= 10
+    assert ".click();" not in meeting_flow
+
+
 def test_frontend_browser_smoke_exercises_command_palette() -> None:
     script = (REPO_ROOT / "scripts" / "smoke_frontend_browser.py").read_text(encoding="utf-8")
 
@@ -202,7 +249,8 @@ def test_frontend_browser_smoke_exercises_youtube_history_actions() -> None:
     script = (REPO_ROOT / "scripts" / "smoke_frontend_browser.py").read_text(encoding="utf-8")
 
     assert "exercise_youtube_history_interactions" in script
-    assert "Search history" in script
+    assert "Search YouTube transcript history" in script
+    assert "#youtube-source-search" in script
     assert "Copy transcript Synthetic Video 00002" in script
     assert "Delete transcript Synthetic Video 00002" in script
     assert "\"youtube-history-actions\"" in script

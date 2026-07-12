@@ -19,10 +19,23 @@
   <meta name="twitter:image" content="https://replit.com/public/images/opengraph.png" />
 
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="/boot.css" />
+  <script src="/boot-theme.js"></script>
 </head>
 
 <body>
-  <div id="root"></div>
+  <div id="root">
+    <div class="boot-shell" role="status" aria-label="Scriber is starting">
+      <div class="boot-brand">
+        <span class="boot-mark" aria-hidden="true">
+          <img class="boot-logo boot-logo-light" src="/favicon.svg" alt="" />
+          <img class="boot-logo boot-logo-dark" src="/favicon-dark.svg" alt="" />
+        </span>
+        <span class="boot-wordmark">Scriber</span>
+      </div>
+      <span class="boot-progress" aria-hidden="true"><span></span></span>
+    </div>
+  </div>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 

@@ -4,8 +4,8 @@
   "version": "../package.json",
   "identifier": "app.scriber.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev:client",
-    "beforeBundleCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build_tauri_backend_sidecar.ps1 -SkipFrontendBuild -InstallPyInstaller -BundleMediaTools -UseProfileBFfmpeg -ValidateSlimMediaTools -ReuseSidecarIfUnchanged -BundleRustAudioSidecar -CopyToTauriRelease",
+    "beforeDevCommand": "npm run dev:tauri",
+    "beforeBundleCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build_tauri_backend_sidecar.ps1 -SkipFrontendBuild -InstallPyInstaller -BundleMediaTools -UseProfileBFfmpeg -ValidateSlimMediaTools -ReuseSidecarIfUnchanged -BundleRustAudioSidecar -BundleRustDiarizationSidecar -CopyToTauriRelease",
     "beforeBuildCommand": "npm run build:webview",
     "devUrl": "http://localhost:5000",
     "frontendDist": "../dist/public"
@@ -19,12 +19,14 @@
         "minWidth": 960,
         "minHeight": 640,
         "resizable": true,
+        "visible": false,
+        "backgroundColor": "#202225",
         "decorations": false,
         "dragDropEnabled": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:* http://localhost:*; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*; media-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:* http://localhost:*; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*; media-src 'self' data: blob: http://127.0.0.1:* http://localhost:*; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     }
   },
   "bundle": {
@@ -36,7 +38,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "target/release/backend/": "backend/"
+      "target/release/backend/": "backend/",
+      "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     },
     "windows": {
       "nsis": {

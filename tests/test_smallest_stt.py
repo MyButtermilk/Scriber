@@ -31,3 +31,10 @@ def test_format_smallest_utterances_without_speakers():
     assert format_smallest_utterances_to_scriber_text([{"text": "Hello"}, {"transcript": "world"}]) == (
         "Hello\n\nworld"
     )
+
+
+def test_format_smallest_utterances_preserves_numeric_speaker_zero():
+    assert format_smallest_utterances_to_scriber_text([
+        {"speaker": 0, "text": "First"},
+        {"speaker": 1, "text": "Second"},
+    ]) == "[Speaker 1]: First\n\n[Speaker 2]: Second"

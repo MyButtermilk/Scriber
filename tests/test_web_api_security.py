@@ -1163,3 +1163,23 @@ def test_validate_summarization_model_rejects_invalid_prefix():
 def test_validate_summarization_model_rejects_invalid_chars():
     with pytest.raises(ValueError):
         web_api._validate_summarization_model("gpt-5-mini;rm")
+
+
+def test_file_transcript_public_payload_never_exposes_owned_local_path(tmp_path):
+    source = tmp_path / "private" / "meeting.wav"
+    record = web_api.TranscriptRecord(
+        id="private-file",
+        title="meeting.wav",
+        date="Today",
+        duration="00:01",
+        status="processing",
+        type="file",
+        language="auto",
+        source_url=str(source),
+    )
+
+    payload = record.to_public(include_content=True)
+
+    assert record.source_url == str(source)
+    assert payload["sourceUrl"] == ""
+    assert str(tmp_path) not in str(payload)

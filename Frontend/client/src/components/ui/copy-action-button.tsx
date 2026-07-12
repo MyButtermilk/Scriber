@@ -31,6 +31,7 @@ export function CopyActionButton({
       type="button"
       className={cn("copy-pill", size === "sm" && "copy-pill--sm", copied && "is-copied", className)}
       onClick={onClick}
+      onKeyDown={(event) => event.stopPropagation()}
       disabled={disabled}
       data-label={hoverLabel}
       aria-label={ariaLabel}

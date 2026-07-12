@@ -4,7 +4,7 @@ import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { responseErrorMessage } from "@/lib/request-errors";
 
-export type TranscriptHistoryType = "mic" | "file" | "youtube";
+export type TranscriptHistoryType = "mic" | "file" | "youtube" | "meeting";
 
 export interface TranscriptHistoryPage<TItem> {
   items: TItem[];

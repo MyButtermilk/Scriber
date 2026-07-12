@@ -9,6 +9,7 @@ interface PageIntroProps {
   accentClassName?: string;
   titleAccessory?: ReactNode;
   bottomContent?: ReactNode;
+  sticky?: boolean;
   className?: string;
 }
 
@@ -19,12 +20,14 @@ export function PageIntro({
   accentClassName = "bg-primary/60",
   titleAccessory,
   bottomContent,
+  sticky = true,
   className,
 }: PageIntroProps) {
   return (
     <header
       className={cn(
-        "transcription-intro sticky top-0 z-20 -mx-4 -mt-5 mb-6 border-b border-slate-200/80 bg-card/95 px-4 pt-5 text-left backdrop-blur-xl dark:border-white/[0.065] md:-mx-6 md:-mt-6 md:px-6 md:pt-6",
+        "transcription-intro -mx-4 -mt-5 mb-6 border-b border-slate-200/80 bg-card/95 px-4 pt-5 text-left backdrop-blur-xl dark:border-white/[0.065] md:-mx-6 md:-mt-6 md:px-6 md:pt-6",
+        sticky ? "sticky top-0 z-20" : "relative z-0",
         bottomContent ? "pb-0" : "pb-4",
         className,
       )}
@@ -35,13 +38,13 @@ export function PageIntro({
       </div>
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h1 className="font-heading text-[36px] font-semibold leading-[0.96] tracking-[-0.045em] text-foreground md:text-[42px]">
+        <h1 className="text-balance font-heading text-[36px] font-semibold leading-[0.96] tracking-[-0.045em] text-foreground md:text-[42px]">
           {title}
         </h1>
         {titleAccessory ? <div className="shrink-0">{titleAccessory}</div> : null}
       </div>
 
-      <p className="mt-3 w-full text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">
+      <p className="mt-3 max-w-[65ch] text-pretty text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">
         {description}
       </p>
 

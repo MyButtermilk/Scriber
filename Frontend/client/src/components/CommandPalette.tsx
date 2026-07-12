@@ -19,6 +19,7 @@ import {
   FolderOpen,
   Home,
   Terminal,
+  CalendarClock,
 } from "lucide-react";
 import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
@@ -210,6 +211,10 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           <CommandItem onSelect={() => navigate("/file")}>
             <FolderOpen className="mr-2 h-4 w-4" />
             <span>Datei-Upload</span>
+          </CommandItem>
+          <CommandItem onSelect={() => navigate("/meetings")}>
+            <CalendarClock className="mr-2 h-4 w-4" />
+            <span>Meetings</span>
           </CommandItem>
           <CommandItem onSelect={() => navigate("/debug")}>
             <Terminal className="mr-2 h-4 w-4" />

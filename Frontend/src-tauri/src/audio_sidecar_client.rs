@@ -82,7 +82,11 @@ pub fn audio_sidecar_executable_available() -> bool {
 pub fn call_audio_sidecar_command(command: &str, payload: Value) -> AudioSidecarCallResult {
     match command {
         "captureStart" => return start_audio_sidecar_capture(payload),
+        "captureStatus" => return status_audio_sidecar_capture(payload),
         "captureStop" => return stop_audio_sidecar_capture(payload),
+        "meetingCaptureStart" => return start_audio_sidecar_meeting_capture(payload),
+        "meetingCaptureStatus" => return status_audio_sidecar_meeting_capture(payload),
+        "meetingCaptureStop" => return stop_audio_sidecar_meeting_capture(payload),
         "prewarmStart" => return start_audio_sidecar_prewarm(payload),
         "prewarmStatus" => return status_audio_sidecar_prewarm(payload),
         "prewarmStop" => return stop_audio_sidecar_prewarm(payload),
@@ -111,6 +115,9 @@ pub fn shutdown_all_audio_sidecars(reason: &str) -> usize {
     let mut prewarm_sessions = lock_active_audio_prewarm_sidecars();
     let prewarm_entries: Vec<(String, ActiveAudioSidecar)> = prewarm_sessions.drain().collect();
     drop(prewarm_sessions);
+    let mut meeting_sessions = lock_active_audio_meeting_sidecars();
+    let meeting_entries: Vec<(String, ActiveAudioSidecar)> = meeting_sessions.drain().collect();
+    drop(meeting_sessions);
 
     let mut stopped = 0usize;
     for (stream_id, mut sidecar) in entries {
@@ -119,6 +126,10 @@ pub fn shutdown_all_audio_sidecars(reason: &str) -> usize {
     }
     for (prewarm_id, mut sidecar) in prewarm_entries {
         stop_prewarm_sidecar_process(&prewarm_id, &mut sidecar, reason);
+        stopped = stopped.saturating_add(1);
+    }
+    for (meeting_capture_id, mut sidecar) in meeting_entries {
+        stop_meeting_sidecar_process(&meeting_capture_id, &mut sidecar, reason);
         stopped = stopped.saturating_add(1);
     }
     stopped
@@ -140,6 +151,12 @@ fn active_audio_prewarm_sidecars() -> &'static Mutex<HashMap<String, ActiveAudio
     ACTIVE_AUDIO_PREWARM_SIDECARS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn active_audio_meeting_sidecars() -> &'static Mutex<HashMap<String, ActiveAudioSidecar>> {
+    static ACTIVE_AUDIO_MEETING_SIDECARS: OnceLock<Mutex<HashMap<String, ActiveAudioSidecar>>> =
+        OnceLock::new();
+    ACTIVE_AUDIO_MEETING_SIDECARS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn lock_active_audio_sidecars() -> MutexGuard<'static, HashMap<String, ActiveAudioSidecar>> {
     active_audio_sidecars()
         .lock()
@@ -149,6 +166,13 @@ fn lock_active_audio_sidecars() -> MutexGuard<'static, HashMap<String, ActiveAud
 fn lock_active_audio_prewarm_sidecars() -> MutexGuard<'static, HashMap<String, ActiveAudioSidecar>>
 {
     active_audio_prewarm_sidecars()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn lock_active_audio_meeting_sidecars() -> MutexGuard<'static, HashMap<String, ActiveAudioSidecar>>
+{
+    active_audio_meeting_sidecars()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -270,9 +294,10 @@ fn start_audio_sidecar_capture_with_sidecar(
 
     let replaced = {
         let mut sessions = lock_active_audio_sidecars();
-        let replaced: Vec<(String, ActiveAudioSidecar)> = sessions.drain().collect();
-        sessions.insert(stream_id.clone(), sidecar);
-        replaced
+        sessions
+            .insert(stream_id.clone(), sidecar)
+            .map(|old| vec![(stream_id.clone(), old)])
+            .unwrap_or_default()
     };
     for (old_stream_id, mut old_sidecar) in replaced {
         let reason = if old_stream_id == stream_id {
@@ -281,6 +306,165 @@ fn start_audio_sidecar_capture_with_sidecar(
             "captureStartReplacedActiveCapture"
         };
         stop_sidecar_process(&old_stream_id, &mut old_sidecar, reason);
+    }
+    response
+}
+
+fn start_audio_sidecar_meeting_capture(payload: Value) -> AudioSidecarCallResult {
+    let Some(program) = find_audio_sidecar_executable() else {
+        return unavailable_result(
+            "meetingCaptureUnavailable",
+            "Rust audio sidecar executable was not found",
+            json!({"sidecar": AUDIO_SIDECAR_NAME, "sidecarExecutableAvailable": false}),
+            None,
+            None,
+        );
+    };
+    let path_hash = Some(hash_sensitive_identifier(&program.display().to_string()));
+    let mut sidecar = match spawn_audio_sidecar_process(&program, path_hash.clone()) {
+        Ok(sidecar) => sidecar,
+        Err(result) => return result,
+    };
+    let request_id = Uuid::new_v4().simple().to_string();
+    let request = sidecar_request(&request_id, "meetingCaptureStart", payload);
+    if let Err(error) = write_sidecar_json_line(&mut sidecar.stdin, &request) {
+        let _ = sidecar.child.kill();
+        let _ = sidecar.child.wait();
+        return unavailable_result(
+            "audioSidecarWriteFailed",
+            error,
+            json!({"sidecar": AUDIO_SIDECAR_NAME, "meetingCaptureAvailable": false}),
+            path_hash,
+            Some(sidecar.pid),
+        );
+    }
+    let response = match read_sidecar_response_line(&sidecar.response_rx) {
+        Ok(line) => {
+            parse_sidecar_response(&line, &request_id, path_hash.clone(), Some(sidecar.pid))
+        }
+        Err(result) => {
+            let _ = sidecar.child.kill();
+            let _ = sidecar.child.wait();
+            return with_process_identity(result, path_hash, Some(sidecar.pid));
+        }
+    };
+    if !response.success {
+        stop_meeting_sidecar_process("", &mut sidecar, "meetingCaptureStartFailed");
+        return response;
+    }
+    let meeting_capture_id = response
+        .payload
+        .get("meetingCaptureId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if meeting_capture_id.is_empty() {
+        stop_meeting_sidecar_process("", &mut sidecar, "missingMeetingCaptureId");
+        return unavailable_result(
+            "audioSidecarMissingMeetingCaptureId",
+            "Rust audio sidecar meetingCaptureStart succeeded without meetingCaptureId",
+            response.payload,
+            path_hash,
+            Some(sidecar.pid),
+        );
+    }
+    let replaced = {
+        let mut sessions = lock_active_audio_meeting_sidecars();
+        let replaced: Vec<(String, ActiveAudioSidecar)> = sessions.drain().collect();
+        sessions.insert(meeting_capture_id.clone(), sidecar);
+        replaced
+    };
+    for (old_id, mut old_sidecar) in replaced {
+        stop_meeting_sidecar_process(&old_id, &mut old_sidecar, "meetingCaptureReplaced");
+    }
+    response
+}
+
+fn meeting_capture_id(payload: &Value) -> String {
+    payload
+        .get("meetingCaptureId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(96)
+        .collect()
+}
+
+fn status_audio_sidecar_meeting_capture(payload: Value) -> AudioSidecarCallResult {
+    call_active_meeting_sidecar("meetingCaptureStatus", payload, false)
+}
+
+fn stop_audio_sidecar_meeting_capture(payload: Value) -> AudioSidecarCallResult {
+    call_active_meeting_sidecar("meetingCaptureStop", payload, true)
+}
+
+fn call_active_meeting_sidecar(
+    command: &str,
+    payload: Value,
+    remove: bool,
+) -> AudioSidecarCallResult {
+    let id = meeting_capture_id(&payload);
+    if id.is_empty() {
+        return AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({"active": false, "meetingCaptureId": "", "reason": "missingMeetingCaptureId"}),
+            executable_available: audio_sidecar_executable_available(),
+            executable_path_hash: None,
+            pid: None,
+        };
+    }
+    let mut sessions = lock_active_audio_meeting_sidecars();
+    if !sessions.contains_key(&id) {
+        return AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({"active": false, "meetingCaptureId": id, "reason": "noActiveMeetingCapture"}),
+            executable_available: audio_sidecar_executable_available(),
+            executable_path_hash: None,
+            pid: None,
+        };
+    }
+    let request_id = Uuid::new_v4().simple().to_string();
+    let request = sidecar_request(&request_id, command, json!({"meetingCaptureId": id}));
+    let response = {
+        let sidecar = sessions.get_mut(&id).unwrap();
+        let path_hash = sidecar.path_hash.clone();
+        let pid = Some(sidecar.pid);
+        if let Err(error) = write_sidecar_json_line(&mut sidecar.stdin, &request) {
+            unavailable_result(
+                "audioSidecarWriteFailed",
+                error,
+                json!({"active": false, "meetingCaptureId": id}),
+                path_hash,
+                pid,
+            )
+        } else {
+            match read_sidecar_response_line_with_timeout(
+                &sidecar.response_rx,
+                if remove {
+                    SIDECAR_RESPONSE_TIMEOUT
+                } else {
+                    SIDECAR_STATUS_RESPONSE_TIMEOUT
+                },
+            ) {
+                Ok(line) => parse_sidecar_response(&line, &request_id, path_hash, pid),
+                Err(result) => result,
+            }
+        }
+    };
+    // A meeting status check is observational. Even when the relay has
+    // finished, keep the process registered until meetingCaptureStop can join
+    // its workers and return the redacted relay/writer diagnostics.
+    if remove || !response.success {
+        if let Some(mut sidecar) = sessions.remove(&id) {
+            let _ = write_sidecar_json_line(&mut sidecar.stdin, &shutdown_request());
+            let _ = wait_for_sidecar_exit_or_kill(&mut sidecar.child, SIDECAR_SHUTDOWN_TIMEOUT);
+        }
     }
     response
 }
@@ -478,6 +662,99 @@ fn stop_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
         object.insert("sidecarPathHash".to_string(), json!(path_hash));
     }
     result
+}
+
+fn status_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
+    let stream_id = payload
+        .get("streamId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(96)
+        .collect::<String>();
+    if stream_id.is_empty() {
+        return AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({"active": false, "streamId": "", "reason": "missingStreamId"}),
+            executable_available: audio_sidecar_executable_available(),
+            executable_path_hash: None,
+            pid: None,
+        };
+    }
+
+    let mut sessions = lock_active_audio_sidecars();
+    let Some(sidecar) = sessions.get_mut(&stream_id) else {
+        return AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({"active": false, "streamId": stream_id, "reason": "noActiveCapture"}),
+            executable_available: audio_sidecar_executable_available(),
+            executable_path_hash: None,
+            pid: None,
+        };
+    };
+    let path_hash = sidecar.path_hash.clone();
+    let pid = Some(sidecar.pid);
+    match sidecar.child.try_wait() {
+        Ok(Some(status)) => {
+            let _ = sessions.remove(&stream_id);
+            return AudioSidecarCallResult {
+                success: true,
+                error_code: None,
+                fallback_reason: None,
+                payload: json!({
+                    "active": false,
+                    "streamId": stream_id,
+                    "reason": "captureProcessExited",
+                    "exitStatus": status.code(),
+                }),
+                executable_available: true,
+                executable_path_hash: path_hash,
+                pid,
+            };
+        }
+        Err(err) => {
+            return unavailable_result(
+                "audioSidecarStatusFailed",
+                format!("Rust audio capture status check failed: {err}"),
+                json!({"active": false, "streamId": stream_id, "reason": "captureStatusFailed"}),
+                path_hash,
+                pid,
+            );
+        }
+        Ok(None) => {}
+    }
+
+    let request_id = Uuid::new_v4().simple().to_string();
+    let request = sidecar_request(&request_id, "captureStatus", json!({"streamId": stream_id}));
+    if let Err(err) = write_sidecar_json_line(&mut sidecar.stdin, &request) {
+        let _ = sidecar.child.kill();
+        let _ = sidecar.child.wait();
+        let _ = sessions.remove(&stream_id);
+        return unavailable_result(
+            "audioSidecarWriteFailed",
+            err,
+            json!({"active": false, "streamId": stream_id, "reason": "captureStatusWriteFailed"}),
+            path_hash,
+            pid,
+        );
+    }
+    match read_sidecar_response_line_with_timeout(
+        &sidecar.response_rx,
+        SIDECAR_STATUS_RESPONSE_TIMEOUT,
+    ) {
+        Ok(line) => parse_sidecar_response(&line, &request_id, path_hash, pid),
+        Err(result) => {
+            let _ = sidecar.child.kill();
+            let _ = sidecar.child.wait();
+            let _ = sessions.remove(&stream_id);
+            with_process_identity(result, path_hash, pid)
+        }
+    }
 }
 
 fn stop_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
@@ -979,6 +1256,20 @@ fn stop_sidecar_process(stream_id: &str, sidecar: &mut ActiveAudioSidecar, reaso
 
 fn stop_prewarm_sidecar_process(prewarm_id: &str, sidecar: &mut ActiveAudioSidecar, reason: &str) {
     stop_sidecar_process_with_command(prewarm_id, "prewarmId", "prewarmStop", sidecar, reason);
+}
+
+fn stop_meeting_sidecar_process(
+    meeting_capture_id: &str,
+    sidecar: &mut ActiveAudioSidecar,
+    reason: &str,
+) {
+    stop_sidecar_process_with_command(
+        meeting_capture_id,
+        "meetingCaptureId",
+        "meetingCaptureStop",
+        sidecar,
+        reason,
+    );
 }
 
 fn stop_sidecar_process_with_command(

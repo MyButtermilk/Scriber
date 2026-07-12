@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 PROFILE_REQUIREMENTS: dict[str, dict[str, set[str]]] = {
     "A": {
-        "encoders": {"libopus", "libmp3lame", "pcm_s16le"},
+        "encoders": {"flac", "libopus", "libmp3lame", "pcm_s16le"},
         "decoders": {
             "aac",
             "alac",
@@ -33,12 +33,12 @@ PROFILE_REQUIREMENTS: dict[str, dict[str, set[str]]] = {
             "vorbis",
         },
         "demuxers": {"flac", "matroska", "mov", "mp3", "ogg", "s16le", "wav"},
-        "muxers": {"mp3", "s16le", "webm"},
-        "filters": {"aformat", "anull", "aresample", "pan"},
+        "muxers": {"flac", "matroska", "mp3", "ogg", "s16le", "webm"},
+        "filters": {"adelay", "aformat", "amix", "anull", "aresample", "pan"},
         "protocols": {"file", "pipe"},
     },
     "B": {
-        "encoders": {"libopus", "libmp3lame", "pcm_s16le"},
+        "encoders": {"flac", "libopus", "libmp3lame", "pcm_s16le"},
         "decoders": {
             "aac",
             "alac",
@@ -53,8 +53,8 @@ PROFILE_REQUIREMENTS: dict[str, dict[str, set[str]]] = {
             "vorbis",
         },
         "demuxers": {"flac", "matroska", "mov", "mp3", "ogg", "s16le", "wav"},
-        "muxers": {"mp3", "s16le", "webm"},
-        "filters": {"aformat", "anull", "aresample", "pan"},
+        "muxers": {"flac", "matroska", "mp3", "ogg", "s16le", "webm"},
+        "filters": {"adelay", "aformat", "amix", "anull", "aresample", "pan"},
         "protocols": {"file", "pipe"},
     },
 }

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from scripts.validate_hybrid_release_readiness import (
     REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS,
+    validate_meeting_release_matrix,
     validate_release_readiness,
 )
 from scripts.validate_tauri_updater_metadata import sha256_file
@@ -15,6 +16,19 @@ from scripts.validate_tauri_updater_metadata import sha256_file
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATE_SCRIPT = REPO_ROOT / "scripts" / "validate_hybrid_release_readiness.py"
+
+
+def test_required_meeting_release_matrix_stays_red_without_real_evidence(tmp_path: Path) -> None:
+    check = validate_meeting_release_matrix(
+        tmp_path,
+        required=True,
+        expected_app_version="0.4.35",
+    )
+
+    assert check.name == "meetingReleaseMatrix"
+    assert check.ok is False
+    assert check.details["reportCount"] == 0
+    assert any("no evidence reports" in failure for failure in check.failures)
 
 
 SCENARIO_FIXTURES = {

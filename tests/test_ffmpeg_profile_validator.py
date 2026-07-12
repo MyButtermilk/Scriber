@@ -47,6 +47,7 @@ def test_validate_requirements_accepts_profile_b_audio_set() -> None:
     assert "s16le" in requirements["demuxers"]
     assert "s16le" in requirements["muxers"]
     assert "pipe" in requirements["protocols"]
+    assert "adelay" in requirements["filters"]
 
 
 def test_validate_requirements_reports_missing_encoder_and_network_warning() -> None:

@@ -22,6 +22,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.runtime.ffmpeg_commands import (  # noqa: E402
     ffprobe_duration_args,
+    lossless_flac_track_args,
+    meeting_lossless_archive_args,
+    meeting_multitrack_flac_args,
+    meeting_opus_playback_args,
     mp3_encode_pcm_pipe_args,
     mp3_transcode_args,
     pcm_pipe_decode_args,
@@ -273,6 +277,104 @@ def check_transcode_to_mp3(candidate_ffmpeg: Path, source: Path, target: Path, t
     return {"input": file_info(source), "output": file_info(target)}
 
 
+def check_meeting_multitrack_flac(
+    candidate_ffmpeg: Path,
+    source: Path,
+    target: Path,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    run_command(
+        meeting_multitrack_flac_args(
+            str(candidate_ffmpeg),
+            source,
+            source,
+            target,
+            microphone_raw_path=source,
+        ),
+        timeout_sec=timeout_sec,
+    )
+    assert_media_file(target)
+    return {"input": file_info(source), "output": file_info(target), "trackCount": 3}
+
+
+def check_meeting_lossless_work_track(
+    candidate_ffmpeg: Path,
+    source: Path,
+    work_track: Path,
+    archive: Path,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    run_command(
+        lossless_flac_track_args(str(candidate_ffmpeg), source, work_track),
+        timeout_sec=timeout_sec,
+    )
+    assert_media_file(work_track)
+    run_command(
+        meeting_lossless_archive_args(
+            str(candidate_ffmpeg),
+            [(work_track, "System audio")],
+            archive,
+            stream_copy=True,
+        ),
+        timeout_sec=timeout_sec,
+    )
+    assert_media_file(archive)
+    return {
+        "input": file_info(source),
+        "workTrack": file_info(work_track),
+        "output": file_info(archive),
+        "streamCopy": True,
+    }
+
+
+def check_meeting_playback_mix(
+    candidate_ffmpeg: Path,
+    source: Path,
+    target: Path,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    run_command(
+        meeting_opus_playback_args(
+            str(candidate_ffmpeg),
+            [source, source],
+            target,
+            timeline_origins_ms=[0, 120],
+        ),
+        timeout_sec=timeout_sec,
+    )
+    assert_media_file(target)
+    return {
+        "input": file_info(source),
+        "output": file_info(target),
+        "timelineOriginsMs": [0, 120],
+    }
+
+
+def check_meeting_playback_track(
+    candidate_ffmpeg: Path,
+    source: Path,
+    target: Path,
+    timeout_sec: float,
+    *,
+    timeline_origin_ms: int,
+) -> dict[str, Any]:
+    run_command(
+        meeting_opus_playback_args(
+            str(candidate_ffmpeg),
+            [source],
+            target,
+            timeline_origins_ms=[timeline_origin_ms],
+        ),
+        timeout_sec=timeout_sec,
+    )
+    assert_media_file(target)
+    return {
+        "input": file_info(source),
+        "output": file_info(target),
+        "timelineOriginsMs": [timeline_origin_ms],
+    }
+
+
 def check_pcm_pipe_to_mp3(candidate_ffmpeg: Path, timeout_sec: float) -> dict[str, Any]:
     input_bytes = sine_pcm_s16le_bytes(duration_sec=1.0)
     completed = run_command(
@@ -443,7 +545,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         failures.append("candidate ffmpeg was not found")
     if args.require_ffprobe and not candidate_ffprobe:
         failures.append("candidate ffprobe was not found")
-    if not generator_ffmpeg:
+    if not args.meeting_only and not generator_ffmpeg:
         failures.append("fixture generator ffmpeg was not found")
     if failures:
         return {
@@ -456,6 +558,56 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     assert candidate_ffmpeg is not None
+    if args.meeting_only:
+        temp_context: tempfile.TemporaryDirectory[str] | None = None
+        if args.work_dir:
+            work_dir = args.work_dir.expanduser().resolve()
+            work_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            temp_context = tempfile.TemporaryDirectory(prefix="scriber-ffmpeg-meeting-")
+            work_dir = Path(temp_context.name)
+        checks: list[dict[str, Any]] = []
+        started = time.perf_counter()
+        try:
+            source = work_dir / "meeting-source.wav"
+            write_sine_wav(source, duration_sec=args.duration_sec)
+            run_check(checks, "meeting_multitrack_flac", lambda: check_meeting_multitrack_flac(
+                candidate_ffmpeg, source, work_dir / "meeting-tracks.mka", args.timeout_sec
+            ))
+            run_check(checks, "meeting_lossless_work_track", lambda: check_meeting_lossless_work_track(
+                candidate_ffmpeg, source, work_dir / "system.work.flac",
+                work_dir / "meeting-work-track.mka", args.timeout_sec
+            ))
+            run_check(checks, "meeting_playback_mix", lambda: check_meeting_playback_mix(
+                candidate_ffmpeg, source, work_dir / "meeting-playback.opus", args.timeout_sec
+            ))
+            run_check(checks, "meeting_playback_microphone", lambda: check_meeting_playback_track(
+                candidate_ffmpeg, source, work_dir / "microphone.opus", args.timeout_sec,
+                timeline_origin_ms=120,
+            ))
+            run_check(checks, "meeting_playback_system", lambda: check_meeting_playback_track(
+                candidate_ffmpeg, source, work_dir / "system.opus", args.timeout_sec,
+                timeline_origin_ms=240,
+            ))
+            return {
+                "apiVersion": "1", "ok": all(check["ok"] for check in checks),
+                "generatedAt": utc_now(), "profile": "B", "mode": "meeting-only",
+                "durationMs": round((time.perf_counter() - started) * 1000.0, 3),
+                "mediaTools": {
+                    "candidateFfmpeg": str(candidate_ffmpeg),
+                    "candidateFfprobe": str(candidate_ffprobe) if candidate_ffprobe else None,
+                },
+                "summary": {
+                    "totalChecks": len(checks),
+                    "passedChecks": sum(1 for check in checks if check["ok"]),
+                    "failedChecks": sum(1 for check in checks if not check["ok"]),
+                },
+                "checks": checks,
+                "failures": [check["error"] for check in checks if not check["ok"]],
+            }
+        finally:
+            if temp_context is not None:
+                temp_context.cleanup()
     assert generator_ffmpeg is not None
 
     temp_context: tempfile.TemporaryDirectory[str] | None = None
@@ -533,6 +685,37 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         )
         run_check(
             checks,
+            "meeting_multitrack_flac",
+            lambda: check_meeting_multitrack_flac(
+                candidate_ffmpeg,
+                fixtures["wav_pcm_s16"],
+                work_dir / "meeting-tracks.mka",
+                args.timeout_sec,
+            ),
+        )
+        run_check(
+            checks,
+            "meeting_lossless_work_track",
+            lambda: check_meeting_lossless_work_track(
+                candidate_ffmpeg,
+                fixtures["wav_pcm_s16"],
+                work_dir / "system.work.flac",
+                work_dir / "meeting-work-track.mka",
+                args.timeout_sec,
+            ),
+        )
+        run_check(
+            checks,
+            "meeting_playback_mix",
+            lambda: check_meeting_playback_mix(
+                candidate_ffmpeg,
+                fixtures["wav_pcm_s16"],
+                work_dir / "meeting-playback.opus",
+                args.timeout_sec,
+            ),
+        )
+        run_check(
+            checks,
             "no_audio_video_fails",
             lambda: check_expected_failure(
                 candidate_ffmpeg,
@@ -599,6 +782,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--require-ffprobe", action="store_true")
     parser.add_argument("--duration-sec", type=float, default=1.0)
     parser.add_argument("--timeout-sec", type=float, default=30.0)
+    parser.add_argument("--meeting-only", action="store_true")
     return parser.parse_args(argv)
 
 

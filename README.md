@@ -33,7 +33,7 @@ Scriber is not another upload page wrapped around one speech API. It is a Window
 |  | Typical transcription tools | Scriber |
 | --- | --- | --- |
 | **Live dictation** | Text stays inside the recorder | A global hotkey records, transcribes, and pastes into the app you are already using |
-| **Input sources** | Meetings, files, or YouTube as separate products | Live microphone, YouTube, and local media share one workflow and history |
+| **Input sources** | Meetings, files, or YouTube as separate products | Meetings, live microphone, YouTube, and local media share one workspace |
 | **Model choice** | One vendor decides quality, latency, and price | Switch between streaming, async, batch, and local ONNX providers |
 | **YouTube** | Always download and transcribe audio | Prefer captions first, then fall back to audio automatically |
 | **After transcription** | Copy raw text and leave | Search, summarize, post-process, export, copy, and reopen later |
@@ -78,6 +78,25 @@ Drop in audio, video, or several files at once. Scriber extracts audio, compress
 - Provider-aware preparation for large inputs
 - Progress, cancellation, retry, and durable job state
 - PDF and DOCX export from completed transcripts
+
+### 👥 Capture meetings without a joining bot
+
+The Meetings workspace records microphone and Windows system audio locally while
+the call is in progress. WebRTC AEC3 uses the system-audio reference to remove
+speaker echo from the microphone track; the raw source is still retained for
+recovery. After stop, Scriber creates a timestamped canonical transcript,
+summary, decisions, action items, cited chat answers, and reusable exports.
+
+- Independent raw mic, AEC-clean mic, and system tracks on one timeline
+- Crash-safe chunks, pause/resume gaps, startup recovery, and configurable audio retention
+- Provider-native timestamps and speaker turns where supported
+- Optional offline Sherpa-ONNX speaker separation for STT models without native
+  diarization; the signed app supplies an isolated static worker while only the
+  models are downloaded, shared by File, YouTube, Meetings, and Meeting imports
+- Import an existing audio or video recording directly into the Meeting workspace
+- Optional local speaker library with explicit biometric opt-in and deletion
+- Optional Outlook Calendar PKCE/delta context; no meeting bot joins the call
+- Markdown, JSON, PDF, DOCX, multitrack FLAC, and synchronized Opus playback
 
 ## ✨ The transcript is the beginning, not the result
 

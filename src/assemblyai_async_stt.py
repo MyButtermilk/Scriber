@@ -131,7 +131,12 @@ def format_assemblyai_utterances_to_scriber_text(utterances: list[dict[str, Any]
         text = str(utterance.get("text", "") or "").strip()
         if not text:
             continue
-        speaker_key = str(utterance.get("speaker", "") or "").strip() or "_unknown"
+        speaker_value = utterance.get("speaker")
+        speaker_key = (
+            "_unknown"
+            if speaker_value in (None, "")
+            else str(speaker_value).strip() or "_unknown"
+        )
         speaker_num = speaker_map.get(speaker_key)
         if speaker_num is None:
             speaker_num = next_index
@@ -177,12 +182,20 @@ async def transcribe_with_assemblyai_pre_recorded(
     model: str = DEFAULT_ASSEMBLYAI_UNIVERSAL_35_PRO_MODEL,
     on_progress: Callable[[str], None] | None = None,
     timeout_secs: float = 900.0,
+    upload_timeout_secs: float | None = None,
 ) -> dict[str, Any]:
     """Upload + transcribe with AssemblyAI Universal-3.5-Pro pre-recorded API."""
     headers = {"authorization": api_key}
 
     _report_progress(on_progress, "Uploading audio...")
-    upload_timeout = min(max(30.0, timeout_secs * 0.4), 300.0)
+    # Short/default jobs retain the historical five-minute upload budget. Long
+    # file and Meeting routes pass their separately calculated upload budget so
+    # a valid multi-hundred-megabyte track is not cut off before processing.
+    upload_timeout = (
+        min(max(30.0, float(upload_timeout_secs)), 3_600.0)
+        if upload_timeout_secs is not None
+        else min(max(30.0, timeout_secs * 0.4), 300.0)
+    )
     async with session.post(
         f"{_ASSEMBLYAI_BASE_URL}/upload",
         data=audio_source,

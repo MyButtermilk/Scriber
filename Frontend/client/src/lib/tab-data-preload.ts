@@ -8,6 +8,9 @@ import {
 } from "@/hooks/use-transcript-history-query";
 import { loadSettingsBootstrap } from "@/lib/settings-bootstrap";
 import type { TranscriptHistoryItem } from "@/lib/api-types";
+import type { MeetingsResponse } from "@/lib/api-types";
+import { apiUrl } from "@/lib/backend";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 
 const PRIMARY_HISTORY_TYPES = ["mic", "youtube", "file"] as const satisfies readonly TranscriptHistoryType[];
 
@@ -31,6 +34,21 @@ async function warmPrimaryTabData(queryClient: QueryClient, isCancelled: () => b
   const bootstrap = await loadSettingsBootstrap().catch(() => null);
   if (bootstrap) {
     queryClient.setQueryData(["/api/settings"], bootstrap.settings);
+  }
+
+  if (!isCancelled()) {
+    await queryClient.prefetchQuery({
+      queryKey: ["/api/meetings"],
+      queryFn: async ({ signal }) => {
+        const response = await fetchWithTimeout(apiUrl("/api/meetings?limit=100"), {
+          credentials: "include",
+          signal,
+        }, 10_000);
+        if (!response.ok) throw new Error("Failed to preload meetings");
+        return response.json() as Promise<MeetingsResponse>;
+      },
+      staleTime: 10_000,
+    }).catch(() => undefined);
   }
 
   for (const type of PRIMARY_HISTORY_TYPES) {

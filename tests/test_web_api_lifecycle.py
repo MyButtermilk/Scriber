@@ -262,6 +262,102 @@ def test_close_persistence_stores_closes_every_sqlite_owner(monkeypatch):
     close_transcripts.assert_called_once_with()
 
 
+def test_begin_shutdown_releases_persisted_native_audio_claim(tmp_path):
+    ctl = ScriberWebController.__new__(ScriberWebController)
+    ctl._retry_scheduler = MagicMock()
+    ctl._audio_admission_store = web_api.AudioAdmissionStore(
+        tmp_path / "shutdown-audio-admission.db"
+    )
+    ctl._audio_admission_store.initialize()
+    ctl._audio_controller_id = "controller-shutdown"
+    ctl._audio_admission_heartbeat_task = None
+    ctl._persistent_audio_claim = ctl._audio_admission_store.acquire(
+        owner_kind="meeting",
+        owner_id="meeting-shutdown",
+        controller_id=ctl._audio_controller_id,
+        ttl_seconds=60,
+    )
+
+    ctl.begin_shutdown()
+
+    assert ctl._shutting_down is True
+    ctl._retry_scheduler.cancel.assert_called_once_with(cancel_running=True)
+    assert ctl._persistent_audio_claim is None
+    assert ctl._audio_admission_store.active() is None
+
+
+@pytest.mark.asyncio
+async def test_audio_heartbeat_adopts_concurrent_pending_to_meeting_transfer(
+    monkeypatch, tmp_path
+):
+    ctl = ScriberWebController.__new__(ScriberWebController)
+    ctl._audio_admission_store = web_api.AudioAdmissionStore(
+        tmp_path / "heartbeat-transfer.db"
+    )
+    ctl._audio_admission_store.initialize()
+    ctl._audio_controller_id = "controller-transfer"
+    pending = ctl._audio_admission_store.acquire(
+        owner_kind="meeting",
+        owner_id="pending-transfer",
+        controller_id=ctl._audio_controller_id,
+        ttl_seconds=60,
+    )
+    transferred = ctl._audio_admission_store.transfer(
+        pending, owner_id="meeting-transfer"
+    )
+    ctl._persistent_audio_claim = pending
+    sleep_calls = 0
+
+    async def one_heartbeat_then_cancel(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(web_api.asyncio, "sleep", one_heartbeat_then_cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        await web_api._audio_claim_heartbeat(ctl)
+
+    assert ctl._persistent_audio_claim == transferred
+
+
+@pytest.mark.asyncio
+async def test_live_mic_heartbeat_fails_closed_after_repeated_renewal_errors(
+    monkeypatch
+):
+    claim = web_api.AudioAdmissionClaim(
+        owner_kind="live_mic",
+        owner_id="session-heartbeat",
+        controller_id="controller-heartbeat",
+        state_version=1,
+        lease_expires_at="2026-07-12T10:01:00Z",
+        updated_at="2026-07-12T10:00:00Z",
+    )
+
+    class BrokenStore:
+        def renew(self, *_args, **_kwargs):
+            raise OSError("database unavailable")
+
+    ctl = ScriberWebController.__new__(ScriberWebController)
+    ctl._audio_admission_store = BrokenStore()
+    ctl._audio_controller_id = claim.controller_id
+    ctl._persistent_audio_claim = claim
+    ctl._emergency_stop_pipeline = AsyncMock()
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(web_api.asyncio, "sleep", no_wait)
+
+    await web_api._audio_claim_heartbeat(ctl)
+
+    assert ctl._persistent_audio_claim is None
+    ctl._emergency_stop_pipeline.assert_awaited_once_with(
+        session_id="session-heartbeat"
+    )
+
+
 class _RunServerControllerStub:
     def __init__(self):
         self.events: list[str] = []
@@ -827,7 +923,7 @@ async def test_device_change_bursts_are_coalesced_and_handler_failures_are_consu
     ctl = ScriberWebController(asyncio.get_running_loop())
     handled: list[list[dict[str, str]]] = []
 
-    async def _handle(devices: list[dict[str, str]]) -> None:
+    async def _handle(devices: list[dict[str, str]], *, reason: str = "") -> None:
         handled.append(devices)
         if len(handled) == 1:
             raise RuntimeError("synthetic hotplug failure")
@@ -841,6 +937,44 @@ async def test_device_change_bursts_are_coalesced_and_handler_failures_are_consu
 
     assert handled == [[{"deviceId": "latest"}]]
     assert ctl._device_change_task is None
+
+
+@pytest.mark.asyncio
+async def test_meeting_device_change_policy_pauses_missing_explicit_and_reconnects_default(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    calls: list[tuple[str, bool]] = []
+    meeting = {
+        "id": "meeting-device-policy", "state": "recording",
+        "captureMetadata": {"deviceSelection": {
+            "microphoneMode": "explicit", "microphoneDeviceId": "usb-selected",
+        }},
+    }
+    monkeypatch.setattr(ctl._meeting_store, "active", lambda: meeting)
+
+    async def reconnect(_meeting, *, reason: str, auto_resume: bool):
+        calls.append((reason, auto_resume))
+
+    monkeypatch.setattr(ctl, "_reconnect_meeting_after_device_change", reconnect)
+    monkeypatch.setattr(ctl, "broadcast", AsyncMock())
+    monkeypatch.setattr(ctl, "_sync_idle_mic_prewarm_after_settings", AsyncMock())
+
+    await ctl._handle_devices_changed(
+        [{"deviceId": "different-device", "label": "Other"}], reason="device_removed"
+    )
+    meeting["captureMetadata"]["deviceSelection"] = {"microphoneMode": "default"}
+    await ctl._handle_devices_changed(
+        [{"deviceId": "new-default", "label": "Default"}],
+        reason="native_default_device_changed",
+    )
+
+    assert calls == [
+        ("selected-device-removed", False),
+        ("default-device-changed", True),
+    ]
     ctl.shutdown()
 
 
@@ -1000,6 +1134,53 @@ async def test_settings_round_trip_youtube_caption_preference(monkeypatch, tmp_p
     assert web_api.Config.YOUTUBE_PREFER_CAPTIONS is False
     assert settings["youtubePreferCaptions"] is False
 
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_settings_round_trip_meeting_pipeline_preferences(monkeypatch, tmp_path):
+    from src import config as config_module
+
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
+    monkeypatch.setattr(config_module, "_json_settings", dict(config_module._json_settings))
+    for name, value in {
+        "MEETING_FINAL_PROVIDER": "soniox_async",
+        "MEETING_ANALYSIS_MODEL": "gemini-flash-latest",
+        "MEETING_SMART_TURN_ENABLED": True,
+        "MEETING_AUTO_ANALYZE": True,
+        "MEETING_AEC_ENABLED": True,
+        "MEETING_AUDIO_RETENTION_DAYS": 0,
+    }.items():
+        monkeypatch.setattr(web_api.Config, name, value, raising=False)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    settings = await ctl.update_settings({
+        "meetingFinalProvider": "assemblyai",
+        "meetingAnalysisModel": "gemini-3.5-flash",
+        "meetingSmartTurnEnabled": False,
+        "meetingAutoAnalyze": False,
+        "meetingAecEnabled": False,
+        "meetingAudioRetentionDays": 30,
+    })
+
+    assert settings["meetingFinalProvider"] == "assemblyai"
+    assert settings["meetingAnalysisModel"] == "gemini-3.5-flash"
+    assert settings["meetingSmartTurnEnabled"] is False
+    assert settings["meetingAutoAnalyze"] is False
+    assert settings["meetingAecEnabled"] is False
+    assert settings["meetingAudioRetentionDays"] == 30
+    assert config_module._json_settings["meetingFinalProvider"] == "assemblyai"
+    assert config_module._json_settings["meetingAudioRetentionDays"] == 30
+
+    with pytest.raises(ValueError, match="Unsupported final meeting"):
+        await ctl.update_settings({
+            "meetingFinalProvider": "unknown-provider",
+            "meetingSmartTurnEnabled": True,
+        })
+    assert web_api.Config.MEETING_FINAL_PROVIDER == "assemblyai"
+    assert web_api.Config.MEETING_SMART_TURN_ENABLED is False
     ctl.shutdown()
 
 

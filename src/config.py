@@ -128,6 +128,8 @@ class Config:
     ASSEMBLYAI_RT_MODEL = os.getenv("SCRIBER_ASSEMBLYAI_RT_MODEL", DEFAULT_ASSEMBLYAI_RT_MODEL)
     MISTRAL_RT_MODEL = os.getenv("SCRIBER_MISTRAL_RT_MODEL", "voxtral-mini-2602")
     MISTRAL_ASYNC_MODEL = os.getenv("SCRIBER_MISTRAL_ASYNC_MODEL", "voxtral-mini-2602")
+    DEEPGRAM_MODEL = os.getenv("SCRIBER_DEEPGRAM_MODEL", "nova-3")
+    GEMINI_STT_MODEL = os.getenv("SCRIBER_GEMINI_STT_MODEL", "gemini-2.5-flash")
     DEBUG = os.getenv("SCRIBER_DEBUG", "0") in ("1", "true", "True")
     LANGUAGE = os.getenv("SCRIBER_LANGUAGE", "auto")
     MIC_DEVICE = os.getenv("SCRIBER_MIC_DEVICE", "default")
@@ -256,6 +258,13 @@ Input:"""
     DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest"
     SUMMARIZATION_MODEL = os.getenv("SCRIBER_SUMMARIZATION_MODEL", DEFAULT_SUMMARIZATION_MODEL)
 
+    # Public Microsoft Entra desktop-app registration. This identifier is not a secret.
+    OUTLOOK_CLIENT_ID = os.getenv("SCRIBER_OUTLOOK_CLIENT_ID", "").strip()
+    VOICEPRINT_LIBRARY_OPT_IN = (
+        str(_json_settings.get("voiceprintLibraryOptIn", os.getenv("SCRIBER_VOICEPRINT_LIBRARY_OPT_IN", "0")))
+        .strip().lower() in {"1", "true", "yes", "on"}
+    )
+
     # Auto-summarize transcripts when completed
     AUTO_SUMMARIZE = os.getenv("SCRIBER_AUTO_SUMMARIZE", "0") in ("1", "true", "True")
 
@@ -319,6 +328,48 @@ ${output}"""
         or os.getenv("SCRIBER_POST_PROCESSING_HOTKEY")
         or "ctrl+shift+p"
     )
+    MEETING_HOTKEY = (
+        _json_settings.get("meetingHotkey")
+        or os.getenv("SCRIBER_MEETING_HOTKEY")
+        or "ctrl+alt+m"
+    )
+    MEETING_FINAL_PROVIDER = (
+        _json_settings.get("meetingFinalProvider")
+        or os.getenv("SCRIBER_MEETING_FINAL_PROVIDER")
+        or "soniox_async"
+    )
+    MEETING_ANALYSIS_MODEL = (
+        _json_settings.get("meetingAnalysisModel")
+        or os.getenv("SCRIBER_MEETING_ANALYSIS_MODEL")
+        or SUMMARIZATION_MODEL
+        or DEFAULT_SUMMARIZATION_MODEL
+    )
+    MEETING_SMART_TURN_ENABLED = (
+        str(_json_settings.get("meetingSmartTurnEnabled", os.getenv("SCRIBER_MEETING_SMART_TURN_ENABLED", "1")))
+        .strip().lower() in {"1", "true", "yes", "on"}
+    )
+    MEETING_AUTO_ANALYZE = (
+        str(_json_settings.get("meetingAutoAnalyze", os.getenv("SCRIBER_MEETING_AUTO_ANALYZE", "1")))
+        .strip().lower() in {"1", "true", "yes", "on"}
+    )
+    MEETING_AEC_ENABLED = (
+        str(_json_settings.get("meetingAecEnabled", os.getenv("SCRIBER_MEETING_AEC_ENABLED", "1")))
+        .strip().lower() in {"1", "true", "yes", "on"}
+    )
+    MEETING_AUDIO_RETENTION_DAYS = _env_int(
+        "SCRIBER_MEETING_AUDIO_RETENTION_DAYS",
+        int(_json_settings.get("meetingAudioRetentionDays", 0) or 0),
+        minimum=0,
+        maximum=3650,
+    )
+    SPEAKER_DIARIZATION_FALLBACK_ENABLED = (
+        str(
+            _json_settings.get(
+                "speakerDiarizationFallbackEnabled",
+                os.getenv("SCRIBER_SPEAKER_DIARIZATION_FALLBACK_ENABLED", "1"),
+            )
+        ).strip().lower() in {"1", "true", "yes", "on"}
+    )
     POST_PROCESSING_PROMPT = (
         _json_settings.get("postProcessingPrompt")
         or os.getenv("SCRIBER_POST_PROCESSING_PROMPT")
@@ -381,6 +432,55 @@ ${output}"""
         os.environ["SCRIBER_POST_PROCESSING_HOTKEY"] = cls.POST_PROCESSING_HOTKEY
         global _json_settings
         _json_settings["postProcessingHotkey"] = cls.POST_PROCESSING_HOTKEY
+
+    @classmethod
+    def set_meeting_hotkey(cls, hotkey: str) -> None:
+        cls.MEETING_HOTKEY = hotkey.strip()
+        os.environ["SCRIBER_MEETING_HOTKEY"] = cls.MEETING_HOTKEY
+        global _json_settings
+        _json_settings["meetingHotkey"] = cls.MEETING_HOTKEY
+
+    @classmethod
+    def set_meeting_final_provider(cls, provider: str) -> None:
+        cls.MEETING_FINAL_PROVIDER = provider.strip().lower()
+        os.environ["SCRIBER_MEETING_FINAL_PROVIDER"] = cls.MEETING_FINAL_PROVIDER
+        _json_settings["meetingFinalProvider"] = cls.MEETING_FINAL_PROVIDER
+
+    @classmethod
+    def set_meeting_analysis_model(cls, model: str) -> None:
+        cls.MEETING_ANALYSIS_MODEL = model.strip() or cls.DEFAULT_SUMMARIZATION_MODEL
+        os.environ["SCRIBER_MEETING_ANALYSIS_MODEL"] = cls.MEETING_ANALYSIS_MODEL
+        _json_settings["meetingAnalysisModel"] = cls.MEETING_ANALYSIS_MODEL
+
+    @classmethod
+    def set_meeting_smart_turn_enabled(cls, enabled: bool) -> None:
+        cls.MEETING_SMART_TURN_ENABLED = bool(enabled)
+        os.environ["SCRIBER_MEETING_SMART_TURN_ENABLED"] = "1" if enabled else "0"
+        _json_settings["meetingSmartTurnEnabled"] = cls.MEETING_SMART_TURN_ENABLED
+
+    @classmethod
+    def set_meeting_auto_analyze(cls, enabled: bool) -> None:
+        cls.MEETING_AUTO_ANALYZE = bool(enabled)
+        os.environ["SCRIBER_MEETING_AUTO_ANALYZE"] = "1" if enabled else "0"
+        _json_settings["meetingAutoAnalyze"] = cls.MEETING_AUTO_ANALYZE
+
+    @classmethod
+    def set_meeting_aec_enabled(cls, enabled: bool) -> None:
+        cls.MEETING_AEC_ENABLED = bool(enabled)
+        os.environ["SCRIBER_MEETING_AEC_ENABLED"] = "1" if enabled else "0"
+        _json_settings["meetingAecEnabled"] = cls.MEETING_AEC_ENABLED
+
+    @classmethod
+    def set_meeting_audio_retention_days(cls, days: int) -> None:
+        cls.MEETING_AUDIO_RETENTION_DAYS = max(0, min(3650, int(days)))
+        os.environ["SCRIBER_MEETING_AUDIO_RETENTION_DAYS"] = str(cls.MEETING_AUDIO_RETENTION_DAYS)
+        _json_settings["meetingAudioRetentionDays"] = cls.MEETING_AUDIO_RETENTION_DAYS
+
+    @classmethod
+    def set_speaker_diarization_fallback_enabled(cls, enabled: bool) -> None:
+        cls.SPEAKER_DIARIZATION_FALLBACK_ENABLED = bool(enabled)
+        os.environ["SCRIBER_SPEAKER_DIARIZATION_FALLBACK_ENABLED"] = "1" if enabled else "0"
+        _json_settings["speakerDiarizationFallbackEnabled"] = bool(enabled)
 
     @classmethod
     def set_mode(cls, mode: str) -> None:
@@ -483,6 +583,13 @@ ${output}"""
         _json_settings["youtubePreferCaptions"] = cls.YOUTUBE_PREFER_CAPTIONS
 
     @classmethod
+    def set_voiceprint_library_opt_in(cls, enabled: bool) -> None:
+        cls.VOICEPRINT_LIBRARY_OPT_IN = bool(enabled)
+        os.environ["SCRIBER_VOICEPRINT_LIBRARY_OPT_IN"] = "1" if enabled else "0"
+        global _json_settings
+        _json_settings["voiceprintLibraryOptIn"] = cls.VOICEPRINT_LIBRARY_OPT_IN
+
+    @classmethod
     def set_post_processing_enabled(cls, enabled: bool) -> None:
         cls.POST_PROCESSING_ENABLED = bool(enabled)
         os.environ["SCRIBER_POST_PROCESSING_ENABLED"] = "1" if cls.POST_PROCESSING_ENABLED else "0"
@@ -547,6 +654,17 @@ ${output}"""
 
         add("SCRIBER_HOTKEY", cls.HOTKEY)
         add("SCRIBER_POST_PROCESSING_HOTKEY", cls.POST_PROCESSING_HOTKEY)
+        add("SCRIBER_MEETING_HOTKEY", cls.MEETING_HOTKEY)
+        add("SCRIBER_MEETING_FINAL_PROVIDER", cls.MEETING_FINAL_PROVIDER)
+        add("SCRIBER_MEETING_ANALYSIS_MODEL", cls.MEETING_ANALYSIS_MODEL)
+        add("SCRIBER_MEETING_SMART_TURN_ENABLED", "1" if cls.MEETING_SMART_TURN_ENABLED else "0")
+        add("SCRIBER_MEETING_AUTO_ANALYZE", "1" if cls.MEETING_AUTO_ANALYZE else "0")
+        add("SCRIBER_MEETING_AEC_ENABLED", "1" if cls.MEETING_AEC_ENABLED else "0")
+        add("SCRIBER_MEETING_AUDIO_RETENTION_DAYS", str(cls.MEETING_AUDIO_RETENTION_DAYS))
+        add(
+            "SCRIBER_SPEAKER_DIARIZATION_FALLBACK_ENABLED",
+            "1" if cls.SPEAKER_DIARIZATION_FALLBACK_ENABLED else "0",
+        )
         add("SCRIBER_DEFAULT_STT", cls.DEFAULT_STT_SERVICE)
         add("SCRIBER_MODE", cls.MODE)
         add("SCRIBER_SONIOX_MODE", cls.SONIOX_MODE)
@@ -556,12 +674,15 @@ ${output}"""
         add("SCRIBER_ASSEMBLYAI_RT_MODEL", cls.ASSEMBLYAI_RT_MODEL)
         add("SCRIBER_MISTRAL_RT_MODEL", cls.MISTRAL_RT_MODEL)
         add("SCRIBER_MISTRAL_ASYNC_MODEL", cls.MISTRAL_ASYNC_MODEL)
+        add("SCRIBER_DEEPGRAM_MODEL", cls.DEEPGRAM_MODEL)
+        add("SCRIBER_GEMINI_STT_MODEL", cls.GEMINI_STT_MODEL)
         add("SCRIBER_CUSTOM_VOCAB", cls.CUSTOM_VOCAB or "")
         # Note: SUMMARIZATION_PROMPT is not persisted to .env (multi-line value causes parsing issues)
         # The default prompt from config.py will be used
         add("SCRIBER_SUMMARIZATION_MODEL", cls.SUMMARIZATION_MODEL or cls.DEFAULT_SUMMARIZATION_MODEL)
         add("SCRIBER_AUTO_SUMMARIZE", "1" if cls.AUTO_SUMMARIZE else "0")
         add("SCRIBER_YOUTUBE_PREFER_CAPTIONS", "1" if cls.YOUTUBE_PREFER_CAPTIONS else "0")
+        add("SCRIBER_VOICEPRINT_LIBRARY_OPT_IN", "1" if cls.VOICEPRINT_LIBRARY_OPT_IN else "0")
         add("SCRIBER_POST_PROCESSING_ENABLED", "1" if cls.POST_PROCESSING_ENABLED else "0")
         add("SCRIBER_POST_PROCESSING_MODEL", cls.POST_PROCESSING_MODEL or cls.DEFAULT_POST_PROCESSING_MODEL)
         add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")

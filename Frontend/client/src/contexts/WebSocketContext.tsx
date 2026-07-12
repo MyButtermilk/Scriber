@@ -7,6 +7,7 @@ import {
     wsUrl,
 } from "@/lib/backend";
 import type { MicrophoneDevice } from "@/lib/api-types";
+import type { MeetingNote, MeetingSegment, MeetingSummary, MeetingTranscriptCheckpoint } from "@/lib/api-types";
 
 type BaseWsMessage = {
     apiVersion: string;
@@ -98,7 +99,19 @@ export type ScriberWebSocketMessage =
         status: ModelDownloadStatus;
         message?: string;
     })
-    | (BaseWsMessage & { type: "onnx_models_updated"; modelId: string });
+    | (BaseWsMessage & { type: "onnx_models_updated"; modelId: string })
+    | (BaseWsMessage & { type: "meeting_state"; meeting: MeetingSummary })
+    | (BaseWsMessage & { type: "meeting_segment"; meetingId: string; segment: MeetingSegment })
+    | (BaseWsMessage & { type: "meeting_checkpoint"; meetingId: string; checkpoint: MeetingTranscriptCheckpoint })
+    | (BaseWsMessage & { type: "meeting_transcript_edited"; meetingId: string; segment: MeetingSegment; transcriptEditVersion: number; outputsStale: boolean })
+    | (BaseWsMessage & { type: "meeting_note"; meetingId: string; note: MeetingNote })
+    | (BaseWsMessage & { type: "meeting_audio_level"; meetingId: string; source: string; rms: number })
+    | (BaseWsMessage & { type: "meeting_live_status"; meetingId: string; source: string; status: "reconnecting" | "recovered" | "degraded"; reconnectCount: number })
+    | (BaseWsMessage & { type: "meeting_finalize_progress" | "meeting_analysis_progress"; meetingId: string; progress: number; status: string })
+    | (BaseWsMessage & { type: "meeting_import_progress"; importId: string; phase: string; progress: number; status: string; receivedBytes: number; expectedBytes?: number; meetingId?: string })
+    | (BaseWsMessage & { type: "meeting_detected"; detectionId: string; label: string; source: string; meetingId?: string })
+    | (BaseWsMessage & { type: "meeting_chat_delta"; meetingId: string; threadId: string; delta: string })
+    | (BaseWsMessage & { type: "meeting_delivery_updated"; meetingId: string; delivery: Record<string, unknown> });
 
 type MessageHandler = (data: ScriberWebSocketMessage) => void;
 

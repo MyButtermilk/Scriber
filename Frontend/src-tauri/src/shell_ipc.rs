@@ -253,6 +253,17 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                     "audioPrewarmStart",
                     "audioPrewarmStatus",
                     "audioPrewarmStop",
+                    "audioMeetingStart",
+                    "audioMeetingStatus",
+                    "audioMeetingPause",
+                    "audioMeetingResume",
+                    "audioMeetingStop",
+                    "meetingDetectionStatus",
+                    "outlookCredentialStore",
+                    "outlookCredentialStatus",
+                    "outlookCredentialDelete",
+                    "outlookAuthorizationCodeExchange",
+                    "outlookTokenAcquire",
                     "overlayPrepare",
                     "overlayShow",
                     "overlayHide",
@@ -265,6 +276,8 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                 "audioProbe": true,
                 "audioCapturePrototype": false,
                 "audioPrewarmPrototype": false,
+                "audioMeetingCapture": true,
+                "meetingDetection": cfg!(windows),
                 "audioSidecar": {
                     "executableAvailable": audio_sidecar_executable_available(),
                     "stdioProtocolVersion": "1",
@@ -295,6 +308,17 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
             started,
             native_device_event_status_payload(),
         ),
+        "meetingDetectionStatus" => match detect_meeting_context() {
+            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Err(err) => response_line(
+                request_id,
+                false,
+                "meetingDetectionUnavailable",
+                &err,
+                started,
+                json!({}),
+            ),
+        },
         "audioEndpointInventory" => match collect_native_capture_endpoint_inventory()
             .map_err(|err| ShellCommandError::new("audioEndpointInventoryFailed", err))
         {
@@ -456,6 +480,94 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                 err.payload,
             ),
         },
+        "audioMeetingStart" | "audioMeetingResume" => match start_meeting_audio(payload) {
+            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Err(err) => response_line(
+                request_id,
+                false,
+                err.code,
+                &err.reason,
+                started,
+                err.payload,
+            ),
+        },
+        "audioMeetingStatus" => match status_meeting_audio(payload) {
+            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Err(err) => response_line(
+                request_id,
+                false,
+                err.code,
+                &err.reason,
+                started,
+                err.payload,
+            ),
+        },
+        "audioMeetingPause" | "audioMeetingStop" => match stop_meeting_audio(payload) {
+            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Err(err) => response_line(
+                request_id,
+                false,
+                err.code,
+                &err.reason,
+                started,
+                err.payload,
+            ),
+        },
+        "outlookCredentialStore" => match outlook_credential_store(payload) {
+            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Err(reason) => response_line(
+                request_id,
+                false,
+                "outlookCredentialStoreFailed",
+                &reason,
+                started,
+                json!({}),
+            ),
+        },
+        "outlookCredentialStatus" => match outlook_credential_status() {
+            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Err(reason) => response_line(
+                request_id,
+                false,
+                "outlookCredentialStatusFailed",
+                &reason,
+                started,
+                json!({}),
+            ),
+        },
+        "outlookCredentialDelete" => match outlook_credential_delete() {
+            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Err(reason) => response_line(
+                request_id,
+                false,
+                "outlookCredentialDeleteFailed",
+                &reason,
+                started,
+                json!({}),
+            ),
+        },
+        "outlookAuthorizationCodeExchange" => match outlook_token_request(payload, true) {
+            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Err(reason) => response_line(
+                request_id,
+                false,
+                "outlookAuthorizationFailed",
+                &reason,
+                started,
+                json!({}),
+            ),
+        },
+        "outlookTokenAcquire" => match outlook_token_request(payload, false) {
+            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Err(reason) => response_line(
+                request_id,
+                false,
+                "outlookTokenAcquireFailed",
+                &reason,
+                started,
+                json!({}),
+            ),
+        },
         _ => response_line(
             request_id,
             false,
@@ -465,6 +577,504 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
             json!({}),
         ),
     }
+}
+
+const OUTLOOK_CREDENTIAL_TARGET: &str = "Scriber.Outlook.RefreshToken.v1";
+
+#[cfg(windows)]
+fn outlook_credential_store(payload: &Value) -> Result<Value, String> {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Security::Credentials::{
+        CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
+    };
+    let refresh_token = payload
+        .get("refreshToken")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if refresh_token.is_empty() || refresh_token.len() > 2400 || refresh_token.contains('\0') {
+        return Err(
+            "Outlook refresh token is missing or exceeds the Credential Manager limit".to_string(),
+        );
+    }
+    let mut target: Vec<u16> = OUTLOOK_CREDENTIAL_TARGET
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut username: Vec<u16> = "Scriber Outlook".encode_utf16().chain(Some(0)).collect();
+    let mut blob = refresh_token.as_bytes().to_vec();
+    let credential = CREDENTIALW {
+        Type: CRED_TYPE_GENERIC,
+        TargetName: target.as_mut_ptr(),
+        CredentialBlobSize: blob.len() as u32,
+        CredentialBlob: blob.as_mut_ptr(),
+        Persist: CRED_PERSIST_LOCAL_MACHINE,
+        UserName: username.as_mut_ptr(),
+        Comment: null_mut(),
+        Attributes: null_mut(),
+        TargetAlias: null_mut(),
+        ..Default::default()
+    };
+    let written = unsafe { CredWriteW(&credential, 0) };
+    blob.fill(0);
+    if written == 0 {
+        return Err(format!(
+            "Windows Credential Manager write failed: {}",
+            unsafe { windows_sys::Win32::Foundation::GetLastError() }
+        ));
+    }
+    Ok(json!({"stored": true, "targetHash": hash_sensitive_identifier(OUTLOOK_CREDENTIAL_TARGET)}))
+}
+
+#[cfg(not(windows))]
+fn outlook_credential_store(_payload: &Value) -> Result<Value, String> {
+    Err("Outlook Credential Manager storage is only supported on Windows".to_string())
+}
+
+#[cfg(windows)]
+fn outlook_read_refresh_token() -> Result<String, String> {
+    use std::{ptr::null_mut, slice};
+    use windows_sys::Win32::Security::Credentials::{
+        CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
+    };
+    let target: Vec<u16> = OUTLOOK_CREDENTIAL_TARGET
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut credential: *mut CREDENTIALW = null_mut();
+    let found = unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) };
+    if found == 0 {
+        return Err("Outlook is not connected".to_string());
+    }
+    let value = unsafe {
+        let item = &*credential;
+        let bytes = slice::from_raw_parts(item.CredentialBlob, item.CredentialBlobSize as usize);
+        String::from_utf8(bytes.to_vec())
+            .map_err(|_| "Stored Outlook credential is invalid".to_string())
+    };
+    unsafe { CredFree(credential.cast()) };
+    value
+}
+
+#[cfg(windows)]
+fn outlook_token_request(payload: &Value, authorization_code: bool) -> Result<Value, String> {
+    const SCOPES: &str = "User.Read Calendars.Read offline_access";
+    let client_id = payload
+        .get("clientId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if client_id.is_empty()
+        || client_id.len() > 128
+        || !client_id
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || value == '-')
+    {
+        return Err("Outlook public client ID is missing or invalid".to_string());
+    }
+    let mut form = vec![
+        ("client_id", client_id.to_string()),
+        ("scope", SCOPES.to_string()),
+    ];
+    let mut consumed_refresh_token = None;
+    if authorization_code {
+        let code = payload
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let verifier = payload
+            .get("codeVerifier")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let redirect_uri = payload
+            .get("redirectUri")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let valid_redirect = redirect_uri
+            .strip_prefix("http://127.0.0.1:")
+            .and_then(|rest| rest.split_once('/'))
+            .is_some_and(|(port, path)| {
+                port.parse::<u16>().is_ok() && path == "api/calendar/outlook/callback"
+            });
+        if code.is_empty()
+            || code.len() > 4096
+            || verifier.len() < 43
+            || verifier.len() > 128
+            || !valid_redirect
+        {
+            return Err("Outlook authorization response is invalid".to_string());
+        }
+        form.extend([
+            ("grant_type", "authorization_code".to_string()),
+            ("code", code.to_string()),
+            ("code_verifier", verifier.to_string()),
+            ("redirect_uri", redirect_uri.to_string()),
+        ]);
+    } else {
+        let refresh_token = outlook_read_refresh_token()?;
+        form.extend([
+            ("grant_type", "refresh_token".to_string()),
+            ("refresh_token", refresh_token.clone()),
+        ]);
+        consumed_refresh_token = Some(refresh_token);
+    }
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "Outlook token client initialization failed".to_string())?;
+    let response = client
+        .post("https://login.microsoftonline.com/common/oauth2/v2.0/token")
+        .form(&form)
+        .send()
+        .map_err(|error| {
+            format!(
+                "Outlook token request failed: {}",
+                error.status().map(|v| v.as_u16()).unwrap_or(0)
+            )
+        })?;
+    let status = response.status();
+    let token: Value = response
+        .json()
+        .map_err(|_| "Outlook token response was invalid".to_string())?;
+    if !status.is_success() {
+        let code = token
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("token_request_failed");
+        return Err(format!(
+            "Outlook token endpoint rejected the request ({code})"
+        ));
+    }
+    let access_token = token
+        .get("access_token")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if access_token.is_empty() {
+        return Err("Outlook token response omitted the access token".to_string());
+    }
+    if let Some(refresh_token) = token.get("refresh_token").and_then(Value::as_str) {
+        outlook_credential_store(&json!({"refreshToken": refresh_token}))?;
+    } else if authorization_code {
+        return Err("Outlook authorization did not issue an offline refresh token".to_string());
+    }
+    if let Some(mut value) = consumed_refresh_token {
+        unsafe {
+            value.as_bytes_mut().fill(0);
+        }
+    }
+    Ok(json!({
+        "accessToken": access_token,
+        "expiresIn": token.get("expires_in").and_then(Value::as_u64).unwrap_or(0),
+        "scope": token.get("scope").and_then(Value::as_str).unwrap_or(SCOPES),
+        "tokenType": token.get("token_type").and_then(Value::as_str).unwrap_or("Bearer"),
+    }))
+}
+
+#[cfg(not(windows))]
+fn outlook_token_request(_payload: &Value, _authorization_code: bool) -> Result<Value, String> {
+    Err("Outlook token acquisition is only supported on Windows".to_string())
+}
+
+#[cfg(windows)]
+fn outlook_credential_status() -> Result<Value, String> {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Security::Credentials::{
+        CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
+    };
+    let target: Vec<u16> = OUTLOOK_CREDENTIAL_TARGET
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut credential: *mut CREDENTIALW = null_mut();
+    let found = unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) };
+    if found == 0 {
+        let error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        if error == 1168 {
+            return Ok(json!({"connected": false, "credentialStored": false}));
+        }
+        return Err(format!("Windows Credential Manager read failed: {error}"));
+    }
+    unsafe { CredFree(credential.cast()) };
+    Ok(json!({
+        "connected": true,
+        "credentialStored": true,
+        "targetHash": hash_sensitive_identifier(OUTLOOK_CREDENTIAL_TARGET),
+    }))
+}
+
+#[cfg(not(windows))]
+fn outlook_credential_status() -> Result<Value, String> {
+    Ok(json!({"connected": false, "credentialStored": false, "reason": "unsupportedPlatform"}))
+}
+
+#[cfg(windows)]
+fn outlook_credential_delete() -> Result<Value, String> {
+    use windows_sys::Win32::Security::Credentials::{CredDeleteW, CRED_TYPE_GENERIC};
+    let target: Vec<u16> = OUTLOOK_CREDENTIAL_TARGET
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let deleted = unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) };
+    if deleted == 0 {
+        let error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        if error != 1168 {
+            return Err(format!("Windows Credential Manager delete failed: {error}"));
+        }
+    }
+    Ok(json!({"deleted": true}))
+}
+
+#[cfg(not(windows))]
+fn outlook_credential_delete() -> Result<Value, String> {
+    Ok(json!({"deleted": true}))
+}
+
+#[cfg(windows)]
+fn detect_meeting_context() -> Result<Value, String> {
+    use windows::core::Interface;
+    use windows::Win32::{
+        Media::Audio::{
+            eConsole, eRender, AudioSessionStateActive, IAudioSessionControl2,
+            IAudioSessionManager2, IMMDeviceEnumerator, MMDeviceEnumerator,
+        },
+        System::Com::{
+            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+        },
+    };
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+        },
+        UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId},
+    };
+
+    fn process_family(pid: u32) -> String {
+        if pid == 0 {
+            return String::new();
+        }
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return String::new();
+        }
+        let mut buffer = vec![0u16; 1024];
+        let mut len = buffer.len() as u32;
+        let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut len) };
+        unsafe { CloseHandle(handle) };
+        if ok == 0 || len == 0 {
+            return String::new();
+        }
+        let path = String::from_utf16_lossy(&buffer[..len as usize]).to_ascii_lowercase();
+        if path.ends_with("teams.exe") || path.contains("ms-teams") {
+            "teams".to_string()
+        } else if path.ends_with("zoom.exe") {
+            "zoom".to_string()
+        } else if path.ends_with("webex.exe") || path.contains("webexhost") {
+            "webex".to_string()
+        } else if path.ends_with("chrome.exe")
+            || path.ends_with("msedge.exe")
+            || path.ends_with("firefox.exe")
+        {
+            "browser".to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return Ok(json!({"detected": false, "reason": "noForegroundWindow"}));
+    }
+    let mut foreground_pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut foreground_pid) };
+    let mut title_buffer = [0u16; 512];
+    let title_len = unsafe {
+        GetWindowTextW(hwnd, title_buffer.as_mut_ptr(), title_buffer.len() as i32)
+    }
+    .max(0) as usize;
+    let title = String::from_utf16_lossy(&title_buffer[..title_len]).to_ascii_lowercase();
+    let foreground_family = process_family(foreground_pid);
+    let label = if foreground_family == "teams" || title.contains("microsoft teams") {
+        "Microsoft Teams"
+    } else if foreground_family == "zoom" || title.contains("zoom meeting") {
+        "Zoom"
+    } else if foreground_family == "webex" || title.contains("webex") {
+        "Webex"
+    } else if foreground_family == "browser"
+        && (title.contains("google meet") || title.contains("meet.google.com"))
+    {
+        "Google Meet"
+    } else {
+        ""
+    };
+    if label.is_empty() {
+        return Ok(json!({
+            "detected": false,
+            "reason": "foregroundNotMeeting",
+            "windowHash": hash_sensitive_identifier(&format!("{hwnd:p}")),
+        }));
+    }
+
+    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+        .ok()
+        .map_err(|err| format!("COM initialization failed: {err}"))?;
+    let render_result = (|| -> Result<bool, String> {
+        let enumerator: IMMDeviceEnumerator =
+            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+                .map_err(|err| format!("MMDeviceEnumerator creation failed: {err}"))?;
+        let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
+            .map_err(|err| format!("default render endpoint unavailable: {err}"))?;
+        let manager: IAudioSessionManager2 = unsafe { device.Activate(CLSCTX_ALL, None) }
+            .map_err(|err| format!("audio session manager unavailable: {err}"))?;
+        let sessions = unsafe { manager.GetSessionEnumerator() }
+            .map_err(|err| format!("audio session enumeration unavailable: {err}"))?;
+        let count = unsafe { sessions.GetCount() }
+            .map_err(|err| format!("audio session count unavailable: {err}"))?;
+        for index in 0..count {
+            let control = unsafe { sessions.GetSession(index) }
+                .map_err(|err| format!("audio session item unavailable: {err}"))?;
+            if unsafe { control.GetState() }.ok() != Some(AudioSessionStateActive) {
+                continue;
+            }
+            let Ok(control2) = control.cast::<IAudioSessionControl2>() else {
+                continue;
+            };
+            let Ok(pid) = (unsafe { control2.GetProcessId() }) else {
+                continue;
+            };
+            let family = process_family(pid);
+            if pid == foreground_pid
+                || (!foreground_family.is_empty() && family == foreground_family)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })();
+    unsafe { CoUninitialize() };
+    let active_render_session = render_result?;
+    Ok(json!({
+        "detected": active_render_session,
+        "candidate": true,
+        "label": label,
+        "source": "windowAndRenderSession",
+        "activeRenderSession": active_render_session,
+        "windowHash": hash_sensitive_identifier(&format!("{hwnd:p}")),
+        "processHash": hash_sensitive_identifier(&foreground_pid.to_string()),
+        "reason": if active_render_session { "meetingWindowWithActiveRender" } else { "meetingWindowWithoutActiveRender" },
+    }))
+}
+
+#[cfg(not(windows))]
+fn detect_meeting_context() -> Result<Value, String> {
+    Ok(json!({"detected": false, "reason": "unsupportedPlatform"}))
+}
+
+fn start_meeting_audio(payload: &Value) -> Result<Value, ShellCommandError> {
+    if !payload.is_object() {
+        return Err(ShellCommandError::new(
+            "invalidMeetingCapturePayload",
+            "audioMeetingStart payload must be an object",
+        ));
+    }
+    let meeting_id = payload
+        .get("meetingId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if meeting_id.is_empty() || meeting_id.len() > 96 {
+        return Err(ShellCommandError::new(
+            "invalidMeetingId",
+            "audioMeetingStart requires a bounded meetingId",
+        ));
+    }
+    let request = json!({
+        "sampleRate": 16_000,
+        "channels": 1,
+        "blockSize": 160,
+        "devicePreference": "default",
+        "prebufferMs": 0,
+        "aecEnabled": payload.get("aecEnabled").and_then(Value::as_bool).unwrap_or(true),
+        "aecDelayMs": payload.get("aecDelayMs").and_then(Value::as_i64).unwrap_or(80),
+        "microphoneNativeEndpointIdHash": payload.get("microphoneNativeEndpointIdHash").and_then(Value::as_str).unwrap_or(""),
+        "renderNativeEndpointIdHash": payload.get("renderNativeEndpointIdHash").and_then(Value::as_str).unwrap_or(""),
+    });
+    let result = call_audio_sidecar_command("meetingCaptureStart", request);
+    if !result.success {
+        return Err(ShellCommandError::new(
+            "meetingCaptureFailed",
+            result
+                .fallback_reason
+                .unwrap_or_else(|| "meeting capture failed".to_string()),
+        ));
+    }
+    let meeting_capture_id = result
+        .payload
+        .get("meetingCaptureId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if meeting_capture_id.is_empty() {
+        return Err(ShellCommandError::new(
+            "meetingCaptureMissingStream",
+            "meeting capture did not return a meeting capture identifier",
+        ));
+    }
+    let mut response = result.payload;
+    response["captureId"] = json!(meeting_capture_id);
+    response["aecRequested"] = json!(payload
+        .get("aecEnabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true));
+    Ok(response)
+}
+
+fn stop_meeting_audio(payload: &Value) -> Result<Value, ShellCommandError> {
+    let capture_id = payload
+        .get("captureId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if capture_id.is_empty() || capture_id.len() > 96 {
+        return Err(ShellCommandError::new(
+            "invalidMeetingCaptureId",
+            "meeting capture identifier is missing or invalid",
+        ));
+    }
+    let result = call_audio_sidecar_command(
+        "meetingCaptureStop",
+        json!({"meetingCaptureId": capture_id}),
+    );
+    Ok(json!({"captureId": capture_id, "stopped": true, "sidecar": result.payload}))
+}
+
+fn status_meeting_audio(payload: &Value) -> Result<Value, ShellCommandError> {
+    let capture_id = payload
+        .get("captureId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if capture_id.is_empty() || capture_id.len() > 96 {
+        return Err(ShellCommandError::new(
+            "invalidMeetingCaptureId",
+            "meeting capture identifier is missing or invalid",
+        ));
+    }
+    let result = call_audio_sidecar_command(
+        "meetingCaptureStatus",
+        json!({"meetingCaptureId": capture_id}),
+    );
+    let active = result
+        .payload
+        .get("active")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(json!({
+        "captureId": capture_id,
+        "active": active,
+        "reason": if active { "active" } else { "meetingCaptureSourceInactive" },
+        "sidecar": result.payload,
+    }))
 }
 
 fn audio_capture_start_sidecar_payload(options: &AudioCaptureStartOptions) -> Value {

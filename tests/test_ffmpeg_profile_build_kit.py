@@ -44,6 +44,7 @@ def test_profile_b_configure_args_cover_validator_requirements() -> None:
 
     assert "--enable-libopus" in args
     assert "--enable-libmp3lame" in args
+    assert "--enable-filter=adelay" in args
     assert "--enable-parser=h264" in args
     assert "--enable-parser=hevc" in args
     assert "--disable-network" in args

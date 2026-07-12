@@ -25,13 +25,14 @@ jobs:
   build-windows:
     runs-on: windows-latest
     env:
-      SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG: ffmpeg-profile-b-n7.0-v2
-      SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME: scriber-ffmpeg-profile-b-n7.0-v2-Windows.zip
+      SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG: ffmpeg-profile-b-n7.0-v3
+      SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME: scriber-ffmpeg-profile-b-n7.0-v3-Windows.zip
       SCRIBER_PYTHON_VENV_ARTIFACT_TAG: release-cache-python-venv-v1
       SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG: release-cache-python-wheelhouse-v2
       SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG: release-cache-backend-sidecar-v1
       SCRIBER_RUST_BUILD_ARTIFACT_TAG: release-cache-rust-build-v2
       SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG: release-cache-rust-audio-sidecar-v1
+      SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG: release-cache-rust-diarization-sidecar-v1
       SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'true' || 'false' }}
       SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}
       CARGO_HOME: ${{ github.workspace }}/.cargo
@@ -54,6 +55,8 @@ jobs:
             "frontend-dependencies.txt",
             "rust-release.txt",
             "rust-audio-sidecar.txt",
+            "rust-diarization-sidecar.txt",
+            "sherpa-onnx-archive.txt",
             "backend-sidecar.txt"
           )
           $rows = @()
@@ -164,6 +167,22 @@ jobs:
           restore-keys: |
             scriber-rust-audio-sidecar-${{ runner.os }}-
 
+      - name: Restore Rust diarization sidecar cache
+        id: rust-diarization-sidecar-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: build/rust-diarization-sidecar-cache
+          key: scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}
+          restore-keys: |
+            scriber-rust-diarization-sidecar-${{ runner.os }}-
+
+      - name: Restore Sherpa ONNX static archive cache
+        id: sherpa-onnx-archive-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: build/sherpa-onnx-archive-cache
+          key: scriber-sherpa-onnx-archive-${{ runner.os }}-${{ hashFiles('build/cache-keys/sherpa-onnx-archive.txt') }}
+
       - name: Restore Tauri bundler cache
         id: tauri-bundler-cache
         uses: actions/cache/restore@v6
@@ -263,6 +282,19 @@ jobs:
             -AssetName "scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}.zip" `
             -DestinationPath build\rust-audio-sidecar-cache
 
+      - name: Restore Rust diarization sidecar release artifact
+        id: rust-diarization-sidecar-artifact
+        if: steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\restore_release_cache_artifact.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Tag $env:SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG `
+            -AssetName "scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}.zip" `
+            -DestinationPath build\rust-diarization-sidecar-cache
+
       - name: Restore FFmpeg Profile B cache
         id: ffmpeg-profile-b-cache
         uses: actions/cache/restore@v6
@@ -273,9 +305,9 @@ jobs:
             build/ffmpeg-profile-b-msys2/ffmpeg-profile-b-fixtures.json
             build/ffmpeg-profile-b-msys2/media-preparation-smoke-profile-b.json
             build/ffmpeg-profile-b-msys2/profile-b-msys2-build-report.json
-          key: scriber-ffmpeg-profile-b-msys2-n7.0-v2-${{ runner.os }}
+          key: scriber-ffmpeg-profile-b-msys2-n7.0-v3-${{ runner.os }}
           restore-keys: |
-            scriber-ffmpeg-profile-b-msys2-n7.0-v2-${{ runner.os }}
+            scriber-ffmpeg-profile-b-msys2-n7.0-v3-${{ runner.os }}
             scriber-ffmpeg-profile-b-msys2-n7.0-${{ runner.os }}-
 
       - name: Restore FFmpeg Profile B release artifact
@@ -376,6 +408,9 @@ jobs:
           }
           $rustAudioSidecarCacheHit = Normalize-CacheOutput "${{ steps.rust-audio-sidecar-cache.outputs.cache-hit }}"
           $rustAudioSidecarArtifactRestored = Normalize-CacheOutput "${{ steps.rust-audio-sidecar-artifact.outputs.restored }}"
+          $rustDiarizationSidecarCacheHit = Normalize-CacheOutput "${{ steps.rust-diarization-sidecar-cache.outputs.cache-hit }}"
+          $rustDiarizationSidecarArtifactRestored = Normalize-CacheOutput "${{ steps.rust-diarization-sidecar-artifact.outputs.restored }}"
+          $sherpaOnnxArchiveCacheHit = Normalize-CacheOutput "${{ steps.sherpa-onnx-archive-cache.outputs.cache-hit }}"
           $ffmpegProfileBCacheHit = Normalize-CacheOutput "${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}"
           $ffmpegProfileBArtifactRestored = Normalize-CacheOutput "${{ steps.ffmpeg-profile-b-artifact.outputs.restored }}"
           $tauriBundlerCacheHit = Normalize-CacheOutput "${{ steps.tauri-bundler-cache.outputs.cache-hit }}"
@@ -406,6 +441,8 @@ jobs:
             [ordered]@{ Name = "Backend sidecar"; Actions = (Get-ActionsCacheLayer $backendSidecarCacheHit); ReleaseArtifact = $backendSidecarArtifactRestored; Effective = (Get-EffectiveCacheSource $backendSidecarCacheHit $backendSidecarArtifactRestored) }
             [ordered]@{ Name = "Rust build"; Actions = (Get-ActionsCacheLayer $rustBuildCacheHit); ReleaseArtifact = $rustBuildArtifactRestored; Effective = $rustBuildEffective }
             [ordered]@{ Name = "Rust audio sidecar"; Actions = (Get-ActionsCacheLayer $rustAudioSidecarCacheHit); ReleaseArtifact = $rustAudioSidecarArtifactRestored; Effective = (Get-EffectiveCacheSource $rustAudioSidecarCacheHit $rustAudioSidecarArtifactRestored) }
+            [ordered]@{ Name = "Rust diarization sidecar"; Actions = (Get-ActionsCacheLayer $rustDiarizationSidecarCacheHit); ReleaseArtifact = $rustDiarizationSidecarArtifactRestored; Effective = (Get-EffectiveCacheSource $rustDiarizationSidecarCacheHit $rustDiarizationSidecarArtifactRestored) }
+            [ordered]@{ Name = "Sherpa ONNX static archive"; Actions = (Get-ActionsCacheLayer $sherpaOnnxArchiveCacheHit); ReleaseArtifact = "n/a"; Effective = (Get-EffectiveCacheSource $sherpaOnnxArchiveCacheHit "empty") }
             [ordered]@{ Name = "FFmpeg Profile B"; Actions = (Get-ActionsCacheLayer $ffmpegProfileBCacheHit); ReleaseArtifact = $ffmpegProfileBArtifactRestored; Effective = (Get-EffectiveCacheSource $ffmpegProfileBCacheHit $ffmpegProfileBArtifactRestored) }
             [ordered]@{ Name = "Tauri bundler"; Actions = (Get-ActionsCacheLayer $tauriBundlerCacheHit); ReleaseArtifact = "n/a"; Effective = (Get-EffectiveCacheSource $tauriBundlerCacheHit "empty") }
           )
@@ -419,6 +456,8 @@ jobs:
             Get-PathEvidence "Rust build Cargo cache" @(".cargo\registry\index", ".cargo\registry\cache", ".cargo\git\db")
             Get-PathEvidence "Rust build target cache" @("Frontend\src-tauri\target\release\.fingerprint", "Frontend\src-tauri\target\release\deps", "Frontend\src-tauri\target\release\incremental")
             Get-PathEvidence "Rust audio sidecar" @("build\rust-audio-sidecar-cache")
+            Get-PathEvidence "Rust diarization sidecar" @("build\rust-diarization-sidecar-cache")
+            Get-PathEvidence "Sherpa ONNX static archive" @("build\sherpa-onnx-archive-cache")
             Get-PathEvidence "FFmpeg Profile B" @("build\ffmpeg-profile-b-msys2\dist\scriber-ffmpeg-profile-b", "build\ffmpeg-profile-b-msys2\ffmpeg-profile-b-manifest.json")
             Get-PathEvidence "Tauri bundler" @("%USERPROFILE%\.cache\tauri", "%LOCALAPPDATA%\tauri")
           )
@@ -719,7 +758,7 @@ jobs:
             build/ffmpeg-profile-b-msys2/ffmpeg-profile-b-fixtures.json
             build/ffmpeg-profile-b-msys2/media-preparation-smoke-profile-b.json
             build/ffmpeg-profile-b-msys2/profile-b-msys2-build-report.json
-          key: scriber-ffmpeg-profile-b-msys2-n7.0-v2-${{ runner.os }}
+          key: scriber-ffmpeg-profile-b-msys2-n7.0-v3-${{ runner.os }}
 
       - name: Build Windows installer
         shell: pwsh
@@ -953,6 +992,33 @@ jobs:
         with:
           path: build/rust-audio-sidecar-cache
           key: scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}
+
+      - name: Publish Rust diarization sidecar release artifact
+        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-diarization-sidecar-artifact.outputs.restored != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_release_cache_artifact.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Tag $env:SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG `
+            -AssetName "scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}.zip" `
+            -SourcePath build\rust-diarization-sidecar-cache `
+            -Title "Scriber Rust Diarization Sidecar Cache v1"
+
+      - name: Save Rust diarization sidecar cache
+        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: build/rust-diarization-sidecar-cache
+          key: scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}
+
+      - name: Save Sherpa ONNX static archive cache
+        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.sherpa-onnx-archive-cache.outputs.cache-hit != 'true' && hashFiles('build/sherpa-onnx-archive-cache/**') != ''
+        uses: actions/cache/save@v6
+        with:
+          path: build/sherpa-onnx-archive-cache
+          key: scriber-sherpa-onnx-archive-${{ runner.os }}-${{ hashFiles('build/cache-keys/sherpa-onnx-archive.txt') }}
 
       - name: Publish backend sidecar release artifact
         if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true'

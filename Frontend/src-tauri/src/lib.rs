@@ -14,7 +14,10 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, MutexGuard,
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
@@ -33,7 +36,7 @@ use windows::Win32::Graphics::Dwm::{
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, GlobalFree, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
-    ERROR_SUCCESS, HANDLE,
+    ERROR_SUCCESS, HANDLE, WAIT_OBJECT_0,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::DataExchange::{
@@ -56,7 +59,9 @@ use windows_sys::Win32::System::Registry::{
     REG_SZ,
 };
 #[cfg(windows)]
-use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
+use windows_sys::Win32::System::Threading::{
+    CreateEventW, CreateMutexW, ReleaseMutex, SetEvent, WaitForSingleObject, INFINITE,
+};
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8765;
 const FALLBACK_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -69,6 +74,7 @@ const BACKEND_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(6);
 const BACKEND_TERMINATE_TIMEOUT: Duration = Duration::from_secs(2);
 const BACKEND_TERMINATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const BACKEND_HEALTH_MAX_RESPONSE_BYTES: u64 = 64 * 1024;
+static INITIAL_MAIN_WINDOW_REVEALED: AtomicBool = AtomicBool::new(false);
 const BACKEND_JSON_MAX_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
 const FORCE_MANAGED_BACKEND_ENV: &str = "SCRIBER_FORCE_MANAGED_BACKEND";
 const SESSION_TOKEN_ENV: &str = "SCRIBER_SESSION_TOKEN";
@@ -245,6 +251,7 @@ pub struct DesktopHotkeyStatus {
     available: bool,
     hotkey: String,
     post_processing_hotkey: String,
+    meeting_hotkey: String,
     mode: String,
     message: String,
     capture_suspended: bool,
@@ -313,6 +320,7 @@ struct BackendJob;
 #[cfg(windows)]
 pub struct SingleInstanceGuard {
     handle: HANDLE,
+    show_event: HANDLE,
 }
 
 #[cfg(windows)]
@@ -328,6 +336,9 @@ impl Drop for SingleInstanceGuard {
             if !self.handle.is_null() {
                 let _ = ReleaseMutex(self.handle);
                 let _ = CloseHandle(self.handle);
+            }
+            if !self.show_event.is_null() {
+                let _ = CloseHandle(self.show_event);
             }
         }
     }
@@ -387,6 +398,8 @@ struct DesktopHotkeyStateInner {
     post_processing_hotkey: Option<String>,
     post_processing_hotkey_id: Option<u32>,
     post_processing_enabled: bool,
+    meeting_hotkey: Option<String>,
+    meeting_hotkey_id: Option<u32>,
     mode: String,
     available: bool,
     message: String,
@@ -403,6 +416,8 @@ impl DesktopHotkeyState {
                 post_processing_hotkey: None,
                 post_processing_hotkey_id: None,
                 post_processing_enabled: false,
+                meeting_hotkey: None,
+                meeting_hotkey_id: None,
                 mode: "toggle".to_string(),
                 available: false,
                 message: "Global hotkey not initialized".to_string(),
@@ -419,6 +434,7 @@ impl DesktopHotkeyState {
             available: state.available,
             hotkey: state.registered_hotkey.clone().unwrap_or_default(),
             post_processing_hotkey: state.post_processing_hotkey.clone().unwrap_or_default(),
+            meeting_hotkey: state.meeting_hotkey.clone().unwrap_or_default(),
             mode: state.mode.clone(),
             message: state.message.clone(),
             capture_suspended: state.capture_suspended,
@@ -430,6 +446,7 @@ impl DesktopHotkeyState {
         hotkey: String,
         post_processing_hotkey: String,
         post_processing_enabled: bool,
+        meeting_hotkey: String,
         mode: String,
         message: String,
     ) {
@@ -438,7 +455,7 @@ impl DesktopHotkeyState {
             && !post_processing_hotkey.is_empty()
             && post_processing_hotkey != hotkey;
         state.registered_hotkey_id = shortcut_id_for_hotkey(&hotkey);
-        state.registered_hotkey = Some(hotkey);
+        state.registered_hotkey = Some(hotkey.clone());
         state.post_processing_hotkey_id = if post_processing_enabled {
             shortcut_id_for_hotkey(&post_processing_hotkey)
         } else {
@@ -450,6 +467,19 @@ impl DesktopHotkeyState {
             None
         };
         state.post_processing_enabled = post_processing_enabled;
+        let meeting_enabled = !meeting_hotkey.is_empty()
+            && meeting_hotkey != hotkey
+            && state.post_processing_hotkey.as_deref() != Some(meeting_hotkey.as_str());
+        state.meeting_hotkey_id = if meeting_enabled {
+            shortcut_id_for_hotkey(&meeting_hotkey)
+        } else {
+            None
+        };
+        state.meeting_hotkey = if meeting_enabled {
+            Some(meeting_hotkey)
+        } else {
+            None
+        };
         state.mode = mode;
         state.available = true;
         state.message = message;
@@ -462,6 +492,7 @@ impl DesktopHotkeyState {
         hotkey: &str,
         post_processing_hotkey: &str,
         post_processing_enabled: bool,
+        meeting_hotkey: &str,
         mode: &str,
     ) -> bool {
         let state = lock_unpoisoned(&self.inner);
@@ -478,6 +509,15 @@ impl DesktopHotkeyState {
                     None
                 }
             && state.mode == mode
+            && state.meeting_hotkey.as_deref()
+                == if !meeting_hotkey.is_empty()
+                    && meeting_hotkey != hotkey
+                    && state.post_processing_hotkey.as_deref() != Some(meeting_hotkey)
+                {
+                    Some(meeting_hotkey)
+                } else {
+                    None
+                }
     }
 
     fn set_unregistered(&self, mode: String, available: bool, message: String) {
@@ -487,6 +527,8 @@ impl DesktopHotkeyState {
         state.post_processing_hotkey = None;
         state.post_processing_hotkey_id = None;
         state.post_processing_enabled = false;
+        state.meeting_hotkey = None;
+        state.meeting_hotkey_id = None;
         state.mode = mode;
         state.available = available;
         state.message = message;
@@ -508,6 +550,8 @@ impl DesktopHotkeyState {
             state.post_processing_hotkey = None;
             state.post_processing_hotkey_id = None;
             state.post_processing_enabled = false;
+            state.meeting_hotkey = None;
+            state.meeting_hotkey_id = None;
             state.last_dispatched_at = None;
         }
     }
@@ -526,7 +570,10 @@ impl DesktopHotkeyState {
         let is_post_processing = state.post_processing_enabled
             && state.post_processing_hotkey_id == Some(shortcut_id)
             && state.registered_hotkey_id != Some(shortcut_id);
-        if !is_primary && !is_post_processing {
+        let is_meeting = state.meeting_hotkey_id == Some(shortcut_id)
+            && state.registered_hotkey_id != Some(shortcut_id)
+            && state.post_processing_hotkey_id != Some(shortcut_id);
+        if !is_primary && !is_post_processing && !is_meeting {
             return None;
         }
         match event_state {
@@ -539,7 +586,9 @@ impl DesktopHotkeyState {
                     return None;
                 }
                 state.last_dispatched_at = Some(now);
-                if is_post_processing {
+                if is_meeting {
+                    Some("/api/meetings/hotkey")
+                } else if is_post_processing {
                     Some("/api/live-mic/toggle-post-processing")
                 } else if state.mode == "push_to_talk" {
                     Some("/api/live-mic/start")
@@ -863,7 +912,38 @@ fn set_desktop_window_chrome_theme(app: AppHandle, theme: String) -> Result<(), 
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return Err("main window not found".to_string());
     };
-    apply_desktop_window_chrome_theme(&window, theme)
+    apply_desktop_window_chrome_theme(&window, theme)?;
+    reveal_initial_main_window(&window)
+}
+
+fn reveal_initial_main_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), String> {
+    if INITIAL_MAIN_WINDOW_REVEALED.swap(true, Ordering::AcqRel) {
+        return Ok(());
+    }
+    window
+        .show()
+        .map_err(|err| format!("Could not reveal themed main window: {err}"))?;
+    write_shell_log("initial main window revealed after desktop theme applied");
+    Ok(())
+}
+
+fn schedule_initial_main_window_reveal_fallback(app: AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(3));
+        if INITIAL_MAIN_WINDOW_REVEALED.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+            write_shell_log("initial main window reveal fallback could not find main window");
+            return;
+        };
+        match window.show() {
+            Ok(()) => write_shell_log("initial main window revealed by fallback"),
+            Err(err) => write_shell_log(&format!(
+                "initial main window reveal fallback failed: {err}"
+            )),
+        }
+    });
 }
 
 #[tauri::command]
@@ -1053,6 +1133,21 @@ pub fn run() {
         .on_menu_event(|app, event| {
             handle_shell_menu_event(app, event.id().as_ref());
         })
+        .on_window_event(|window, event| {
+            if should_hide_window_instead_of_closing(window.label()) {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    match window.hide() {
+                        Ok(()) => write_shell_log(
+                            "main window close requested; hidden to tray instead of destroyed",
+                        ),
+                        Err(err) => {
+                            write_shell_log(&format!("main window close-to-tray failed: {err}"))
+                        }
+                    }
+                }
+            }
+        })
         .manage(single_instance_guard)
         .manage(DesktopHotkeyState::new())
         .manage(TrayState::default())
@@ -1061,6 +1156,8 @@ pub fn run() {
         .manage(backend_manager)
         .setup(|app| {
             configure_desktop_shell(app)?;
+            schedule_initial_main_window_reveal_fallback(app.handle().clone());
+            start_single_instance_show_listener(app.handle().clone());
             native_overlay::set_app_handle(app.handle().clone());
             match native_overlay::create_overlay_window(app) {
                 Ok(()) => write_shell_log("native overlay hidden window precreated"),
@@ -1130,6 +1227,10 @@ fn configure_desktop_shell<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()>
     apply_desktop_window_icon(app.handle());
     install_tray(app)?;
     Ok(())
+}
+
+fn should_hide_window_instead_of_closing(label: &str) -> bool {
+    label == MAIN_WINDOW_LABEL
 }
 
 fn apply_default_desktop_autostart<R: Runtime>(app: &AppHandle<R>) {
@@ -2440,6 +2541,12 @@ fn refresh_child_state(state: &mut BackendState) {
                 let pid = child.id();
                 let launch_kind = state.launch_kind.clone();
                 write_backend_exit_metadata(pid, &launch_kind, &status.to_string());
+                let stopped = audio_sidecar_client::shutdown_all_audio_sidecars(
+                    "managedBackendExitedUnexpectedly",
+                );
+                write_shell_log(&format!(
+                    "stopped {stopped} audio sidecar(s) after unexpected backend exit pid={pid}"
+                ));
                 state.message = format!("Managed backend exited with {status}");
                 state.child = None;
                 state.job = None;
@@ -2452,6 +2559,12 @@ fn refresh_child_state(state: &mut BackendState) {
                 let pid = child.id();
                 let launch_kind = state.launch_kind.clone();
                 write_backend_exit_metadata(pid, &launch_kind, &format!("inspect failed: {err}"));
+                let stopped = audio_sidecar_client::shutdown_all_audio_sidecars(
+                    "managedBackendInspectionFailed",
+                );
+                write_shell_log(&format!(
+                    "stopped {stopped} audio sidecar(s) after backend inspection failure pid={pid}"
+                ));
                 state.message = format!("Failed to inspect backend process: {err}");
                 state.child = None;
                 state.job = None;
@@ -2464,6 +2577,12 @@ fn refresh_child_state(state: &mut BackendState) {
 }
 
 fn terminate_managed_child(state: &mut BackendState) {
+    let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("managedBackendReplacement");
+    if stopped > 0 {
+        write_shell_log(&format!(
+            "stopped {stopped} audio sidecar(s) before managed backend replacement"
+        ));
+    }
     if let Some(mut child) = state.child.take() {
         let pid = child.id();
         let access = BackendAccess {
@@ -2656,6 +2775,7 @@ fn shell_ipc_env_pairs(
 #[cfg(windows)]
 fn acquire_single_instance_guard(name: &str) -> Result<SingleInstanceGuard, String> {
     let wide_name = wide_null(name);
+    let wide_show_event_name = wide_null(&format!("{name}.ShowMainWindow"));
     unsafe {
         let handle = CreateMutexW(std::ptr::null(), 1, wide_name.as_ptr());
         if handle.is_null() {
@@ -2667,10 +2787,44 @@ fn acquire_single_instance_guard(name: &str) -> Result<SingleInstanceGuard, Stri
 
         if GetLastError() == ERROR_ALREADY_EXISTS {
             let _ = CloseHandle(handle);
-            return Err("another Scriber desktop instance is already running".to_string());
+            let show_event = CreateEventW(std::ptr::null(), 0, 0, wide_show_event_name.as_ptr());
+            if show_event.is_null() {
+                return Err(format!(
+                    "another Scriber desktop instance is already running; main-window restore signal failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            let signaled = SetEvent(show_event) != 0;
+            let signal_error = if signaled {
+                None
+            } else {
+                Some(std::io::Error::last_os_error())
+            };
+            let _ = CloseHandle(show_event);
+            return if signaled {
+                Err(
+                    "another Scriber desktop instance is already running; requested its main window"
+                        .to_string(),
+                )
+            } else {
+                Err(format!(
+                    "another Scriber desktop instance is already running; main-window restore signal failed: {}",
+                    signal_error.expect("signal error is present")
+                ))
+            };
         }
 
-        Ok(SingleInstanceGuard { handle })
+        let show_event = CreateEventW(std::ptr::null(), 0, 0, wide_show_event_name.as_ptr());
+        if show_event.is_null() {
+            let error = std::io::Error::last_os_error();
+            let _ = ReleaseMutex(handle);
+            let _ = CloseHandle(handle);
+            return Err(format!(
+                "single-instance show event creation failed: {error}"
+            ));
+        }
+
+        Ok(SingleInstanceGuard { handle, show_event })
     }
 }
 
@@ -2678,6 +2832,28 @@ fn acquire_single_instance_guard(name: &str) -> Result<SingleInstanceGuard, Stri
 fn acquire_single_instance_guard(_name: &str) -> Result<SingleInstanceGuard, String> {
     Ok(SingleInstanceGuard)
 }
+
+#[cfg(windows)]
+fn start_single_instance_show_listener<R: Runtime>(app: AppHandle<R>) {
+    // HANDLE is an opaque pointer in windows-sys. Preserve only its numeric
+    // value across the thread boundary; the managed guard owns its lifetime.
+    let show_event_value = app.state::<SingleInstanceGuard>().show_event as usize;
+    std::thread::spawn(move || loop {
+        let show_event = show_event_value as HANDLE;
+        let wait_result = unsafe { WaitForSingleObject(show_event, INFINITE) };
+        if wait_result != WAIT_OBJECT_0 {
+            write_shell_log(&format!(
+                "single-instance main-window listener stopped wait_result={wait_result}"
+            ));
+            break;
+        }
+        write_shell_log("single-instance main-window restore requested");
+        show_main_window(&app);
+    });
+}
+
+#[cfg(not(windows))]
+fn start_single_instance_show_listener<R: Runtime>(_app: AppHandle<R>) {}
 
 #[cfg(windows)]
 fn wide_null(value: &str) -> Vec<u16> {
@@ -2919,6 +3095,7 @@ fn refresh_global_hotkey_for_app<R: Runtime>(
         &config.hotkey,
         &config.post_processing_hotkey,
         config.post_processing_enabled,
+        &config.meeting_hotkey,
         &config.mode,
     ) {
         return Ok(hotkey_state.status());
@@ -2948,16 +3125,50 @@ fn refresh_global_hotkey_for_app<R: Runtime>(
                 )
             })?;
     }
+    let configured_meeting_hotkey = if !config.meeting_hotkey.is_empty()
+        && config.meeting_hotkey != config.hotkey
+        && (!post_hotkey_registered || config.meeting_hotkey != config.post_processing_hotkey)
+    {
+        config.meeting_hotkey.clone()
+    } else {
+        String::new()
+    };
+    let mut registered_meeting_hotkey = configured_meeting_hotkey.clone();
+    let mut meeting_hotkey_fallback = false;
+    if !configured_meeting_hotkey.is_empty()
+        && app
+            .global_shortcut()
+            .register(configured_meeting_hotkey.as_str())
+            .is_err()
+    {
+        let fallback = "ctrl+alt+shift+m".to_string();
+        if fallback != config.hotkey
+            && (!post_hotkey_registered || fallback != config.post_processing_hotkey)
+            && app.global_shortcut().register(fallback.as_str()).is_ok()
+        {
+            registered_meeting_hotkey = fallback;
+            meeting_hotkey_fallback = true;
+        } else {
+            registered_meeting_hotkey.clear();
+        }
+    }
 
     let message = format!(
-        "Global hotkey registered: {} ({}){}",
+        "Global hotkey registered: {} ({}){}{}",
         config.hotkey,
         config.mode,
         if post_hotkey_registered {
             format!(", post-processing: {}", config.post_processing_hotkey)
         } else {
             String::new()
-        }
+        },
+        if registered_meeting_hotkey.is_empty() {
+            String::new()
+        } else if meeting_hotkey_fallback {
+            format!(", meeting fallback: {}", registered_meeting_hotkey)
+        } else {
+            format!(", meeting: {}", registered_meeting_hotkey)
+        },
     );
     write_shell_log(&message);
     hotkey_state.set_registered(
@@ -2968,6 +3179,7 @@ fn refresh_global_hotkey_for_app<R: Runtime>(
             String::new()
         },
         post_hotkey_registered,
+        registered_meeting_hotkey,
         config.mode,
         message,
     );
@@ -3121,6 +3333,7 @@ struct BackendHotkeyConfig {
     hotkey: String,
     post_processing_hotkey: String,
     post_processing_enabled: bool,
+    meeting_hotkey: String,
     mode: String,
 }
 
@@ -3144,11 +3357,17 @@ fn fetch_backend_hotkey_config(access: &BackendAccess) -> Result<BackendHotkeyCo
         .get("postProcessingEnabled")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let raw_meeting_hotkey = value
+        .get("meetingHotkeyRaw")
+        .or_else(|| value.get("meetingHotkey"))
+        .and_then(Value::as_str)
+        .unwrap_or("ctrl+alt+m");
 
     Ok(BackendHotkeyConfig {
         hotkey: normalize_global_shortcut(raw_hotkey),
         post_processing_hotkey: normalize_global_shortcut(raw_post_processing_hotkey),
         post_processing_enabled,
+        meeting_hotkey: normalize_global_shortcut(raw_meeting_hotkey),
         mode: normalize_hotkey_mode(raw_mode),
     })
 }
@@ -3791,12 +4010,13 @@ mod tests {
         parse_shell_menu_smoke_actions, read_backend_response_limited, recent_transcript_label,
         recent_transcripts_from_value, request_backend_shutdown, resolve_session_token,
         sanitize_menu_label, shell_ipc, shell_ipc_env_pairs, shortcut_id_for_hotkey,
-        should_refresh_hotkey_after_backend_ready, should_show_window_for_tray_click,
-        split_http_response, wait_for_child_exit, BackendAccess, DesktopHotkeyState,
-        NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry, ShellMenuSmokeAction,
-        AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST,
-        HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
-        MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        should_hide_window_instead_of_closing, should_refresh_hotkey_after_backend_ready,
+        should_show_window_for_tray_click, split_http_response, wait_for_child_exit, BackendAccess,
+        DesktopHotkeyState, NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry,
+        ShellMenuSmokeAction, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
+        BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE,
+        MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
+        MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
         SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
         TRAY_RECENT_TRANSCRIPT_LIMIT,
@@ -4042,6 +4262,14 @@ mod tests {
 
         let second = acquire_single_instance_guard(&name);
         assert!(matches!(second, Err(message) if message.contains("already running")));
+        let restore_signal = unsafe {
+            windows_sys::Win32::System::Threading::WaitForSingleObject(first.show_event, 0)
+        };
+        assert_eq!(
+            restore_signal,
+            windows_sys::Win32::Foundation::WAIT_OBJECT_0,
+            "a second launch must ask the primary instance to restore its window"
+        );
 
         drop(first);
         let third = acquire_single_instance_guard(&name);
@@ -4184,6 +4412,7 @@ mod tests {
             "ctrl+alt+s".to_string(),
             String::new(),
             false,
+            String::new(),
             "toggle".to_string(),
             "registered".to_string(),
         );
@@ -4227,6 +4456,7 @@ mod tests {
             "ctrl+alt+s".to_string(),
             String::new(),
             false,
+            String::new(),
             "toggle".to_string(),
             "registered".to_string(),
         );
@@ -4254,6 +4484,7 @@ mod tests {
             "ctrl+alt+s".to_string(),
             String::new(),
             false,
+            String::new(),
             "toggle".to_string(),
             "registered".to_string(),
         );
@@ -4271,22 +4502,60 @@ mod tests {
     #[test]
     fn desktop_hotkey_state_detects_already_registered_config() {
         let state = DesktopHotkeyState::new();
-        assert!(!state.is_registered_config("ctrl+alt+s", "", false, "toggle"));
+        assert!(!state.is_registered_config("ctrl+alt+s", "", false, "", "toggle"));
 
         state.set_registered(
             "ctrl+alt+s".to_string(),
             "ctrl+shift+p".to_string(),
             true,
+            "ctrl+alt+m".to_string(),
             "toggle".to_string(),
             "registered".to_string(),
         );
-        assert!(state.is_registered_config("ctrl+alt+s", "ctrl+shift+p", true, "toggle"));
-        assert!(!state.is_registered_config("ctrl+shift+s", "ctrl+shift+p", true, "toggle"));
-        assert!(!state.is_registered_config("ctrl+alt+s", "ctrl+shift+x", true, "toggle"));
-        assert!(!state.is_registered_config("ctrl+alt+s", "ctrl+shift+p", true, "push_to_talk"));
+        assert!(state.is_registered_config(
+            "ctrl+alt+s",
+            "ctrl+shift+p",
+            true,
+            "ctrl+alt+m",
+            "toggle"
+        ));
+        assert!(!state.is_registered_config(
+            "ctrl+shift+s",
+            "ctrl+shift+p",
+            true,
+            "ctrl+alt+m",
+            "toggle"
+        ));
+        assert!(!state.is_registered_config(
+            "ctrl+alt+s",
+            "ctrl+shift+x",
+            true,
+            "ctrl+alt+m",
+            "toggle"
+        ));
+        assert!(!state.is_registered_config(
+            "ctrl+alt+s",
+            "ctrl+shift+p",
+            true,
+            "ctrl+alt+x",
+            "toggle"
+        ));
+        assert!(!state.is_registered_config(
+            "ctrl+alt+s",
+            "ctrl+shift+p",
+            true,
+            "ctrl+alt+m",
+            "push_to_talk"
+        ));
 
         state.set_capture_suspended(true, "suspended".to_string());
-        assert!(!state.is_registered_config("ctrl+alt+s", "ctrl+shift+p", true, "toggle"));
+        assert!(!state.is_registered_config(
+            "ctrl+alt+s",
+            "ctrl+shift+p",
+            true,
+            "ctrl+alt+m",
+            "toggle"
+        ));
     }
 
     #[test]
@@ -4302,6 +4571,7 @@ mod tests {
             "Ctrl+Alt+Space".to_string(),
             String::new(),
             false,
+            String::new(),
             "toggle".to_string(),
             "ready".to_string(),
         );
@@ -4321,6 +4591,7 @@ mod tests {
             "ctrl+alt+s".to_string(),
             String::new(),
             false,
+            String::new(),
             "push_to_talk".to_string(),
             "registered".to_string(),
         );
@@ -4349,6 +4620,7 @@ mod tests {
             "ctrl+alt+s".to_string(),
             "ctrl+shift+p".to_string(),
             true,
+            "ctrl+alt+m".to_string(),
             "push_to_talk".to_string(),
             "registered".to_string(),
         );
@@ -4377,6 +4649,34 @@ mod tests {
     }
 
     #[test]
+    fn desktop_meeting_hotkey_maps_to_confirmation_endpoint() {
+        let state = DesktopHotkeyState::new();
+        let meeting_id = shortcut_id_for_hotkey("ctrl+alt+m").unwrap();
+        state.set_registered(
+            "ctrl+alt+s".to_string(),
+            String::new(),
+            false,
+            "ctrl+alt+m".to_string(),
+            "toggle".to_string(),
+            "registered".to_string(),
+        );
+        let now = Instant::now();
+        assert_eq!(state.status().meeting_hotkey, "ctrl+alt+m");
+        assert_eq!(
+            state.action_for_event(meeting_id, ShortcutState::Pressed, now),
+            Some("/api/meetings/hotkey")
+        );
+        assert_eq!(
+            state.action_for_event(
+                meeting_id,
+                ShortcutState::Released,
+                now + Duration::from_millis(20)
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn desktop_hotkey_primary_wins_when_post_processing_hotkey_matches_primary() {
         let state = DesktopHotkeyState::new();
         let primary_id = shortcut_id_for_hotkey("ctrl+alt+s").unwrap();
@@ -4384,6 +4684,7 @@ mod tests {
             "ctrl+alt+s".to_string(),
             "ctrl+alt+s".to_string(),
             true,
+            "ctrl+alt+s".to_string(),
             "toggle".to_string(),
             "registered".to_string(),
         );
@@ -4672,6 +4973,13 @@ mod tests {
             MouseButton::Right,
             Some(MouseButtonState::Up)
         ));
+    }
+
+    #[test]
+    fn only_main_window_close_is_routed_to_the_tray() {
+        assert!(should_hide_window_instead_of_closing("main"));
+        assert!(!should_hide_window_instead_of_closing("tray-panel"));
+        assert!(!should_hide_window_instead_of_closing("recording-overlay"));
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {

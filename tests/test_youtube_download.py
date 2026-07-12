@@ -12,14 +12,19 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.youtube_download import (
+    YouTubeCaptionCue,
     YouTubeDownloadError,
+    _caption_cues_from_json3_bytes,
+    _caption_cues_from_vtt_bytes,
     _caption_text_from_json3_bytes,
     _caption_text_from_vtt_bytes,
     _ensure_audio_only_file,
     _extract_audio_track,
     _has_video_stream,
+    _parse_caption_payload,
     _select_caption_track,
     download_youtube_audio,
+    download_youtube_transcript,
 )
 
 
@@ -98,6 +103,161 @@ def test_caption_parsers_remove_transport_markup_and_duplicate_lines():
 
     assert _caption_text_from_json3_bytes(json3) == "Hello world\nNext line"
     assert _caption_text_from_vtt_bytes(vtt) == "Hello world\nNext line"
+
+
+def test_json3_caption_cues_preserve_provider_times_and_estimate_only_to_next_start():
+    payload = b'''{
+      "events": [
+        {"tStartMs": 1000, "dDurationMs": 500, "segs": [{"utf8": "Hello "}, {"utf8": "world"}]},
+        {"dDurationMs": 100, "segs": [{"utf8": "missing start"}]},
+        {"tStartMs": 2000, "segs": [{"utf8": "Estimated ending"}]},
+        {"tStartMs": 2600, "dDurationMs": 400, "segs": [{"utf8": "Exact ending"}]},
+        {"tStartMs": 3200, "segs": [{"utf8": "no defensible ending"}]}
+      ]
+    }'''
+
+    assert _caption_cues_from_json3_bytes(payload) == (
+        YouTubeCaptionCue(1000, 1500, "Hello world"),
+        YouTubeCaptionCue(2000, 2600, "Estimated ending", "estimated"),
+        YouTubeCaptionCue(2600, 3000, "Exact ending"),
+    )
+
+
+def test_vtt_caption_cues_parse_each_valid_timing_line_and_clean_markup():
+    payload = b'''WEBVTT
+
+first
+00:00:01.250 --> 00:00:02.750 align:start position:0%
+<v Alice>Hello &amp; <b>world</b></v>
+
+bad
+not-a-time --> 00:00:04.000
+Discard me
+
+backwards
+00:00:05.000 --> 00:00:04.000
+Discard me too
+
+00:01:02.000 --> 00:01:03.125
+Second line
+'''
+
+    assert _caption_cues_from_vtt_bytes(payload) == (
+        YouTubeCaptionCue(1250, 2750, "Hello & world"),
+        YouTubeCaptionCue(62000, 63125, "Second line"),
+    )
+
+
+def test_caption_cues_keep_time_separated_repeated_text():
+    payload = b'''{
+      "events": [
+        {"tStartMs": 0, "dDurationMs": 500, "segs": [{"utf8": "Thank you"}]},
+        {"tStartMs": 5000, "dDurationMs": 500, "segs": [{"utf8": "Thank you"}]}
+      ]
+    }'''
+
+    cues = _caption_cues_from_json3_bytes(payload)
+
+    assert [cue.text for cue in cues] == ["Thank you", "Thank you"]
+    assert [cue.start_ms for cue in cues] == [0, 5000]
+
+
+def test_caption_cues_collapse_only_immediately_overlapping_exact_duplicates():
+    payload = b'''{
+      "events": [
+        {"tStartMs": 0, "dDurationMs": 1000, "segs": [{"utf8": "Repeat"}]},
+        {"tStartMs": 500, "dDurationMs": 1000, "segs": [{"utf8": "Repeat"}]},
+        {"tStartMs": 1500, "dDurationMs": 500, "segs": [{"utf8": "Repeat"}]}
+      ]
+    }'''
+
+    assert _caption_cues_from_json3_bytes(payload) == (
+        YouTubeCaptionCue(0, 1500, "Repeat", "estimated"),
+        YouTubeCaptionCue(1500, 2000, "Repeat"),
+    )
+
+
+def test_rolling_caption_prefix_is_trimmed_only_for_immediate_overlap():
+    payload = b'''{
+      "events": [
+        {"tStartMs": 0, "dDurationMs": 1000, "segs": [{"utf8": "Hello"}]},
+        {"tStartMs": 500, "dDurationMs": 1000, "segs": [{"utf8": "Hello world"}]},
+        {"tStartMs": 3000, "dDurationMs": 500, "segs": [{"utf8": "Hello again"}]}
+      ]
+    }'''
+
+    assert _caption_cues_from_json3_bytes(payload) == (
+        YouTubeCaptionCue(0, 1000, "Hello"),
+        YouTubeCaptionCue(500, 1500, "world", "estimated"),
+        YouTubeCaptionCue(3000, 3500, "Hello again"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "extension"),
+    [
+        (b'{"events":[{"segs":[{"utf8":"text only"}]}]}', "json3"),
+        (b"{not-json", "json3"),
+        (b"WEBVTT\n\ntext without a timing line\n", "vtt"),
+        (b"<transcript><text>legacy untimed text</text></transcript>", "srv3"),
+    ],
+)
+def test_structured_caption_parser_rejects_malformed_or_untimed_payloads(
+    payload: bytes,
+    extension: str,
+):
+    assert _parse_caption_payload(payload, extension) == ()
+
+
+@pytest.mark.asyncio
+async def test_download_youtube_transcript_returns_none_for_untimed_caption_track(
+    monkeypatch,
+):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return b'{"events":[{"segs":[{"utf8":"text only"}]}]}'
+
+    class FakeYoutubeDL:
+        def __init__(self, _options):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, _url, *, download):
+            assert download is False
+            return {
+                "language": "en",
+                "subtitles": {
+                    "en": [{"ext": "json3", "url": "https://example.test/captions"}],
+                },
+            }
+
+        def urlopen(self, _request):
+            return FakeResponse()
+
+    class FakeRequest:
+        def __init__(self, url, *, headers):
+            self.url = url
+            self.headers = headers
+
+    yt_dlp_module = types.ModuleType("yt_dlp")
+    yt_dlp_module.YoutubeDL = FakeYoutubeDL
+    networking_module = types.ModuleType("yt_dlp.networking")
+    networking_module.Request = FakeRequest
+    monkeypatch.setitem(sys.modules, "yt_dlp", yt_dlp_module)
+    monkeypatch.setitem(sys.modules, "yt_dlp.networking", networking_module)
+
+    assert await download_youtube_transcript("https://example.test/video") is None
 
 
 @pytest.mark.asyncio

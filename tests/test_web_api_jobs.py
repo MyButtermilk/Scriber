@@ -10,8 +10,9 @@ import pytest
 from src import web_api
 from src.config import Config
 from src.data.job_store import JobStatus, JobStore
+from src.pipeline import direct_file_workflow_timeout_seconds
 from src.web_api import ScriberWebController, TranscriptRecord
-from src.youtube_download import YouTubeTranscript
+from src.youtube_download import YouTubeCaptionCue, YouTubeTranscript
 
 
 @pytest.mark.asyncio
@@ -1383,6 +1384,13 @@ async def test_youtube_captions_skip_audio_download_and_stt_provider(monkeypatch
                     text="Caption text without an audio upload.",
                     language="en-orig",
                     is_automatic=True,
+                    cues=(
+                        YouTubeCaptionCue(
+                            start_ms=0,
+                            end_ms=1_500,
+                            text="Caption text without an audio upload.",
+                        ),
+                    ),
                 )
             ),
         ) as caption_mock,
@@ -1394,7 +1402,7 @@ async def test_youtube_captions_skip_audio_download_and_stt_provider(monkeypatch
         await ctl._run_youtube_transcription(rec, provider=None)
 
     assert rec.status == "completed"
-    assert rec.content == "Caption text without an audio upload."
+    assert rec.content == "[0:00] Caption text without an audio upload."
     assert rec.language == "en-orig"
     assert rec._youtube_stt_provider_used == ""
     caption_mock.assert_awaited_once()
@@ -1778,3 +1786,139 @@ async def test_file_auto_summary_cancellation_preserves_completed_transcript(mon
     assert rec.summary_error == "Summary canceled"
     assert save_mock.await_count == 1
     assert summary_save_mock.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_file_long_media_passes_duration_and_scaled_outer_timeout(
+    monkeypatch, tmp_path
+):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    file_path = tmp_path / "two-hours.wav"
+    file_path.write_bytes(b"RIFF....WAVEfmt ")
+    rec = _completed_record(transcript_type="file", tmp_path=tmp_path)
+    rec.id = "file-long-duration-budget"
+    captured_init: dict = {}
+    captured_timeouts: list[float] = []
+
+    class _DurationAwarePipeline:
+        last_structured_transcript_payload = None
+
+        def __init__(self, *, on_transcription, duration_seconds: float):
+            self._on_transcription = on_transcription
+            self._duration_seconds = duration_seconds
+
+        def _direct_file_workflow_timeout_seconds(self, *, minimum_seconds: float):
+            return direct_file_workflow_timeout_seconds(
+                self._duration_seconds,
+                minimum_seconds=minimum_seconds,
+            )
+
+        async def transcribe_file_direct(self, _path):
+            self._on_transcription("A complete two-hour transcript.", True)
+
+    def create_pipeline(*_args, **kwargs):
+        captured_init.update(kwargs)
+        return _DurationAwarePipeline(
+            on_transcription=kwargs["on_transcription"],
+            duration_seconds=kwargs["direct_file_expected_duration_seconds"],
+        )
+
+    async def capture_timeout(operation, *, timeout_seconds, timeout_label):
+        if timeout_label == "File transcription":
+            captured_timeouts.append(timeout_seconds)
+        return await operation
+
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+    monkeypatch.setattr(ctl, "_await_with_timeout", capture_timeout)
+    monkeypatch.setattr(
+        ctl, "_apply_speaker_diarization_fallback", AsyncMock(return_value=[])
+    )
+    with (
+        patch("src.web_api._probe_media_duration_seconds", return_value=7_200.0),
+        patch("src.web_api._create_scriber_pipeline", side_effect=create_pipeline),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        await ctl._run_file_transcription(rec, file_path, provider="soniox")
+
+    assert rec.status == "completed"
+    assert rec.duration == "2:00:00"
+    assert captured_init["direct_file_expected_duration_seconds"] == 7_200.0
+    assert captured_timeouts == [8_220.0]
+
+
+@pytest.mark.asyncio
+async def test_file_duration_limit_uses_concrete_frozen_route_model_before_pipeline(
+    monkeypatch, tmp_path
+):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    file_path = tmp_path / "too-long.wav"
+    file_path.write_bytes(b"RIFF....WAVEfmt ")
+    rec = _completed_record(transcript_type="file", tmp_path=tmp_path)
+    rec.id = "file-concrete-route-duration-limit"
+    observed_routes: list[tuple[str, str]] = []
+
+    def duration_limit(provider: str, model: str | None = None):
+        observed_routes.append((provider, str(model or "")))
+        return 600
+
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+    monkeypatch.setattr(Config, "SONIOX_ASYNC_MODEL", "stt-async-concrete-test")
+    with (
+        patch("src.web_api._probe_media_duration_seconds", return_value=601.0),
+        patch("src.web_api.meeting_max_duration_seconds", side_effect=duration_limit),
+        patch("src.web_api._create_scriber_pipeline") as pipeline_mock,
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        await ctl._run_file_transcription(rec, file_path, provider="soniox")
+
+    assert observed_routes == [("soniox", "stt-async-concrete-test")]
+    pipeline_mock.assert_not_called()
+    assert rec.status == "failed"
+    assert "up to 10 minutes" in rec.content
+
+
+@pytest.mark.asyncio
+async def test_youtube_duration_limit_is_checked_after_real_audio_download(
+    monkeypatch, tmp_path
+):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._downloads_dir = tmp_path / "downloads"
+    audio_path = tmp_path / "downloaded-audio.webm"
+    audio_path.write_bytes(b"downloaded-audio")
+    rec = _completed_record(transcript_type="youtube", tmp_path=tmp_path)
+    rec.id = "youtube-post-download-duration-limit"
+    download_finished = False
+    observed_routes: list[tuple[str, str]] = []
+
+    async def download_audio(*_args, **_kwargs):
+        nonlocal download_finished
+        download_finished = True
+        return audio_path
+
+    def duration_limit(provider: str, model: str | None = None):
+        assert download_finished is True
+        observed_routes.append((provider, str(model or "")))
+        return 600
+
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+    monkeypatch.setattr(Config, "SONIOX_ASYNC_MODEL", "stt-async-youtube-test")
+    register_asset = AsyncMock()
+    with (
+        patch("src.web_api.download_youtube_audio", new=AsyncMock(side_effect=download_audio)) as download_mock,
+        patch("src.web_api._probe_media_duration_seconds", return_value=601.0),
+        patch("src.web_api.meeting_max_duration_seconds", side_effect=duration_limit),
+        patch("src.web_api._create_scriber_pipeline") as pipeline_mock,
+        patch.object(ctl, "_register_transcript_source_asset", new=register_asset),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        await ctl._run_youtube_transcription(rec, provider="soniox")
+
+    download_mock.assert_awaited_once()
+    assert observed_routes == [("soniox", "stt-async-youtube-test")]
+    register_asset.assert_not_awaited()
+    pipeline_mock.assert_not_called()
+    assert rec.status == "failed"
+    assert "up to 10 minutes" in rec.content

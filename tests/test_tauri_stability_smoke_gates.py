@@ -25,6 +25,41 @@ def test_tauri_shell_defers_backend_start_off_setup_hot_path() -> None:
     assert "std::thread::sleep(BACKEND_SUPERVISOR_INTERVAL);" in lib
 
 
+def test_main_window_close_hides_to_tray_without_destroying_restore_target() -> None:
+    lib = read_script("Frontend/src-tauri/src/lib.rs")
+
+    assert ".on_window_event(|window, event|" in lib
+    assert "should_hide_window_instead_of_closing(window.label())" in lib
+    assert "tauri::WindowEvent::CloseRequested" in lib
+    assert "api.prevent_close();" in lib
+    assert "window.hide()" in lib
+    assert "hidden to tray instead of destroyed" in lib
+
+
+def test_unexpected_backend_exit_stops_all_audio_sidecars_before_recovery() -> None:
+    lib = read_script("Frontend/src-tauri/src/lib.rs")
+
+    assert 'shutdown_all_audio_sidecars(\n                    "managedBackendExitedUnexpectedly"' in lib
+    assert 'shutdown_all_audio_sidecars(\n                    "managedBackendInspectionFailed"' in lib
+    assert "after unexpected backend exit pid={pid}" in lib
+    assert "after backend inspection failure pid={pid}" in lib
+
+
+def test_every_managed_backend_replacement_drains_audio_sidecars_first() -> None:
+    lib = read_script("Frontend/src-tauri/src/lib.rs")
+    function = lib.split("fn terminate_managed_child", 1)[1].split("\n    fn ", 1)[0]
+    assert "shutdown_all_audio_sidecars" in function
+    assert '"managedBackendReplacement"' in function
+    assert function.index("shutdown_all_audio_sidecars") < function.index("request_backend_shutdown")
+
+
+def test_meeting_status_keeps_sidecar_until_stop_collects_diagnostics() -> None:
+    client = read_script("Frontend/src-tauri/src/audio_sidecar_client.rs")
+
+    assert "A meeting status check is observational" in client
+    assert "if remove || !response.success {" in client
+
+
 def test_desktop_stability_smoke_reports_memory_growth_gate() -> None:
     script = read_script("scripts/smoke_tauri_desktop.ps1")
 
@@ -59,6 +94,8 @@ def test_desktop_smoke_verifies_single_instance_and_audio_sidecar_cleanup() -> N
     assert "SecondArgumentList" in script
     assert "ForbiddenLogText" in script
     assert "another Scriber desktop instance is already running" in script
+    assert "single-instance main-window restore requested" in script
+    assert "mainWindowRestoreObserved" in script
     assert "Single-instance forbidden probe text leaked to runtime logs." in script
     assert "secondArgumentCount" in script
     assert "forbiddenLogTextAbsent" in script
@@ -92,6 +129,27 @@ def test_installer_and_build_scripts_forward_memory_growth_gate() -> None:
     assert '"-MaxBackendWorkingSetGrowthMB", $MaxBackendWorkingSetGrowthMB.ToString' in installer
     assert "[double]$InstallerMaxBackendWorkingSetGrowthMB = 0" in build
     assert '"-MaxBackendWorkingSetGrowthMB", $InstallerMaxBackendWorkingSetGrowthMB.ToString' in build
+
+
+def test_installer_smoke_uses_only_the_current_versioned_artifact() -> None:
+    installer = read_script("scripts/smoke_windows_installer.ps1")
+    build = read_script("scripts/build_windows.ps1")
+
+    assert "src\\version.py" in installer
+    assert "Scriber_${currentVersion}_x64-setup.exe" in installer
+    assert "Scriber_0.4.2_x64-setup.exe" not in installer
+    assert '"-InstallerPath",' in build
+    assert "$artifacts[0]" in build
+
+
+def test_installer_smoke_gates_meeting_notices_and_optional_model_absence() -> None:
+    installer = read_script("scripts/smoke_windows_installer.ps1")
+
+    assert "function Test-InstalledMeetingResources" in installer
+    assert 'Join-Path $Root "THIRD_PARTY_NOTICES.md"' in installer
+    assert "aec3 0\\.2\\.0" in installer
+    assert "Optional WeSpeaker model must not be bundled" in installer
+    assert "meetingResources = $meetingResources" in installer
 
 
 def test_installer_and_build_scripts_forward_idle_cpu_gate() -> None:
@@ -133,6 +191,22 @@ def test_installer_smoke_requires_packaged_audio_sidecar() -> None:
     assert "audioSidecarExe = $audioSidecarExe" in installer
 
 
+def test_release_and_installer_smokes_attest_static_diarization_worker() -> None:
+    installer = read_script("scripts/smoke_windows_installer.ps1")
+    build = read_script("scripts/build_windows.ps1")
+    smoke = read_script("scripts/smoke_diarization_worker_resource.py")
+
+    assert "scripts\\smoke_diarization_worker_resource.py" in installer
+    assert "diarizationWorker = $diarizationWorker" in installer
+    assert "Diarization worker staged resource smoke" in build
+    assert "diarization-worker-staged-smoke.json" in build
+    assert "diarizationWorkerStagedSmokeValidated = $true" in build
+    assert "--self-test" in smoke
+    assert "linkMode" in smoke
+    assert "_pe_imports" in smoke
+    assert "Optional diarization models are present in the base package" in smoke
+
+
 def test_release_build_and_installer_smoke_report_size_budgets() -> None:
     installer = read_script("scripts/smoke_windows_installer.ps1")
     build = read_script("scripts/build_windows.ps1")
@@ -159,11 +233,13 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
 
     assert "function Test-MediaToolExecutable" in sidecar
     assert "function Test-ScriberFfmpegCapabilities" in sidecar
+    assert "function Invoke-ScriberFfmpegFixtureSmoke" in sidecar
     assert "function Invoke-ScriberFfmpegProfileManifest" in sidecar
     assert "function Get-SidecarInputManifest" in sidecar
     assert "function Sync-DirectoryContents" in sidecar
     assert "function Copy-FileIfChanged" in sidecar
     assert "function Get-RustAudioSidecarInputManifest" in sidecar
+    assert r'Frontend\src-tauri\src\meeting_aec.rs' in sidecar
     assert "function Write-SidecarBuildMetadata" in sidecar
     assert "PySide6" not in sidecar
     assert "[switch]$UseProfileBFfmpeg" in sidecar
@@ -180,6 +256,17 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "[switch]$ValidateSlimMediaTools" in sidecar
     assert "[switch]$ReuseSidecarIfUnchanged" in sidecar
     assert "[switch]$BundleRustAudioSidecar" in sidecar
+    assert "[switch]$BundleRustDiarizationSidecar" in sidecar
+    assert "function Copy-RustDiarizationSidecarToBackend" in sidecar
+    assert "cargo build --release --locked --target-dir $CargoTargetRoot" in sidecar
+    assert "SHERPA_ONNX_ARCHIVE_DIR" in sidecar
+    assert "f6555701d6397d74f1302b0666a661f32708b599a14a5fde80835d4902fcd315" in sidecar
+    assert r"scripts\write_diarization_worker_manifest.py" in sidecar
+    assert r"scripts\smoke_diarization_worker_resource.py" in sidecar
+    assert "rust-diarization-sidecar-cache" in sidecar
+    assert "sherpa-onnx-archive-cache" in sidecar
+    assert "rust-diarization-sidecar-build" in sidecar
+    assert "rustDiarizationSidecarCopied = $RustDiarizationSidecarCopied" in sidecar
     assert "function Copy-RustAudioSidecarToTauriRelease" in sidecar
     assert "cargo build --release --bin scriber-audio-sidecar" in sidecar
     assert "--target-dir $cargoTargetDir" in sidecar
@@ -188,6 +275,14 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert '"target\\release"' in sidecar
     assert "audio-sidecar-build-metadata.json" in sidecar
     assert 'Test-ScriberFfmpegCapabilities -Path $copiedFfmpeg' in sidecar
+    assert '-Label "copied"' in sidecar
+    assert '-Label "target-current"' in sidecar
+    assert '"--meeting-only"' in sidecar
+    assert 'foreach ($filter in @("adelay"' in sidecar
+    assert 'Test-ScriberFfmpegCapabilities -Path (Join-Path $script:PreparedProfileBMediaToolsDir "ffmpeg.exe")' in sidecar
+    assert "Ignoring stale or unusable Profile B build report" in sidecar
+    assert "sidecarSha256 = Get-Sha256Hex -Path $cachedSidecarExe" in sidecar
+    assert 'Get-ObjectPropertyValue -Object $rustAudio -Name "sha256"' in sidecar
     assert "scripts\\ffmpeg\\validate_ffmpeg_profile.py" in sidecar
     assert "ffmpeg-profile-manifest.json" in sidecar
     assert "Invoke-ScriberFfmpegProfileManifest" in sidecar
@@ -313,7 +408,19 @@ def test_tauri_before_bundle_uses_profile_b_standard_media_tools() -> None:
     assert "-ValidateSlimMediaTools" in config
     assert "-ReuseSidecarIfUnchanged" in config
     assert "-BundleRustAudioSidecar" in config
+    assert "-BundleRustDiarizationSidecar" in config
     assert "-UseGyanFfmpegEssentials" not in config
+
+
+def test_diarization_worker_stays_outside_tauri_and_audio_cargo_graph() -> None:
+    tauri_cargo = read_script("Frontend/src-tauri/Cargo.toml")
+    tauri_lock = read_script("Frontend/src-tauri/Cargo.lock")
+    worker_cargo = read_script("native/scriber-diarization-sidecar/Cargo.toml")
+
+    assert "sherpa-onnx" not in tauri_cargo
+    assert "sherpa-onnx" not in tauri_lock
+    assert 'sherpa-onnx = { version = "=1.13.3"' in worker_cargo
+    assert 'sherpa-onnx-sys = { version = "=1.13.3"' in worker_cargo
 
 
 def test_tauri_desktop_build_only_emits_rlib_for_shell_library() -> None:
@@ -366,6 +473,8 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "build/cache-keys/frontend-dependencies.txt" in workflow
     assert "build/cache-keys/rust-release.txt" in workflow
     assert "build/cache-keys/rust-audio-sidecar.txt" in workflow
+    assert "build/cache-keys/rust-diarization-sidecar.txt" in workflow
+    assert "build/cache-keys/sherpa-onnx-archive.txt" in workflow
     assert "build/cache-keys/backend-sidecar.txt" in workflow
     assert "Restore Python wheelhouse cache" in workflow
     assert "scriber-python-wheelhouse-" in workflow
@@ -390,7 +499,11 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "Frontend/src-tauri/target/release/incremental" in workflow
     assert "scriber-rust-release-v2-${{ runner.os }}" in workflow
     assert "scriber-rust-audio-sidecar-" in workflow
+    assert "scriber-rust-diarization-sidecar-" in workflow
+    assert "scriber-sherpa-onnx-archive-" in workflow
     assert 'Name = "Rust audio sidecar"' in workflow
+    assert 'Name = "Rust diarization sidecar"' in workflow
+    assert 'Name = "Sherpa ONNX static archive"' in workflow
     assert "Cache layer summary:" in workflow
     assert "function Get-ActionsCacheLayer" in workflow
     assert 'if ($ActionsCacheHit -eq "false")' in workflow
@@ -428,13 +541,13 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "release-artifacts\\release-artifact-summary.json" in workflow
     assert "restore_profile_b_release_artifact.ps1" in workflow
     assert "publish_profile_b_release_artifact.ps1" in workflow
-    assert "ffmpeg-profile-b-n7.0-v2" in workflow
+    assert "ffmpeg-profile-b-n7.0-v3" in workflow
     assert 'Name = "FFmpeg Profile B"' in workflow
     assert "$ffmpegProfileBArtifactRestored" in workflow
     assert "mode = \"release-artifact\"" in workflow
     assert "ffmpeg-profile-b-resolve.outputs.usable != 'true'" in workflow
     assert "Restored Profile B media tools were not usable" in workflow
-    assert "scriber-ffmpeg-profile-b-msys2-n7.0-v2-" in workflow
+    assert "scriber-ffmpeg-profile-b-msys2-n7.0-v3-" in workflow
     assert "Restore backend sidecar cache" in workflow
     assert "Report release cache hits" in workflow
     assert "Export Rust build release artifact" in workflow
@@ -451,6 +564,8 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert "frontend-dependencies.txt" in script
     assert "rust-release.txt" in script
     assert "rust-audio-sidecar.txt" in script
+    assert "rust-diarization-sidecar.txt" in script
+    assert "sherpa-onnx-archive.txt" in script
     assert "backend-sidecar.txt" in script
     assert "__app_version__" in script
     assert "Normalize-FirstJsonVersionProperties" in script
@@ -462,8 +577,8 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert 'Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/icons" -Filter "*"' in script
     assert '"scripts/check_backend_runtime_imports.py"' in script
     assert 'Add-FileGlobEntries -Entries $backendEntries -Root "pyloudnorm" -Filter "*.py"' in script
-    assert 'constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v2' in script
-    assert 'constant`tbackend-sidecar-flags`tBundleMediaTools;UseProfileB;ValidateSlim;BundleRustAudio' in script
+    assert 'constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v3' in script
+    assert 'constant`tbackend-sidecar-flags`tBundleMediaTools;UseProfileB;ValidateSlim;BundleRustAudio;BundleRustDiarization' in script
 
 
 def test_release_cache_key_outputs_are_stable_for_version_only_churn() -> None:
@@ -750,6 +865,11 @@ def test_desktop_installer_and_build_scripts_support_bundle_gate() -> None:
     assert "rustAudioFallbackCircuit = $rustAudioFallbackCircuit" in desktop
     assert "registrationVerified = $true" in desktop
     assert "redactionVerified = $true" in desktop
+    assert "$meetingPrivacyFindings" in desktop
+    assert "Support bundle contains Meeting-sensitive artifact categories" in desktop
+    assert "sensitiveFindingCount = 0" in desktop
+    assert "transcriptStoresAbsent = $true" in desktop
+    assert "voiceprintArtifactsAbsent = $true" in desktop
     assert "$configSnapshots" in desktop
     assert "[System.IO.File]::WriteAllBytes($snapshot.Path" in desktop
     assert "supportBundle = $supportBundle" in desktop
@@ -875,3 +995,29 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
     assert '"-LiveRecordingRustAudioCaptureMode", $InstallerLiveRecordingRustAudioCaptureMode' in build
     assert '"-LiveRecordingMicAlwaysOn"' in build
     assert '"-MaxLiveBackendWorkingSetGrowthMB", $InstallerMaxLiveBackendWorkingSetGrowthMB.ToString' in build
+
+
+def test_installed_smoke_can_drive_real_synthetic_meeting_audio_pipes() -> None:
+    desktop = read_script("scripts/smoke_tauri_desktop.ps1")
+    installer = read_script("scripts/smoke_windows_installer.ps1")
+    build = read_script("scripts/build_windows.ps1")
+
+    assert "[switch]$VerifyMeetingAudioDeviceTest" in desktop
+    assert "function Test-MeetingAudioDeviceTest" in desktop
+    assert "/api/meetings/device-test" in desktop
+    assert '$env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = "1"' in desktop
+    assert '$env:SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL = "1"' in desktop
+    assert 'foreach ($source in @("microphone", "system", "mic_clean"))' in desktop
+    assert "Synthetic Meeting audio source '$source' delivered no active frames." in desktop
+    assert 'transport = "tauri-shell-ipc-to-rust-sidecar-frame-pipes"' in desktop
+    assert "audioPersisted = [bool]$response.audioPersisted" in desktop
+    assert "audioSentToProvider = [bool]$response.audioSentToProvider" in desktop
+    assert "meetingAudioDeviceTest = $meetingAudioDeviceTest" in desktop
+
+    assert "[switch]$VerifyMeetingAudioDeviceTest" in installer
+    assert '"-VerifyMeetingAudioDeviceTest"' in installer
+    assert "meetingAudioDeviceTest = $smoke.meetingAudioDeviceTest" in installer
+
+    assert "[switch]$RunInstallerMeetingAudioDeviceTestSmoke" in build
+    assert "$RunInstallerMeetingAudioDeviceTestSmoke" in build
+    assert '"-VerifyMeetingAudioDeviceTest"' in build

@@ -53,6 +53,10 @@ def test_installer_smoke_can_verify_installed_media_preparation_tools() -> None:
     assert "backend\\tools\\ffmpeg" in installer
     assert "resources\\backend\\tools\\ffmpeg" in installer
     assert "function Invoke-InstalledMediaPreparationSmoke" in installer
+    assert '[string]$PythonExecutable = ""' in installer
+    assert 'venv\\Scripts\\python.exe' in installer
+    assert "& $PythonExecutable @mediaSmokeArgs | Out-Host" in installer
+    assert "python @mediaSmokeArgs" not in installer
     assert "scripts\\smoke_media_preparation.py" in installer
     assert "--media-tools-dir" in installer
     assert "--require-ffprobe" in installer
@@ -62,6 +66,8 @@ def test_installer_smoke_can_verify_installed_media_preparation_tools() -> None:
     assert "$RunInstallerMediaPreparationSmoke" in build
     assert '"-VerifyMediaPreparation"' in build
     assert '"-AllowMissingFfprobeForMediaPreparation"' in build
+    assert '"-PythonExecutable"' in build
+    assert "$releasePython" in build
     assert "$SkipBundledFfprobe" in build
 
 

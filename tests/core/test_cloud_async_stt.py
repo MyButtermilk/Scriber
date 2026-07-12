@@ -11,8 +11,11 @@ from src.cloud_async_stt import (
     deepgram_transcript_payload_to_text,
     openai_transcript_payload_to_text,
     speechmatics_transcript_payload_to_text,
+    transcribe_with_deepgram_pre_recorded,
     transcribe_with_gemini_audio,
+    transcribe_with_openai_audio_transcription,
 )
+from src.config import Config
 
 
 def test_pcm_stream_to_wav_reads_source_in_bounded_chunks():
@@ -137,6 +140,7 @@ async def test_gemini_large_seekable_audio_streams_to_file_upload(monkeypatch):
 @pytest.mark.asyncio
 async def test_gemini_inline_audio_read_and_base64_run_off_event_loop(monkeypatch):
     monkeypatch.setenv("SCRIBER_GEMINI_STT_INLINE_LIMIT_MB", "1")
+    monkeypatch.setattr(Config, "GEMINI_STT_MODEL", "changed-after-route-freeze")
     event_loop_thread = threading.get_ident()
     read_threads: list[int] = []
     encode_threads: list[int] = []
@@ -183,12 +187,55 @@ async def test_gemini_inline_audio_read_and_base64_run_off_event_loop(monkeypatc
         audio_source=TrackingStream(b"inline audio"),
         filename="audio.wav",
         content_type="audio/wav",
+        model="frozen-gemini-model",
         language="en",
     )
 
     assert payload["candidates"][0]["content"]["parts"][0]["text"] == "hello"
+    assert session.posts[0][0].endswith(
+        "/models/frozen-gemini-model:generateContent"
+    )
     assert read_threads and all(thread_id != event_loop_thread for thread_id in read_threads)
     assert encode_threads and all(thread_id != event_loop_thread for thread_id in encode_threads)
+
+
+@pytest.mark.asyncio
+async def test_deepgram_request_uses_explicit_frozen_model(monkeypatch):
+    monkeypatch.setattr(Config, "DEEPGRAM_MODEL", "changed-after-route-freeze")
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return '{"results":{"channels":[]}}'
+
+    class Session:
+        def __init__(self):
+            self.posts = []
+
+        def post(self, url, **kwargs):
+            self.posts.append((url, kwargs))
+            return Response()
+
+    session = Session()
+    await transcribe_with_deepgram_pre_recorded(
+        session=session,
+        api_key="key",
+        audio_source=b"audio",
+        filename="audio.wav",
+        content_type="audio/wav",
+        model="frozen-deepgram-model",
+        language="en",
+    )
+
+    assert session.posts[0][0] == "https://api.deepgram.com/v1/listen"
+    assert ("model", "frozen-deepgram-model") in session.posts[0][1]["params"]
 
 
 @pytest.mark.asyncio
@@ -268,6 +315,47 @@ def test_openai_payload_uses_text_fallback():
     )
 
 
+@pytest.mark.asyncio
+async def test_openai_batch_requests_word_timestamps_for_local_speaker_alignment():
+    class Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return '{"text":"hello","words":[{"word":"hello","start":0,"end":0.4}]}'
+
+    class Session:
+        fields: dict[str, object]
+
+        def post(self, _url, **kwargs):
+            data = kwargs["data"]
+            self.fields = {
+                str(field[0].get("name")): field[2]
+                for field in data._fields
+            }
+            return Response()
+
+    session = Session()
+    payload = await transcribe_with_openai_audio_transcription(
+        session=session,
+        api_key="secret",
+        audio_source=b"audio",
+        filename="meeting.wav",
+        content_type="audio/wav",
+        model="gpt-4o-mini-transcribe-2025-12-15",
+        language="en",
+    )
+
+    assert session.fields["response_format"] == "verbose_json"
+    assert session.fields["timestamp_granularities[]"] == "word"
+    assert payload["words"][0]["start"] == 0
+
+
 def test_speechmatics_payload_builds_text_from_results():
     payload = {
         "results": [
@@ -278,3 +366,16 @@ def test_speechmatics_payload_builds_text_from_results():
     }
 
     assert speechmatics_transcript_payload_to_text(payload, prefer_speaker_labels=False) == "Hello world."
+
+
+def test_speechmatics_payload_preserves_numeric_speaker_zero():
+    payload = {
+        "results": [
+            {"type": "word", "alternatives": [{"content": "First", "speaker": 0}]},
+            {"type": "word", "alternatives": [{"content": "Second", "speaker": 1}]},
+        ]
+    }
+
+    assert speechmatics_transcript_payload_to_text(
+        payload, prefer_speaker_labels=True
+    ) == "[Speaker 1]: First\n\n[Speaker 2]: Second"

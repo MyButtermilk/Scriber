@@ -43,10 +43,15 @@ def test_profile_b_fixture_smoke_covers_documented_matrix() -> None:
     assert "mp3_encode_pcm_pipe_args" in script
     assert "pcm_pipe_decode_args" in script
     assert "ffprobe_duration_args" in script
+    assert "meeting_opus_playback_args" in script
+    assert '"meeting_playback_microphone"' in script
+    assert '"meeting_playback_system"' in script
+    assert "timeline_origins_ms=[0, 120]" in script
     assert "--media-tools-dir" in script
     assert "--fixture-ffmpeg" in script
     assert "--require-ffprobe" in script
     assert "--timeout-sec" in script
+    assert "--meeting-only" in script
 
 
 def test_profile_b_fixture_smoke_missing_tool_resolution_can_fail(tmp_path: Path) -> None:
@@ -103,5 +108,10 @@ def test_profile_b_fixture_smoke_writes_artifact(tmp_path: Path) -> None:
     assert checks["azure_mai_webm_opus_to_mp3"]["output"]["suffix"] == ".mp3"
     assert checks["webm_opus_to_pcm_pipe"]["stdoutBytes"] > 0
     assert checks["raw_pcm_pipe_to_mp3"]["stdoutBytes"] > 0
+    assert checks["meeting_multitrack_flac"]["trackCount"] == 3
+    assert checks["meeting_lossless_work_track"]["streamCopy"] is True
+    assert checks["meeting_lossless_work_track"]["workTrack"]["suffix"] == ".flac"
+    assert checks["meeting_playback_mix"]["output"]["suffix"] == ".opus"
+    assert checks["meeting_playback_mix"]["timelineOriginsMs"] == [0, 120]
     assert checks["no_audio_video_fails"]["ok"] is True
     assert checks["corrupted_input_fails"]["ok"] is True

@@ -29,6 +29,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from src.config import Config
 from src.gladia_stt import (
     gladia_transcript_payload_to_text,
     transcribe_with_gladia_pre_recorded,
@@ -157,6 +158,7 @@ async def transcribe_with_deepgram_pre_recorded(
     audio_source: bytes | BinaryIO,
     filename: str,
     content_type: str,
+    model: str | None = None,
     language: Language | str | None,
     custom_vocab: str = "",
     diarize: bool = True,
@@ -166,7 +168,7 @@ async def transcribe_with_deepgram_pre_recorded(
     _report_progress(on_progress, "Uploading audio...")
     _report_progress(on_progress, "Processing transcription...")
 
-    model = os.getenv("SCRIBER_DEEPGRAM_MODEL", "nova-3")
+    model = str(model or Config.DEEPGRAM_MODEL or "nova-3").strip() or "nova-3"
     params: list[tuple[str, str]] = [
         ("model", model),
         ("smart_format", "true"),
@@ -391,6 +393,7 @@ async def transcribe_with_gemini_audio(
     audio_source: bytes | BinaryIO,
     filename: str,
     content_type: str,
+    model: str | None = None,
     language: Language | str | None,
     custom_vocab: str = "",
     diarize: bool = False,
@@ -401,7 +404,10 @@ async def transcribe_with_gemini_audio(
     if audio_size == 0:
         return {}
 
-    model = os.getenv("SCRIBER_GEMINI_STT_MODEL", "gemini-2.5-flash")
+    model = (
+        str(model or Config.GEMINI_STT_MODEL or "gemini-2.5-flash").strip()
+        or "gemini-2.5-flash"
+    )
     inline_limit_mb = env_float(
         "SCRIBER_GEMINI_STT_INLINE_LIMIT_MB",
         18.0,
@@ -533,8 +539,13 @@ async def transcribe_with_openai_audio_transcription(
     form = aiohttp.FormData()
     form.add_field("file", audio_source, filename=filename, content_type=content_type)
     form.add_field("model", model)
-    response_format = "diarized_json" if diarize and "diarize" in model.lower() else "json"
+    response_format = "diarized_json" if diarize and "diarize" in model.lower() else "verbose_json"
     form.add_field("response_format", response_format)
+    # The local speaker fallback needs real word intervals. OpenAI only returns
+    # timestamp granularities with verbose_json; the diarize model explicitly
+    # does not accept this option and already returns native speaker segments.
+    if response_format == "verbose_json":
+        form.add_field("timestamp_granularities[]", "word")
     language_code = provider_language_code(language)
     if language_code:
         form.add_field("language", language_code)
@@ -575,10 +586,13 @@ def speechmatics_transcript_payload_to_text(
             content = str(alternative.get("content") or "").strip()
             if not content:
                 continue
+            speaker_value = alternative.get("speaker")
+            if speaker_value in (None, ""):
+                speaker_value = item.get("speaker")
             segments.append(
                 {
                     "text": content,
-                    "speaker": alternative.get("speaker") or item.get("speaker"),
+                    "speaker": speaker_value,
                 }
             )
         formatted = _format_speaker_segments(segments)
@@ -824,6 +838,7 @@ class DeepgramAsyncProcessor(_BufferedAsyncProcessor):
         self,
         *,
         api_key: str,
+        model: str | None = None,
         language: Language | str | None,
         custom_vocab: str = "",
         session: aiohttp.ClientSession | None = None,
@@ -832,6 +847,7 @@ class DeepgramAsyncProcessor(_BufferedAsyncProcessor):
     ) -> None:
         super().__init__(session=session, on_progress=on_progress, diarize=diarize)
         self._api_key = api_key
+        self._model = str(model or Config.DEEPGRAM_MODEL or "nova-3")
         self._language = language
         self._custom_vocab = custom_vocab
 
@@ -843,6 +859,7 @@ class DeepgramAsyncProcessor(_BufferedAsyncProcessor):
                 audio_source=wav_source,
                 filename="audio.wav",
                 content_type="audio/wav",
+                model=self._model,
                 language=self._language,
                 custom_vocab=self._custom_vocab,
                 diarize=self._diarize,
@@ -905,6 +922,7 @@ class GeminiAsyncProcessor(_BufferedAsyncProcessor):
         self,
         *,
         api_key: str,
+        model: str | None = None,
         language: Language | str | None,
         custom_vocab: str = "",
         session: aiohttp.ClientSession | None = None,
@@ -913,6 +931,7 @@ class GeminiAsyncProcessor(_BufferedAsyncProcessor):
     ) -> None:
         super().__init__(session=session, on_progress=on_progress, diarize=diarize)
         self._api_key = api_key
+        self._model = str(model or Config.GEMINI_STT_MODEL or "gemini-2.5-flash")
         self._language = language
         self._custom_vocab = custom_vocab
 
@@ -924,6 +943,7 @@ class GeminiAsyncProcessor(_BufferedAsyncProcessor):
                 audio_source=wav_source,
                 filename="audio.wav",
                 content_type="audio/wav",
+                model=self._model,
                 language=self._language,
                 custom_vocab=self._custom_vocab,
                 diarize=self._diarize,

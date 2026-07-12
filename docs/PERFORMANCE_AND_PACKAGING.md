@@ -1,19 +1,22 @@
 # Performance And Packaging
 
-Last verified: 2026-07-10
+Last verified: 2026-07-12
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
 
 ## Current Baseline
 
-Latest validated local Profile B installer build from 2026-06-17:
+Latest validated local Profile B installer build from 2026-07-11 (unsigned
+`v0.4.35` development build with LZMA):
 
-- Installer: about `88.22 MiB`.
-- Installed app: about `199.73 MiB`.
-- Backend resource tree: about `185.45 MiB`.
-- Installed media tools: about `4.98 MiB`.
-- Profile B portable media-tool build: about `4.98 MiB` for `ffmpeg.exe`,
+- Installer: `120.16 MiB` (SHA-256
+  `67e80944c66aed0e052378ba57f8cf6436a6e59eafc24a2a2737fd0e0439c69a`).
+- Installed app: about `303.45 MiB`.
+- Backend resource tree: about `286.07 MiB`.
+- Installed media-tool/runtime directory: about `100.37 MiB`, dominated by the
+  pinned Deno YouTube runtime; the FFmpeg/ffprobe Profile B subset is `5.11 MiB`.
+- Profile B portable media-tool build: about `5.11 MiB` for `ffmpeg.exe`,
   `ffprobe.exe`, and required runtime DLLs.
 - Previous PySide6 overlay runtime component: about `62.70 MiB`; current
   standard builds remove this runtime and render the overlay in Tauri.
@@ -23,6 +26,9 @@ Latest validated local Profile B installer build from 2026-06-17:
 - Installed frontend smoke passed.
 - Installed media-preparation smoke passed `5/5`.
 - Installed uninstall smoke passed.
+- Installed Tauri-WebView/frontend ownership smoke passed against the exact
+  `Scriber_0.4.35_x64-setup.exe`; `THIRD_PARTY_NOTICES.md` was present and the
+  optional WeSpeaker model was absent.
 - Real installed file and YouTube workflow smoke previously passed `2/2` for
   the Profile B path with `https://www.youtube.com/watch?v=0wEjbSYNUM8`.
 
@@ -142,6 +148,13 @@ Packaging/build:
   script. It uses Tauri's normal Cargo target by default so desktop and audio
   sidecar builds can share compiled dependencies; `-RustAudioIsolatedTarget` is
   troubleshooting fallback.
+- The static Rust diarization worker has a separate focused input cache under
+  `build\rust-diarization-sidecar-cache`; it hashes only its standalone crate,
+  lockfile, static-CRT config, manifest writer, target contract, and pinned
+  Sherpa archive identity. The 1.13.3 static-MT archive is checksum-verified in
+  `build\sherpa-onnx-archive-cache`. Neither cache is part of the Tauri/audio
+  Cargo graph or the Python backend cache, and neither cache contains optional
+  diarization models.
 - Installed frontend assets are owned by the Tauri WebView bundle and are not
   embedded in the Python/PyInstaller backend sidecar.
 - The Rust audio sidecar is bundled once as Tauri's install-root
@@ -189,6 +202,13 @@ Packaging/build:
   the Python backend sidecar cache. The audio sidecar cache key normalizes the
   app package version in Cargo metadata, so patch version bumps do not force a
   rebuild of `scriber-audio-sidecar.exe` when its Rust inputs are unchanged.
+- GitHub release builds likewise restore
+  `build\rust-diarization-sidecar-cache` through a dedicated Actions cache and
+  internal release-artifact fallback. The Sherpa static archive has its own
+  stable Actions cache, so a worker source change does not force another
+  roughly 109 MiB archive download. Release build metadata reports
+  worker/manifest SHA-256,
+  byte size, cache key/hit, archive provenance, and staged smoke evidence.
 - FFmpeg Profile B has a reusable GitHub release artifact fallback in addition
   to Actions cache restore, so new app tags do not need to rebuild FFmpeg when
   the Profile B source/ref/profile is unchanged.
@@ -300,7 +320,8 @@ The build expects MSYS2/UCRT64 and can install dependencies when the script is
 run with the matching option. The produced tools are validated by:
 
 - Profile manifest creation.
-- Fixture smoke checks.
+- Fixture smoke checks, including the real three-track Meeting FLAC/Matroska
+  asset and the mixed Ogg/Opus playback asset.
 - Scriber media-preparation smoke.
 - Sidecar slim-media validation.
 - Installed package media-preparation smoke.
@@ -311,8 +332,8 @@ In GitHub release builds, Profile B reuse is layered:
 
 1. Restore the normal Actions cache for the current ref.
 2. If that misses, download the internal reusable release artifact
-   `scriber-ffmpeg-profile-b-n7.0-v2-Windows.zip` from tag
-   `ffmpeg-profile-b-n7.0-v2`.
+   `scriber-ffmpeg-profile-b-n7.0-v3-Windows.zip` from tag
+   `ffmpeg-profile-b-n7.0-v3`.
 3. Validate the restored tools and media-preparation behavior.
 4. Build through MSYS2 only if both restored sources are absent or invalid.
 
@@ -324,7 +345,9 @@ Profile B keeps required Scriber capabilities:
 
 - MP3 encode/decode through `libmp3lame`.
 - WebM/Opus support.
-- AAC, Opus, MP3, FLAC, ALAC decode.
+- AAC, Opus, MP3, FLAC, ALAC decode and FLAC encode.
+- FLAC, Matroska, Ogg/Opus, and WebM muxing plus the `adelay` and `amix`
+  filters required by Meeting finalization and Meeting-clock alignment.
 - stdout `pcm_s16le`.
 - raw `s16le`.
 - common local demuxers/muxers.
@@ -332,6 +355,11 @@ Profile B keeps required Scriber capabilities:
 
 It intentionally excludes unrelated network protocols, GPL/nonfree flags, video
 encoders, and hardware acceleration stacks.
+
+The sidecar build validates a cached Profile B report against these executable
+capabilities before reuse. A stale report is ignored and rebuilt, so a cache
+that predates a required Meeting filter or muxer cannot silently reach the
+packaged backend.
 
 ## Installer Build Modes
 
@@ -402,7 +430,7 @@ Release workflow:
   durable internal release artifacts from `release-cache-python-venv-v1`,
   `release-cache-python-wheelhouse-v2`, `release-cache-backend-sidecar-v1`,
   `release-cache-rust-build-v2`, `release-cache-rust-audio-sidecar-v1`, and
-  `ffmpeg-profile-b-n7.0-v2`. Those releases are implementation caches, not
+  `ffmpeg-profile-b-n7.0-v3`. Those releases are implementation caches, not
   user-facing app updates, and are published with `--latest=false`. `main`
   pushes may refresh them after real cache misses; signed `v*` tag releases
   normally only restore them.
@@ -605,23 +633,549 @@ Current packaging choices:
   customtkinter, Tk, and unused provider SDK reintroduction in the packaged
   backend.
 
-## Remaining Performance Opportunities
+## Meeting Performance Research And Implementation Status (2026-07-12)
 
-Highest-value current opportunities:
+This backlog is a handoff for a later implementation agent. It combines a
+static review of the current Python, React, SQLite, FFmpeg, and native-worker
+paths with an instrumented mock-backend browser walkthrough of the Meeting
+workspace. Unless a baseline is explicitly listed below, the expected gain is a
+hypothesis, not a measured result. Instrument first, preserve correctness and
+privacy contracts, then keep a change only when its acceptance gate passes.
 
-- Split stop-to-text latency into provider finalize, clipboard, and paste
-  segments before optimizing locally.
-- Run React Profiler on Live Mic during recording to catch broad subtree
-  rerenders from status/history WebSocket events.
-- Keep investigating UI responsive behavior at narrow widths.
-- Add longer installed idle/live stability runs with CPU and memory budgets.
+Priority order:
 
-Lower-value or risky opportunities:
+| ID | Priority | Opportunity | Primary expected gain |
+| --- | --- | --- | --- |
+| `PERF-MTG-01` | P0 | Replace full Meeting-detail polling and per-segment refetches with incremental synchronization | SQLite, JSON, network, and React work |
+| `PERF-MTG-02` | P0 | Virtualize and isolate the live transcript | WebView main-thread and DOM cost |
+| `PERF-MTG-03` | P0 | Move Meeting-import writes off the event loop and coalesce progress | Control responsiveness and upload throughput |
+| `PERF-MTG-04` | P1 | Remove redundant finalizer audio passes and reuse verified assets | Stop-to-ready latency and disk I/O |
+| `PERF-MTG-05` | P1 | Make long-meeting analysis budgeted, chunked, and resumable | LLM latency, reliability, and cost |
+| `PERF-MTG-06` | P2 | Measure a warm, crash-isolated diarization worker | Repeated-job startup and model-init time |
+| `PERF-MTG-07` | P2 | Batch Voice Library inference and persistence | ONNX, file-open, and SQLite work |
+| `PERF-MTG-08` | P3 | Offload and stream large text/EML exports | Event-loop latency and Python peak heap |
+| `PERF-MTG-09` | P1 | Reuse buffers in the Rust Mic/System/AEC relay | Sidecar CPU, allocator churn, and jitter |
+| `PERF-MTG-10` | P1 | Replace five-ms WASAPI polling with event-driven capture | Idle wakeups and prewarm CPU |
+| `PERF-MTG-11` | P1 | Gate relay deadlines and Meeting resource slopes | Detect stalls, leaks, and false-positive soaks |
+| `PERF-UI-01` | P2 | Keep eager tab shells but idle-load heavy subtrees | Startup parse/execute time |
+| `PERF-BUILD-01` | P3 | Overlap hot-cache typecheck and sidecar-current proof | Repeated release-build wall time |
 
-- yt-dlp extractor filtering. This is risky and should not be default.
-- Removing ffprobe. This is an explicit experiment only.
-- Moving more provider or pipeline work into Rust. Capture/prewarm are already
-  Rust/WASAPI; further migration needs measured benefit and rollback gates.
+Implementation update (2026-07-12): the broadly useful portions of
+`PERF-MTG-01`, `PERF-MTG-02`, and `PERF-MTG-05` are implemented. Scriber now
+patches Meeting summary/detail caches from committed WebSocket events,
+reconciles full detail on reconnect or terminal transitions instead of polling
+it every ten seconds, appends live segments atomically, stores 30-second
+transcript recovery as compact schema-v3 bases and deltas, virtualizes the
+transcript, isolates the elapsed timer and 60-Hz meters from the page tree, and
+uses persistent budgeted map/reduce analysis for long Meetings. The more
+specialized items remain backlog work and should not be implemented without
+measured benefit for normal Meetings.
+
+A second selective pass removed two additional always-on costs. Meeting detail
+assembly now validates the Meeting once and reads notes, action items, audio
+gaps, audio assets, and checkpoint metadata through the already-open SQLite
+connection instead of repeating five existence queries. The native 10-ms
+Mic/System/AEC relay now reuses its decode, AEC-output, downsample, and encoded
+PCM scratch buffers. This removes nine recurring vector allocations per relay
+frame (about 900 allocations per second at 10-ms cadence) while leaving frame
+headers, payload ownership, timestamps, flags, and pipe writes unchanged.
+Finalization additionally uses a timeline sweep for cross-track echo dedupe
+instead of an all-pairs mic-by-system comparison, renews its 30-minute artifact
+lease every five minutes, and derives bounded provider upload/batch/poll budgets
+from the verified source duration. The five-hour UI gate is route-aware rather
+than provider-agnostic, so short whole-track upload limits cannot produce a
+false-positive readiness state.
+The capability carries concrete duration ceilings where known: 18,000 seconds
+for Soniox, 10,800 for the configured Voxtral Mini Transcribe 2 model, and 8,100
+for Gladia pre-recorded. Deepgram is eligible because the active mono-track
+route remains below its documented 2-GB boundary and has no audio-duration cap.
+
+### `PERF-MTG-01` - Incremental Meeting synchronization
+
+**Implemented**
+
+- `append_live_segment` allocates the source sequence and persists the segment
+  in one `BEGIN IMMEDIATE` transaction before broadcast.
+- `meeting_segment`, `meeting_state`, and redacted `meeting_checkpoint` events
+  update TanStack caches directly. A checkpoint event carries metadata and
+  hashes, never transcript text.
+- The selected Meeting no longer performs a steady ten-second full-detail
+  poll. Selection, reconnect, and terminal transitions remain authoritative
+  reconciliation boundaries.
+- `MeetingStore.detail()` performs one existence validation and uses one shared
+  SQLite connection for its related collections; the public collection methods
+  retain their independent not-found validation.
+- Checkpoint schema v3 writes a complete base every twentieth 30-second
+  sequence and deltas between bases. A delta carries per-source segment
+  frontiers plus a redundant prior-base fallback; old payload bodies are pruned
+  to bounded tombstones without deleting their metadata rows. Recovery remains
+  checksum-validated while retained payload growth is linear/bounded rather
+  than quadratic.
+
+**Remaining measured-work candidates**
+
+- Cold detail pagination/include flags are intentionally not part of this pass.
+  They need a long-Meeting storage/latency baseline before adding protocol and
+  migration complexity.
+
+**Original evidence**
+
+- `Frontend/client/src/pages/Meetings.tsx` previously polled the selected full
+  Meeting detail every ten seconds. A final `meeting_segment` also invalidated
+  the Meeting list, capabilities, and full detail even though the segment had
+  already been inserted into local state.
+- `MeetingStore.detail()` in `src/data/meeting_store.py` previously read every
+  selected transcript segment, output, output version, speaker, note, action
+  item, audio gap, audio asset, and checkpoint through helpers that repeated the
+  Meeting-existence lookup.
+- The earlier live backend path in `src/web_api.py` obtained the next segment
+  sequence and inserted the segment through separate thread/SQLite operations.
+- The previous checkpoint schema serialized and stored all durable live segments
+  up to the source-specific frontier every 30 seconds. Across a long Meeting
+  that made retained snapshot bytes grow quadratically with segment count.
+
+**Implementation boundary (items 1, 2, 3, and 5 complete)**
+
+1. Add an atomic `append_live_segment` store operation that allocates the next
+   source sequence and inserts the final segment in one transaction and one
+   worker-thread hop. Broadcast only after the transaction commits.
+2. Patch the TanStack list/detail caches from versioned WebSocket payloads. Do
+   not invalidate capabilities or refetch full detail for every final segment.
+3. Publish a small, redacted `meeting_checkpoint` event containing checkpoint
+   id, source frontiers, segment count, and commit ordinal, never snapshot text.
+   Remove the steady ten-second full-detail poll. Reconcile once on selection,
+   reconnect, visibility return, and state/canonical-revision transitions.
+4. Split large or cold detail collections behind explicit include flags or
+   paginated endpoints. `outputVersions`, chat history, deliveries, and old
+   checkpoints should not ride on every workspace refresh.
+5. Replace cumulative snapshot retention with checkpoint deltas plus periodic
+   compact base snapshots, or prune superseded cumulative snapshots, while
+   retaining atomic crash recovery and source-specific durable frontiers.
+
+**Benchmark and acceptance gate**
+
+- Fixture: a two-hour Meeting with 5,000 segments, two audio sources, 240
+  checkpoint intervals, reconnect, and canonical replacement.
+- Record REST request count/bytes, SQLite statement count/time, snapshot DB
+  growth, JSON parse time, event-loop lag, and React commits.
+- Steady state has no detail GET per segment and no ten-second full poll; the
+  checkpoint UI updates within one second of commit; snapshot storage is linear
+  or bounded; reconnect produces exactly the same state as SQLite; ordering and
+  `startMs`/`endMs`/`durationMs` remain unchanged.
+
+### `PERF-MTG-02` - Bounded transcript rendering
+
+**Implemented**
+
+- Variable-height transcript virtualization uses stable segment ids and a
+  bounded overscan while retaining search, timestamps, keyboard focus, inline
+  correction, and click-to-seek.
+- Elapsed time lives in a memoized child. Mic/System samples remain in refs and
+  are painted with `requestAnimationFrame`, so neither source forces Meeting
+  transcript reconciliation at event frequency.
+
+**Remaining measured-work candidates**
+
+- Server-windowed FTS for exceptionally large open transcripts and a formal
+  10,000-row performance budget remain evidence-gated follow-up work.
+
+**Original evidence**
+
+- The Meeting page maps every visible segment to a DOM button. Search lowercases
+  and filters the full array in the same page component.
+- A one-second `clockNow` state update used only for elapsed time rerenders the
+  monolithic Meeting page while recording.
+- Scriber already has a variable-height `@tanstack/react-virtual` pattern in
+  `Frontend/client/src/components/virtual-transcript-history.tsx`; the Meeting
+  transcript does not use it.
+- `meeting_audio_level` writes React state in the page at audio-event frequency,
+  while Live Mic already demonstrates a ref/RAF/canvas boundary.
+
+**Implementation boundary**
+
+- Move elapsed time and live meters into isolated memoized components. Keep
+  audio samples in refs or a small external store and paint at animation-frame
+  cadence without reconciling the transcript tree.
+- Build a dedicated Meeting transcript component with variable-row measurement,
+  overscan, stable segment keys, and preserved scroll anchoring. Use the server
+  FTS endpoint and cursor/window loading for large canonical transcripts; keep
+  instant local filtering for small transcripts.
+- Preserve click-to-seek, keyboard focus, active-playback highlighting, live
+  append, search result navigation, and canonical-revision replacement.
+
+**Benchmark and acceptance gate**
+
+- Profile recording, append, search, seek, and auto-follow with 100, 1,000, and
+  10,000 variable-length segments.
+- Track DOM nodes, React commit count/duration, long tasks, scroll FPS, CPU, and
+  memory. Render fewer than 100 segment rows at once and keep reference-device
+  p95 commits below 16 ms. The one-second timer and 60-Hz meters must cause no
+  transcript commit. Keyboard order, screen-reader labels, and seek targets must
+  remain correct.
+
+### `PERF-MTG-03` - Backpressured Meeting import
+
+**Evidence**
+
+- The async upload handler in `src/web_api.py` performs synchronous file writes
+  in the request loop. It persists and broadcasts progress for every roughly
+  one MiB received.
+- Each progress write in `src/data/meeting_import_store.py` performs a complete
+  immediate SQLite transaction. Each progress event then invalidates the whole
+  import collection in the frontend.
+
+**Implementation boundary**
+
+- Give a bounded writer thread sole ownership of the `.part` handle and
+  incremental SHA-256. Feed it through a two-to-eight-MiB queue with explicit
+  backpressure.
+- Persist and broadcast progress on a combined time/byte threshold, no more than
+  about four times per second, and always persist the exact final byte count.
+  Patch the matching import cache row from the WebSocket payload.
+- Preserve the durable cancel barrier, fsync and atomic source commit, exact
+  content hash, and rule that DELETE never removes a file while the writer owns
+  its handle.
+
+**Benchmark and acceptance gate**
+
+- Upload the maximum supported fixture, or at least 10 GiB, from a throttled and
+  antivirus-like slow disk while an active Meeting exchanges control/WS pings.
+- Measure throughput, p95/p99 event-loop lag, commits per GiB, queue depth,
+  handles, threads, cancel latency, and restart recovery. Target at most four
+  progress commits per second and 25-50 ms p99 loop lag. Final bytes and SHA-256
+  must match, and cancel/restart must leak no handle, thread, or partial file.
+
+### `PERF-MTG-04` - Fewer full-audio passes in finalization
+
+**Evidence**
+
+- `src/meeting_finalizer.py` fingerprints each complete WAV, encodes a working
+  FLAC, decodes it again for equality, then serially creates the multitrack
+  archive, mix, microphone playback, and system playback in separate FFmpeg
+  processes.
+- Every produced asset is decoded in full. The decoded PCM equality is a hard
+  invariant for the lossless archive, but lossy Opus fingerprints are stored as
+  non-equality evidence and are not used to prove source identity.
+- Track preparation and consolidation run before the code can reuse all durable
+  recovery evidence on a retry.
+
+**Implementation boundary**
+
+- Keep per-stream decoded sample-count and PCM-SHA equality for the FLAC archive
+  unchanged. Never weaken atomic publication, timeline padding, cancellation,
+  or the one-temporary-PCM-track peak-disk limit.
+- Validate Opus derivatives with container/codec/stream/timeline checks, file
+  SHA-256, and a bounded decode smoke. Move full lossy decode hashing to a
+  release diagnostic unless a consumer is shown to require it.
+- Prototype streaming verified chunks and explicit gap-silence once through an
+  incremental PCM hash directly into FFmpeg stdin for the working FLAC. This
+  avoids materializing and rereading a complete WAV. Keep task-scoped WAV decode
+  only for optional consumers that demonstrably require it.
+- Produce mix and isolated playback outputs in one FFmpeg graph/process when
+  Profile B supports it, or compare that with bounded concurrency of at most two
+  jobs. Reuse a verified asset on retry only when its source PCM fingerprints,
+  encoder profile, command schema, probe, and current file hash all match.
+- Decide recovery/reuse before starting expensive regeneration.
+
+**Benchmark and acceptance gate**
+
+- Run 15-, 60-, and 120-minute dual-track fixtures. Record phase wall time,
+  process count, CPU time, bytes read/written, peak working set, and peak disk.
+- Require identical archive invariants and playback timeline coverage within the
+  existing 40-ms tolerance, no asset DB row before verification, at least 20%
+  wall-time improvement at 60 minutes, and no more than 10% peak-memory or disk
+  regression.
+
+### `PERF-MTG-05` - Budgeted and resumable analysis
+
+**Implemented**
+
+- The single-request fast path is retained only for prompts at or below 48,000
+  characters and Meetings at or below 60 minutes.
+- Longer transcripts are partitioned by stable segment id and timestamps into
+  map inputs capped at 30,000 characters and 30 minutes. Map concurrency is two;
+  hierarchical reduce fan-in is three.
+- Single, map, and reduce results are cached persistently by algorithm version,
+  stage, analysis schema/model, and prompt/chunk digest. A changed chunk
+  invalidates only its map branch and the dependent reduce path.
+- Schema repair contains only the malformed map/reduce object, never the whole
+  five-hour transcript. The deterministic final merge deduplicates and orders
+  evidence by cited canonical segment time, retaining exact citations and
+  timestamp-derived chapters.
+
+**Original problem boundary**
+
+- The previous implementation serialized the complete canonical transcript into
+  one prompt and repeated that complete prompt after a schema failure. That path
+  made provider budgets, retries, and cost unreliable for long Meetings.
+
+**Deterministic acceptance evidence**
+
+- A synthetic 600-segment, 18,000-second Meeting proves map prompt budgets,
+  concurrency two, hierarchical reduction, monotonic progress, valid citations,
+  and deterministic final ordering.
+- Cache tests prove that changing one map chunk regenerates only that branch;
+  malformed-map tests prove repair contains only the failed chunk. Prompt-
+  injection fixtures remain serialized as untrusted transcript JSON.
+- Real provider cost/latency and a physical five-hour soak remain release
+  evidence, not claims made by these accelerated tests.
+
+### `PERF-MTG-06` - Warm diarization worker, only after phase measurement
+
+**Evidence**
+
+- `src/speaker_diarization.py` currently creates a scratch WAV and starts the
+  native executable for every job. The worker protocol consumes one request and
+  initializes the segmentation and embedding models for that request.
+- The measured baseline below is 5.24 seconds/175.4 MiB for 56.861 seconds and
+  102-116.8 seconds/276.7-292.4 MiB for the synthetic ten-minute fixture, but it
+  does not yet separate preparation, process spawn, model init, inference, and
+  clustering.
+
+**Implementation boundary**
+
+- Add those phase timings first. If cold init is material, prototype an opt-in,
+  crash-isolated `--serve-stdio` mode: one serial request at a time, 60-120
+  second idle TTL, and at most one or two model instances keyed by attested model
+  digests and configuration.
+- Stop the worker before component deletion/update. A crash must respawn cleanly
+  and must not affect Tauri, live capture, or the backend.
+- Reuse verified immutable Scriber-owned 16-kHz mono PCM inputs by safe same-
+  volume hardlink where possible; foreign/mutable inputs still take the FFmpeg
+  preparation path.
+
+**Benchmark and acceptance gate**
+
+- Run cold and warm sequences of ten 1-, 10-, and 60-minute jobs. Measure each
+  phase, idle/active RSS, crash recovery, and component deletion.
+- Keep the warm mode only if p50 improves by at least 20% or one second. TTL must
+  release memory, turns/labels must remain equivalent, and no unverified path may
+  bypass media preparation.
+
+### `PERF-MTG-07` - Batch Voice Library work
+
+**Evidence**
+
+- `_apply_speaker_intelligence` materializes track audio and processes candidate
+  samples serially. Some store/detail and profile registration calls also run
+  synchronously from the async finalizer.
+- `WeSpeakerModel._extract_sync` allocates a three-row input batch but fills and
+  consumes only row zero. Each registration separately scans profiles,
+  calculates similarities, updates a centroid, and commits SQLite work.
+
+**Implementation boundary**
+
+- Add `extract_many`: open each prepared track once, fill up to three real batch
+  rows, validate every returned row, and run ONNX once per batch.
+- Offload a deterministic `register_speaker_embeddings_batch` operation and
+  update profiles/centroids in one transaction after loading them once. Preserve
+  scalar ordering semantics because each accepted sample changes its centroid.
+
+**Benchmark and acceptance gate**
+
+- Compare 1-, 4-, and 8-speaker fixtures with three samples each. Count ONNX
+  runs, file opens, DB statements, time, memory, and match decisions.
+- Require embeddings within a documented floating-point tolerance, identical
+  profile/match outcomes, at most `ceil(samples / 3)` ONNX runs, no synchronous
+  store work on the event loop, and no additional full-PCM temporary.
+
+### `PERF-MTG-08` - Stream large exports
+
+**Evidence**
+
+- JSON and Markdown serialization and UTF-8 copies occur in the aiohttp request
+  task after detail loading. EML also assembles the attachment and
+  `EmailMessage.as_bytes()` fully in memory. PDF/DOCX rendering is already
+  offloaded.
+
+**Implementation boundary**
+
+- Move large JSON/Markdown/EML construction to a bounded export executor. Write
+  large results to a task-scoped private temporary file, serve with
+  `FileResponse`, and clean it after completion or cancellation.
+- Preserve all MIME headers/templates and the current `private, no-store` audio
+  behavior. Never trade retention/privacy correctness for browser caching.
+
+**Benchmark and acceptance gate**
+
+- Export 5-, 25-, and 100-MiB Meeting details, including PDF/DOCX attachments in
+  EML, while measuring WS/control latency, event-loop lag, time-to-first-byte,
+  peak heap, and temporary cleanup.
+- Output must remain byte- or semantically equivalent, p99 loop lag must stay in
+  the control-path budget, peak heap should remain below twice artifact size,
+  and cancellation must leave no sensitive file.
+
+### `PERF-MTG-09` - Reuse native audio relay buffers
+
+**Implemented allocation-reuse slice**
+
+- Caller-owned `Vec<i16>` buffers are reused for microphone, system, and clean
+  AEC samples. AEC3 writes into the caller's existing output buffer.
+- Three 48-to-16-kHz downsample buffers and their three PCM byte buffers are
+  allocated once per relay session and cleared without releasing capacity.
+- A 10,000-frame regression test verifies stable backing allocations and exact
+  output sizes; the AEC adapter has an independent 1,000-frame reuse test.
+- Upstream frame payload ownership and `WasapiPcmConverter` compaction remain
+  candidates for a future measured pass. The long installed CPU/jitter gate is
+  still required before claiming a device-level percentage improvement.
+
+**Evidence**
+
+- The Mic/System/AEC relay in
+  `Frontend/src-tauri/src/audio_sidecar.rs` allocates header/payload, PCM,
+  downsampled, and byte buffers for each ten-ms frame. `meeting_aec.rs` also
+  creates a new output vector per AEC frame.
+- `WasapiPcmConverter` drains from the front of vectors, which moves retained
+  samples, and the capture writer constructs another complete encoded frame.
+  Static review estimates at least thirteen heap allocations per relay
+  iteration, or roughly 1,300 per second, before device-specific conversion.
+
+**Implementation boundary**
+
+- Add `read_exact_into`, `pcm_i16_into`, `process_into`, and `downsample_into`
+  APIs backed by fixed or recycled buffers. Replace front-drain with a head
+  cursor/ring buffer and write header/payload without a second full-frame copy.
+- Preserve every protocol header, sequence number, prebuffer/live flag, EOS
+  rule, PCM digest, source timeline, and crash isolation. Avoid new unsafe code
+  unless a measured need and focused proof justify it.
+
+**Benchmark and acceptance gate**
+
+- Process 100,000 deterministic ten-ms frames with AEC on/off and run a
+  30-minute installed capture. Use ETW/WPA allocation count, sidecar CPU, p99
+  relay time, working set, and byte/AEC digests.
+- Require at least 50% fewer allocations and either 15% less sidecar CPU or 20%
+  less p99 jitter; p99 processing stays below five ms and all protocol/audio
+  digests remain identical. Do not merge for CPU gain below 5% with no jitter
+  benefit.
+
+### `PERF-MTG-10` - Event-driven WASAPI capture
+
+**Evidence**
+
+- Active capture and prewarm currently call `GetNextPacketSize` in loops and
+  sleep five ms when no packet is available. Mic, loopback, and Always-On-Mic
+  prewarm therefore wake repeatedly while idle.
+
+**Implementation boundary**
+
+- Prototype `AUDCLNT_STREAMFLAGS_EVENTCALLBACK` plus
+  `IAudioClient::SetEventHandle`, waiting on both audio and stop/device events.
+  Loopback needs a timeout to its next ten-ms synthetic-silence deadline so the
+  shared Meeting clock remains continuous.
+- Keep current polling behind a runtime rollback/device fallback until USB,
+  Bluetooth, dock, default-device changes, sleep/resume, and unreliable-driver
+  cases pass.
+
+**Benchmark and acceptance gate**
+
+- Measure 30 minutes idle prewarm and ten minutes Mic+loopback across at least
+  five device classes. Record wakeups/context switches, CPU, first-frame p50/p95,
+  padding, skew, drops, reconnect, and stalls.
+- Require at least 50% fewer wakeups and 30% less idle sidecar CPU, with no drop
+  or stall and no more than ten-ms first-frame-p95 regression. Any event-starved
+  device or reconnect regression keeps polling as the default.
+
+### `PERF-MTG-11` - Relay deadline and resource regression gates
+
+**Evidence**
+
+- `MeetingRelayStats` counts frames, bytes, padding, input skew, and AEC energy,
+  but does not expose processing/write duration, pipe backpressure, deadline
+  misses, CPU, or memory slope.
+- The current 60-minute/two-hour release matrix can pass duration/loss checks
+  while a relay is increasingly CPU-bound or blocked on a pipe.
+
+**Implementation boundary**
+
+- Add cheap fixed histogram buckets or sampled timers for AEC compute, each pipe
+  write, total frame time, greater-than-ten-ms deadline misses, and consecutive
+  misses. Keep all diagnostics redacted and include them in stop/support data.
+- Collect sidecar CPU and working-set slope in the installed Meeting matrix.
+  Reject injected stalls, leaks, or unmarked loss. Instrumentation itself must
+  remain below 1% sidecar CPU.
+
+**Benchmark and acceptance gate**
+
+- Initial gate proposal: p99 relay below five ms, p99.9 below eight ms, zero
+  consecutive deadline misses, zero unmarked loss, working-set growth below
+  25 MiB/hour, and CPU/memory slopes within 20% of the device-class baseline.
+- Calibrate hardware-class baselines before making absolute CPU thresholds hard.
+  Add deliberate stall, CPU, and leak fixtures; all three must fail validation
+  while stable physical evidence remains green.
+
+### `PERF-UI-01` - Eager shells with idle-loaded heavy subtrees
+
+**Evidence**
+
+- Primary tabs are intentionally eager to prevent blank WebView navigation.
+  Current source size is nevertheless concentrated in Settings and Meetings,
+  and heavy dialogs/sections are parsed even when the user opens another tab.
+  The current build's main App chunk is about 313 KiB and total JS assets about
+  1.2 MiB; this is not proof that parse/execute is the startup bottleneck.
+
+**Implementation boundary**
+
+- Preserve a real eager shell for every primary page: heading, navigation,
+  latest data, and stable skeleton. Locally split heavy Settings sections,
+  Meeting detail/import/email dialogs, and File dropzone only if an installed
+  startup trace assigns material time to them.
+- Preload after first commit/frontend-ready with idle scheduling and on
+  hover/focus. No route may show a full-page Suspense blank or remount the
+  router.
+
+**Benchmark and acceptance gate**
+
+- Run 30 installed cold/warm launches and sample all primary tab transitions.
+  Mark boot shell, first React content, backend ready, and interactive.
+- Require at least 10% or 100-ms p95 startup improvement, 20% smaller initial
+  JS, no blank sample, and no regression beyond the current primary-tab smoke.
+  Reject a change that saves less than 50 ms or creates offline chunk failures.
+
+### `PERF-BUILD-01` - Overlap exact-hot-cache proofs
+
+**Evidence**
+
+- `scripts/build_windows.ps1` runs frontend typecheck before sidecar preparation
+  and target-current validation. A documented hot build spends about 8.1
+  seconds on typecheck and 6.2 seconds on sidecar preparation, so the theoretical
+  saving is only several seconds.
+
+**Implementation boundary and gate**
+
+- Only on the exact-hot/target-current path, run the two independent checks in
+  parallel with separate logs, then join both successfully before the Tauri
+  bundle. Keep cold builds serial unless an A/B shows no CPU-contention loss.
+- Compare five hot and three cold runs. Keep the change only for at least four
+  seconds median hot improvement, less than 5% cold regression, identical
+  artifact digests/checks, and equally clear failure diagnostics.
+
+### Cross-cutting measurement sequence
+
+1. Add one reproducible long-Meeting fixture generator and a report schema for
+   REST/WS counts, SQLite time, React commits, loop lag, FFmpeg phases, working
+   set, disk I/O, relay deadlines, sidecar CPU, and allocation count. Keep
+   transcript/audio fixture content synthetic.
+2. Implement and gate `PERF-MTG-01` through `03` first; they remove avoidable
+   hot-path work without changing model behavior.
+3. Land `PERF-MTG-11` instrumentation before native relay/polling changes, then
+   evaluate `PERF-MTG-09` and `10` independently behind rollback switches.
+4. Optimize finalization and analysis next. Keep every archive, citation,
+   checkpoint, recovery, and cancellation invariant as a release gate.
+5. Prototype warm native/model paths only after phase timings show that startup
+   or batching is material. Retain a rollback switch and bounded memory.
+6. Treat `PERF-UI-01` and `PERF-BUILD-01` as trace-driven experiments, not
+   architectural defaults.
+7. Continue the existing installed idle/live stability runs and stop-to-text
+   split metrics. Provider time, local finalization, clipboard, and paste must be
+   reported separately before attributing gains.
+
+Lower-value or risky opportunities remain unchanged:
+
+- yt-dlp extractor filtering is risky and should not be default.
+- Removing ffprobe is an explicit experiment only.
+- Moving provider or pipeline ownership into Rust needs measured benefit and
+  rollback gates; Rust/WASAPI already owns the native capture boundary.
 
 ## Rust Expansion Plan
 
@@ -2025,3 +2579,41 @@ Near-term Rust work should harden the promoted WASAPI path: selected-device
 evidence, dock/USB/default-device transitions, longer Always-On-Mic runs,
 restart diagnostics, and eventually moving more device-listing/mapping helpers
 out of `sounddevice`.
+## Meeting Audio Packaging
+
+- `aec3 = 0.2.0` is compiled into the existing crash-isolated Rust audio
+  sidecar; meeting capture does not add another executable or a GStreamer/Clang
+  runtime dependency.
+- `meeting_aec.rs` is part of the Rust-audio-sidecar cache key, so AEC changes
+  invalidate that focused artifact without unnecessarily invalidating the
+  Python backend cache.
+- `THIRD_PARTY_NOTICES.md` is an explicit Tauri resource and must remain in the
+  installed application.
+- The optional WeSpeaker ONNX file is a post-install, explicit-opt-in download.
+  It must remain absent from PyInstaller, Tauri resources, NSIS payloads, and
+  release cache inputs.
+
+## Local Diarization Baseline
+
+The local speaker path is a separate static Rust process, not part of the audio
+sidecar. Its `17,146,368`-byte executable is a signed-installer resource; the
+two optional models total about 39.2 MiB and remain post-install downloads.
+
+Measured on 2026-07-11 with the official k2-fsa four-speaker fixture and a
+synthetic ten-minute repetition of that same fixture:
+
+| Input | Clustering | Wall time | Peak working set | Speakers |
+| --- | --- | ---: | ---: | ---: |
+| 56.861 s | known 4, threshold 0.9 | 5.24 s | 175.4 MiB | 4 |
+| 600 s | automatic, threshold 0.9 | 116.8 s | 276.7 MiB | 7 |
+| 600 s | known 4, threshold 0.9 | 102.0 s | 282.3 MiB | 4 |
+| 600 s | automatic, threshold 0.8 | 112.0 s | 292.4 MiB | 8 |
+| 600 s | automatic, threshold 0.95 | 111.0 s | 284.4 MiB | 6 |
+
+The repeated fixture is a stress probe, not a representative quality corpus.
+It proves that an explicit expected speaker count can prevent fragmentation,
+but does not justify changing the internal `0.9` threshold. The worker keeps a
+two-hour/1-GiB hard ceiling; product routing initially limits local fallback to
+60 minutes pending a real multilingual 60-minute soak. Long jobs run as durable
+background work, and the parent must drain stdout/stderr concurrently to avoid
+pipe backpressure deadlocks on large turn lists.

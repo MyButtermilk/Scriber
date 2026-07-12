@@ -1,10 +1,12 @@
 mod audio_frame_pipe;
+mod meeting_aec;
 mod redaction;
 
 use audio_frame_pipe::{
-    encode_audio_frame, AudioFrameHeader, AUDIO_FRAME_FLAG_PREBUFFER, AUDIO_FRAME_HEADER_LEN,
-    AUDIO_FRAME_VERSION,
+    encode_audio_frame, AudioFrameHeader, AUDIO_FRAME_FLAG_END_OF_STREAM,
+    AUDIO_FRAME_FLAG_PREBUFFER, AUDIO_FRAME_HEADER_LEN, AUDIO_FRAME_VERSION,
 };
+use meeting_aec::{MeetingAec3, MEETING_AEC_FRAME_SAMPLES};
 use redaction::hash_sensitive_identifier;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -29,12 +31,15 @@ use std::ptr::{null, null_mut};
 use windows_sys::Win32::{
     Foundation::{
         CloseHandle, GetLastError, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, ERROR_PIPE_LISTENING,
-        HANDLE, INVALID_HANDLE_VALUE,
+        GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE,
     },
-    Storage::FileSystem::{FlushFileBuffers, WriteFile, PIPE_ACCESS_OUTBOUND},
+    Storage::FileSystem::{
+        CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING,
+        PIPE_ACCESS_OUTBOUND,
+    },
     System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_NOWAIT, PIPE_READMODE_BYTE,
-        PIPE_TYPE_BYTE,
+        PIPE_TYPE_BYTE, PIPE_WAIT,
     },
 };
 
@@ -43,9 +48,10 @@ use windows::{
     core::GUID,
     Win32::{
         Media::Audio::{
-            eCapture, eConsole, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator,
-            MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
-            DEVICE_STATE_ACTIVE, WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVE_FORMAT_PCM,
+            eCapture, eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDevice,
+            IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT,
+            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, DEVICE_STATE_ACTIVE,
+            WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVE_FORMAT_PCM,
         },
         System::Com::{
             CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
@@ -58,10 +64,34 @@ const SIDECAR_PROTOCOL_VERSION: &str = "1";
 const SIDECAR_NAME: &str = "scriber-audio-sidecar";
 const SIDECAR_JSON_LINE_MAX_BYTES: usize = 1024 * 1024;
 const SYNTHETIC_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE";
+const SYNTHETIC_SIGNAL_ENV: &str = "SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL";
 const WASAPI_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_WASAPI_CAPTURE";
 const DISABLE_WASAPI_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE";
 const WAVE_FORMAT_IEEE_FLOAT_TAG: u16 = 3;
 const WAVE_FORMAT_EXTENSIBLE_TAG: u16 = 0xfffe;
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WasapiInitializeArgs {
+    stream_flags: u32,
+    buffer_duration_100ns: i64,
+    periodicity_100ns: i64,
+}
+
+#[cfg(windows)]
+fn wasapi_shared_initialize_args(capture_kind: &str) -> WasapiInitializeArgs {
+    WasapiInitializeArgs {
+        stream_flags: if capture_kind.eq_ignore_ascii_case("loopback") {
+            AUDCLNT_STREAMFLAGS_LOOPBACK
+        } else {
+            0
+        },
+        buffer_duration_100ns: 1_000_000,
+        // Shared-mode clients must pass zero. Loopback is represented solely
+        // by stream_flags and must never leak into this timing argument.
+        periodicity_100ns: 0,
+    }
+}
 #[cfg(windows)]
 const KSDATAFORMAT_SUBTYPE_PCM: GUID = GUID::from_u128(0x00000001_0000_0010_8000_00aa00389b71);
 #[cfg(windows)]
@@ -139,6 +169,7 @@ fn write_json_line(payload: &Value) -> Result<(), ()> {
 struct AudioSidecarState {
     capture_sessions: HashMap<String, CaptureSession>,
     prewarm_sessions: HashMap<String, PrewarmSession>,
+    meeting_sessions: HashMap<String, MeetingCaptureSession>,
 }
 
 impl AudioSidecarState {
@@ -146,6 +177,7 @@ impl AudioSidecarState {
         Self {
             capture_sessions: HashMap::new(),
             prewarm_sessions: HashMap::new(),
+            meeting_sessions: HashMap::new(),
         }
     }
 
@@ -212,7 +244,15 @@ impl AudioSidecarState {
                 response_payload(request_id, true, "", "", started, capabilities_payload())
             }
             "captureStart" => self.handle_capture_start(request_id, payload, started),
+            "captureStatus" => self.handle_capture_status(request_id, payload, started),
             "captureStop" => self.handle_capture_stop(request_id, payload, started),
+            "meetingCaptureStart" => {
+                self.handle_meeting_capture_start(request_id, payload, started)
+            }
+            "meetingCaptureStatus" => {
+                self.handle_meeting_capture_status(request_id, payload, started)
+            }
+            "meetingCaptureStop" => self.handle_meeting_capture_stop(request_id, payload, started),
             "prewarmStart" => self.handle_prewarm_start(request_id, payload, started),
             "prewarmStatus" => self.handle_prewarm_status(request_id, payload, started),
             "prewarmStop" => self.handle_prewarm_stop(request_id, payload, started),
@@ -300,6 +340,230 @@ impl AudioSidecarState {
             })
         };
         response_payload(request_id, true, "", "", started, stop_payload)
+    }
+
+    fn handle_capture_status(
+        &mut self,
+        request_id: &str,
+        payload: &Value,
+        started: Instant,
+    ) -> Value {
+        let stream_id = bounded_string(payload, "streamId", "", 96);
+        let Some(session) = self.capture_sessions.get(&stream_id) else {
+            return response_payload(
+                request_id,
+                true,
+                "",
+                "",
+                started,
+                json!({
+                    "sidecar": SIDECAR_NAME,
+                    "active": false,
+                    "streamId": stream_id,
+                    "reason": "noActiveCapture",
+                }),
+            );
+        };
+
+        if session.worker_finished() {
+            let stop_payload = self
+                .capture_sessions
+                .remove(&stream_id)
+                .map(|mut session| session.stop("captureStatusWorkerFinished"))
+                .unwrap_or_else(|| json!({"stopped": false, "reason": "noActiveCapture"}));
+            return response_payload(
+                request_id,
+                true,
+                "",
+                "",
+                started,
+                json!({
+                    "sidecar": SIDECAR_NAME,
+                    "active": false,
+                    "streamId": stream_id,
+                    "reason": "captureWorkerFinished",
+                    "stop": stop_payload,
+                }),
+            );
+        }
+
+        response_payload(request_id, true, "", "", started, session.status())
+    }
+
+    fn handle_meeting_capture_start(
+        &mut self,
+        request_id: &str,
+        payload: &Value,
+        started: Instant,
+    ) -> Value {
+        match self.start_meeting_capture(payload) {
+            Ok(payload) => response_payload(request_id, true, "", "", started, payload),
+            Err(reason) => response_payload(
+                request_id,
+                false,
+                "meetingCaptureUnavailable",
+                &reason,
+                started,
+                json!({"sidecar": SIDECAR_NAME, "meetingCaptureAvailable": false}),
+            ),
+        }
+    }
+
+    fn handle_meeting_capture_status(
+        &mut self,
+        request_id: &str,
+        payload: &Value,
+        started: Instant,
+    ) -> Value {
+        let meeting_capture_id = bounded_string(payload, "meetingCaptureId", "", 96);
+        let value = self
+            .meeting_sessions
+            .get(&meeting_capture_id)
+            .map(MeetingCaptureSession::status)
+            .unwrap_or_else(|| {
+                json!({
+                    "active": false, "meetingCaptureId": meeting_capture_id,
+                    "reason": "noActiveMeetingCapture"
+                })
+            });
+        response_payload(request_id, true, "", "", started, value)
+    }
+
+    fn handle_meeting_capture_stop(
+        &mut self,
+        request_id: &str,
+        payload: &Value,
+        started: Instant,
+    ) -> Value {
+        let meeting_capture_id = bounded_string(payload, "meetingCaptureId", "", 96);
+        let value = self.stop_meeting_capture(&meeting_capture_id, "meetingCaptureStop");
+        response_payload(request_id, true, "", "", started, value)
+    }
+
+    fn start_meeting_capture(&mut self, payload: &Value) -> Result<Value, String> {
+        if !wasapi_capture_enabled() && !synthetic_capture_enabled() {
+            return Err("Rust meeting capture is unavailable".to_string());
+        }
+        let meeting_clock_origin = Instant::now();
+        let mut microphone_request = CaptureRequest::from_payload(payload);
+        microphone_request.clock_origin = Some(meeting_clock_origin);
+        microphone_request.capture_kind = "microphone".to_string();
+        microphone_request.sample_rate = 48_000;
+        microphone_request.channels = 1;
+        microphone_request.block_size = 480;
+        microphone_request.prewarm_id.clear();
+        microphone_request.native_endpoint_id_hash =
+            bounded_string(payload, "microphoneNativeEndpointIdHash", "", 128);
+        microphone_request.device_preference =
+            if microphone_request.native_endpoint_id_hash.is_empty() {
+                "default".to_string()
+            } else {
+                "selected".to_string()
+            };
+        let microphone = self.start_capture(microphone_request)?;
+        let microphone_stream_id = microphone
+            .get("streamId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let microphone_pipe = microphone
+            .get("framePipe")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+
+        let mut system_request = CaptureRequest::from_payload(payload);
+        system_request.clock_origin = Some(meeting_clock_origin);
+        system_request.capture_kind = "loopback".to_string();
+        system_request.sample_rate = 48_000;
+        system_request.channels = 1;
+        system_request.block_size = 480;
+        system_request.prewarm_id.clear();
+        system_request.native_endpoint_id_hash =
+            bounded_string(payload, "renderNativeEndpointIdHash", "", 128);
+        system_request.device_preference = if system_request.native_endpoint_id_hash.is_empty() {
+            "default".to_string()
+        } else {
+            "selected".to_string()
+        };
+        let system = match self.start_capture(system_request) {
+            Ok(value) => value,
+            Err(error) => {
+                if let Some(mut session) = self.capture_sessions.remove(&microphone_stream_id) {
+                    let _ = session.stop("meetingSystemCaptureFailed");
+                }
+                return Err(error);
+            }
+        };
+        let system_stream_id = system
+            .get("streamId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let system_pipe = system
+            .get("framePipe")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let meeting_capture_id = Uuid::new_v4().simple().to_string();
+        let aec_enabled = payload
+            .get("aecEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        match start_meeting_aec_relay(
+            &meeting_capture_id,
+            microphone_stream_id.clone(),
+            system_stream_id.clone(),
+            microphone_pipe,
+            system_pipe,
+            payload
+                .get("aecDelayMs")
+                .and_then(Value::as_i64)
+                .unwrap_or(80)
+                .clamp(0, 500) as i32,
+            aec_enabled,
+        ) {
+            Ok((session, sources)) => {
+                self.meeting_sessions
+                    .insert(meeting_capture_id.clone(), session);
+                Ok(json!({
+                    "sidecar": SIDECAR_NAME,
+                    "meetingCaptureId": meeting_capture_id,
+                    "sampleRate": 16000,
+                    "frameDurationMs": 10,
+                    "clockMode": "windowsQueryPerformanceCounter",
+                    "aecActive": aec_enabled,
+                    "sources": sources,
+                }))
+            }
+            Err(error) => {
+                for stream_id in [&microphone_stream_id, &system_stream_id] {
+                    if let Some(mut session) = self.capture_sessions.remove(stream_id) {
+                        let _ = session.stop("meetingAecRelayStartFailed");
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn stop_meeting_capture(&mut self, meeting_capture_id: &str, reason: &str) -> Value {
+        let Some(mut meeting) = self.meeting_sessions.remove(meeting_capture_id) else {
+            return json!({"stopped": false, "meetingCaptureId": meeting_capture_id,
+                          "reason": "noActiveMeetingCapture"});
+        };
+        let stream_ids = meeting.capture_stream_ids.clone();
+        let relay = meeting.stop(reason);
+        let sources: Vec<Value> = stream_ids
+            .iter()
+            .filter_map(|stream_id| {
+                self.capture_sessions
+                    .remove(stream_id)
+                    .map(|mut session| session.stop(reason))
+            })
+            .collect();
+        json!({"stopped": true, "meetingCaptureId": meeting_capture_id,
+               "reason": reason, "relay": relay, "sources": sources})
     }
 
     fn handle_prewarm_start(
@@ -496,6 +760,10 @@ impl AudioSidecarState {
     }
 
     fn stop_all_sessions(&mut self, reason: &str) {
+        let meeting_ids: Vec<String> = self.meeting_sessions.keys().cloned().collect();
+        for meeting_id in meeting_ids {
+            let _ = self.stop_meeting_capture(&meeting_id, reason);
+        }
         let sessions: Vec<CaptureSession> = self
             .capture_sessions
             .drain()
@@ -537,6 +805,8 @@ struct CaptureRequest {
     native_endpoint_id_hash: String,
     prebuffer_ms: u32,
     prewarm_id: String,
+    capture_kind: String,
+    clock_origin: Option<Instant>,
 }
 
 impl CaptureRequest {
@@ -550,6 +820,8 @@ impl CaptureRequest {
             native_endpoint_id_hash: bounded_string(payload, "nativeEndpointIdHash", "", 64),
             prebuffer_ms: optional_u64(payload, "prebufferMs", 0, 2_000) as u32,
             prewarm_id: bounded_string(payload, "prewarmId", "", 96),
+            capture_kind: bounded_string(payload, "captureKind", "microphone", 24),
+            clock_origin: None,
         }
     }
 
@@ -563,6 +835,8 @@ impl CaptureRequest {
             "nativeEndpointIdHash": self.native_endpoint_id_hash,
             "prebufferMs": self.prebuffer_ms,
             "prewarmId": self.prewarm_id,
+            "captureKind": self.capture_kind,
+            "sharedClock": self.clock_origin.is_some(),
         })
     }
 }
@@ -587,6 +861,26 @@ struct CaptureSession {
 }
 
 impl CaptureSession {
+    fn worker_finished(&self) -> bool {
+        self.join_handle
+            .as_ref()
+            .map(|handle| handle.is_finished())
+            .unwrap_or(true)
+    }
+
+    fn status(&self) -> Value {
+        let worker_finished = self.worker_finished();
+        json!({
+            "sidecar": SIDECAR_NAME,
+            "active": !worker_finished,
+            "streamId": self.stream_id,
+            "reason": if worker_finished { "captureWorkerFinished" } else { "active" },
+            "source": self.source,
+            "workerFinished": worker_finished,
+            "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        })
+    }
+
     fn stop(&mut self, reason: &str) -> Value {
         let _ = self.stop_tx.send(());
         let stats = self
@@ -616,6 +910,193 @@ impl CaptureSession {
             "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         })
     }
+}
+
+#[derive(Debug, Default)]
+struct MeetingRelayStats {
+    frames_processed: u64,
+    bytes_forwarded: u64,
+    aec_render_active_frames: u64,
+    aec_render_energy: f64,
+    aec_raw_mic_energy: f64,
+    aec_clean_mic_energy: f64,
+    microphone_padding_frames: u64,
+    system_padding_frames: u64,
+    max_input_skew_micros: u64,
+    error: Option<String>,
+}
+
+impl MeetingRelayStats {
+    fn aec_metrics(&self, enabled: bool) -> Value {
+        let echo_reduction_db = if enabled
+            && self.aec_render_active_frames > 0
+            && self.aec_raw_mic_energy > 0.0
+            && self.aec_clean_mic_energy > 0.0
+        {
+            Some(
+                (10.0 * (self.aec_raw_mic_energy / self.aec_clean_mic_energy).log10())
+                    .clamp(-60.0, 60.0),
+            )
+        } else {
+            None
+        };
+        json!({
+            "measurement": "render-active-raw-to-clean-energy-ratio",
+            "renderActiveFrames": self.aec_render_active_frames,
+            "renderActiveDurationMs": self.aec_render_active_frames.saturating_mul(10),
+            "renderEnergy": self.aec_render_energy,
+            "rawMicEnergy": self.aec_raw_mic_energy,
+            "cleanMicEnergy": self.aec_clean_mic_energy,
+            "echoReductionDb": echo_reduction_db,
+        })
+    }
+}
+
+struct MeetingCaptureSession {
+    meeting_capture_id: String,
+    capture_stream_ids: Vec<String>,
+    stop_tx: Sender<()>,
+    join_handle: Option<JoinHandle<MeetingRelayStats>>,
+    started_at: Instant,
+    aec_enabled: bool,
+}
+
+impl MeetingCaptureSession {
+    fn worker_finished(&self) -> bool {
+        self.join_handle
+            .as_ref()
+            .map(|handle| handle.is_finished())
+            .unwrap_or(true)
+    }
+
+    fn status(&self) -> Value {
+        let finished = self.worker_finished();
+        json!({
+            "active": !finished,
+            "meetingCaptureId": self.meeting_capture_id,
+            "reason": if finished { "meetingRelayFinished" } else { "active" },
+            "workerFinished": finished,
+            "aecActive": self.aec_enabled && !finished,
+            "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        })
+    }
+
+    fn stop(&mut self, reason: &str) -> Value {
+        let _ = self.stop_tx.send(());
+        let stats = self
+            .join_handle
+            .take()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| MeetingRelayStats {
+                    error: Some("meetingRelayThreadPanicked".to_string()),
+                    ..Default::default()
+                })
+            })
+            .unwrap_or_default();
+        let aec_metrics = stats.aec_metrics(self.aec_enabled);
+        json!({
+            "stopped": true, "meetingCaptureId": self.meeting_capture_id, "reason": reason,
+            "aecActive": false, "framesProcessed": stats.frames_processed,
+            "bytesForwarded": stats.bytes_forwarded, "relayError": stats.error,
+            "microphonePaddingFrames": stats.microphone_padding_frames,
+            "systemPaddingFrames": stats.system_padding_frames,
+            "maxInputSkewMicros": stats.max_input_skew_micros,
+            "aecMetrics": aec_metrics,
+            "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        })
+    }
+}
+
+#[cfg(windows)]
+fn start_meeting_aec_relay(
+    meeting_capture_id: &str,
+    microphone_stream_id: String,
+    system_stream_id: String,
+    microphone_pipe: String,
+    system_pipe: String,
+    delay_ms: i32,
+    aec_enabled: bool,
+) -> Result<(MeetingCaptureSession, Value), String> {
+    let pipe_specs = [
+        (
+            "mic_raw",
+            format!(r"\\.\pipe\scriber-meeting-{meeting_capture_id}-mic-raw"),
+        ),
+        (
+            "system",
+            format!(r"\\.\pipe\scriber-meeting-{meeting_capture_id}-system"),
+        ),
+        (
+            "mic_clean",
+            format!(r"\\.\pipe\scriber-meeting-{meeting_capture_id}-mic-clean"),
+        ),
+    ];
+    let mut handles = Vec::new();
+    for (_, path) in &pipe_specs {
+        match create_meeting_output_pipe(path) {
+            Ok(handle) => handles.push(handle),
+            Err(error) => {
+                for handle in handles {
+                    unsafe {
+                        CloseHandle(handle);
+                    }
+                }
+                return Err(error);
+            }
+        }
+    }
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let thread_handles: Vec<isize> = handles.iter().map(|handle| *handle as isize).collect();
+    let join_handle = thread::Builder::new()
+        .name("scriber-meeting-aec3-relay".to_string())
+        .spawn(move || {
+            run_meeting_aec_relay(
+                microphone_pipe,
+                system_pipe,
+                thread_handles,
+                stop_rx,
+                delay_ms,
+                aec_enabled,
+            )
+        })
+        .map_err(|error| {
+            for handle in handles {
+                unsafe {
+                    CloseHandle(handle);
+                }
+            }
+            format!("meeting AEC3 relay thread spawn failed: {error}")
+        })?;
+    let session = MeetingCaptureSession {
+        meeting_capture_id: meeting_capture_id.to_string(),
+        capture_stream_ids: vec![microphone_stream_id, system_stream_id],
+        stop_tx,
+        join_handle: Some(join_handle),
+        started_at: Instant::now(),
+        aec_enabled,
+    };
+    let sources = json!([
+        {"source": "microphone", "trackKind": "mic_raw", "framePipe": pipe_specs[0].1,
+         "timelineOffsetMs": 0},
+        {"source": "system", "trackKind": "system", "framePipe": pipe_specs[1].1,
+         "timelineOffsetMs": 0},
+        {"source": "mic_clean", "trackKind": "mic_clean", "framePipe": pipe_specs[2].1,
+         "timelineOffsetMs": 0},
+    ]);
+    Ok((session, sources))
+}
+
+#[cfg(not(windows))]
+fn start_meeting_aec_relay(
+    _meeting_capture_id: &str,
+    _microphone_stream_id: String,
+    _system_stream_id: String,
+    _microphone_pipe: String,
+    _system_pipe: String,
+    _delay_ms: i32,
+    _aec_enabled: bool,
+) -> Result<(MeetingCaptureSession, Value), String> {
+    Err("meeting AEC3 relay is only implemented on Windows".to_string())
 }
 
 #[derive(Debug, Default)]
@@ -843,6 +1324,42 @@ fn adopted_prewarm_payload(adopted_prewarm: Option<&(AdoptedPrewarm, Value)>) ->
 
 fn synthetic_capture_enabled() -> bool {
     env_flag_enabled(env::var(SYNTHETIC_CAPTURE_ENV).ok().as_deref())
+}
+
+fn synthetic_signal_enabled() -> bool {
+    env_flag_enabled(env::var(SYNTHETIC_SIGNAL_ENV).ok().as_deref())
+}
+
+fn synthetic_frame_payload(request: &CaptureRequest, sequence: u64) -> Vec<u8> {
+    let sample_count = usize::from(request.channels) * request.block_size as usize;
+    if !synthetic_signal_enabled() {
+        return vec![0_u8; sample_count * 2];
+    }
+    let sample_rate = f64::from(request.sample_rate.max(1));
+    let channels = usize::from(request.channels.max(1));
+    let mut payload = Vec::with_capacity(sample_count * 2);
+    for frame_index in 0..request.block_size as usize {
+        let absolute_index = sequence
+            .saturating_mul(u64::from(request.block_size))
+            .saturating_add(frame_index as u64);
+        let time = absolute_index as f64 / sample_rate;
+        let render = (2.0 * std::f64::consts::PI * 660.0 * time).sin() * 6_000.0;
+        let sample = if request.capture_kind == "loopback" {
+            render
+        } else {
+            let near_end = (2.0 * std::f64::consts::PI * 220.0 * time).sin() * 4_000.0;
+            let delayed_time = (time - 0.08).max(0.0);
+            let echo = (2.0 * std::f64::consts::PI * 660.0 * delayed_time).sin() * 2_400.0;
+            near_end + echo
+        };
+        let pcm = sample
+            .round()
+            .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+        for _ in 0..channels {
+            payload.extend_from_slice(&pcm.to_le_bytes());
+        }
+    }
+    payload
 }
 
 fn wasapi_capture_enabled() -> bool {
@@ -1496,12 +2013,25 @@ fn run_synthetic_prewarm_worker(
 
 #[cfg(windows)]
 fn create_frame_pipe(pipe_path: &str) -> Result<HANDLE, String> {
+    create_frame_pipe_with_wait_mode(pipe_path, PIPE_NOWAIT)
+}
+
+#[cfg(windows)]
+fn create_meeting_output_pipe(pipe_path: &str) -> Result<HANDLE, String> {
+    // Python consumes the public relay outputs as ordinary blocking byte
+    // streams. PIPE_NOWAIT can surface an empty read/EINVAL before the first
+    // 10 ms frame and make every meeting consumer exit prematurely.
+    create_frame_pipe_with_wait_mode(pipe_path, PIPE_WAIT)
+}
+
+#[cfg(windows)]
+fn create_frame_pipe_with_wait_mode(pipe_path: &str, wait_mode: u32) -> Result<HANDLE, String> {
     let wide = wide_null(pipe_path);
     let handle = unsafe {
         CreateNamedPipeW(
             wide.as_ptr(),
             PIPE_ACCESS_OUTBOUND,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | wait_mode,
             1,
             64 * 1024,
             0,
@@ -1511,11 +2041,386 @@ fn create_frame_pipe(pipe_path: &str) -> Result<HANDLE, String> {
     };
     if handle == INVALID_HANDLE_VALUE {
         return Err(format!(
-            "CreateNamedPipeW failed for synthetic frame pipe: {}",
+            "CreateNamedPipeW failed for audio frame pipe: {}",
             unsafe { GetLastError() }
         ));
     }
     Ok(handle)
+}
+
+#[cfg(windows)]
+fn open_frame_pipe_reader(pipe_path: &str) -> Result<HANDLE, String> {
+    let wide = wide_null(pipe_path);
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ,
+            0,
+            null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(format!(
+            "CreateFileW failed for upstream meeting frame pipe: {}",
+            unsafe { GetLastError() }
+        ));
+    }
+    Ok(handle)
+}
+
+#[cfg(windows)]
+fn read_exact_from_pipe(
+    handle: HANDLE,
+    size: usize,
+    stop_rx: &mpsc::Receiver<()>,
+) -> Result<Vec<u8>, String> {
+    let mut bytes = vec![0u8; size];
+    let mut offset = 0usize;
+    while offset < size {
+        match stop_rx.try_recv() {
+            Ok(()) | Err(TryRecvError::Disconnected) => {
+                return Err("meetingRelayStopped".to_string())
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+        let mut read = 0u32;
+        let ok = unsafe {
+            ReadFile(
+                handle,
+                bytes[offset..].as_mut_ptr(),
+                (size - offset).min(u32::MAX as usize) as u32,
+                &mut read,
+                null_mut(),
+            )
+        };
+        if ok == 0 {
+            let error = unsafe { GetLastError() };
+            if error == ERROR_NO_DATA {
+                thread::sleep(Duration::from_millis(2));
+                continue;
+            }
+            return Err(format!("meeting upstream ReadFile failed: {error}"));
+        }
+        if read == 0 {
+            thread::sleep(Duration::from_millis(2));
+            continue;
+        }
+        offset += read as usize;
+    }
+    Ok(bytes)
+}
+
+#[cfg(windows)]
+fn read_meeting_frame(
+    handle: HANDLE,
+    stop_rx: &mpsc::Receiver<()>,
+) -> Result<(AudioFrameHeader, Vec<u8>), String> {
+    let header_bytes = read_exact_from_pipe(handle, AUDIO_FRAME_HEADER_LEN, stop_rx)?;
+    let header = AudioFrameHeader::decode(&header_bytes)
+        .map_err(|error| format!("meeting upstream frame header invalid: {error}"))?;
+    let payload = read_exact_from_pipe(handle, header.payload_len as usize, stop_rx)?;
+    Ok((header, payload))
+}
+
+#[cfg(windows)]
+fn pcm_i16_into(payload: &[u8], samples: &mut Vec<i16>) -> Result<(), String> {
+    if payload.len() % 2 != 0 {
+        return Err("meeting PCM payload has an odd byte length".to_string());
+    }
+    samples.clear();
+    samples.extend(
+        payload
+            .chunks_exact(2)
+            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]])),
+    );
+    Ok(())
+}
+
+fn meeting_frame_energy(samples: &[i16]) -> f64 {
+    samples
+        .iter()
+        .map(|sample| f64::from(*sample).powi(2))
+        .sum::<f64>()
+}
+
+fn meeting_render_active_energy_threshold() -> f64 {
+    64.0_f64.powi(2) * MEETING_AEC_FRAME_SAMPLES as f64
+}
+
+#[cfg(windows)]
+fn downsample_meeting_48k_to_16k_into(
+    samples: &[i16],
+    output: &mut Vec<i16>,
+) -> Result<(), String> {
+    if samples.len() != MEETING_AEC_FRAME_SAMPLES || samples.len() % 3 != 0 {
+        return Err("meeting downsampler requires one 48 kHz 10ms frame".to_string());
+    }
+    output.clear();
+    output.extend(samples.chunks_exact(3).map(|group| {
+        let sum = i32::from(group[0]) + i32::from(group[1]) + i32::from(group[2]);
+        (sum / 3).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+    }));
+    Ok(())
+}
+
+#[cfg(windows)]
+fn pcm_bytes_into(samples: &[i16], payload: &mut Vec<u8>) {
+    payload.clear();
+    payload.extend(samples.iter().flat_map(|sample| sample.to_le_bytes()));
+}
+
+#[cfg(windows)]
+fn write_meeting_frame(
+    handle: HANDLE,
+    header: AudioFrameHeader,
+    payload: &[u8],
+) -> Result<u64, String> {
+    let encoded = header.encode().map_err(|error| error.to_string())?;
+    let header_bytes = write_all_to_pipe(handle, &encoded)?;
+    let payload_bytes = write_all_to_pipe(handle, payload)?;
+    Ok(u64::from(header_bytes) + u64::from(payload_bytes))
+}
+
+const MEETING_ALIGNMENT_TOLERANCE_MICROS: u64 = 5_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MeetingAlignmentAction {
+    Pair,
+    MicrophoneOnly,
+    SystemOnly,
+}
+
+fn meeting_alignment_action(
+    microphone_timestamp: Option<u64>,
+    system_timestamp: Option<u64>,
+) -> Option<MeetingAlignmentAction> {
+    match (microphone_timestamp, system_timestamp) {
+        (Some(microphone), Some(system))
+            if microphone.abs_diff(system) <= MEETING_ALIGNMENT_TOLERANCE_MICROS =>
+        {
+            Some(MeetingAlignmentAction::Pair)
+        }
+        (Some(microphone), Some(system)) if microphone < system => {
+            Some(MeetingAlignmentAction::MicrophoneOnly)
+        }
+        (Some(_), Some(_)) => Some(MeetingAlignmentAction::SystemOnly),
+        (Some(_), None) => Some(MeetingAlignmentAction::MicrophoneOnly),
+        (None, Some(_)) => Some(MeetingAlignmentAction::SystemOnly),
+        (None, None) => None,
+    }
+}
+
+#[cfg(windows)]
+fn run_meeting_aec_relay(
+    microphone_pipe: String,
+    system_pipe: String,
+    output_handles: Vec<isize>,
+    stop_rx: mpsc::Receiver<()>,
+    delay_ms: i32,
+    aec_enabled: bool,
+) -> MeetingRelayStats {
+    let mut stats = MeetingRelayStats::default();
+    let outputs: Vec<HANDLE> = output_handles
+        .iter()
+        .map(|handle| *handle as HANDLE)
+        .collect();
+    let result = (|| -> Result<(), String> {
+        let microphone = open_frame_pipe_reader(&microphone_pipe)?;
+        let system = match open_frame_pipe_reader(&system_pipe) {
+            Ok(handle) => handle,
+            Err(error) => {
+                unsafe {
+                    CloseHandle(microphone);
+                }
+                return Err(error);
+            }
+        };
+        let processing = (|| -> Result<(), String> {
+            for handle in &outputs {
+                wait_for_pipe_client(*handle, &stop_rx)?;
+            }
+            let mut aec = if aec_enabled {
+                Some(MeetingAec3::new(delay_ms)?)
+            } else {
+                None
+            };
+            let mut relay_sequence = 0u64;
+            let mut microphone_frame = Some(read_meeting_frame(microphone, &stop_rx)?);
+            let mut system_frame = Some(read_meeting_frame(system, &stop_rx)?);
+            let mut microphone_done = false;
+            let mut system_done = false;
+            let mut mic_samples = Vec::with_capacity(MEETING_AEC_FRAME_SAMPLES);
+            let mut system_samples = Vec::with_capacity(MEETING_AEC_FRAME_SAMPLES);
+            let mut clean_samples = Vec::with_capacity(MEETING_AEC_FRAME_SAMPLES);
+            let output_samples = MEETING_AEC_FRAME_SAMPLES / 3;
+            let mut microphone_16k = Vec::with_capacity(output_samples);
+            let mut system_16k = Vec::with_capacity(output_samples);
+            let mut clean_16k = Vec::with_capacity(output_samples);
+            let mut microphone_payload = Vec::with_capacity(output_samples * 2);
+            let mut system_payload = Vec::with_capacity(output_samples * 2);
+            let mut clean_payload = Vec::with_capacity(output_samples * 2);
+            loop {
+                let microphone_timestamp = microphone_frame
+                    .as_ref()
+                    .map(|(header, _)| header.timestamp_micros);
+                let system_timestamp = system_frame
+                    .as_ref()
+                    .map(|(header, _)| header.timestamp_micros);
+                let Some(action) = meeting_alignment_action(microphone_timestamp, system_timestamp)
+                else {
+                    break;
+                };
+                if let (Some(microphone), Some(system)) = (microphone_timestamp, system_timestamp) {
+                    stats.max_input_skew_micros =
+                        stats.max_input_skew_micros.max(microphone.abs_diff(system));
+                }
+                let consume_microphone = matches!(
+                    action,
+                    MeetingAlignmentAction::Pair | MeetingAlignmentAction::MicrophoneOnly
+                );
+                let consume_system = matches!(
+                    action,
+                    MeetingAlignmentAction::Pair | MeetingAlignmentAction::SystemOnly
+                );
+                let microphone_item = if consume_microphone {
+                    microphone_frame.take()
+                } else {
+                    stats.microphone_padding_frames =
+                        stats.microphone_padding_frames.saturating_add(1);
+                    None
+                };
+                let system_item = if consume_system {
+                    system_frame.take()
+                } else {
+                    stats.system_padding_frames = stats.system_padding_frames.saturating_add(1);
+                    None
+                };
+                if let Some((_, payload)) = microphone_item.as_ref() {
+                    pcm_i16_into(payload, &mut mic_samples)?;
+                } else {
+                    mic_samples.clear();
+                    mic_samples.resize(MEETING_AEC_FRAME_SAMPLES, 0);
+                }
+                if let Some((_, payload)) = system_item.as_ref() {
+                    pcm_i16_into(payload, &mut system_samples)?;
+                } else {
+                    system_samples.clear();
+                    system_samples.resize(MEETING_AEC_FRAME_SAMPLES, 0);
+                }
+                if mic_samples.len() != MEETING_AEC_FRAME_SAMPLES
+                    || system_samples.len() != MEETING_AEC_FRAME_SAMPLES
+                {
+                    return Err("meeting AEC3 received a non-10ms source frame".to_string());
+                }
+                if let Some(processor) = aec.as_mut() {
+                    processor.process_into(&system_samples, &mic_samples, &mut clean_samples)?;
+                } else {
+                    clean_samples.clear();
+                    clean_samples.extend_from_slice(&mic_samples);
+                }
+                let system_energy = meeting_frame_energy(&system_samples);
+                if aec_enabled && system_energy >= meeting_render_active_energy_threshold() {
+                    stats.aec_render_active_frames =
+                        stats.aec_render_active_frames.saturating_add(1);
+                    stats.aec_render_energy += system_energy;
+                    stats.aec_raw_mic_energy += meeting_frame_energy(&mic_samples);
+                    stats.aec_clean_mic_energy += meeting_frame_energy(&clean_samples);
+                }
+                downsample_meeting_48k_to_16k_into(&mic_samples, &mut microphone_16k)?;
+                downsample_meeting_48k_to_16k_into(&system_samples, &mut system_16k)?;
+                downsample_meeting_48k_to_16k_into(&clean_samples, &mut clean_16k)?;
+                pcm_bytes_into(&microphone_16k, &mut microphone_payload);
+                pcm_bytes_into(&system_16k, &mut system_payload);
+                pcm_bytes_into(&clean_16k, &mut clean_payload);
+                let timestamp_micros = match action {
+                    MeetingAlignmentAction::Pair => microphone_timestamp
+                        .unwrap_or_default()
+                        .max(system_timestamp.unwrap_or_default()),
+                    MeetingAlignmentAction::MicrophoneOnly => {
+                        microphone_timestamp.unwrap_or_default()
+                    }
+                    MeetingAlignmentAction::SystemOnly => system_timestamp.unwrap_or_default(),
+                };
+                let microphone_eos = microphone_item
+                    .as_ref()
+                    .is_some_and(|(header, _)| header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0);
+                let system_eos = system_item
+                    .as_ref()
+                    .is_some_and(|(header, _)| header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0);
+                let will_finish =
+                    (microphone_done || microphone_eos) && (system_done || system_eos);
+                let mut combined_flags = microphone_item
+                    .as_ref()
+                    .map(|(header, _)| header.flags)
+                    .unwrap_or_default()
+                    | system_item
+                        .as_ref()
+                        .map(|(header, _)| header.flags)
+                        .unwrap_or_default();
+                combined_flags &= !AUDIO_FRAME_FLAG_END_OF_STREAM;
+                if will_finish {
+                    combined_flags |= AUDIO_FRAME_FLAG_END_OF_STREAM;
+                }
+                let common_header = AudioFrameHeader::new(
+                    clean_payload.len() as u32,
+                    relay_sequence,
+                    timestamp_micros,
+                    160,
+                    1,
+                    combined_flags,
+                )
+                .map_err(|error| error.to_string())?;
+                stats.bytes_forwarded +=
+                    write_meeting_frame(outputs[0], common_header, &microphone_payload)?;
+                stats.bytes_forwarded +=
+                    write_meeting_frame(outputs[1], common_header, &system_payload)?;
+                let clean_header = common_header;
+                stats.bytes_forwarded +=
+                    write_meeting_frame(outputs[2], clean_header, &clean_payload)?;
+                stats.frames_processed += 1;
+                relay_sequence = relay_sequence.saturating_add(1);
+                if will_finish {
+                    break;
+                }
+                if consume_microphone {
+                    if microphone_eos {
+                        microphone_done = true;
+                    } else {
+                        microphone_frame = Some(read_meeting_frame(microphone, &stop_rx)?);
+                    }
+                }
+                if consume_system {
+                    if system_eos {
+                        system_done = true;
+                    } else {
+                        system_frame = Some(read_meeting_frame(system, &stop_rx)?);
+                    }
+                }
+            }
+            Ok(())
+        })();
+        unsafe {
+            CloseHandle(microphone);
+            CloseHandle(system);
+        }
+        processing
+    })();
+    if let Err(error) = result {
+        if error != "meetingRelayStopped" {
+            stats.error = Some(error);
+        }
+    }
+    for handle in outputs {
+        unsafe {
+            FlushFileBuffers(handle);
+            DisconnectNamedPipe(handle);
+            CloseHandle(handle);
+        }
+    }
+    stats
 }
 
 #[cfg(windows)]
@@ -1527,7 +2432,7 @@ fn run_synthetic_frame_pipe_writer(
     adopted_prebuffer_blocks: Vec<Vec<u8>>,
 ) -> CaptureWriterStats {
     let mut stats = CaptureWriterStats::default();
-    let started = Instant::now();
+    let started = request.clock_origin.unwrap_or_else(Instant::now);
     let connect_result = wait_for_pipe_client(pipe_handle, &stop_rx);
     if let Err(err) = connect_result {
         stats.error = Some(err);
@@ -1556,8 +2461,6 @@ fn run_synthetic_frame_pipe_writer(
         return stats;
     }
 
-    let payload_len = usize::from(request.channels) * request.block_size as usize * 2;
-    let payload = vec![0_u8; payload_len];
     let frame_interval = Duration::from_secs_f64(
         (request.block_size as f64 / f64::from(request.sample_rate)).max(0.001),
     );
@@ -1567,6 +2470,7 @@ fn run_synthetic_frame_pipe_writer(
         0
     };
     let mut prebuffer_frames_written = 0_u32;
+    let stream_started_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     loop {
         match stop_rx.try_recv() {
             Ok(()) | Err(TryRecvError::Disconnected) => break,
@@ -1579,7 +2483,11 @@ fn run_synthetic_frame_pipe_writer(
         } else {
             0
         };
-        let timestamp_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        let payload = synthetic_frame_payload(&request, sequence);
+        let frame_duration_micros = u64::from(request.block_size).saturating_mul(1_000_000)
+            / u64::from(request.sample_rate.max(1));
+        let timestamp_micros =
+            stream_started_micros.saturating_add(sequence.saturating_mul(frame_duration_micros));
         let header = match AudioFrameHeader::new(
             payload.len() as u32,
             sequence,
@@ -1689,7 +2597,7 @@ fn run_wasapi_capture_writer(
 ) -> CaptureWriterStats {
     let mut stats = CaptureWriterStats::default();
     let mut ready_sent = false;
-    let started = Instant::now();
+    let started = request.clock_origin.unwrap_or_else(Instant::now);
     let result = run_wasapi_capture_writer_inner(
         pipe_handle,
         &request,
@@ -1760,10 +2668,13 @@ fn select_wasapi_capture_device(
     enumerator: &IMMDeviceEnumerator,
     request: &CaptureRequest,
 ) -> Result<WasapiSelectedDevice, String> {
+    let loopback = request.capture_kind.eq_ignore_ascii_case("loopback");
+    let data_flow = if loopback { eRender } else { eCapture };
     let requested_hash = request.native_endpoint_id_hash.trim();
     if !requested_hash.is_empty() {
-        let collection = unsafe { enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) }
-            .map_err(|err| format!("WASAPI capture endpoint enumeration failed: {err}"))?;
+        let collection =
+            unsafe { enumerator.EnumAudioEndpoints(data_flow, DEVICE_STATE_ACTIVE) }
+                .map_err(|err| format!("WASAPI capture endpoint enumeration failed: {err}"))?;
         let count = unsafe { collection.GetCount() }
             .map_err(|err| format!("WASAPI capture endpoint count failed: {err}"))?;
         for index in 0..count {
@@ -1797,8 +2708,8 @@ fn select_wasapi_capture_device(
         );
     }
 
-    let device = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
-        .map_err(|err| format!("default WASAPI capture endpoint unavailable: {err}"))?;
+    let device = unsafe { enumerator.GetDefaultAudioEndpoint(data_flow, eConsole) }
+        .map_err(|err| format!("default WASAPI endpoint unavailable: {err}"))?;
     let endpoint_id_hash = unsafe { wasapi_endpoint_id_hash(&device) };
     Ok(WasapiSelectedDevice {
         device,
@@ -1888,12 +2799,13 @@ fn run_wasapi_capture_writer_inner(
         let mix_format_ptr = unsafe { client.GetMixFormat() }
             .map_err(|err| format!("GetMixFormat failed: {err}"))?;
         let mix_format = unsafe { wasapi_mix_format_from_ptr(mix_format_ptr) };
+        let initialize_args = wasapi_shared_initialize_args(&request.capture_kind);
         let init_result = unsafe {
             client.Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
-                0,
-                1_000_000,
-                0,
+                initialize_args.stream_flags,
+                initialize_args.buffer_duration_100ns,
+                initialize_args.periodicity_100ns,
                 mix_format_ptr,
                 None,
             )
@@ -1907,6 +2819,7 @@ fn run_wasapi_capture_writer_inner(
             .map_err(|err| format!("IAudioCaptureClient service unavailable: {err}"))?;
 
         unsafe { client.Start() }.map_err(|err| format!("WASAPI Start failed: {err}"))?;
+        let stream_started_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         let capture_result = (|| -> Result<(), String> {
             if defer_ready_until_after_pipe {
                 stats.deferred_prewarm_stop =
@@ -1945,7 +2858,7 @@ fn run_wasapi_capture_writer_inner(
                 &capture_client,
                 mix_format,
                 stats,
-                started,
+                stream_started_micros,
                 sequence,
                 adopted_prebuffer_blocks.is_empty(),
             )
@@ -1990,12 +2903,13 @@ fn run_wasapi_prewarm_worker_inner(
         let mix_format_ptr = unsafe { client.GetMixFormat() }
             .map_err(|err| format!("GetMixFormat failed: {err}"))?;
         let mix_format = unsafe { wasapi_mix_format_from_ptr(mix_format_ptr) };
+        let initialize_args = wasapi_shared_initialize_args("microphone");
         let init_result = unsafe {
             client.Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
-                0,
-                1_000_000,
-                0,
+                initialize_args.stream_flags,
+                initialize_args.buffer_duration_100ns,
+                initialize_args.periodicity_100ns,
                 mix_format_ptr,
                 None,
             )
@@ -2044,11 +2958,16 @@ fn pump_wasapi_capture(
     capture_client: &IAudioCaptureClient,
     mix_format: WasapiMixFormat,
     stats: &mut CaptureWriterStats,
-    started: Instant,
+    stream_started_micros: u64,
     initial_sequence: u64,
     use_live_prebuffer: bool,
 ) -> Result<(), String> {
     let mut converter = WasapiPcmConverter::new(mix_format, request);
+    let loopback = request.capture_kind.eq_ignore_ascii_case("loopback");
+    let loopback_frame_interval = Duration::from_secs_f64(
+        f64::from(request.block_size) / f64::from(request.sample_rate.max(1)),
+    );
+    let mut next_loopback_frame_at = Instant::now() + loopback_frame_interval;
     let prebuffer_frame_target = if use_live_prebuffer {
         requested_prebuffer_frame_count(request)
     } else {
@@ -2065,6 +2984,29 @@ fn pump_wasapi_capture(
         let mut packet_frames = unsafe { capture_client.GetNextPacketSize() }
             .map_err(|err| format!("WASAPI GetNextPacketSize failed: {err}"))?;
         if packet_frames == 0 {
+            let now = Instant::now();
+            if loopback && now >= next_loopback_frame_at {
+                let payload = vec![
+                    0_u8;
+                    request.block_size as usize
+                        * request.channels as usize
+                        * std::mem::size_of::<i16>()
+                ];
+                write_wasapi_capture_frame(
+                    pipe_handle,
+                    request,
+                    &payload,
+                    0,
+                    stream_started_micros,
+                    &mut sequence,
+                    stats,
+                )?;
+                next_loopback_frame_at = advance_loopback_frame_deadline(
+                    next_loopback_frame_at,
+                    now,
+                    loopback_frame_interval,
+                );
+            }
             thread::sleep(Duration::from_millis(5));
             continue;
         }
@@ -2089,33 +3031,72 @@ fn pump_wasapi_capture(
                 } else {
                     0
                 };
-                let timestamp_micros =
-                    started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
-                let header = AudioFrameHeader::new(
-                    payload.len() as u32,
-                    sequence,
-                    timestamp_micros,
-                    request.block_size,
-                    request.channels,
+                write_wasapi_capture_frame(
+                    pipe_handle,
+                    request,
+                    &payload,
                     flags,
-                )
-                .map_err(|err| format!("WASAPI frame header failed: {err}"))?;
-                let frame = encode_audio_frame(&header, &payload)
-                    .map_err(|err| format!("WASAPI frame encode failed: {err}"))?;
-                let bytes_written = write_all_to_pipe(pipe_handle, &frame)?;
-                stats.frames_written = stats.frames_written.saturating_add(1);
-                if flags & AUDIO_FRAME_FLAG_PREBUFFER != 0 {
-                    stats.prebuffer_frames_written =
-                        stats.prebuffer_frames_written.saturating_add(1);
-                } else {
-                    stats.live_frames_written = stats.live_frames_written.saturating_add(1);
+                    stream_started_micros,
+                    &mut sequence,
+                    stats,
+                )?;
+                if loopback {
+                    next_loopback_frame_at = Instant::now() + loopback_frame_interval;
                 }
-                stats.bytes_written = stats.bytes_written.saturating_add(u64::from(bytes_written));
-                sequence = sequence.saturating_add(1);
             }
             packet_frames = unsafe { capture_client.GetNextPacketSize() }
                 .map_err(|err| format!("WASAPI GetNextPacketSize failed: {err}"))?;
         }
+    }
+}
+
+#[cfg(windows)]
+fn write_wasapi_capture_frame(
+    pipe_handle: HANDLE,
+    request: &CaptureRequest,
+    payload: &[u8],
+    flags: u16,
+    stream_started_micros: u64,
+    sequence: &mut u64,
+    stats: &mut CaptureWriterStats,
+) -> Result<(), String> {
+    let frame_duration_micros = u64::from(request.block_size).saturating_mul(1_000_000)
+        / u64::from(request.sample_rate.max(1));
+    let timestamp_micros =
+        stream_started_micros.saturating_add(sequence.saturating_mul(frame_duration_micros));
+    let header = AudioFrameHeader::new(
+        payload.len() as u32,
+        *sequence,
+        timestamp_micros,
+        request.block_size,
+        request.channels,
+        flags,
+    )
+    .map_err(|err| format!("WASAPI frame header failed: {err}"))?;
+    let frame = encode_audio_frame(&header, payload)
+        .map_err(|err| format!("WASAPI frame encode failed: {err}"))?;
+    let bytes_written = write_all_to_pipe(pipe_handle, &frame)?;
+    stats.frames_written = stats.frames_written.saturating_add(1);
+    if flags & AUDIO_FRAME_FLAG_PREBUFFER != 0 {
+        stats.prebuffer_frames_written = stats.prebuffer_frames_written.saturating_add(1);
+    } else {
+        stats.live_frames_written = stats.live_frames_written.saturating_add(1);
+    }
+    stats.bytes_written = stats.bytes_written.saturating_add(u64::from(bytes_written));
+    *sequence = sequence.saturating_add(1);
+    Ok(())
+}
+
+fn advance_loopback_frame_deadline(
+    previous_deadline: Instant,
+    now: Instant,
+    frame_interval: Duration,
+) -> Instant {
+    let scheduled = previous_deadline + frame_interval;
+    if scheduled + frame_interval < now {
+        now + frame_interval
+    } else {
+        scheduled
     }
 }
 
@@ -2358,7 +3339,11 @@ fn capabilities_payload() -> Value {
             "ping",
             "capabilities",
             "captureStart",
+            "captureStatus",
             "captureStop",
+            "meetingCaptureStart",
+            "meetingCaptureStatus",
+            "meetingCaptureStop",
             "prewarmStart",
             "prewarmStatus",
             "prewarmStop",
@@ -2371,9 +3356,14 @@ fn capabilities_payload() -> Value {
             Value::String("rustAudioCaptureDisabled".to_string())
         },
         "wasapiCaptureAvailable": wasapi_capture_enabled(),
+        "wasapiLoopbackAvailable": wasapi_capture_enabled(),
+        "meetingCaptureAvailable": wasapi_capture_enabled() || synthetic_capture_enabled(),
+        "meetingAec3": {"available": true, "implementation": "aec3-rs", "version": "0.2.0"},
         "wasapiCaptureEnv": WASAPI_CAPTURE_ENV,
         "syntheticFramePipeAvailable": synthetic_capture_enabled(),
         "syntheticFramePipeEnv": SYNTHETIC_CAPTURE_ENV,
+        "syntheticSignalAvailable": synthetic_signal_enabled(),
+        "syntheticSignalEnv": SYNTHETIC_SIGNAL_ENV,
         "prewarmAvailable": wasapi_capture_enabled() || synthetic_capture_enabled(),
         "prewarmUnavailableReason": if wasapi_capture_enabled() || synthetic_capture_enabled() {
             Value::Null
@@ -2507,6 +3497,10 @@ mod tests {
             SYNTHETIC_CAPTURE_ENV
         );
         assert_eq!(
+            payload["capabilities"]["syntheticSignalEnv"],
+            SYNTHETIC_SIGNAL_ENV
+        );
+        assert_eq!(
             payload["capabilities"]["audioFrameProtocol"]["sampleFormat"],
             "pcm_i16_le"
         );
@@ -2526,6 +3520,180 @@ mod tests {
         assert_eq!(response["success"], true);
         assert_eq!(response["requestId"], "r1");
         assert_eq!(response["payload"]["pong"], true);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn synthetic_meeting_capture_relays_raw_system_and_aec_clean_frames() {
+        let _lock = audio_env_test_lock();
+        let _disable_wasapi = set_audio_test_env(DISABLE_WASAPI_CAPTURE_ENV, "1");
+        let _enable_synthetic = set_audio_test_env(SYNTHETIC_CAPTURE_ENV, "1");
+        let _enable_signal = set_audio_test_env(SYNTHETIC_SIGNAL_ENV, "1");
+        let mut state = AudioSidecarState::new();
+        let request = json!({
+            "protocolVersion": SIDECAR_PROTOCOL_VERSION,
+            "requestId": "meeting-start",
+            "command": "meetingCaptureStart",
+            "payload": {"aecEnabled": true, "aecDelayMs": 80}
+        });
+        let response = state.handle_sidecar_request(&request.to_string());
+        assert_eq!(response["success"], true, "{response}");
+        assert_eq!(response["payload"]["aecActive"], true);
+        let sources = response["payload"]["sources"].as_array().unwrap();
+        assert_eq!(sources.len(), 3);
+        let readers: Vec<_> = sources
+            .iter()
+            .map(|source| {
+                let path = source["framePipe"].as_str().unwrap().to_string();
+                thread::spawn(move || {
+                    let mut file = loop {
+                        match std::fs::File::open(&path) {
+                            Ok(file) => break file,
+                            Err(_) => thread::sleep(Duration::from_millis(5)),
+                        }
+                    };
+                    let mut header = [0u8; AUDIO_FRAME_HEADER_LEN];
+                    file.read_exact(&mut header).unwrap();
+                    let decoded = AudioFrameHeader::decode(&header).unwrap();
+                    let mut payload = vec![0u8; decoded.payload_len as usize];
+                    file.read_exact(&mut payload).unwrap();
+                    let peak = payload
+                        .chunks_exact(2)
+                        .map(|sample| i16::from_le_bytes([sample[0], sample[1]]).unsigned_abs())
+                        .max()
+                        .unwrap_or(0);
+                    (decoded, payload, peak)
+                })
+            })
+            .collect();
+        let mut received = Vec::new();
+        for reader in readers {
+            let (header, payload, peak) = reader.join().unwrap();
+            assert_eq!(header.frame_count, 160);
+            assert_eq!(payload.len(), 320);
+            assert!(peak > 0, "synthetic Meeting source must carry a signal");
+            received.push(header);
+        }
+        assert!(received.windows(2).all(|pair| {
+            pair[0].sequence == pair[1].sequence
+                && pair[0].timestamp_micros == pair[1].timestamp_micros
+        }));
+        let capture_id = response["payload"]["meetingCaptureId"].as_str().unwrap();
+        let stop = json!({
+            "protocolVersion": SIDECAR_PROTOCOL_VERSION,
+            "requestId": "meeting-stop",
+            "command": "meetingCaptureStop",
+            "payload": {"meetingCaptureId": capture_id}
+        });
+        let stopped = state.handle_sidecar_request(&stop.to_string());
+        assert_eq!(stopped["success"], true);
+        assert_eq!(stopped["payload"]["stopped"], true);
+        assert!(stopped["payload"]["relay"]["aecMetrics"].is_object());
+        assert_eq!(
+            stopped["payload"]["relay"]["aecMetrics"]["measurement"],
+            "render-active-raw-to-clean-energy-ratio"
+        );
+    }
+
+    #[test]
+    fn meeting_relay_stats_report_measurable_render_active_attenuation() {
+        let stats = MeetingRelayStats {
+            frames_processed: 100,
+            bytes_forwarded: 1_000,
+            aec_render_active_frames: 25,
+            aec_render_energy: 50_000.0,
+            aec_raw_mic_energy: 10_000.0,
+            aec_clean_mic_energy: 1_000.0,
+            error: None,
+            ..Default::default()
+        };
+        let metrics = stats.aec_metrics(true);
+        assert_eq!(metrics["renderActiveFrames"], 25);
+        assert_eq!(metrics["renderActiveDurationMs"], 250);
+        assert_eq!(metrics["echoReductionDb"], 10.0);
+    }
+
+    #[test]
+    fn meeting_alignment_preserves_large_source_start_skew() {
+        assert_eq!(
+            meeting_alignment_action(Some(0), Some(250_000)),
+            Some(MeetingAlignmentAction::MicrophoneOnly)
+        );
+        assert_eq!(
+            meeting_alignment_action(Some(250_000), Some(0)),
+            Some(MeetingAlignmentAction::SystemOnly)
+        );
+        assert_eq!(
+            meeting_alignment_action(Some(250_000), Some(254_000)),
+            Some(MeetingAlignmentAction::Pair)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn meeting_relay_pcm_scratch_buffers_keep_their_allocations() {
+        let source: Vec<i16> = (0..MEETING_AEC_FRAME_SAMPLES)
+            .map(|index| (index as i16).wrapping_mul(31))
+            .collect();
+        let mut source_payload = Vec::with_capacity(source.len() * 2);
+        pcm_bytes_into(&source, &mut source_payload);
+
+        let mut decoded = Vec::with_capacity(MEETING_AEC_FRAME_SAMPLES);
+        let mut downsampled = Vec::with_capacity(MEETING_AEC_FRAME_SAMPLES / 3);
+        let mut payload = Vec::with_capacity((MEETING_AEC_FRAME_SAMPLES / 3) * 2);
+        pcm_i16_into(&source_payload, &mut decoded).expect("initial PCM decode");
+        downsample_meeting_48k_to_16k_into(&decoded, &mut downsampled).expect("initial downsample");
+        pcm_bytes_into(&downsampled, &mut payload);
+        let allocations = (decoded.as_ptr(), downsampled.as_ptr(), payload.as_ptr());
+
+        for _ in 0..10_000 {
+            pcm_i16_into(&source_payload, &mut decoded).expect("reused PCM decode");
+            downsample_meeting_48k_to_16k_into(&decoded, &mut downsampled)
+                .expect("reused downsample");
+            pcm_bytes_into(&downsampled, &mut payload);
+            assert_eq!(decoded.as_ptr(), allocations.0);
+            assert_eq!(downsampled.as_ptr(), allocations.1);
+            assert_eq!(payload.as_ptr(), allocations.2);
+        }
+        assert_eq!(decoded, source);
+        assert_eq!(downsampled.len(), MEETING_AEC_FRAME_SAMPLES / 3);
+        assert_eq!(payload.len(), downsampled.len() * 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wasapi_loopback_initialize_changes_flags_not_periodicity() {
+        let microphone = wasapi_shared_initialize_args("microphone");
+        let loopback = wasapi_shared_initialize_args("loopback");
+        assert_eq!(microphone.periodicity_100ns, 0);
+        assert_eq!(loopback.periodicity_100ns, 0);
+        assert_eq!(
+            microphone.buffer_duration_100ns,
+            loopback.buffer_duration_100ns
+        );
+        assert_eq!(microphone.stream_flags, 0);
+        assert_eq!(loopback.stream_flags, AUDCLNT_STREAMFLAGS_LOOPBACK);
+    }
+
+    #[test]
+    fn loopback_silence_deadline_keeps_ten_ms_cadence() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(10);
+        assert_eq!(
+            advance_loopback_frame_deadline(start + interval, start + interval, interval),
+            start + Duration::from_millis(20)
+        );
+    }
+
+    #[test]
+    fn loopback_silence_deadline_drops_large_catch_up_bursts() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(10);
+        let now = start + Duration::from_millis(100);
+        assert_eq!(
+            advance_loopback_frame_deadline(start + interval, now, interval),
+            now + interval
+        );
     }
 
     #[test]
@@ -2626,6 +3794,8 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 4,
             prewarm_id: "".to_string(),
+            capture_kind: "microphone".to_string(),
+            clock_origin: None,
         };
 
         let (mut session, payload) = start_synthetic_prewarm_impl(request).unwrap();
@@ -2655,6 +3825,8 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 4,
             prewarm_id: "".to_string(),
+            capture_kind: "microphone".to_string(),
+            clock_origin: None,
         };
 
         let (session, _) = start_synthetic_prewarm_impl(request).unwrap();
@@ -2736,6 +3908,8 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 400,
             prewarm_id: "".to_string(),
+            capture_kind: "microphone".to_string(),
+            clock_origin: None,
         };
 
         assert_eq!(requested_prebuffer_frame_count(&request), 13);
@@ -2764,6 +3938,8 @@ mod tests {
             native_endpoint_id_hash: "endpoint-hash".to_string(),
             prebuffer_ms: 0,
             prewarm_id: "".to_string(),
+            capture_kind: "microphone".to_string(),
+            clock_origin: None,
         };
 
         let payload = endpoint_selection_payload(
@@ -2826,6 +4002,8 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 0,
             prewarm_id: "".to_string(),
+            capture_kind: "microphone".to_string(),
+            clock_origin: None,
         };
         let samples = [
             0.0_f32, 0.1, 0.2, 0.3, 0.4, 0.5, -0.5, -0.4, -0.3, -0.2, -0.1, 0.0,
@@ -2858,6 +4036,8 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 2,
             prewarm_id: "".to_string(),
+            capture_kind: "microphone".to_string(),
+            clock_origin: None,
         };
         let (mut session, payload) = start_synthetic_capture_impl(request, None).unwrap();
         let pipe_path = payload["framePipe"].as_str().unwrap();
@@ -2907,6 +4087,8 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 1,
             prewarm_id: "".to_string(),
+            capture_kind: "microphone".to_string(),
+            clock_origin: None,
         };
         let (mut prewarm_session, _) = start_synthetic_prewarm_impl(prewarm_request).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -2923,6 +4105,8 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 1,
             prewarm_id: adopted.prewarm_id.clone(),
+            capture_kind: "microphone".to_string(),
+            clock_origin: None,
         };
         let (mut capture_session, payload) =
             start_synthetic_capture_impl(capture_request, Some((adopted, prewarm_stop))).unwrap();
@@ -2969,6 +4153,8 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 400,
             prewarm_id: "prewarm-1".to_string(),
+            capture_kind: "microphone".to_string(),
+            clock_origin: None,
         };
         let adopted = AdoptedPrewarm {
             prewarm_id: "prewarm-1".to_string(),

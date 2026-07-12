@@ -9,6 +9,15 @@ from src.core.ws_contracts import (
     error_event,
     history_updated_event,
     input_warning_event,
+    meeting_audio_level_event,
+    meeting_checkpoint_event,
+    meeting_live_status_event,
+    meeting_import_progress_event,
+    meeting_detected_event,
+    meeting_note_event,
+    meeting_segment_event,
+    meeting_state_event,
+    meeting_transcript_edited_event,
     session_finished_event,
     session_started_event,
     state_event,
@@ -19,6 +28,46 @@ from src.core.ws_contracts import (
     version_event_payload,
 )
 from src.web_api import ScriberWebController
+
+
+def test_meeting_event_builders_are_versioned_and_valid():
+    payloads = [
+        meeting_state_event({"id": "meeting-1", "state": "recording"}),
+        meeting_segment_event("meeting-1", {
+            "id": "segment-1", "revision": "live", "source": "microphone",
+            "speakerLabel": "You", "startMs": 100, "endMs": 850,
+            "text": "Hello", "sequence": 0, "isFinal": True,
+        }),
+        meeting_note_event("meeting-1", {"id": "note-1", "body": "Follow up"}),
+        meeting_audio_level_event("meeting-1", "microphone", 0.25),
+        meeting_checkpoint_event("meeting-1", {
+            "id": "checkpoint-1", "meetingId": "meeting-1", "sequence": 1,
+            "cutoffMs": 30_000, "segmentCount": 3,
+            "sources": ["microphone", "system"],
+            "frontiers": {"logical": {"microphone": 30_000, "system": 30_000}},
+            "commitOrdinal": 2, "snapshotSha256": "a" * 64,
+            "createdAt": "2026-07-12T10:00:00+00:00",
+            "updatedAt": "2026-07-12T10:00:00+00:00",
+        }),
+        meeting_transcript_edited_event(
+            "meeting-1",
+            {
+                "id": "segment-1", "meetingId": "meeting-1", "revision": "canonical",
+                "source": "system", "startMs": 0, "endMs": 1_000,
+                "durationMs": 1_000, "text": "Corrected", "sequence": 0,
+                "speakerLabel": "Speaker 1", "isFinal": True,
+            },
+            transcript_edit_version=1,
+            outputs_stale=True,
+        ),
+        meeting_live_status_event("meeting-1", "system", "reconnecting", 1),
+        meeting_import_progress_event(
+            "import-1", "receiving", 0.5, "Uploading", received_bytes=50, expected_bytes=100
+        ),
+        meeting_detected_event("detect-1", "Teams meeting", source="window"),
+    ]
+    for payload in payloads:
+        validate_event_payload(payload)
 
 
 def test_ws_event_builders_match_contract():
@@ -128,6 +177,20 @@ def test_ws_contract_validation_rejects_invalid_payload():
         validate_event_payload({"type": "history_updated", "apiVersion": "0"})
     with pytest.raises(WSContractError):
         validate_event_payload(version_event_payload({"type": "history_updated", "transcriptId": 123}))
+    with pytest.raises(WSContractError):
+        validate_event_payload(meeting_live_status_event("meeting-1", "system", "invalid", 1))
+    with pytest.raises(WSContractError):
+        validate_event_payload(
+            version_event_payload(
+                {
+                    "type": "meeting_live_status",
+                    "meetingId": "meeting-1",
+                    "source": "system",
+                    "status": "reconnecting",
+                    "reconnectCount": -1,
+                }
+            )
+        )
     with pytest.raises(WSContractError):
         validate_event_payload(version_event_payload({"type": "unknown_event"}))
 

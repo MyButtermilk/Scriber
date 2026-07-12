@@ -48,6 +48,7 @@ completed transcript plus summary evidence.
 
 param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+    [string]$PythonExecutable = "",
     [string]$InstallerPath = "",
     [string]$InstallDir = "",
     [string]$DataDir = "",
@@ -62,6 +63,7 @@ param(
     [switch]$WaitForManualGlobalHotkey,
     [switch]$VerifySupportBundle,
     [switch]$VerifyFrontend,
+    [switch]$VerifyMeetingAudioDeviceTest,
     [switch]$VerifyMediaPreparation,
     [switch]$VerifyRealMediaWorkflows,
     [string]$RealWorkflowYoutubeUrl = "https://www.youtube.com/watch?v=0wEjbSYNUM8",
@@ -305,6 +307,46 @@ function Test-InstalledFrontendAssetOwnership {
     }
 }
 
+function Test-InstalledMeetingResources {
+    param([string]$Root)
+
+    $noticePath = Join-Path $Root "THIRD_PARTY_NOTICES.md"
+    if (-not (Test-Path -LiteralPath $noticePath -PathType Leaf)) {
+        throw "Installed third-party notices file is missing: $noticePath"
+    }
+    $notice = Get-Content -LiteralPath $noticePath -Raw
+    if ($notice -notmatch 'aec3 0\.2\.0') {
+        throw "Installed third-party notices do not contain the pinned aec3 notice."
+    }
+    $bundledVoiceModels = @(
+        Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction Stop |
+            Where-Object { $_.Name -match '(?i)wespeaker' }
+    )
+    if ($bundledVoiceModels.Count -gt 0) {
+        throw "Optional WeSpeaker model must not be bundled in the base installer."
+    }
+    $diarizationSmokeScript = Join-Path $RepoRoot "scripts\smoke_diarization_worker_resource.py"
+    $diarizationSmokeJson = & $PythonExecutable $diarizationSmokeScript --root $Root
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installed diarization worker resource smoke failed."
+    }
+    try {
+        $diarizationWorker = ($diarizationSmokeJson | Out-String).Trim() | ConvertFrom-Json
+    } catch {
+        throw "Installed diarization worker resource smoke returned invalid JSON."
+    }
+    if (-not $diarizationWorker.ok) {
+        throw "Installed diarization worker resource smoke did not report ok=true."
+    }
+    return [pscustomobject]@{
+        verified = $true
+        noticePath = Convert-ToRelativePath -Root $Root -Path $noticePath
+        aec3NoticePresent = $true
+        optionalWeSpeakerModelAbsent = $true
+        diarizationWorker = $diarizationWorker
+    }
+}
+
 function Convert-ToRelativePath {
     param(
         [string]$Root,
@@ -534,6 +576,9 @@ function Invoke-InstalledDesktopSmoke {
     if ($VerifyFrontend) {
         $smokeArgs += "-VerifyFrontend"
     }
+    if ($VerifyMeetingAudioDeviceTest) {
+        $smokeArgs += "-VerifyMeetingAudioDeviceTest"
+    }
     if ($VerifyRealMediaWorkflows) {
         $smokeArgs += "-VerifyRealMediaWorkflows"
         $smokeArgs += @("-RealWorkflowYoutubeUrl", $RealWorkflowYoutubeUrl)
@@ -640,7 +685,7 @@ function Invoke-InstalledMediaPreparationSmoke {
 
     Push-Location $RepoRoot
     try {
-        python @mediaSmokeArgs
+        & $PythonExecutable @mediaSmokeArgs | Out-Host
         if ($LASTEXITCODE -ne 0) {
             throw "Installed media preparation smoke failed with exit code $LASTEXITCODE."
         }
@@ -665,11 +710,29 @@ function Invoke-InstalledMediaPreparationSmoke {
 }
 
 $RepoRoot = (Resolve-Path $RepoRoot).Path
+if (-not $PythonExecutable) {
+    $repoPython = Join-Path $RepoRoot "venv\Scripts\python.exe"
+    $PythonExecutable = if (Test-Path -LiteralPath $repoPython -PathType Leaf) {
+        $repoPython
+    } else {
+        (Get-Command python -ErrorAction Stop).Source
+    }
+}
+if (-not (Test-Path -LiteralPath $PythonExecutable -PathType Leaf)) {
+    throw "Python executable for installer smoke was not found: $PythonExecutable"
+}
+$PythonExecutable = (Resolve-Path -LiteralPath $PythonExecutable).Path
 if ($VerifyUninstall -and $KeepInstalled) {
     throw "-VerifyUninstall cannot be combined with -KeepInstalled."
 }
 if (-not $InstallerPath) {
-    $InstallerPath = Join-Path $RepoRoot "Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.2_x64-setup.exe"
+    $versionSource = Get-Content -LiteralPath (Join-Path $RepoRoot "src\version.py") -Raw
+    $versionMatch = [regex]::Match($versionSource, '(?m)^__version__\s*=\s*"([^"]+)"')
+    if (-not $versionMatch.Success) {
+        throw "Could not resolve the current installer version from src\version.py."
+    }
+    $currentVersion = $versionMatch.Groups[1].Value
+    $InstallerPath = Join-Path $RepoRoot "Frontend\src-tauri\target\release\bundle\nsis\Scriber_${currentVersion}_x64-setup.exe"
 }
 if (-not (Test-Path $InstallerPath)) {
     throw "Missing installer: $InstallerPath"
@@ -708,12 +771,14 @@ $upgrade = $null
 $mediaPreparation = $null
 $audioSidecarExe = $null
 $frontendAssetOwnership = $null
+$meetingResources = $null
 $cleanupCompleted = $false
 try {
     Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer"
     $appExe = Resolve-InstalledAppExe -Root $InstallDir
     $audioSidecarExe = Resolve-InstalledAudioSidecarExe -Root $InstallDir
     $frontendAssetOwnership = Test-InstalledFrontendAssetOwnership -Root $InstallDir
+    $meetingResources = Test-InstalledMeetingResources -Root $InstallDir
     $installSize = Get-DirectorySizeReport -Root $InstallDir -MaxSizeMB $MaxInstalledSizeMB
 
     $smoke = Invoke-InstalledDesktopSmoke -AppExe $appExe -RuntimeDataDir $DataDir
@@ -726,6 +791,7 @@ try {
         $appExe = Resolve-InstalledAppExe -Root $InstallDir
         $audioSidecarExe = Resolve-InstalledAudioSidecarExe -Root $InstallDir
         $frontendAssetOwnership = Test-InstalledFrontendAssetOwnership -Root $InstallDir
+        $meetingResources = Test-InstalledMeetingResources -Root $InstallDir
         $installSize = Get-DirectorySizeReport -Root $InstallDir -MaxSizeMB $MaxInstalledSizeMB
         $secondSmoke = Invoke-InstalledDesktopSmoke -AppExe $appExe -RuntimeDataDir $DataDir
         if (-not (Test-Path -LiteralPath $sentinelPath -PathType Leaf)) {
@@ -745,6 +811,7 @@ try {
             globalHotkey = $secondSmoke.globalHotkey
             supportBundle = $secondSmoke.supportBundle
             frontend = $secondSmoke.frontend
+            meetingAudioDeviceTest = $secondSmoke.meetingAudioDeviceTest
             frontendAssetOwnership = $frontendAssetOwnership
             liveRecording = $secondSmoke.liveRecording
             stability = $secondSmoke.stability
@@ -785,7 +852,9 @@ try {
         globalHotkey = $smoke.globalHotkey
         supportBundle = $smoke.supportBundle
         frontend = $smoke.frontend
+        meetingAudioDeviceTest = $smoke.meetingAudioDeviceTest
         frontendAssetOwnership = $frontendAssetOwnership
+        meetingResources = $meetingResources
         realMediaWorkflows = $smoke.realMediaWorkflows
         mediaPreparation = $mediaPreparation
         liveRecording = $smoke.liveRecording

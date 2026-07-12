@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.validate_microphone_hardware_matrix import validate_matrix as validate_microphone_matrix
+from scripts.validate_meeting_release_matrix import validate_matrix as validate_meeting_matrix
 from scripts.validate_tauri_updater_metadata import DEFAULT_METADATA, sha256_file, validate_local_artifacts, validate_metadata
 
 
@@ -77,6 +78,7 @@ def validate_release_readiness(
     tauri_text_injection_smoke_report: Path | None = None,
     tauri_text_injection_matrix_report: Path | None = None,
     recording_hot_path_comparison_report: Path | None = None,
+    meeting_release_matrix_dir: Path | None = None,
     require_rust_audio_sidecar_smoke: bool = False,
     require_rust_audio_prewarm_sidecar_smoke: bool = False,
     require_rust_audio_app_prewarm_smoke: bool = False,
@@ -84,6 +86,7 @@ def validate_release_readiness(
     require_tauri_text_injection_smoke: bool = False,
     require_tauri_text_injection_matrix: bool = False,
     require_recording_hot_path_comparison: bool = False,
+    require_meeting_release_matrix: bool = False,
     require_installed_live_recording_rust_audio: bool = False,
     require_rust_endpoint_inventory: bool = False,
     require_device_refresh_evidence: bool = False,
@@ -94,6 +97,7 @@ def validate_release_readiness(
     min_rust_audio_app_prewarm_cycles: int = 0,
     min_installed_live_recording_duration_sec: float = 0.0,
     expected_authenticode_publisher: str = "",
+    expected_app_version: str = "",
     require_authenticode_timestamp: bool = False,
     platform: str = "windows-x86_64",
 ) -> dict[str, Any]:
@@ -202,6 +206,14 @@ def validate_release_readiness(
                 required=require_recording_hot_path_comparison,
             )
         )
+    if require_meeting_release_matrix or meeting_release_matrix_dir is not None:
+        checks.append(
+            validate_meeting_release_matrix(
+                meeting_release_matrix_dir,
+                required=require_meeting_release_matrix,
+                expected_app_version=expected_app_version,
+            )
+        )
     return {
         "ok": all(check.ok for check in checks),
         "checks": [check.to_public() for check in checks],
@@ -238,6 +250,45 @@ def validate_physical_microphone_matrix(
             "requireDeviceRefreshEvidence": payload.get("requireDeviceRefreshEvidence", False),
         },
     )
+
+
+def validate_meeting_release_matrix(
+    input_dir: Path | None,
+    *,
+    required: bool,
+    expected_app_version: str = "",
+) -> ReadinessCheck:
+    details: dict[str, Any] = {
+        "inputDir": str(input_dir) if input_dir else "",
+        "required": required,
+        "expectedAppVersion": expected_app_version,
+    }
+    if input_dir is None:
+        failures = ["Meeting release matrix directory is required"] if required else []
+        return ReadinessCheck("meetingReleaseMatrix", not failures, failures, details)
+    payload = validate_meeting_matrix(
+        input_dir=input_dir,
+        expected_app_version=expected_app_version,
+        require_full_matrix=True,
+        require_signed_installer=True,
+    )
+    failures = list(payload.get("matrixFailures") or [])
+    for report in payload.get("reports") or []:
+        if not isinstance(report, dict):
+            continue
+        scenario = str(report.get("scenarioId") or "unknown")
+        failures.extend(f"{scenario}: {failure}" for failure in report.get("failures") or [])
+    details.update(
+        {
+            "reportCount": payload.get("reportCount", 0),
+            "passedReportCount": payload.get("passedReportCount", 0),
+            "failedReportCount": payload.get("failedReportCount", 0),
+            "installerSha256": payload.get("installerSha256"),
+            "coverage": payload.get("coverage", {}),
+            "acceptanceChecks": payload.get("acceptanceChecks", []),
+        }
+    )
+    return ReadinessCheck("meetingReleaseMatrix", bool(payload.get("ok")), failures, details)
 
 
 def validate_signed_updater_metadata(
@@ -2549,6 +2600,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--tauri-text-injection-smoke-report", default="")
     parser.add_argument("--tauri-text-injection-matrix-report", default="")
     parser.add_argument("--recording-hot-path-comparison-report", default="")
+    parser.add_argument("--meeting-release-matrix-dir", default="")
     parser.add_argument("--require-rust-audio-sidecar-smoke", action="store_true")
     parser.add_argument("--require-rust-audio-prewarm-sidecar-smoke", action="store_true")
     parser.add_argument("--require-rust-audio-app-prewarm-smoke", action="store_true")
@@ -2557,6 +2609,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--require-tauri-text-injection-smoke", action="store_true")
     parser.add_argument("--require-tauri-text-injection-matrix", action="store_true")
     parser.add_argument("--require-recording-hot-path-comparison", action="store_true")
+    parser.add_argument("--require-meeting-release-matrix", action="store_true")
     parser.add_argument("--require-rust-endpoint-inventory", action="store_true")
     parser.add_argument("--require-device-refresh-evidence", action="store_true")
     parser.add_argument("--require-rust-audio-sidecar-prewarm-adoption", action="store_true")
@@ -2566,6 +2619,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--min-rust-audio-app-prewarm-cycles", type=int, default=0)
     parser.add_argument("--min-installed-live-recording-duration-sec", type=float, default=0.0)
     parser.add_argument("--expected-authenticode-publisher", default="")
+    parser.add_argument("--expected-app-version", default="")
     parser.add_argument("--require-authenticode-timestamp", action="store_true")
     parser.add_argument("--platform", default="windows-x86_64")
     parser.add_argument("--output", default="")
@@ -2590,6 +2644,7 @@ def main(argv: list[str]) -> int:
         tauri_text_injection_smoke_report=parse_optional_path(args.tauri_text_injection_smoke_report),
         tauri_text_injection_matrix_report=parse_optional_path(args.tauri_text_injection_matrix_report),
         recording_hot_path_comparison_report=parse_optional_path(args.recording_hot_path_comparison_report),
+        meeting_release_matrix_dir=parse_optional_path(args.meeting_release_matrix_dir),
         require_rust_audio_sidecar_smoke=args.require_rust_audio_sidecar_smoke,
         require_rust_audio_prewarm_sidecar_smoke=args.require_rust_audio_prewarm_sidecar_smoke,
         require_rust_audio_app_prewarm_smoke=args.require_rust_audio_app_prewarm_smoke,
@@ -2598,6 +2653,7 @@ def main(argv: list[str]) -> int:
         require_tauri_text_injection_smoke=args.require_tauri_text_injection_smoke,
         require_tauri_text_injection_matrix=args.require_tauri_text_injection_matrix,
         require_recording_hot_path_comparison=args.require_recording_hot_path_comparison,
+        require_meeting_release_matrix=args.require_meeting_release_matrix,
         require_rust_endpoint_inventory=args.require_rust_endpoint_inventory,
         require_device_refresh_evidence=args.require_device_refresh_evidence,
         require_rust_audio_sidecar_prewarm_adoption=args.require_rust_audio_sidecar_prewarm_adoption,
@@ -2607,6 +2663,7 @@ def main(argv: list[str]) -> int:
         min_rust_audio_app_prewarm_cycles=args.min_rust_audio_app_prewarm_cycles,
         min_installed_live_recording_duration_sec=args.min_installed_live_recording_duration_sec,
         expected_authenticode_publisher=args.expected_authenticode_publisher,
+        expected_app_version=args.expected_app_version,
         require_authenticode_timestamp=args.require_authenticode_timestamp,
         platform=args.platform,
     )
