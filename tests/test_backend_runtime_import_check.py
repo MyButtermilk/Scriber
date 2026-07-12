@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from scripts.check_backend_runtime_imports import (
     REQUIRED_IMPORTS,
@@ -237,7 +241,80 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert 'Resolve-PythonInstalledTool -Names @("deno.exe", "deno")' in build_script
     assert "$pythonCommand = Get-Command $Python -ErrorAction SilentlyContinue" in build_script
     assert "if ($pythonDir)" in build_script
+    cache_manifest_source = build_script.split(
+        "function Get-SidecarInputManifest", 1
+    )[1].split("function Copy-DirectoryContents", 1)[0]
+    assert 'Resolve-PythonInstalledTool -Names @("deno.exe", "deno")' not in cache_manifest_source
+    assert 'Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp")' not in cache_manifest_source
+    assert '"requirements-base.txt"' in cache_manifest_source
+    assert '$ErrorActionPreference = "Continue"' in build_script
+    assert '& $Python -c "import PyInstaller" *> $null' in build_script
     assert 'Test-MediaToolExecutable -Path $copiedDeno -Name "deno"' in build_script
+
+
+def test_sidecar_cache_manifest_does_not_require_a_python_environment_path():
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is unavailable")
+
+    repo_root = Path(__file__).resolve().parents[1]
+    script = r"""
+$root = $env:SCRIBER_TEST_REPO_ROOT
+$scriptPath = Join-Path $root "scripts\build_tauri_backend_sidecar.ps1"
+$tokens = $null
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$errors
+)
+if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+$functions = $ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
+}, $true)
+foreach ($function in $functions) {
+    Invoke-Expression $function.Extent.Text
+}
+function Invoke-ScriberTestPython {
+    & $env:SCRIBER_TEST_PYTHON @args
+}
+$manifestArgs = @{
+    Root = $root
+    SearchDir = ""
+    BundleTools = $false
+    UseProfileB = $false
+    UseGyanEssentials = $false
+    SkipFfprobe = $false
+    ValidateSlimBundle = $false
+    PyInstallerClean = $true
+}
+$absolute = Get-SidecarInputManifest -Python $env:SCRIBER_TEST_PYTHON @manifestArgs |
+    ConvertTo-Json -Depth 8 -Compress
+$commandOnly = Get-SidecarInputManifest -Python "Invoke-ScriberTestPython" @manifestArgs |
+    ConvertTo-Json -Depth 8 -Compress
+if ($absolute -ne $commandOnly) {
+    throw "Sidecar cache manifest depends on the Python executable path."
+}
+if (Test-PyInstaller -Python "powershell.exe") {
+    throw "A failing PyInstaller probe was reported as available."
+}
+"ok"
+"""
+    env = os.environ.copy()
+    env["SCRIBER_TEST_REPO_ROOT"] = str(repo_root)
+    env["SCRIBER_TEST_PYTHON"] = sys.executable
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-Command", script],
+        cwd=repo_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "ok"
 
 
 def test_local_stt_services_do_not_override_pipecat_settings_object():

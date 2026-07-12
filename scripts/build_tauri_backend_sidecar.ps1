@@ -343,8 +343,10 @@ function Get-SidecarInputManifest {
         if (-not $SkipFfprobe) {
             $tools += Get-ToolMetadataEntry -Root $Root -Path (Resolve-MediaTool -Names @("ffprobe.exe", "ffprobe") -SearchDir $SearchDir) -Name "ffprobe"
         }
-        $tools += Get-ToolMetadataEntry -Root $Root -Path (Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp") -SearchDir $SearchDir) -Name "yt-dlp"
-        $tools += Get-ToolMetadataEntry -Root $Root -Path (Resolve-PythonInstalledTool -Names @("deno.exe", "deno") -Python $Python) -Name "deno"
+        # yt-dlp and Deno are exact pins in requirements-base.txt, which is
+        # already hashed above. Do not resolve them from the active Python
+        # environment here: signed tag builds intentionally skip restoring a
+        # venv when the backend sidecar cache is exact.
     }
     return [ordered]@{
         apiVersion = "1"
@@ -1188,8 +1190,16 @@ function Resolve-PythonPath {
 function Test-PyInstaller {
     param([string]$Python)
 
-    & $Python -c "import PyInstaller" 2>$null
-    return $LASTEXITCODE -eq 0
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $Python -c "import PyInstaller" *> $null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 }
 
 function Invoke-BackendRuntimeImportCheck {
