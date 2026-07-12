@@ -235,6 +235,8 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert "_internal\\onnxruntime\\capi" in build_script
     assert "_internal\\scipy" not in build_script
     assert 'Resolve-PythonInstalledTool -Names @("deno.exe", "deno")' in build_script
+    assert "$pythonCommand = Get-Command $Python -ErrorAction SilentlyContinue" in build_script
+    assert "if ($pythonDir)" in build_script
     assert 'Test-MediaToolExecutable -Path $copiedDeno -Name "deno"' in build_script
 
 

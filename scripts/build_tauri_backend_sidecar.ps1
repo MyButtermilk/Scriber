@@ -1290,17 +1290,27 @@ function Resolve-PythonInstalledTool {
     )
 
     if ($Python) {
-        $pythonDir = Split-Path -Parent $Python
-        $candidateDirs = @(
-            $pythonDir,
-            (Join-Path $pythonDir "Scripts"),
-            (Join-Path $pythonDir "bin"),
-            (Join-Path (Split-Path -Parent $pythonDir) "bin")
-        )
-        foreach ($candidateDir in $candidateDirs | Select-Object -Unique) {
-            $resolved = Resolve-MediaTool -Names $Names -SearchDir $candidateDir
-            if ($resolved) {
-                return $resolved
+        $resolvedPython = $Python
+        $pythonCommand = Get-Command $Python -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($pythonCommand -and $pythonCommand.Source) {
+            $resolvedPython = $pythonCommand.Source
+        }
+        $pythonDir = Split-Path -Parent $resolvedPython
+        if ($pythonDir) {
+            $candidateDirs = @(
+                $pythonDir,
+                (Join-Path $pythonDir "Scripts"),
+                (Join-Path $pythonDir "bin")
+            )
+            $pythonParentDir = Split-Path -Parent $pythonDir
+            if ($pythonParentDir) {
+                $candidateDirs += Join-Path $pythonParentDir "bin"
+            }
+            foreach ($candidateDir in $candidateDirs | Select-Object -Unique) {
+                $resolved = Resolve-MediaTool -Names $Names -SearchDir $candidateDir
+                if ($resolved) {
+                    return $resolved
+                }
             }
         }
     }
