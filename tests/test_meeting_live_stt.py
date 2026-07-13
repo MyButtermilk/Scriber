@@ -154,6 +154,106 @@ async def test_soniox_meeting_stream_uses_stable_upserts_and_persists_final_turn
 
 
 @pytest.mark.asyncio
+async def test_soniox_meeting_stream_preserves_each_contiguous_speaker_run():
+    websocket = FakeWebSocket()
+    segments = []
+
+    async def connect(_url):
+        return websocket
+
+    stream = SonioxMeetingStream(
+        meeting_id="meeting-speaker-runs",
+        source="system",
+        api_key="secret",
+        model="stt-rt-v5",
+        language="en",
+        diarization=True,
+        on_segment=lambda segment: _append(segments, segment),
+        on_gap=lambda source, reason: _append([], (source, reason)),
+        connect_factory=connect,
+        session_id="speaker-session",
+    )
+    await stream.start()
+    await websocket.push({
+        "tokens": [
+            {"text": "Alice", "is_final": True, "start_ms": 0, "end_ms": 100, "speaker": "0"},
+            {"text": " and", "is_final": True, "start_ms": 100, "end_ms": 200, "speaker": "1"},
+            {"text": " Alice", "is_final": True, "start_ms": 200, "end_ms": 300, "speaker": "0"},
+            {"text": "<end>", "is_final": True},
+        ]
+    })
+    await _eventually(lambda: len([item for item in segments if item.is_final]) == 3)
+    await stream.stop()
+
+    final = [item for item in segments if item.is_final]
+    assert [(item.text, item.speaker_label) for item in final] == [
+        ("Alice", "Speaker 1"),
+        ("and", "Speaker 2"),
+        ("Alice", "Speaker 1"),
+    ]
+    assert [item.id for item in final] == [
+        "live-system-speaker--0",
+        "live-system-speaker--0-r1",
+        "live-system-speaker--0-r2",
+    ]
+    assert [(item.start_ms, item.end_ms) for item in final] == [
+        (0, 100),
+        (100, 200),
+        (200, 300),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_soniox_meeting_stream_keeps_stable_id_with_leading_speakerless_token():
+    websocket = FakeWebSocket()
+    segments = []
+
+    async def connect(_url):
+        return websocket
+
+    stream = SonioxMeetingStream(
+        meeting_id="meeting-leading-speakerless",
+        source="system",
+        api_key="secret",
+        model="stt-rt-v5",
+        language="en",
+        diarization=True,
+        on_segment=lambda segment: _append(segments, segment),
+        on_gap=lambda source, reason: _append([], (source, reason)),
+        connect_factory=connect,
+        session_id="leading-session",
+    )
+    await stream.start()
+    await websocket.push({
+        "tokens": [
+            {"text": "Hello", "is_final": False, "start_ms": 10, "end_ms": 100},
+        ]
+    })
+    await websocket.push({
+        "tokens": [
+            {
+                "text": " ",
+                "is_final": True,
+                "start_ms": 0,
+                "end_ms": 10,
+                "speaker": "ignored-whitespace-speaker",
+            },
+            {"text": "Hello", "is_final": True, "start_ms": 10, "end_ms": 100, "speaker": "0"},
+            {"text": "<end>", "is_final": True},
+        ]
+    })
+    await _eventually(lambda: any(item.is_final for item in segments))
+    await stream.stop()
+
+    interim = next(item for item in segments if not item.is_final)
+    final = next(item for item in segments if item.is_final)
+    assert interim.id == final.id == "live-system-leading--0"
+    assert final.text == "Hello"
+    assert final.speaker_label == "Speaker 1"
+    assert not any(item.id == "live-system-leading--0-r1" for item in segments)
+
+
+@pytest.mark.asyncio
 async def test_soniox_meeting_stream_reconnects_after_send_failure_and_marks_one_gap():
     first = FakeWebSocket(fail_binary_once=True)
     second = FakeWebSocket()

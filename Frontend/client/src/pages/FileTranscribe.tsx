@@ -553,7 +553,7 @@ export default function FileTranscribe() {
   const completedItems = recentFromBackend.filter((t) => t.status !== "processing");
 
   return (
-    <div className="transcription-page file-page mx-auto w-full max-w-[1320px] px-4 py-5 md:px-6 md:py-6">
+    <div className="app-page-shell transcription-page file-page px-4 py-5 md:px-6 md:py-6" data-page-shell="file">
       <PageIntro
         eyebrow="Media import · 04"
         title="File transcription"

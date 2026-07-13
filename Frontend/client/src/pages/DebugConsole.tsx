@@ -459,7 +459,7 @@ export default function DebugConsole() {
 
   return (
     <>
-      <div className="debug-console-page">
+      <div className="app-page-shell debug-console-page" data-page-shell="console">
         <header className="debug-console-hero">
           <div className="debug-console-intro">
             <div className="debug-console-eyebrow">

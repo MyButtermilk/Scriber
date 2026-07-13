@@ -3054,3 +3054,784 @@ async def test_meeting_audio_range_requires_auth_and_exports_exclude_voiceprints
     finally:
         await client.close()
         database._close_all_connections()
+
+
+class _EnrollmentStore:
+    def __init__(self):
+        self.enrollments = []
+
+    @staticmethod
+    def active():
+        return None
+
+    @staticmethod
+    def speaker_profiles():
+        return []
+
+    def enroll_speaker_profile(
+        self, display_name, embedding, *, quality, profile_id=""
+    ):
+        self.enrollments.append(
+            {
+                "displayName": display_name,
+                "embedding": embedding,
+                "quality": quality,
+                "profileId": profile_id,
+            }
+        )
+        return {
+            "id": "profile-enrolled",
+            "displayName": display_name,
+            "sampleCount": 1,
+            "isNamed": True,
+            "enrolled": True,
+            "enrollmentSampleCount": 1,
+            "enrolledAt": "2026-07-13T12:00:00+00:00",
+            "createdAt": "2026-07-13T12:00:00+00:00",
+            "updatedAt": "2026-07-13T12:00:00+00:00",
+        }
+
+
+class _EnrollmentModel:
+    def __init__(self, *, installed=True, fail=False):
+        self.installed = installed
+        self.fail = fail
+        self.samples = []
+
+    def status(self):
+        return {"installed": self.installed}
+
+    async def extract_pcm16(self, pcm, *, sample_rate):
+        self.samples.append((pcm, sample_rate))
+        if self.fail:
+            raise RuntimeError("inference failed")
+        return [1.0] + [0.0] * 255
+
+
+class _EnrollmentController:
+    def __init__(self, *, installed=True, fail=False):
+        self._meeting_store = _EnrollmentStore()
+        self._speaker_model = _EnrollmentModel(installed=installed, fail=fail)
+        self._meeting_device_test_active = False
+        self._voice_enrollment_active = False
+        self._is_listening = False
+        self._is_stopping = False
+        self.prewarm_paused = False
+        self.state_broadcasts = []
+
+    def get_state(self):
+        return {
+            "listening": self._is_listening,
+            "voiceEnrollmentActive": self._voice_enrollment_active,
+            "status": "Stopped",
+            "inputWarning": "",
+            "inputWarningCode": "",
+            "inputWarningActions": [],
+            "current": None,
+            "sessionId": None,
+            "backgroundProcessing": False,
+            "recordingState": "idle",
+            "transcribing": False,
+        }
+
+    async def broadcast(self, payload):
+        self.state_broadcasts.append(payload)
+
+    async def _pause_idle_mic_prewarm_for_capture(self):
+        self.prewarm_paused = True
+
+    def _resume_idle_mic_prewarm_after_capture(self):
+        self.prewarm_paused = False
+
+
+@pytest.mark.asyncio
+async def test_voice_enrollment_api_gates_opt_in_model_and_active_audio(monkeypatch):
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+
+    controller = _EnrollmentController()
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/speaker-profiles/enroll")
+    request = _DirectRequest(app, payload={"displayName": "Alice"})
+
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", False)
+    response = await handler(request)
+    assert response.status == 409
+    assert "Turn on Voice Library" in json.loads(response.body)["message"]
+
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+    controller._speaker_model.installed = False
+    response = await handler(request)
+    assert response.status == 409
+    assert "Download the local voice recognition model" in json.loads(response.body)[
+        "message"
+    ]
+
+    controller._speaker_model.installed = True
+    controller._is_listening = True
+    response = await handler(request)
+    assert response.status == 409
+    assert "Stop Live Mic" in json.loads(response.body)["message"]
+    assert controller._voice_enrollment_active is False
+
+
+@pytest.mark.asyncio
+async def test_voice_enrollment_api_is_local_private_and_cleans_up(monkeypatch):
+    controller = _EnrollmentController()
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/speaker-profiles/enroll")
+    shell_calls = []
+    released = []
+    captures = []
+    claim = object()
+
+    class Capture:
+        def __init__(self, *, sample_rate, max_duration_seconds):
+            assert sample_rate == 16_000
+            assert max_duration_seconds == 9.0
+            self.started_with = ""
+            self.cleared = False
+            captures.append(self)
+
+        def start(self, frame_pipe):
+            self.started_with = frame_pipe
+
+        @staticmethod
+        def stop():
+            return {
+                "active": True,
+                "errorCode": "",
+                "durationMs": 8_000,
+                "rms": 0.1,
+                "peak": 0.4,
+                "clippingRatio": 0,
+            }
+
+        @staticmethod
+        def pcm16():
+            return b"private-pcm"
+
+        def clear(self):
+            self.cleared = True
+
+    def shell_call(command, payload, **_kwargs):
+        shell_calls.append((command, payload))
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "private-stream",
+                    "framePipe": "private-pipe",
+                    "sampleRate": 16_000,
+                    "channels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                },
+            }
+        assert command == "audioCaptureStop"
+        assert payload == {"streamId": "private-stream"}
+        return {"success": True, "payload": {"stopped": True}}
+
+    async def no_wait(duration_ms):
+        assert duration_ms == 8_000
+
+    async def claim_audio(_controller, **kwargs):
+        assert kwargs["owner_kind"] == "voice_enrollment"
+        assert kwargs["heartbeat"] is False
+        return claim
+
+    async def release_audio(_controller, released_claim):
+        released.append(released_claim)
+        return True
+
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+    monkeypatch.setattr(web_api, "VoiceEnrollmentCapture", Capture)
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    monkeypatch.setattr(web_api, "_wait_for_voice_enrollment", no_wait)
+    monkeypatch.setattr(web_api, "_claim_persistent_audio", claim_audio)
+    monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+
+    response = await handler(
+        _DirectRequest(
+            app,
+            payload={
+                "displayName": "  Alice   Example ",
+                "durationMs": 8_000,
+                "microphoneNativeEndpointIdHash": "abcdef0123456789",
+            },
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.status == 201
+    assert payload["profile"]["displayName"] == "Alice Example"
+    assert payload["capture"] == {
+        "durationMs": 8_000,
+        "rms": 0.1,
+        "peak": 0.4,
+        "quality": 0.956,
+    }
+    assert payload["audioPersisted"] is False
+    assert payload["audioSentToProvider"] is False
+    serialized = json.dumps(payload).lower()
+    assert "private-pcm" not in serialized
+    assert "private-pipe" not in serialized
+    assert "private-stream" not in serialized
+    assert "embedding" not in serialized
+    assert shell_calls == [
+        (
+            "audioCaptureStart",
+            {
+                "sampleRate": 16_000,
+                "channels": 1,
+                "blockSize": 512,
+                "devicePreference": "default",
+                "nativeEndpointIdHash": "abcdef0123456789",
+                "prebufferMs": 0,
+            },
+        ),
+        ("audioCaptureStop", {"streamId": "private-stream"}),
+    ]
+    assert controller._speaker_model.samples == [(b"private-pcm", 16_000)]
+    assert controller._meeting_store.enrollments[0]["displayName"] == "Alice Example"
+    assert controller._meeting_store.enrollments[0]["embedding"] == [1.0] + [0.0] * 255
+    assert captures[0].started_with == "private-pipe"
+    assert captures[0].cleared is True
+    assert released == [claim]
+    assert controller._voice_enrollment_active is False
+    assert controller.prewarm_paused is False
+    assert [item["voiceEnrollmentActive"] for item in controller.state_broadcasts] == [
+        True,
+        False,
+    ]
+    assert all(item["type"] == "state" for item in controller.state_broadcasts)
+    assert all(item["apiVersion"] == "1" for item in controller.state_broadcasts)
+
+
+@pytest.mark.asyncio
+async def test_voice_enrollment_cancellation_after_claim_releases_owned_lease(
+    monkeypatch,
+):
+    controller = _EnrollmentController()
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/speaker-profiles/enroll")
+    claim_started = asyncio.Event()
+    finish_claim = asyncio.Event()
+    claim = object()
+    released = []
+
+    async def delayed_claim(_controller, **_kwargs):
+        claim_started.set()
+        await finish_claim.wait()
+        return claim
+
+    async def release_audio(_controller, released_claim):
+        released.append(released_claim)
+        return True
+
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+    monkeypatch.setattr(web_api, "_claim_persistent_audio", delayed_claim)
+    monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+
+    task = asyncio.create_task(
+        handler(_DirectRequest(app, payload={"displayName": "Alice"}))
+    )
+    await asyncio.wait_for(claim_started.wait(), timeout=2)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert task.done() is False
+
+    finish_claim.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2)
+
+    assert released == [claim]
+    assert controller._voice_enrollment_active is False
+    assert controller.prewarm_paused is False
+
+
+@pytest.mark.asyncio
+async def test_voice_enrollment_retains_ownership_when_shell_stop_is_unconfirmed(
+    monkeypatch,
+):
+    controller = _EnrollmentController()
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/speaker-profiles/enroll")
+    stop_calls = []
+    released = []
+    captures = []
+    claim = object()
+
+    class Capture:
+        def __init__(self, **_kwargs):
+            self.cleared = False
+            captures.append(self)
+
+        @staticmethod
+        def start(_frame_pipe):
+            return None
+
+        @staticmethod
+        def stop():
+            return {
+                "active": True,
+                "errorCode": "",
+                "durationMs": 8_000,
+                "rms": 0.1,
+                "peak": 0.4,
+                "clippingRatio": 0,
+            }
+
+        def clear(self):
+            self.cleared = True
+
+    def shell_call(command, _payload, **_kwargs):
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "uncertain-stream",
+                    "framePipe": "private-pipe",
+                    "sampleRate": 16_000,
+                    "channels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                },
+            }
+        stop_calls.append(command)
+        return {
+            "success": False,
+            "errorCode": "transportError",
+            "payload": {},
+        }
+
+    async def no_wait(_duration_ms):
+        return None
+
+    async def claim_audio(_controller, **_kwargs):
+        return claim
+
+    async def release_audio(_controller, released_claim):
+        released.append(released_claim)
+        return True
+
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+    monkeypatch.setattr(web_api, "VoiceEnrollmentCapture", Capture)
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    monkeypatch.setattr(web_api, "_wait_for_voice_enrollment", no_wait)
+    monkeypatch.setattr(web_api, "_claim_persistent_audio", claim_audio)
+    monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+
+    response = await handler(
+        _DirectRequest(app, payload={"displayName": "Alice"})
+    )
+
+    assert response.status == 503
+    # The normal stop and the cleanup retry both failed at the IPC boundary.
+    assert stop_calls == ["audioCaptureStop", "audioCaptureStop"]
+    assert captures[0].cleared is True
+    assert released == []
+    assert controller._voice_enrollment_active is True
+    assert controller.prewarm_paused is True
+
+
+@pytest.mark.asyncio
+async def test_voice_enrollment_rejects_unexpected_native_audio_format(monkeypatch):
+    controller = _EnrollmentController()
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/speaker-profiles/enroll")
+    shell_calls = []
+
+    def shell_call(command, payload, **_kwargs):
+        shell_calls.append((command, payload))
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "wrong-format-stream",
+                    "framePipe": "private-pipe",
+                    "sampleRate": 48_000,
+                    "channels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                },
+            }
+        return {"success": True, "payload": {"stopped": True}}
+
+    async def claim_audio(_controller, **_kwargs):
+        return object()
+
+    async def release_audio(_controller, _claim):
+        return True
+
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    monkeypatch.setattr(web_api, "_claim_persistent_audio", claim_audio)
+    monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+
+    response = await handler(
+        _DirectRequest(app, payload={"displayName": "Alice"})
+    )
+
+    assert response.status == 503
+    assert "unsupported audio format" in json.loads(response.body)["message"]
+    assert [item[0] for item in shell_calls] == [
+        "audioCaptureStart",
+        "audioCaptureStop",
+    ]
+    assert controller._meeting_store.enrollments == []
+    assert controller._speaker_model.samples == []
+    assert controller._voice_enrollment_active is False
+
+
+@pytest.mark.asyncio
+async def test_voice_enrollment_api_cleans_up_after_inference_failure(monkeypatch):
+    controller = _EnrollmentController(fail=True)
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/speaker-profiles/enroll")
+    stopped = []
+    released = []
+    captures = []
+
+    class Capture:
+        cleared = False
+
+        def __init__(self, **_kwargs):
+            captures.append(self)
+
+        @staticmethod
+        def start(_frame_pipe):
+            pass
+
+        @staticmethod
+        def stop():
+            return {
+                "active": True,
+                "errorCode": "",
+                "durationMs": 8_000,
+                "rms": 0.1,
+                "peak": 0.4,
+                "clippingRatio": 0,
+            }
+
+        @staticmethod
+        def pcm16():
+            return b"private-pcm"
+
+        def clear(self):
+            self.cleared = True
+
+    def shell_call(command, _payload, **_kwargs):
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream",
+                    "framePipe": "pipe",
+                    "sampleRate": 16_000,
+                    "channels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                },
+            }
+        stopped.append(command)
+        return {"success": True, "payload": {"stopped": True}}
+
+    async def no_wait(_duration_ms):
+        return None
+
+    async def claim_audio(_controller, **_kwargs):
+        return object()
+
+    async def release_audio(_controller, released_claim):
+        released.append(released_claim)
+        return True
+
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+    monkeypatch.setattr(web_api, "VoiceEnrollmentCapture", Capture)
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    monkeypatch.setattr(web_api, "_wait_for_voice_enrollment", no_wait)
+    monkeypatch.setattr(web_api, "_claim_persistent_audio", claim_audio)
+    monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+
+    response = await handler(_DirectRequest(app, payload={"displayName": "Alice"}))
+
+    assert response.status == 503
+    assert json.loads(response.body) == {
+        "message": "The voice sample could not be completed. Try again."
+    }
+    assert stopped == ["audioCaptureStop"]
+    assert released
+    assert captures[0].cleared is True
+    assert controller._voice_enrollment_active is False
+    assert controller.prewarm_paused is False
+    assert [item["voiceEnrollmentActive"] for item in controller.state_broadcasts] == [
+        True,
+        False,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_voice_enrollment_does_not_recreate_data_after_opt_out(monkeypatch):
+    controller = _EnrollmentController()
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/speaker-profiles/enroll")
+    stopped = []
+
+    class Capture:
+        def __init__(self, **_kwargs):
+            self.cleared = False
+
+        @staticmethod
+        def start(_frame_pipe):
+            return None
+
+        @staticmethod
+        def stop():
+            return {
+                "active": True,
+                "errorCode": "",
+                "durationMs": 8_000,
+                "rms": 0.1,
+                "peak": 0.4,
+                "clippingRatio": 0,
+            }
+
+        @staticmethod
+        def pcm16():
+            return b"private-pcm"
+
+        def clear(self):
+            self.cleared = True
+
+    def shell_call(command, _payload, **_kwargs):
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream",
+                    "framePipe": "pipe",
+                    "sampleRate": 16_000,
+                    "channels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                },
+            }
+        stopped.append(command)
+        return {"success": True, "payload": {"stopped": True}}
+
+    async def opt_out_while_recording(_duration_ms):
+        monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", False)
+
+    async def claim_audio(_controller, **_kwargs):
+        return object()
+
+    async def release_audio(_controller, _claim):
+        return True
+
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+    monkeypatch.setattr(web_api, "VoiceEnrollmentCapture", Capture)
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    monkeypatch.setattr(web_api, "_wait_for_voice_enrollment", opt_out_while_recording)
+    monkeypatch.setattr(web_api, "_claim_persistent_audio", claim_audio)
+    monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+
+    response = await handler(_DirectRequest(app, payload={"displayName": "Alice"}))
+
+    assert response.status == 409
+    assert "turned off" in json.loads(response.body)["message"]
+    assert controller._speaker_model.samples == []
+    assert controller._meeting_store.enrollments == []
+    assert stopped == ["audioCaptureStop"]
+    assert controller._voice_enrollment_active is False
+    assert controller.prewarm_paused is False
+
+
+@pytest.mark.asyncio
+async def test_voice_library_delete_waits_for_profile_mutation_lock(monkeypatch):
+    operations = []
+
+    class Store(_EnrollmentStore):
+        @staticmethod
+        def delete_all_speaker_profiles():
+            operations.append("profiles")
+            return 2
+
+    class Model(_EnrollmentModel):
+        @staticmethod
+        def delete():
+            operations.append("model")
+
+    controller = _EnrollmentController()
+    controller._meeting_store = Store()
+    controller._speaker_model = Model()
+    controller._schedule_settings_persist = lambda: operations.append("settings")
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "DELETE", "/api/meetings/speaker-library")
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+
+    mutation_lock = web_api._voice_library_mutation_lock(controller)
+    await mutation_lock.acquire()
+    task = asyncio.create_task(handler(_DirectRequest(app)))
+    await asyncio.sleep(0)
+    assert task.done() is False
+
+    mutation_lock.release()
+    response = await task
+
+    assert response.status == 200
+    assert json.loads(response.body)["deletedProfiles"] == 2
+    assert operations == ["profiles", "model", "settings"]
+    assert web_api.Config.VOICEPRINT_LIBRARY_OPT_IN is False
+
+
+@pytest.mark.asyncio
+async def test_voice_model_download_cannot_restore_model_after_library_delete(
+    monkeypatch,
+):
+    download_started = asyncio.Event()
+    finish_download = asyncio.Event()
+    operations = []
+
+    class Store(_EnrollmentStore):
+        enabled = True
+
+        @classmethod
+        def speaker_library_enabled(cls):
+            return cls.enabled
+
+        @classmethod
+        def delete_all_speaker_profiles(cls):
+            cls.enabled = False
+            operations.append("profiles-deleted")
+            return 0
+
+    class Model(_EnrollmentModel):
+        async def stage_download(self, _session):
+            operations.append("download-started")
+            download_started.set()
+            await finish_download.wait()
+            operations.append("download-staged")
+            return object()
+
+        @staticmethod
+        def promote_staged(_staged):
+            operations.append("promoted")
+            return {"installed": True}
+
+        @staticmethod
+        def discard_staged(_staged):
+            operations.append("staging-discarded")
+
+        @staticmethod
+        def delete():
+            operations.append("model-deleted")
+
+    controller = _EnrollmentController()
+    controller._meeting_store = Store()
+    controller._speaker_model = Model()
+    controller._schedule_settings_persist = lambda: operations.append(
+        "settings-scheduled"
+    )
+    app = web_api.create_app(controller)
+    app[web_api.APP_HTTP_SESSION] = object()
+    download_handler = _route_handler(
+        app, "POST", "/api/meetings/speaker-model"
+    )
+    delete_handler = _route_handler(
+        app, "DELETE", "/api/meetings/speaker-library"
+    )
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+
+    download_task = asyncio.create_task(
+        download_handler(_DirectRequest(app))
+    )
+    await asyncio.wait_for(download_started.wait(), timeout=2)
+    delete_response = await asyncio.wait_for(
+        delete_handler(_DirectRequest(app)), timeout=2
+    )
+    finish_download.set()
+    download_response = await asyncio.wait_for(download_task, timeout=2)
+
+    assert delete_response.status == 200
+    assert download_response.status == 409
+    assert "turned off" in json.loads(download_response.body)["message"]
+    assert "promoted" not in operations
+    assert operations == [
+        "download-started",
+        "profiles-deleted",
+        "model-deleted",
+        "settings-scheduled",
+        "download-staged",
+        "staging-discarded",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_voice_model_promotion_cancellation_finishes_durable_opt_out_cleanup(
+    monkeypatch,
+):
+    promotion_started = threading.Event()
+    finish_promotion = threading.Event()
+    operations = []
+
+    class Store(_EnrollmentStore):
+        enabled = True
+
+        @classmethod
+        def speaker_library_enabled(cls):
+            return cls.enabled
+
+    class Model(_EnrollmentModel):
+        installed = False
+
+        async def stage_download(self, _session):
+            operations.append("staged")
+            return object()
+
+        @classmethod
+        def promote_staged(cls, _staged):
+            operations.append("promotion-started")
+            promotion_started.set()
+            assert finish_promotion.wait(timeout=2)
+            cls.installed = True
+            operations.append("promoted")
+            return {"installed": True}
+
+        @staticmethod
+        def discard_staged(_staged):
+            operations.append("staging-discarded")
+
+        @classmethod
+        def delete(cls):
+            cls.installed = False
+            operations.append("model-deleted")
+
+    controller = _EnrollmentController()
+    controller._meeting_store = Store()
+    controller._speaker_model = Model()
+    app = web_api.create_app(controller)
+    app[web_api.APP_HTTP_SESSION] = object()
+    handler = _route_handler(app, "POST", "/api/meetings/speaker-model")
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+
+    task = asyncio.create_task(handler(_DirectRequest(app)))
+    assert await asyncio.to_thread(promotion_started.wait, 2)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert task.done() is False
+
+    # Simulate an opt-out committed by another process while the atomic model
+    # replacement is still running in the executor.
+    Store.enabled = False
+    finish_promotion.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2)
+
+    assert Model.installed is False
+    assert operations == [
+        "staged",
+        "promotion-started",
+        "promoted",
+        "model-deleted",
+    ]

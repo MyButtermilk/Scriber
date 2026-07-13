@@ -724,6 +724,13 @@ It:
 - includes the version-stable `tauri.conf.json`, Tauri capabilities, and app
   icons in the exact Tauri app-binary key. The large Cargo dependency key is
   intentionally limited to dependency/toolchain inputs,
+- reads the public Entra application ID from the
+  `SCRIBER_OUTLOOK_CLIENT_ID` GitHub repository variable. Official `v*` tag
+  builds fail before dependency setup unless it is a canonical non-nil GUID.
+  The Tauri binary embeds that value and forwards it to the backend worker;
+  the exact app-binary cache key records only a presence flag and SHA-256 so a
+  configuration change cannot restore an older unconfigured binary and the raw
+  identifier does not enter cache metadata,
 - keeps the backend sidecar version-neutral only because the Rust supervisor
   injects `SCRIBER_VERSION` and `src.version.app_version()` prefers that runtime
   value. The `tests/test_version_contract.py` regression tests protect this

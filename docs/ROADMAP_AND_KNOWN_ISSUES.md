@@ -1,6 +1,6 @@
 # Roadmap And Known Issues
 
-Last verified: 2026-07-12
+Last verified: 2026-07-13
 
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
@@ -100,12 +100,15 @@ Meetings:
 - Outlook Calendar has public-desktop PKCE, Windows Credential Manager refresh
   token storage, incremental Graph delta sync, periodic refresh, and offline
   backoff. Settings exposes configuration state, connect, sync, disconnect,
-  last sync, and the next event. A production connection still requires the
-  official public Entra client ID to be supplied to the release.
+  last sync, and the next event. Official tag builds now fail before expensive
+  setup when the public Entra client ID is absent or invalid, instead of
+  silently publishing a release whose Outlook setup can never start.
 - Optional WeSpeaker embeddings are local, opt-in, hash-pinned, and excluded
-  from exports/support bundles. Settings lists local profiles and allows users
-  to name or delete individual profiles; confident linked Meeting speakers are
-  updated through the backend profile API. Merge and incorrect-match split
+  from exports/support bundles. Settings can record a short named sample through
+  Rust/WASAPI; PCM stays bounded in memory, is never saved or uploaded, and only
+  its normalized local enrollment centroid remains. Settings lists profiles and
+  allows users to add, name, or delete them; confident linked Meeting speakers
+  are updated through the backend profile API. Merge and incorrect-match split
   remain available in the Meeting workspace.
 - The Meeting start check consumes provider profiles, safe capture/render
   endpoint inventory, and dismissible local detection. Interrupted meetings can
@@ -123,6 +126,12 @@ Meetings:
 - Independent Soniox live streams now supervise send/receive failures, reconnect
   with bounded exponential backoff, emit one preview-gap marker per outage, and
   report reconnect/recovery state visibly while durable local capture continues.
+- Soniox realtime speaker diarization is active for system audio, and final live
+  provider turns now preserve every contiguous speaker run instead of assigning
+  the whole turn to its majority speaker. The shared microphone track is still
+  intentionally presented as `You`; separating several in-room people sharing
+  one microphone remains a product decision because it changes provider cost,
+  final-transcript routing, and the single-speaker Meeting UX.
 - Durable recorder errors are watchdog inputs; simulated disk-full preserves
   completed chunks, rejects the incomplete chunk, and stops capture visibly.
 - The Meeting pipeline now has an explicit five-hour target (18,000 seconds):

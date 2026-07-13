@@ -12,6 +12,7 @@ import webbrowser
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from urllib.parse import urlencode, urlparse
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiohttp import ClientSession
@@ -28,6 +29,19 @@ WINDOWS_TIMEZONE_TO_IANA = {
     "Eastern Standard Time": "America/New_York",
     "Pacific Standard Time": "America/Los_Angeles",
 }
+
+
+def _normalize_public_client_id(value: Any) -> str:
+    candidate = str(value or "").strip()
+    if len(candidate) != 36:
+        return ""
+    try:
+        parsed = UUID(candidate)
+    except (ValueError, AttributeError):
+        return ""
+    if parsed.int == 0 or str(parsed).casefold() != candidate.casefold():
+        return ""
+    return str(parsed)
 
 
 def _b64url(value: bytes) -> str:
@@ -79,7 +93,7 @@ def _delta_window_needs_reseed(window_end: str, now: datetime) -> bool:
 class OutlookCalendarService:
     def __init__(self, shell_call: Callable[..., dict[str, Any]], client_id: str) -> None:
         self.shell_call = shell_call
-        self.client_id = client_id.strip()
+        self.client_id = _normalize_public_client_id(client_id)
         self._pending: dict[str, tuple[str, str, float]] = {}
         self._access_token = ""
         self._access_token_expires_at = 0.0
@@ -118,7 +132,7 @@ class OutlookCalendarService:
 
     def redirect_uri(self) -> str:
         port = max(1, min(65535, int(os.getenv("SCRIBER_WEB_PORT", "8765") or 8765)))
-        return f"http://127.0.0.1:{port}/api/calendar/outlook/callback"
+        return f"http://localhost:{port}/api/calendar/outlook/callback"
 
     def begin_connect(self, *, open_browser: bool = True) -> dict[str, Any]:
         if not self.configured:

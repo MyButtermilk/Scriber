@@ -123,6 +123,7 @@ def test_ws_state_and_auxiliary_events_match_contract():
         state_event(
             {
                 "listening": False,
+                "voiceEnrollmentActive": False,
                 "status": "Stopped",
                 "inputWarning": "",
                 "inputWarningCode": "",
@@ -155,6 +156,19 @@ def test_ws_state_and_auxiliary_events_match_contract():
 def test_ws_contract_validation_rejects_invalid_payload():
     with pytest.raises(WSContractError):
         validate_event_payload({"type": "status", "status": "Listening"})
+    with pytest.raises(WSContractError):
+        validate_event_payload(
+            version_event_payload(
+                {
+                    "type": "state",
+                    "listening": False,
+                    "status": "Stopped",
+                    "backgroundProcessing": False,
+                    "recordingState": "idle",
+                    "transcribing": False,
+                }
+            )
+        )
     with pytest.raises(WSContractError):
         validate_event_payload(version_event_payload({"type": "transcript", "text": "hello", "isFinal": "yes"}))
     with pytest.raises(WSContractError):

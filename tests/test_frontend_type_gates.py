@@ -1270,10 +1270,20 @@ def test_native_recording_overlay_uses_fixed_size_state_layers() -> None:
 
 def test_meeting_states_suppress_update_prompts_and_drive_tray_state() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
+    websocket_types = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx"
+    ).read_text(encoding="utf-8")
+    api_types = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts"
+    ).read_text(encoding="utf-8")
 
     assert 'if (msg.type === "meeting_state")' in source
     assert '["starting", "recording", "paused", "stopping", "finalizing", "analyzing"]' in source
     assert 'mode: `meeting-${meetingState}`' in source
+    assert '(msg.type === "state" && msg.voiceEnrollmentActive)' in source
+    assert "voiceEnrollmentActive: boolean;" in websocket_types
+    assert "export interface BackendStateResponse" in api_types
+    assert "voiceEnrollmentActive: boolean;" in api_types
 
 
 def test_meeting_workspace_uses_focus_canvas_and_gpu_only_live_progress() -> None:
@@ -1372,8 +1382,13 @@ def test_meeting_defaults_and_voice_library_live_only_in_meeting_settings() -> N
     assert 'label="Meeting shortcut"' in meeting_settings
     assert 'label="Keep meeting audio"' in meeting_settings
     assert 'title="Voice Library"' in meeting_settings
+    assert "People sharing the selected microphone currently appear together" in meeting_settings
     assert 'label="Recognize familiar speakers"' in meeting_settings
     assert 'aria-label="Recognize familiar speakers in future meetings"' in meeting_settings
+    assert "Add voice" in meeting_settings
+    assert '"/api/meetings/speaker-profiles/enroll"' in settings
+    assert "Teach Scriber a voice" in settings
+    assert "The recording is not saved or uploaded." in settings
     assert 'setSonioxRealtimeModel(settings.sonioxRealtimeModel || "stt-rt-v5")' in settings
     assert "sonioxRealtimeModel" in meeting_settings
     assert 'label="Meeting shortcut"' not in transcription_settings
@@ -1459,7 +1474,8 @@ def test_outlook_meeting_settings_explain_each_connection_state_plainly() -> Non
     assert "Outlook is connected" in meeting_settings
     assert "Outlook is ready to connect" in meeting_settings
     assert "Finish signing in with Microsoft" in meeting_settings
-    assert "Outlook setup is unavailable in this copy" in meeting_settings
+    assert "Outlook is not available in this release" in meeting_settings
+    assert "Reinstalling the same version will not fix it." in meeting_settings
     assert "Choose Connect Outlook below." in meeting_settings
     assert "Sign in with Microsoft and allow read-only calendar access." in meeting_settings
     assert "Return to Scriber; upcoming meetings sync automatically." in meeting_settings
@@ -1467,7 +1483,7 @@ def test_outlook_meeting_settings_explain_each_connection_state_plainly() -> Non
     assert "SCRIBER_OUTLOOK_CLIENT_ID" in meeting_settings
     assert "Disconnect Outlook" in meeting_settings
     assert "Reconnect Outlook" in meeting_settings
-    assert "Sync now" not in meeting_settings
+    assert "Sync now" in meeting_settings
     assert "const outlookMutation" not in meetings
     assert "Connect Outlook in Settings to use meeting titles and participants automatically." in meetings
     assert 'setLocation("/settings")' in meetings
@@ -1507,7 +1523,9 @@ def test_meeting_workspace_uses_the_shared_transcription_frame_and_type_scale() 
     assert "transcription-page meetings-page" in meetings
     assert '<PageIntro' in meetings
     assert 'eyebrow="Meeting workspace · 02"' in meetings
-    assert 'max-w-[1440px]' in meetings
+    assert 'app-page-shell' in meetings
+    assert 'data-page-shell="meetings"' in meetings
+    assert 'max-w-[1440px]' not in meetings
     assert 'max-w-[1680px]' not in meetings
     assert 'meetings-history-rail rounded-[22px]' in meetings
     assert 'meetings-workspace-panel min-w-0 overflow-hidden rounded-[26px]' in meetings
@@ -1515,13 +1533,43 @@ def test_meeting_workspace_uses_the_shared_transcription_frame_and_type_scale() 
     assert '2xl:grid-cols-[minmax(0,1fr)_300px]' in meetings
     assert '2xl:border-l 2xl:border-t-0' in meetings
 
-    assert 'max-w-[1320px]' in live_mic
+    assert 'app-page-shell' in live_mic
+    assert 'data-page-shell="live-mic"' in live_mic
     assert 'actions?: ReactNode' in page_intro
     assert 'text-[36px]' in page_intro
     assert 'md:text-[42px]' in page_intro
     assert '.meetings-history-rail' in styles
     assert '.meetings-workspace-panel' in styles
     assert 'background: var(--live-core);' in styles
+
+
+def test_primary_tabs_share_the_same_max_width_page_shell() -> None:
+    styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(
+        encoding="utf-8"
+    )
+    shell_rule = styles.split(".app-page-shell {", 1)[1].split("}", 1)[0]
+
+    assert "width: 100%;" in shell_rule
+    assert "max-width: 1320px;" in shell_rule
+    assert "margin-inline: auto;" in shell_rule
+    assert "max-width: 1380px;" not in styles
+
+    expected_shells = {
+        "LiveMic.tsx": "live-mic",
+        "Meetings.tsx": "meetings",
+        "Youtube.tsx": "youtube",
+        "FileTranscribe.tsx": "file",
+        "DebugConsole.tsx": "console",
+        "Settings.tsx": "settings",
+    }
+    pages_dir = REPO_ROOT / "Frontend" / "client" / "src" / "pages"
+    for filename, shell_name in expected_shells.items():
+        source = (pages_dir / filename).read_text(encoding="utf-8")
+        assert source.count("app-page-shell") == 1, filename
+        assert source.count(f'data-page-shell="{shell_name}"') == 1, filename
+
+    meetings = (pages_dir / "Meetings.tsx").read_text(encoding="utf-8")
+    assert 'max-w-[1440px]' not in meetings
 
 
 def test_meeting_export_uses_native_save_as_and_visible_follow_up_actions() -> None:

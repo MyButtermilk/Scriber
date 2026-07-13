@@ -979,7 +979,7 @@ export default function LiveMic() {
           : "Reconnecting to Scriber";
 
   return (
-    <div className="live-mic-page mx-auto w-full max-w-[1320px] px-4 py-5 md:px-6 md:py-6">
+    <div className="app-page-shell live-mic-page px-4 py-5 md:px-6 md:py-6" data-page-shell="live-mic">
       <PageIntro
         eyebrow="Voice capture · 01"
         title="Live transcription"

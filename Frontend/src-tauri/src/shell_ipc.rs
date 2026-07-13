@@ -663,18 +663,10 @@ fn outlook_token_request(payload: &Value, authorization_code: bool) -> Result<Va
         .and_then(Value::as_str)
         .unwrap_or_default()
         .trim();
-    if client_id.is_empty()
-        || client_id.len() > 128
-        || !client_id
-            .chars()
-            .all(|value| value.is_ascii_alphanumeric() || value == '-')
-    {
+    let Some(client_id) = crate::outlook_config::normalize_client_id(client_id) else {
         return Err("Outlook public client ID is missing or invalid".to_string());
-    }
-    let mut form = vec![
-        ("client_id", client_id.to_string()),
-        ("scope", SCOPES.to_string()),
-    ];
+    };
+    let mut form = vec![("client_id", client_id), ("scope", SCOPES.to_string())];
     let mut consumed_refresh_token = None;
     if authorization_code {
         let code = payload
@@ -689,17 +681,11 @@ fn outlook_token_request(payload: &Value, authorization_code: bool) -> Result<Va
             .get("redirectUri")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let valid_redirect = redirect_uri
-            .strip_prefix("http://127.0.0.1:")
-            .and_then(|rest| rest.split_once('/'))
-            .is_some_and(|(port, path)| {
-                port.parse::<u16>().is_ok() && path == "api/calendar/outlook/callback"
-            });
         if code.is_empty()
             || code.len() > 4096
             || verifier.len() < 43
             || verifier.len() > 128
-            || !valid_redirect
+            || !crate::outlook_config::is_valid_redirect_uri(redirect_uri)
         {
             return Err("Outlook authorization response is invalid".to_string());
         }

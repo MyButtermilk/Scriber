@@ -358,6 +358,7 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
 
     if event_type == "state":
         _require_bool(payload, "listening", event_type)
+        _require_bool(payload, "voiceEnrollmentActive", event_type)
         _require_string(payload, "status", event_type)
         _require_bool(payload, "backgroundProcessing", event_type)
         _require_string(payload, "recordingState", event_type)

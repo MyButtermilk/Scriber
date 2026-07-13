@@ -255,6 +255,7 @@ function isBusyForUpdatePrompt(msg: ScriberWebSocketMessage): boolean | null {
     const recordingState = String(msg.recordingState || "").toLowerCase();
     return Boolean(
       msg.listening ||
+      (msg.type === "state" && msg.voiceEnrollmentActive) ||
       msg.transcribing ||
       (recordingState && !["idle", "completed", "failed", "stopped"].includes(recordingState)),
     );

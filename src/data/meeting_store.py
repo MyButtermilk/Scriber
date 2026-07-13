@@ -69,6 +69,10 @@ class MeetingConflict(MeetingStoreError):
     pass
 
 
+class VoiceLibraryDisabled(MeetingConflict):
+    pass
+
+
 class InvalidMeetingTransition(MeetingStoreError):
     pass
 
@@ -176,7 +180,7 @@ class MeetingCreate:
 class MeetingStore:
     """Normalized meeting persistence backed by Scriber's shared SQLite DB."""
 
-    def initialize(self) -> None:
+    def initialize(self, *, speaker_library_enabled: bool = True) -> None:
         with db._get_connection() as conn:  # shared WAL connection lifecycle
             conn.executescript(
                 """
@@ -326,6 +330,11 @@ class MeetingStore:
                     display_name TEXT NOT NULL,
                     embedding_json TEXT NOT NULL DEFAULT '[]',
                     embedding_blob BLOB,
+                    enrollment_embedding_blob BLOB,
+                    enrollment_sample_count INTEGER NOT NULL DEFAULT 0,
+                    enrollment_weight_sum REAL NOT NULL DEFAULT 0.0,
+                    enrollment_resultant_norm REAL NOT NULL DEFAULT 0.0,
+                    enrolled_at TEXT,
                     is_named INTEGER NOT NULL DEFAULT 0,
                     sample_count INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
@@ -340,6 +349,11 @@ class MeetingStore:
                     embedding_blob BLOB,
                     quality REAL,
                     created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS speaker_library_state (
+                    id INTEGER PRIMARY KEY CHECK(id=1),
+                    enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+                    updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS meeting_outputs (
                     id TEXT PRIMARY KEY,
@@ -482,6 +496,22 @@ class MeetingStore:
                 conn.execute("ALTER TABLE speaker_profiles ADD COLUMN embedding_blob BLOB")
             if "is_named" not in profile_columns:
                 conn.execute("ALTER TABLE speaker_profiles ADD COLUMN is_named INTEGER NOT NULL DEFAULT 0")
+            if "enrollment_embedding_blob" not in profile_columns:
+                conn.execute("ALTER TABLE speaker_profiles ADD COLUMN enrollment_embedding_blob BLOB")
+            if "enrollment_sample_count" not in profile_columns:
+                conn.execute(
+                    "ALTER TABLE speaker_profiles ADD COLUMN enrollment_sample_count INTEGER NOT NULL DEFAULT 0"
+                )
+            if "enrollment_weight_sum" not in profile_columns:
+                conn.execute(
+                    "ALTER TABLE speaker_profiles ADD COLUMN enrollment_weight_sum REAL NOT NULL DEFAULT 0.0"
+                )
+            if "enrollment_resultant_norm" not in profile_columns:
+                conn.execute(
+                    "ALTER TABLE speaker_profiles ADD COLUMN enrollment_resultant_norm REAL NOT NULL DEFAULT 0.0"
+                )
+            if "enrolled_at" not in profile_columns:
+                conn.execute("ALTER TABLE speaker_profiles ADD COLUMN enrolled_at TEXT")
             observation_columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(speaker_profile_observations)")
             }
@@ -632,6 +662,11 @@ class MeetingStore:
                    WHERE NOT EXISTS (
                      SELECT 1 FROM meeting_outputs_fts f WHERE f.output_id=o.id
                    )"""
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO speaker_library_state(id,enabled,updated_at)
+                   VALUES (1,?,?)""",
+                (1 if speaker_library_enabled else 0, _utc_now()),
             )
             conn.commit()
 
@@ -971,30 +1006,7 @@ class MeetingStore:
             ).fetchall()]
             cursor = conn.execute("DELETE FROM meetings WHERE id=?", (meeting_id,))
             for profile_id in affected_profiles:
-                remaining = conn.execute(
-                    """SELECT embedding_blob FROM speaker_profile_observations
-                       WHERE profile_id=? AND embedding_blob IS NOT NULL
-                       ORDER BY quality DESC,created_at DESC LIMIT 20""",
-                    (profile_id,),
-                ).fetchall()
-                vectors = [self._embedding_values(row["embedding_blob"]) for row in remaining]
-                vectors = [value for value in vectors if value is not None]
-                if not vectors:
-                    conn.execute(
-                        "DELETE FROM speaker_profiles WHERE id=? AND is_named=0", (profile_id,)
-                    )
-                    conn.execute(
-                        "UPDATE speaker_profiles SET embedding_blob=NULL,sample_count=0 WHERE id=?",
-                        (profile_id,),
-                    )
-                    continue
-                centroid = [sum(vector[index] for vector in vectors) / len(vectors) for index in range(256)]
-                norm = math.sqrt(sum(value * value for value in centroid)) or 1.0
-                centroid = [value / norm for value in centroid]
-                conn.execute(
-                    "UPDATE speaker_profiles SET embedding_blob=?,sample_count=?,updated_at=? WHERE id=?",
-                    (self._embedding_blob(centroid), len(vectors), _utc_now(), profile_id),
-                )
+                self._recompute_speaker_profile_conn(conn, profile_id, _utc_now())
             conn.commit()
         return bool(cursor.rowcount)
 
@@ -2707,13 +2719,41 @@ class MeetingStore:
             })
         return result
 
+    @staticmethod
+    def _speaker_library_enabled_conn(conn: sqlite3.Connection) -> bool:
+        row = conn.execute(
+            "SELECT enabled FROM speaker_library_state WHERE id=1"
+        ).fetchone()
+        return bool(row is not None and row["enabled"])
+
+    def speaker_library_enabled(self) -> bool:
+        return self._speaker_library_enabled_conn(db._get_connection())
+
+    def set_speaker_library_enabled(self, enabled: bool) -> None:
+        now = _utc_now()
+        with db._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """INSERT INTO speaker_library_state(id,enabled,updated_at)
+                   VALUES (1,?,?)
+                   ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,
+                     updated_at=excluded.updated_at""",
+                (1 if enabled else 0, now),
+            )
+            conn.commit()
+
     def speaker_profiles(self) -> list[dict[str, Any]]:
         rows = db._get_connection().execute(
-            "SELECT id,display_name,is_named,sample_count,created_at,updated_at FROM speaker_profiles ORDER BY display_name"
+            """SELECT id,display_name,is_named,sample_count,enrollment_sample_count,
+                      enrolled_at,created_at,updated_at
+               FROM speaker_profiles ORDER BY display_name"""
         ).fetchall()
         return [{
             "id": row["id"], "displayName": row["display_name"], "sampleCount": row["sample_count"],
             "isNamed": bool(row["is_named"]),
+            "enrolled": bool(row["enrollment_sample_count"]),
+            "enrollmentSampleCount": int(row["enrollment_sample_count"] or 0),
+            "enrolledAt": row["enrolled_at"] or "",
             "createdAt": row["created_at"], "updatedAt": row["updated_at"],
         } for row in rows]
 
@@ -2729,6 +2769,219 @@ class MeetingStore:
             return None
         return list(struct.unpack("<256f", blob))
 
+    @staticmethod
+    def _weighted_embedding_centroid(
+        vectors: list[tuple[list[float], float]],
+    ) -> list[float]:
+        valid = [
+            (vector, max(0.01, float(weight)))
+            for vector, weight in vectors
+            if len(vector) == 256
+            and all(math.isfinite(float(value)) for value in vector)
+            and math.isfinite(float(weight))
+            and float(weight) > 0
+        ]
+        if not valid:
+            raise ValueError("At least one finite speaker embedding is required.")
+        total_weight = sum(weight for _vector, weight in valid)
+        centroid = [
+            sum(vector[index] * weight for vector, weight in valid) / total_weight
+            for index in range(256)
+        ]
+        norm = math.sqrt(sum(value * value for value in centroid))
+        if not norm or not math.isfinite(norm):
+            raise ValueError("Speaker embedding centroid is invalid.")
+        return [value / norm for value in centroid]
+
+    def _enrollment_sum_values(
+        self, profile: sqlite3.Row
+    ) -> tuple[list[float] | None, int, float]:
+        """Return the privacy-minimal weighted enrollment sum.
+
+        Early development databases stored a normalized seed without an
+        effective-weight marker. Treat that shape as ``count`` equal samples
+        during migration so those local profiles remain usable.
+        """
+
+        count = max(0, int(profile["enrollment_sample_count"] or 0))
+        values = self._embedding_values(profile["enrollment_embedding_blob"])
+        if count <= 0 or values is None or not all(math.isfinite(value) for value in values):
+            return None, count, 0.0
+        weight_sum = float(profile["enrollment_weight_sum"] or 0.0)
+        if not math.isfinite(weight_sum) or weight_sum <= 0:
+            weight_sum = float(count)
+        stored_norm = math.sqrt(sum(value * value for value in values))
+        if not stored_norm or not math.isfinite(stored_norm):
+            return None, count, weight_sum
+        normalized = [value / stored_norm for value in values]
+        resultant_norm = float(profile["enrollment_resultant_norm"] or 0.0)
+        if not math.isfinite(resultant_norm) or resultant_norm <= 0:
+            # Compatibility for the short development window that stored the
+            # aggregate sum directly, and for the earlier normalized seed.
+            resultant_norm = (
+                stored_norm
+                if abs(stored_norm - 1.0) > 1e-4
+                else weight_sum
+            )
+        return (
+            [value * resultant_norm for value in normalized],
+            count,
+            weight_sum,
+        )
+
+    def _speaker_profile_vectors_conn(
+        self, conn: sqlite3.Connection, profile_id: str
+    ) -> tuple[list[tuple[list[float], float]], int]:
+        profile = conn.execute(
+            """SELECT enrollment_embedding_blob,enrollment_sample_count,
+                      enrollment_weight_sum,enrollment_resultant_norm
+               FROM speaker_profiles WHERE id=?""",
+            (profile_id,),
+        ).fetchone()
+        if profile is None:
+            return [], 0
+        vectors: list[tuple[list[float], float]] = []
+        enrollment_sum, enrollment_count, _weight_sum = self._enrollment_sum_values(
+            profile
+        )
+        if enrollment_sum is not None:
+            enrollment_norm = math.sqrt(
+                sum(value * value for value in enrollment_sum)
+            )
+            if enrollment_norm and math.isfinite(enrollment_norm):
+                vectors.append(
+                    (
+                        [value / enrollment_norm for value in enrollment_sum],
+                        enrollment_norm,
+                    )
+                )
+        observations = conn.execute(
+            """SELECT embedding_blob FROM speaker_profile_observations
+               WHERE profile_id=? AND embedding_blob IS NOT NULL
+               ORDER BY quality DESC,created_at DESC LIMIT 20""",
+            (profile_id,),
+        ).fetchall()
+        observation_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM speaker_profile_observations WHERE profile_id=?",
+                (profile_id,),
+            ).fetchone()[0]
+        )
+        for row in observations:
+            vector = self._embedding_values(row["embedding_blob"])
+            if vector is not None:
+                vectors.append((vector, 1.0))
+        return vectors, enrollment_count + observation_count
+
+    def enroll_speaker_profile(
+        self,
+        display_name: str,
+        embedding: list[float],
+        *,
+        quality: float = 1.0,
+        profile_id: str = "",
+    ) -> dict[str, Any]:
+        name = " ".join(str(display_name).split()).strip()
+        if not name:
+            raise ValueError("Speaker name is required.")
+        if len(name) > 120:
+            raise ValueError("Speaker name must be 120 characters or fewer.")
+        self._embedding_blob(embedding)
+        normalized_embedding = self._weighted_embedding_centroid([(embedding, 1.0)])
+        bounded_quality = float(quality)
+        if not math.isfinite(bounded_quality):
+            raise ValueError("Speaker sample quality must be finite.")
+        sample_weight = max(0.35, min(1.0, max(0.0, bounded_quality)))
+        sample_sum = [value * sample_weight for value in normalized_embedding]
+        now = _utc_now()
+        resolved_id = str(profile_id or "").strip()
+        with db._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not self._speaker_library_enabled_conn(conn):
+                raise VoiceLibraryDisabled("Voice Library is turned off.")
+            if resolved_id:
+                current = conn.execute(
+                    """SELECT enrollment_embedding_blob,enrollment_sample_count,
+                              enrollment_weight_sum,enrollment_resultant_norm
+                       FROM speaker_profiles WHERE id=?""",
+                    (resolved_id,),
+                ).fetchone()
+                if current is None:
+                    raise MeetingNotFound("Speaker profile not found")
+                current_sum, current_count, current_weight = self._enrollment_sum_values(
+                    current
+                )
+                enrollment_sum = list(sample_sum)
+                if current_sum is not None:
+                    enrollment_sum = [
+                        left + right
+                        for left, right in zip(current_sum, sample_sum, strict=True)
+                    ]
+                resultant_norm = math.sqrt(
+                    sum(value * value for value in enrollment_sum)
+                )
+                if not resultant_norm or not math.isfinite(resultant_norm):
+                    raise ValueError("Speaker enrollment centroid is invalid.")
+                enrollment_centroid = [
+                    value / resultant_norm for value in enrollment_sum
+                ]
+                conn.execute(
+                    """UPDATE speaker_profiles SET display_name=?,is_named=1,
+                       enrollment_embedding_blob=?,enrollment_sample_count=?,
+                       enrollment_weight_sum=?,enrollment_resultant_norm=?,
+                       enrolled_at=?,updated_at=? WHERE id=?""",
+                    (
+                        name,
+                        self._embedding_blob(enrollment_centroid),
+                        current_count + 1,
+                        current_weight + sample_weight,
+                        resultant_norm,
+                        now,
+                        now,
+                        resolved_id,
+                    ),
+                )
+            else:
+                resolved_id = uuid4().hex
+                conn.execute(
+                    """INSERT INTO speaker_profiles
+                       (id,display_name,embedding_json,embedding_blob,
+                        enrollment_embedding_blob,enrollment_sample_count,
+                        enrollment_weight_sum,enrollment_resultant_norm,
+                        enrolled_at,is_named,sample_count,created_at,updated_at)
+                       VALUES (?,?,?,NULL,?,1,?,?,?,1,0,?,?)""",
+                    (
+                        resolved_id,
+                        name,
+                        "[]",
+                        self._embedding_blob(normalized_embedding),
+                        sample_weight,
+                        sample_weight,
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+            self._recompute_speaker_profile_conn(conn, resolved_id, now)
+            row = conn.execute(
+                """SELECT id,display_name,is_named,sample_count,enrollment_sample_count,
+                          enrolled_at,created_at,updated_at
+                   FROM speaker_profiles WHERE id=?""",
+                (resolved_id,),
+            ).fetchone()
+            conn.commit()
+        return {
+            "id": row["id"],
+            "displayName": row["display_name"],
+            "sampleCount": int(row["sample_count"] or 0),
+            "isNamed": bool(row["is_named"]),
+            "enrolled": bool(row["enrollment_sample_count"]),
+            "enrollmentSampleCount": int(row["enrollment_sample_count"] or 0),
+            "enrolledAt": row["enrolled_at"] or "",
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
     def register_speaker_embedding(
         self,
         meeting_id: str,
@@ -2739,23 +2992,49 @@ class MeetingStore:
         quality: float = 1.0,
     ) -> dict[str, Any]:
         self.get(meeting_id)
-        blob = self._embedding_blob(embedding)
-        conn = db._get_connection()
-        profiles = conn.execute(
-            "SELECT id,display_name,is_named,embedding_blob,sample_count FROM speaker_profiles"
-        ).fetchall()
-        scores: list[tuple[float, sqlite3.Row]] = []
-        for profile in profiles:
-            centroid = self._embedding_values(profile["embedding_blob"])
-            if centroid is not None:
-                scores.append((sum(left * right for left, right in zip(embedding, centroid, strict=True)), profile))
-        scores.sort(key=lambda item: item[0], reverse=True)
-        best_score = scores[0][0] if scores else -1.0
-        second_score = scores[1][0] if len(scores) > 1 else -1.0
-        matched = bool(scores and best_score >= 0.82 and best_score - second_score >= 0.08)
+        self._embedding_blob(embedding)
+        normalized_embedding = self._weighted_embedding_centroid([(embedding, 1.0)])
+        blob = self._embedding_blob(normalized_embedding)
+        bounded_quality = float(quality)
+        if not math.isfinite(bounded_quality):
+            raise ValueError("Speaker sample quality must be finite.")
+        bounded_quality = max(0.0, min(1.0, bounded_quality))
         now = _utc_now()
-        profile_id = str(scores[0][1]["id"]) if matched else uuid4().hex
-        with conn:
+        with db._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not self._speaker_library_enabled_conn(conn):
+                return {
+                    "profileId": "",
+                    "similarity": 0.0,
+                    "matched": False,
+                    "autoNamed": False,
+                    "skipped": "voice_library_disabled",
+                }
+            profiles = conn.execute(
+                "SELECT id,display_name,is_named,embedding_blob,sample_count FROM speaker_profiles"
+            ).fetchall()
+            scores: list[tuple[float, sqlite3.Row]] = []
+            for candidate in profiles:
+                centroid = self._embedding_values(candidate["embedding_blob"])
+                if centroid is not None:
+                    scores.append(
+                        (
+                            sum(
+                                left * right
+                                for left, right in zip(
+                                    normalized_embedding, centroid, strict=True
+                                )
+                            ),
+                            candidate,
+                        )
+                    )
+            scores.sort(key=lambda item: item[0], reverse=True)
+            best_score = scores[0][0] if scores else -1.0
+            second_score = scores[1][0] if len(scores) > 1 else -1.0
+            matched = bool(
+                scores and best_score >= 0.82 and best_score - second_score >= 0.08
+            )
+            profile_id = str(scores[0][1]["id"]) if matched else uuid4().hex
             if not matched:
                 conn.execute(
                     """INSERT INTO speaker_profiles
@@ -2770,22 +3049,9 @@ class MeetingStore:
                    VALUES (?,?,?,?,?,?,?,?)""",
                 (hashlib.sha256(f"{profile_id}:{segment_id}".encode()).hexdigest()[:32],
                  profile_id, meeting_id, segment_id, best_score, blob,
-                 max(0.0, min(1.0, float(quality))), now),
+                 bounded_quality, now),
             )
-            observations = conn.execute(
-                """SELECT embedding_blob FROM speaker_profile_observations WHERE profile_id=?
-                   AND embedding_blob IS NOT NULL ORDER BY quality DESC,created_at DESC LIMIT 20""",
-                (profile_id,),
-            ).fetchall()
-            vectors = [self._embedding_values(row["embedding_blob"]) for row in observations]
-            vectors = [value for value in vectors if value is not None]
-            centroid = [sum(vector[index] for vector in vectors) / len(vectors) for index in range(256)]
-            norm = math.sqrt(sum(value * value for value in centroid)) or 1.0
-            centroid = [value / norm for value in centroid]
-            conn.execute(
-                "UPDATE speaker_profiles SET embedding_blob=?,sample_count=?,updated_at=? WHERE id=?",
-                (self._embedding_blob(centroid), len(vectors), now, profile_id),
-            )
+            self._recompute_speaker_profile_conn(conn, profile_id, now)
             profile = conn.execute(
                 "SELECT display_name,is_named,sample_count FROM speaker_profiles WHERE id=?", (profile_id,)
             ).fetchone()
@@ -2878,6 +3144,7 @@ class MeetingStore:
 
     def delete_all_speaker_profiles(self) -> int:
         with db._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """UPDATE meeting_segments SET speaker_label=(
                      SELECT label FROM meeting_speakers s WHERE s.id=meeting_segments.speaker_id
@@ -2892,6 +3159,13 @@ class MeetingStore:
                    profile_id=NULL,confidence=NULL"""
             )
             cursor = conn.execute("DELETE FROM speaker_profiles")
+            conn.execute(
+                """INSERT INTO speaker_library_state(id,enabled,updated_at)
+                   VALUES (1,0,?)
+                   ON CONFLICT(id) DO UPDATE SET enabled=0,
+                     updated_at=excluded.updated_at""",
+                (_utc_now(),),
+            )
             conn.commit()
         return int(cursor.rowcount)
 
@@ -2903,13 +3177,7 @@ class MeetingStore:
         ).fetchone()
         if profile is None:
             return False
-        observations = conn.execute(
-            """SELECT embedding_blob FROM speaker_profile_observations WHERE profile_id=?
-               AND embedding_blob IS NOT NULL ORDER BY quality DESC,created_at DESC LIMIT 20""",
-            (profile_id,),
-        ).fetchall()
-        vectors = [self._embedding_values(row["embedding_blob"]) for row in observations]
-        vectors = [value for value in vectors if value is not None]
+        vectors, sample_count = self._speaker_profile_vectors_conn(conn, profile_id)
         if not vectors:
             if not bool(profile["is_named"]):
                 conn.execute("DELETE FROM speaker_profiles WHERE id=?", (profile_id,))
@@ -2919,12 +3187,10 @@ class MeetingStore:
                 (now, profile_id),
             )
             return True
-        centroid = [sum(vector[index] for vector in vectors) / len(vectors) for index in range(256)]
-        norm = math.sqrt(sum(value * value for value in centroid)) or 1.0
-        centroid = [value / norm for value in centroid]
+        centroid = self._weighted_embedding_centroid(vectors)
         conn.execute(
             "UPDATE speaker_profiles SET embedding_blob=?,sample_count=?,updated_at=? WHERE id=?",
-            (self._embedding_blob(centroid), len(vectors), now, profile_id),
+            (self._embedding_blob(centroid), sample_count, now, profile_id),
         )
         return True
 
@@ -2934,10 +3200,16 @@ class MeetingStore:
         now = _utc_now()
         with db._get_connection() as conn:
             target = conn.execute(
-                "SELECT id FROM speaker_profiles WHERE id=?", (target_profile_id,)
+                """SELECT id,enrollment_embedding_blob,enrollment_sample_count,
+                          enrollment_weight_sum,enrollment_resultant_norm,enrolled_at
+                   FROM speaker_profiles WHERE id=?""",
+                (target_profile_id,),
             ).fetchone()
             source = conn.execute(
-                "SELECT id FROM speaker_profiles WHERE id=?", (source_profile_id,)
+                """SELECT id,enrollment_embedding_blob,enrollment_sample_count,
+                          enrollment_weight_sum,enrollment_resultant_norm,enrolled_at
+                   FROM speaker_profiles WHERE id=?""",
+                (source_profile_id,),
             ).fetchone()
             if target is None or source is None:
                 raise MeetingNotFound("Speaker profile not found")
@@ -2956,6 +3228,39 @@ class MeetingStore:
                     (replacement_id, target_profile_id, observation["meeting_id"],
                      observation["segment_id"], observation["similarity"],
                      observation["embedding_blob"], observation["quality"], observation["created_at"]),
+                )
+            target_sum, target_count, target_weight = self._enrollment_sum_values(target)
+            source_sum, source_count, source_weight = self._enrollment_sum_values(source)
+            if target_sum is not None or source_sum is not None:
+                merged_sum = [0.0] * 256
+                for vector in (target_sum, source_sum):
+                    if vector is not None:
+                        merged_sum = [
+                            left + right
+                            for left, right in zip(merged_sum, vector, strict=True)
+                        ]
+                resultant_norm = math.sqrt(
+                    sum(value * value for value in merged_sum)
+                )
+                if not resultant_norm or not math.isfinite(resultant_norm):
+                    raise ValueError("Merged speaker enrollment centroid is invalid.")
+                merged_centroid = [
+                    value / resultant_norm for value in merged_sum
+                ]
+                conn.execute(
+                    """UPDATE speaker_profiles SET enrollment_embedding_blob=?,
+                       enrollment_sample_count=?,enrollment_weight_sum=?,
+                       enrollment_resultant_norm=?,enrolled_at=?,updated_at=?
+                       WHERE id=?""",
+                    (
+                        self._embedding_blob(merged_centroid),
+                        target_count + source_count,
+                        target_weight + source_weight,
+                        resultant_norm,
+                        max(str(target["enrolled_at"] or ""), str(source["enrolled_at"] or "")),
+                        now,
+                        target_profile_id,
+                    ),
                 )
             conn.execute(
                 "UPDATE meeting_speakers SET profile_id=?,updated_at=? WHERE profile_id=?",

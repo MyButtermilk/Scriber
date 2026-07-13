@@ -1597,6 +1597,11 @@ async def test_get_state_reports_background_processing_flag():
     state = ctl.get_state()
     assert state["backgroundProcessing"] is True
     assert state["recordingState"] == "idle"
+    assert state["voiceEnrollmentActive"] is False
+
+    ctl._voice_enrollment_active = True
+    state = ctl.get_state()
+    assert state["voiceEnrollmentActive"] is True
 
     pending.set_result(None)
     state = ctl.get_state()

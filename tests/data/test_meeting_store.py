@@ -9,7 +9,13 @@ from threading import Barrier
 import pytest
 
 from src import database
-from src.data.meeting_store import InvalidMeetingTransition, MeetingConflict, MeetingCreate, MeetingStore
+from src.data.meeting_store import (
+    InvalidMeetingTransition,
+    MeetingConflict,
+    MeetingCreate,
+    MeetingStore,
+    VoiceLibraryDisabled,
+)
 from src.meeting_analysis import stable_analysis_item_id
 from datetime import datetime, timedelta, timezone
 
@@ -1287,3 +1293,317 @@ def test_voice_profile_can_be_named_and_updates_confident_linked_speakers(store:
     detail = store.detail(meeting["id"])
     assert detail["speakers"][0]["displayName"] == "Ada Lovelace"
     assert detail["segments"][0]["speakerLabel"] == "Ada Lovelace"
+
+
+def test_explicit_voice_enrollment_creates_named_privacy_minimal_profile(
+    store: MeetingStore,
+):
+    profile = store.enroll_speaker_profile(
+        "  Ada   Lovelace  ", [1.0] + [0.0] * 255, quality=0.9
+    )
+
+    assert profile["displayName"] == "Ada Lovelace"
+    assert profile["isNamed"] is True
+    assert profile["enrolled"] is True
+    assert profile["enrollmentSampleCount"] == 1
+    assert profile["sampleCount"] == 1
+    assert profile["enrolledAt"]
+    forbidden = ("embedding", "audio", "path", "checksum")
+    assert not any(term in key.lower() for key in profile for term in forbidden)
+    public_profile = store.speaker_profiles()[0]
+    assert public_profile == profile
+
+    with database._get_connection() as conn:
+        stored = conn.execute(
+            """SELECT enrollment_embedding_blob,enrollment_sample_count
+               FROM speaker_profiles WHERE id=?""",
+            (profile["id"],),
+        ).fetchone()
+    assert len(stored["enrollment_embedding_blob"]) == 1_024
+    assert stored["enrollment_sample_count"] == 1
+
+
+def test_existing_voice_profiles_migrate_to_enrollment_schema_without_data_loss(
+    monkeypatch, tmp_path
+):
+    database._close_all_connections()
+    target = tmp_path / "legacy-voice-library.db"
+    monkeypatch.setattr(database, "_DB_PATH", target)
+    with sqlite3.connect(target) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE speaker_profiles (
+                id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                embedding_json TEXT NOT NULL DEFAULT '[]',
+                embedding_blob BLOB,
+                is_named INTEGER NOT NULL DEFAULT 0,
+                sample_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO speaker_profiles (
+                id,display_name,is_named,sample_count,created_at,updated_at
+            ) VALUES (
+                'legacy-profile','Legacy Alice',1,2,
+                '2026-07-01T10:00:00+00:00','2026-07-01T11:00:00+00:00'
+            );
+            """
+        )
+
+    migrated_store = MeetingStore()
+    migrated_store.initialize()
+
+    profile = migrated_store.speaker_profiles()[0]
+    assert profile["id"] == "legacy-profile"
+    assert profile["displayName"] == "Legacy Alice"
+    assert profile["sampleCount"] == 2
+    assert profile["enrolled"] is False
+    assert profile["enrollmentSampleCount"] == 0
+    assert profile["enrolledAt"] == ""
+    with database._get_connection() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(speaker_profiles)")}
+    assert {
+        "enrollment_embedding_blob",
+        "enrollment_sample_count",
+        "enrollment_weight_sum",
+        "enrollment_resultant_norm",
+        "enrolled_at",
+    }.issubset(columns)
+    database._close_all_connections()
+
+
+def test_enrollment_seed_matches_meeting_voice_and_survives_meeting_deletion(
+    store: MeetingStore,
+):
+    vector = [1.0] + [0.0] * 255
+    profile = store.enroll_speaker_profile("Alice", vector)
+    meeting = store.create(create_request())
+    store.add_segments(
+        meeting["id"],
+        [
+            {
+                "id": "enrolled-a",
+                "revision": "canonical",
+                "source": "system",
+                "sequence": 0,
+                "speakerLabel": "Remote 1",
+                "startMs": 0,
+                "endMs": 3_000,
+                "text": "First enrolled sample",
+            },
+            {
+                "id": "enrolled-b",
+                "revision": "canonical",
+                "source": "system",
+                "sequence": 1,
+                "speakerLabel": "Remote 1",
+                "startMs": 3_000,
+                "endMs": 6_000,
+                "text": "Second enrolled sample",
+            },
+        ],
+    )
+    speaker = store.detail(meeting["id"])["speakers"][0]
+
+    first = store.register_speaker_embedding(
+        meeting["id"], speaker["id"], "enrolled-a", vector
+    )
+    second = store.register_speaker_embedding(
+        meeting["id"], speaker["id"], "enrolled-b", vector
+    )
+
+    assert first["profileId"] == profile["id"]
+    assert first["matched"] is True
+    assert first["autoNamed"] is False
+    assert second["profileId"] == profile["id"]
+    assert second["autoNamed"] is True
+    assert store.detail(meeting["id"])["speakers"][0]["displayName"] == "Alice"
+    assert store.speaker_profiles()[0]["sampleCount"] == 3
+
+    assert store.delete(meeting["id"]) is True
+    preserved = store.speaker_profiles()
+    assert len(preserved) == 1
+    assert preserved[0]["id"] == profile["id"]
+    assert preserved[0]["enrolled"] is True
+    assert preserved[0]["enrollmentSampleCount"] == 1
+    assert preserved[0]["sampleCount"] == 1
+
+
+def test_voice_profile_merge_combines_enrollment_seeds_without_exposing_them(
+    store: MeetingStore,
+):
+    target = store.enroll_speaker_profile("Alice", [1.0] + [0.0] * 255)
+    target = store.enroll_speaker_profile(
+        "Alice", [1.0] + [0.0] * 255, profile_id=target["id"]
+    )
+    source = store.enroll_speaker_profile("Alicia", [0.0, 1.0] + [0.0] * 254)
+
+    result = store.merge_speaker_profiles(target["id"], source["id"])
+
+    assert result == {
+        "targetProfileId": target["id"],
+        "mergedProfileId": source["id"],
+    }
+    profiles = store.speaker_profiles()
+    assert len(profiles) == 1
+    merged = profiles[0]
+    assert merged["id"] == target["id"]
+    assert merged["enrollmentSampleCount"] == 3
+    assert merged["sampleCount"] == 3
+    assert merged["enrolled"] is True
+    assert not any("embedding" in key.lower() for key in merged)
+
+    with database._get_connection() as conn:
+        row = conn.execute(
+            "SELECT embedding_blob FROM speaker_profiles WHERE id=?", (target["id"],)
+        ).fetchone()
+    centroid = store._embedding_values(row["embedding_blob"])
+    assert centroid is not None
+    assert centroid[0] == pytest.approx(2 / 5 ** 0.5)
+    assert centroid[1] == pytest.approx(1 / 5 ** 0.5)
+
+
+def test_voice_profile_split_keeps_explicit_seed_only_on_original_profile(
+    store: MeetingStore,
+):
+    vector = [1.0] + [0.0] * 255
+    enrolled = store.enroll_speaker_profile("Alice", vector)
+    meeting = store.create(create_request())
+    store.add_segments(
+        meeting["id"],
+        [
+            {
+                "id": "split-enrolled",
+                "revision": "canonical",
+                "source": "system",
+                "sequence": 0,
+                "speakerLabel": "Remote 1",
+                "startMs": 0,
+                "endMs": 3_000,
+                "text": "This voice belongs elsewhere",
+            }
+        ],
+    )
+    speaker = store.detail(meeting["id"])["speakers"][0]
+    linked = store.register_speaker_embedding(
+        meeting["id"], speaker["id"], "split-enrolled", vector
+    )
+    assert linked["profileId"] == enrolled["id"]
+
+    split = store.split_speaker_profile(meeting["id"], speaker["id"])
+    profiles = {profile["id"]: profile for profile in store.speaker_profiles()}
+
+    original = profiles[split["oldProfileId"]]
+    separated = profiles[split["newProfileId"]]
+    assert original["enrolled"] is True
+    assert original["enrollmentSampleCount"] == 1
+    assert original["sampleCount"] == 1
+    assert separated["enrolled"] is False
+    assert separated["enrollmentSampleCount"] == 0
+    assert separated["sampleCount"] == 1
+
+
+def test_voice_enrollment_centroid_is_order_independent_and_quality_weighted(
+    store: MeetingStore,
+):
+    axis_a = [1.0] + [0.0] * 255
+    axis_b = [0.0, 1.0] + [0.0] * 254
+
+    first = store.enroll_speaker_profile("First", axis_a)
+    store.enroll_speaker_profile("First", axis_b, profile_id=first["id"])
+    store.enroll_speaker_profile("First", axis_b, profile_id=first["id"])
+
+    second = store.enroll_speaker_profile("Second", axis_b)
+    store.enroll_speaker_profile("Second", axis_a, profile_id=second["id"])
+    store.enroll_speaker_profile("Second", axis_b, profile_id=second["id"])
+
+    weighted = store.enroll_speaker_profile("Weighted", axis_a, quality=1.0)
+    store.enroll_speaker_profile(
+        "Weighted", axis_b, quality=0.35, profile_id=weighted["id"]
+    )
+
+    with database._get_connection() as conn:
+        rows = {
+            row["id"]: store._embedding_values(row["embedding_blob"])
+            for row in conn.execute(
+                "SELECT id,embedding_blob FROM speaker_profiles"
+            ).fetchall()
+        }
+
+    expected = [1 / 5**0.5, 2 / 5**0.5] + [0.0] * 254
+    assert rows[first["id"]] == pytest.approx(expected)
+    assert rows[second["id"]] == pytest.approx(expected)
+    weighted_norm = (1.0 + 0.35**2) ** 0.5
+    assert rows[weighted["id"]][0] == pytest.approx(1.0 / weighted_norm)
+    assert rows[weighted["id"]][1] == pytest.approx(0.35 / weighted_norm)
+
+
+def test_voice_profile_sample_count_includes_observations_beyond_matching_window(
+    store: MeetingStore,
+):
+    profile = store.enroll_speaker_profile("Alice", [1.0] + [0.0] * 255)
+    meeting = store.create(create_request())
+    blob = store._embedding_blob([1.0] + [0.0] * 255)
+    now = "2026-07-13T10:00:00+00:00"
+
+    with database._get_connection() as conn:
+        for index in range(25):
+            conn.execute(
+                """INSERT INTO speaker_profile_observations
+                   (id,profile_id,meeting_id,segment_id,similarity,
+                    embedding_blob,quality,created_at)
+                   VALUES (?,?,?,NULL,?,?,?,?)""",
+                (
+                    f"observation-{index}",
+                    profile["id"],
+                    meeting["id"],
+                    0.95,
+                    blob,
+                    0.9,
+                    now,
+                ),
+            )
+        store._recompute_speaker_profile_conn(conn, profile["id"], now)
+        conn.commit()
+
+    assert store.speaker_profiles()[0]["sampleCount"] == 26
+
+
+def test_deleted_voice_library_blocks_late_finalizer_registration_until_reenabled(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    store.add_segments(
+        meeting["id"],
+        [
+            {
+                "id": "late-finalizer-segment",
+                "revision": "canonical",
+                "source": "system",
+                "sequence": 0,
+                "speakerLabel": "Remote 1",
+                "startMs": 0,
+                "endMs": 3_000,
+                "text": "Late finalizer sample",
+            }
+        ],
+    )
+    speaker = store.detail(meeting["id"])["speakers"][0]
+    store.delete_all_speaker_profiles()
+
+    skipped = store.register_speaker_embedding(
+        meeting["id"],
+        speaker["id"],
+        "late-finalizer-segment",
+        [1.0] + [0.0] * 255,
+    )
+
+    assert skipped["skipped"] == "voice_library_disabled"
+    assert store.speaker_profiles() == []
+    with pytest.raises(VoiceLibraryDisabled, match="Voice Library is turned off"):
+        store.enroll_speaker_profile("Alice", [1.0] + [0.0] * 255)
+
+    store.set_speaker_library_enabled(True)
+    profile = store.enroll_speaker_profile("Alice", [1.0] + [0.0] * 255)
+    assert profile["displayName"] == "Alice"

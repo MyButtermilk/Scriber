@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-07-12
+Last verified: 2026-07-13
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -79,7 +79,9 @@ Frontend and shell:
 - `Frontend/client/src/lib/api-types.ts`: shared REST-facing TS types.
 - `Frontend/client/src/components/transcription-history-toolbar.tsx`: shared
   count/search/list-grid toolbar for Live Mic, YouTube, and File history.
-- `Frontend/client/src/index.css`: Tailwind v4 CSS-first design system.
+- `Frontend/client/src/index.css`: Tailwind v4 CSS-first design system. The six
+  primary tabs share the `app-page-shell` 1320 px desktop frame and expose a
+  stable `data-page-shell` hook; do not introduce per-tab maximum widths.
 - `Frontend/src-tauri/src/audio_sidecar.rs`: separate Rust audio sidecar with
   `--self-test`, `--stdio` JSON-lines protocol, a test-only
   `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1` frame-pipe transport harness, and
@@ -146,7 +148,13 @@ Packaging and scripts:
   `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`, `SCRIBER_SESSION_TOKEN`,
   `SCRIBER_BACKEND_LAUNCH_KIND`, optional private shell IPC env
   `SCRIBER_SHELL_IPC_PIPE`, `SCRIBER_SHELL_IPC_TOKEN`,
-  `SCRIBER_SHELL_IPC_API_VERSION`, and writable `SCRIBER_DATA_DIR`.
+  `SCRIBER_SHELL_IPC_API_VERSION`, and writable `SCRIBER_DATA_DIR`. Official
+  builds also embed the public `SCRIBER_OUTLOOK_CLIENT_ID` in the Tauri binary
+  and pass only a canonical non-nil GUID to the worker; source builds may use a
+  valid process environment fallback. Tag releases must fail before expensive
+  setup when that repository variable is missing or invalid, and cache
+  fingerprints may contain only its presence flag and SHA-256, never the raw
+  identifier.
 - `/api/health` remains public. Token-protected endpoints must accept the
   session token via `scriberToken` query parameter or `X-Scriber-Token`.
 - `POST /api/runtime/frontend-ready` is the proof that the actual WebView reached
@@ -387,7 +395,12 @@ Packaging and scripts:
   `live_stt_reconnect` gap per outage, bounded exponential reconnect,
   shared-timeline timestamp rebasing, and versioned `meeting_live_status`
   reconnect/recovery/degraded events. Report the first preview-queue overflow
-  immediately; durable recorder loss must remain zero.
+  immediately; durable recorder loss must remain zero. Meeting realtime
+  requests Soniox speaker diarization for the system-audio stream only; the
+  microphone stream remains the local `You` track. Preserve every contiguous
+  system-speaker token run as its own timestamped final live segment, normalize
+  raw provider speaker ids by first appearance, and scope raw ids to one
+  WebSocket connection so reconnect reuse cannot silently merge people.
 - Live microphone transcription must not request or format provider speaker
   diarization. Keep `enable_speaker_diarization=False` for live pipelines so
   single-speaker dictation inserts plain text. File and YouTube jobs may enable
@@ -484,6 +497,29 @@ Packaging and scripts:
 
 - Runtime data belongs under `SCRIBER_DATA_DIR`, not the install directory.
 - Legacy runtime data migration must not overwrite existing app-data files.
+- Explicit Voice Library enrollment must use the existing private
+  `audioCaptureStart`/`audioCaptureStop` Rust/WASAPI path under the shared
+  native-audio admission lease. Capture mono 16 kHz PCM into a short bounded
+  in-memory buffer only, reject unreadable, short, quiet, or clipped samples,
+  require clear speech activity across at least two enrollment windows, and
+  clear the buffer after local WeSpeaker inference on every success, failure,
+  and cancellation path. Validate the native start response as mono 16 kHz
+  `pcm_i16_le` before reading its frame pipe. Never use WebView `MediaRecorder`, a Python
+  capture fallback, a hidden Meeting, or a temporary enrollment audio file.
+  Persist only one normalized aggregate enrollment centroid plus count,
+  effective-weight, resultant-norm, and time metadata on the local speaker
+  profile; reconstruct its weighted sum only in memory for exact incremental
+  and merge math. Never persist individual enrollment samples. Profile
+  recomputation, Meeting deletion, merge, and split
+  must preserve that explicit seed correctly. Whole-library deletion and
+  Meeting-finalizer registration share a durable SQLite enabled gate under
+  `BEGIN IMMEDIATE`, so a late finalizer cannot recreate deleted voice data;
+  model downloads stay in unique verified staging files and may be promoted
+  only while that gate remains enabled, with a post-promotion recheck for
+  cross-process deletion;
+  public REST responses,
+  exports, logs, diagnostics, and support bundles must not expose PCM,
+  embeddings, raw endpoint IDs, frame-pipe names, or local paths.
 - Meeting capture rotates every source into 30-second WAV chunks. Publishing a
   completed chunk must keep its `meeting_audio_chunks` row and the corresponding
   checksum-protected `meeting_transcript_checkpoints` snapshot in one SQLite

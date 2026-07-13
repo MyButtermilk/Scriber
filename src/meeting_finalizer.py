@@ -999,6 +999,9 @@ class MeetingFinalizer:
     async def _apply_speaker_intelligence(
         self, meeting_id: str, tracks: dict[str, PreparedMeetingTrack]
     ) -> None:
+        library_enabled = getattr(self.store, "speaker_library_enabled", None)
+        if callable(library_enabled) and not await asyncio.to_thread(library_enabled):
+            return
         detail = self.store.detail(meeting_id)
         scheduled_per_speaker: dict[str, int] = {}
         candidates_by_track: dict[str, list[dict[str, Any]]] = {}

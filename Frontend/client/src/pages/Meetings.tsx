@@ -1688,7 +1688,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   }, [setLocation]);
 
   return (
-    <div className="transcription-page meetings-page mx-auto flex min-h-[calc(100dvh-3.5rem)] w-full max-w-[1440px] flex-col px-4 py-5 md:px-6 md:py-6">
+    <div className="app-page-shell transcription-page meetings-page flex min-h-[calc(100dvh-3.5rem)] flex-col px-4 py-5 md:px-6 md:py-6" data-page-shell="meetings">
       <PageIntro
         eyebrow="Meeting workspace · 02"
         title="Meetings"

@@ -478,6 +478,17 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "build/cache-keys/rust-release.txt" in workflow
     assert "build/cache-keys/tauri-app-binary.txt" in workflow
     assert '"runtime`tsource-commit`t$env:GITHUB_SHA"' in workflow
+    assert "SCRIBER_OUTLOOK_CLIENT_ID: ${{ vars.SCRIBER_OUTLOOK_CLIENT_ID }}" in workflow
+    assert "Validate Outlook release configuration" in workflow
+    assert "if: startsWith(github.ref, 'refs/tags/')" in workflow
+    assert workflow.index("Validate Outlook release configuration") < workflow.index(
+        "Compute release cache keys"
+    )
+    assert '[Guid]::TryParseExact($clientId, "D", [ref]$parsed)' in workflow
+    assert "Official tag releases require a valid SCRIBER_OUTLOOK_CLIENT_ID" in workflow
+    assert '"runtime`toutlook-client-id-present`t$($outlookClientIdPresent.ToString().ToLowerInvariant())"' in workflow
+    assert '"runtime`toutlook-client-id-sha256`t$outlookClientIdHash"' in workflow
+    assert '"runtime`toutlook-client-id`t$outlookClientId"' not in workflow
     assert "build/cache-keys/rust-audio-sidecar.txt" in workflow
     assert "build/cache-keys/rust-diarization-sidecar.txt" in workflow
     assert "build/cache-keys/sherpa-onnx-archive.txt" in workflow
@@ -596,6 +607,20 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     backend_block = script.split("$backendEntries = New-EntryList", 1)[1]
     assert "Frontend/src-tauri/Cargo.toml" not in backend_block
     assert "Frontend/src-tauri/src/audio_sidecar.rs" not in backend_block
+
+
+def test_tauri_build_embeds_validated_outlook_configuration_for_backend() -> None:
+    build_script = read_script("Frontend/src-tauri/build.rs")
+    desktop = read_script("Frontend/src-tauri/src/lib.rs")
+    outlook = read_script("Frontend/src-tauri/src/outlook_config.rs")
+
+    assert "cargo:rerun-if-env-changed=SCRIBER_OUTLOOK_CLIENT_ID" in build_script
+    assert 'option_env!("SCRIBER_OUTLOOK_CLIENT_ID")' in outlook
+    assert "Uuid::parse_str" in outlook
+    assert "parsed.is_nil()" in outlook
+    assert "built_in" in outlook and "runtime" in outlook
+    assert "command.env_remove(outlook_config::CLIENT_ID_ENV)" in desktop
+    assert "outlook_config::configured_client_id()" in desktop
 
 
 def test_release_cache_key_outputs_are_stable_for_version_only_churn() -> None:

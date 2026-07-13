@@ -40,6 +40,7 @@ jobs:
       SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}
+      SCRIBER_OUTLOOK_CLIENT_ID: ${{ vars.SCRIBER_OUTLOOK_CLIENT_ID }}
       CARGO_HOME: ${{ github.workspace }}/.cargo
       CARGO_INCREMENTAL: "1"
       CARGO_LOG: ${{ vars.SCRIBER_CARGO_LOG }}
@@ -47,6 +48,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Validate Outlook release configuration
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $clientId = ([string]$env:SCRIBER_OUTLOOK_CLIENT_ID).Trim()
+          $parsed = [Guid]::Empty
+          $valid = [Guid]::TryParseExact($clientId, "D", [ref]$parsed)
+          if (-not $valid -or $parsed -eq [Guid]::Empty) {
+            throw "Official tag releases require a valid SCRIBER_OUTLOOK_CLIENT_ID repository variable in canonical GUID form."
+          }
+          Write-Host "Outlook public-client configuration is present and valid."
 
       - name: Compute release cache keys
         shell: pwsh
@@ -136,6 +149,14 @@ jobs:
           try {
             $publicKeyBytes = [System.Text.Encoding]::UTF8.GetBytes([string]$env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY)
             $publicKeyHash = [Convert]::ToHexString($sha.ComputeHash($publicKeyBytes)).ToLowerInvariant()
+            $outlookClientId = ([string]$env:SCRIBER_OUTLOOK_CLIENT_ID).Trim()
+            $outlookClientIdPresent = -not [string]::IsNullOrWhiteSpace($outlookClientId)
+            $outlookClientIdHash = if ($outlookClientIdPresent) {
+              $outlookBytes = [System.Text.Encoding]::UTF8.GetBytes($outlookClientId)
+              [Convert]::ToHexString($sha.ComputeHash($outlookBytes)).ToLowerInvariant()
+            } else {
+              "missing"
+            }
           } finally {
             $sha.Dispose()
           }
@@ -145,6 +166,8 @@ jobs:
           }
           "runtime`tupdater-public-key-sha256`t$publicKeyHash" | Add-Content -LiteralPath "build\cache-keys\tauri-app-binary.txt" -Encoding utf8
           "runtime`tupdater-endpoint`t$endpoint" | Add-Content -LiteralPath "build\cache-keys\tauri-app-binary.txt" -Encoding utf8
+          "runtime`toutlook-client-id-present`t$($outlookClientIdPresent.ToString().ToLowerInvariant())" | Add-Content -LiteralPath "build\cache-keys\tauri-app-binary.txt" -Encoding utf8
+          "runtime`toutlook-client-id-sha256`t$outlookClientIdHash" | Add-Content -LiteralPath "build\cache-keys\tauri-app-binary.txt" -Encoding utf8
           "runtime`tsource-commit`t$env:GITHUB_SHA" | Add-Content -LiteralPath "build\cache-keys\tauri-app-binary.txt" -Encoding utf8
           $dynamicRows = @()
           foreach ($path in @("build\cache-keys\rust-dependencies.txt", "build\cache-keys\tauri-app-binary.txt")) {

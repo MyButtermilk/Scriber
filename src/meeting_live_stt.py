@@ -128,6 +128,9 @@ class SonioxMeetingStream:
         self._provider_audio_cursor_ms = 0.0
         self._sent_timeline_spans: list[_SentTimelineSpan] = []
         self._interim_latency_samples_ms: list[int] = []
+        self._speaker_epoch = 0
+        self._speaker_numbers: dict[tuple[int, str], int] = {}
+        self._next_speaker_number = 1
         self.smart_turn_analyzer = smart_turn_analyzer
         self.smart_turn_analyses = 0
         self.smart_turn_incomplete = 0
@@ -297,6 +300,10 @@ class SonioxMeetingStream:
                 while websocket is None and not self._stopping:
                     self.reconnect_attempts += 1
                     try:
+                        # Soniox speaker identifiers are scoped to one
+                        # WebSocket session. Never silently merge a reused raw
+                        # identifier from a reconnect with the earlier person.
+                        self._speaker_epoch += 1
                         websocket = await self._open_websocket()
                     except Exception:
                         try:
@@ -466,16 +473,85 @@ class SonioxMeetingStream:
             self.smart_turn_analyzer = None
         await self._emit_final()
 
+    @staticmethod
+    def _contiguous_speaker_runs(
+        tokens: list[dict[str, Any]],
+    ) -> list[list[dict[str, Any]]]:
+        runs: list[list[dict[str, Any]]] = []
+        leading_speakerless: list[dict[str, Any]] = []
+        current_speaker: str | None = None
+        for token in tokens:
+            raw_speaker = token.get("speaker")
+            speaker = str(raw_speaker).strip() if raw_speaker is not None else ""
+            has_visible_text = bool(str(token.get("text", "")).strip())
+            if not speaker or not has_visible_text:
+                if runs:
+                    runs[-1].append(token)
+                else:
+                    leading_speakerless.append(token)
+                continue
+            if runs and speaker != current_speaker:
+                runs.append([])
+            elif not runs:
+                runs.append(leading_speakerless)
+                leading_speakerless = []
+            runs[-1].append(token)
+            current_speaker = speaker
+        if leading_speakerless:
+            runs.append(leading_speakerless)
+        return [run for run in runs if run]
+
+    def _speaker_label(self, tokens: list[dict[str, Any]]) -> str:
+        if self.source == "microphone":
+            return "You"
+        ordered_speakers = [
+            str(token.get("speaker")).strip()
+            for token in tokens
+            if str(token.get("text", "")).strip()
+            and token.get("speaker") is not None
+            and str(token.get("speaker")).strip()
+        ]
+        speakers = Counter(ordered_speakers)
+        if not speakers:
+            return "Meeting audio"
+        for ordered_raw_speaker in ordered_speakers:
+            ordered_key = (self._speaker_epoch, ordered_raw_speaker)
+            if ordered_key not in self._speaker_numbers:
+                self._speaker_numbers[ordered_key] = self._next_speaker_number
+                self._next_speaker_number += 1
+        raw_speaker = speakers.most_common(1)[0][0]
+        key = (self._speaker_epoch, raw_speaker)
+        number = self._speaker_numbers.get(key)
+        if number is None:  # defensive; the ordered pass above should own it
+            number = self._next_speaker_number
+            self._speaker_numbers[key] = number
+            self._next_speaker_number += 1
+        return f"Speaker {number}"
+
     async def _emit(self, tokens: list[dict[str, Any]], *, is_final: bool) -> None:
+        runs = (
+            self._contiguous_speaker_runs(tokens)
+            if is_final and self.diarization
+            else [tokens]
+        )
+        for run_index, run in enumerate(runs):
+            await self._emit_run(run, is_final=is_final, run_index=run_index)
+
+    async def _emit_run(
+        self,
+        tokens: list[dict[str, Any]],
+        *,
+        is_final: bool,
+        run_index: int,
+    ) -> None:
         text = "".join(str(token.get("text", "")) for token in tokens).strip()
         if not text:
             return
         start_ms_values = [int(token["start_ms"]) for token in tokens if token.get("start_ms") is not None]
         end_ms_values = [int(token["end_ms"]) for token in tokens if token.get("end_ms") is not None]
-        speakers = Counter(str(token.get("speaker")) for token in tokens if token.get("speaker") is not None)
-        speaker = speakers.most_common(1)[0][0] if speakers else ""
-        label = "You" if self.source == "microphone" else (f"Speaker {speaker}" if speaker else "Meeting audio")
-        stable_id = f"live-{self.source}-{self.session_id[:8]}-{self.turn_index}"
+        label = self._speaker_label(tokens)
+        stable_base = f"live-{self.source}-{self.session_id[:8]}-{self.turn_index}"
+        stable_id = stable_base if run_index == 0 else f"{stable_base}-r{run_index}"
         absolute_start_ms = self._meeting_time_for_provider_ms(
             min(start_ms_values, default=0), endpoint="start"
         )

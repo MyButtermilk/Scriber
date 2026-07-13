@@ -32,7 +32,7 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     assert payload["summary"]["routeCount"] == 10
     assert "/meetings" in payload["summary"]["routes"]
     assert payload["summary"]["criticalConsoleErrorCount"] == 0
-    assert payload["summary"]["interactionCheckCount"] == 19
+    assert payload["summary"]["interactionCheckCount"] == 20
     assert set(payload["summary"]["interactionChecks"]) == {
         "history-search-copy-navigation",
         "youtube-history-actions",
@@ -50,6 +50,7 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
         "transcript-detail-actions",
         "transcript-cancel-action",
         "rapid-theme-change",
+        "desktop-page-shell-layouts",
         "mobile-navigation",
         "mobile-route-layouts",
         "token-required-browser-state",
@@ -89,6 +90,19 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     assert payload["transcriptDetailActionsCheck"]["name"] == "transcript-detail-actions"
     assert payload["transcriptCancelCheck"]["name"] == "transcript-cancel-action"
     assert payload["rapidThemeChangeCheck"]["name"] == "rapid-theme-change"
+    desktop_layout = payload["desktopPageShellLayoutsCheck"]
+    assert desktop_layout["name"] == "desktop-page-shell-layouts"
+    assert desktop_layout["viewport"] == {"width": 2048, "height": 1252, "deviceScaleFactor": 1}
+    assert desktop_layout["routeCount"] == 6
+    assert desktop_layout["routes"] == ["/", "/meetings", "/youtube", "/file", "/debug", "/settings"]
+    assert desktop_layout["maxWidthSpread"] <= 2
+    assert desktop_layout["maxContentWidthSpread"] <= 2
+    assert desktop_layout["maxPaddingSpread"] <= 2
+    assert desktop_layout["maxGutterImbalance"] <= 2
+    assert desktop_layout["maxCenterDelta"] <= 2
+    assert desktop_layout["meetingAtMostLive"] is True
+    assert desktop_layout["maxWidthReached"] is True
+    assert all(item["maxWidthReached"] for item in desktop_layout["results"])
     assert payload["mobileNavigationCheck"]["name"] == "mobile-navigation"
     assert payload["mobileRouteLayoutsCheck"]["name"] == "mobile-route-layouts"
     assert payload["mobileRouteLayoutsCheck"]["routeCount"] == 10
@@ -116,7 +130,7 @@ def test_frontend_browser_smoke_validate_only_can_include_fast_tab_switch(tmp_pa
     assert result.returncode == 0, result.stderr
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["ok"] is True
-    assert payload["summary"]["interactionCheckCount"] == 20
+    assert payload["summary"]["interactionCheckCount"] == 21
     assert "fast-tab-switch" in payload["summary"]["interactionChecks"]
     assert payload["fastTabSwitchCheck"]["name"] == "fast-tab-switch"
     assert payload["fastTabSwitchCheck"]["ok"] is True
@@ -162,6 +176,24 @@ def test_frontend_browser_smoke_exercises_mobile_navigation() -> None:
     assert "\"mobile-navigation\"" in script
     assert "\"mobile-route-layouts\"" in script
     assert "overflowX" in script
+
+
+def test_frontend_browser_smoke_compares_primary_tab_shells_at_large_desktop_size() -> None:
+    script = (REPO_ROOT / "scripts" / "smoke_frontend_browser.py").read_text(encoding="utf-8")
+
+    assert "exercise_desktop_page_shell_layouts" in script
+    assert "PRIMARY_TAB_SHELLS" in script
+    assert "data-page-shell" in script
+    assert '"width": 2048, "height": 1252' in script
+    assert "maxWidthSpread" in script
+    assert "maxContentWidthSpread" in script
+    assert "maxPaddingSpread" in script
+    assert "maxGutterImbalance" in script
+    assert "maxCenterDelta" in script
+    assert "meetingAtMostLive" in script
+    assert "maxWidthReached" in script
+    assert "desktopPageShellLayoutsCheck" in script
+    assert "desktop-shell-{shell_id}" in script
 
 
 def test_frontend_browser_smoke_exercises_fast_tab_switch() -> None:

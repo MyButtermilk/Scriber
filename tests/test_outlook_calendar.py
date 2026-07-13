@@ -10,6 +10,7 @@ from src.outlook_calendar import (
     SCOPES,
     _delta_window_needs_reseed,
     _graph_datetime_utc,
+    _normalize_public_client_id,
     create_pkce_pair,
 )
 
@@ -38,6 +39,32 @@ def test_pkce_pair_uses_s256_compatible_entropy():
     assert 43 <= len(challenge) <= 128
     assert verifier != challenge
     assert "=" not in verifier + challenge
+
+
+def test_public_client_id_requires_a_non_nil_canonical_guid():
+    assert _normalize_public_client_id("11111111-1111-4111-8111-111111111111") == (
+        "11111111-1111-4111-8111-111111111111"
+    )
+    assert _normalize_public_client_id("AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA") == (
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    )
+    for invalid in (
+        "",
+        "not-a-guid",
+        "{11111111-1111-4111-8111-111111111111}",
+        "11111111111141118111111111111111",
+        "00000000-0000-0000-0000-000000000000",
+    ):
+        assert _normalize_public_client_id(invalid) == ""
+
+
+def test_system_browser_redirect_uses_registered_localhost_path(service, monkeypatch):
+    calendar, _calls = service
+    monkeypatch.setenv("SCRIBER_WEB_PORT", "49152")
+
+    assert calendar.redirect_uri() == (
+        "http://localhost:49152/api/calendar/outlook/callback"
+    )
 
 
 @pytest.mark.asyncio

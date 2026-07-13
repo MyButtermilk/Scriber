@@ -60,11 +60,13 @@ import type {
   MicrophoneDevice,
   MicrophonesResponse,
   MeetingProfilesResponse,
+  MeetingAudioDevicesResponse,
   MeetingTranscriptionMode,
   OnnxModelInfo,
   OnnxModelsResponse,
   OutlookCalendarStatus,
   SpeakerModelStatus,
+  SpeakerEnrollmentResponse,
   SpeakerProfilesResponse,
   SettingsResponse,
   SettingsUpdatePayload,
@@ -105,6 +107,8 @@ const LANGUAGE_OPTIONS = [
 ] as const;
 
 const SETTINGS_SECTION_REQUEST_KEY = "scriber:open-settings-section";
+const VOICE_ENROLLMENT_DURATION_MS = 8_000;
+const DEFAULT_VOICE_ENROLLMENT_DEVICE = "windows-default";
 const SETTINGS_SECTION_IDS: Record<string, string> = {
   transcription: "settings-transcription",
   meetings: "settings-meetings",
@@ -557,7 +561,7 @@ const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
 ];
 
 const MEETING_FINAL_STT_OPTIONS = [
-  { value: "soniox_async", label: "Soniox Async", model: "stt-async-v5", credentialModel: "soniox-async", recommended: true, nativeDiarization: true, fiveHourSupported: true, detail: "Keeps live and final transcription with the same service. Includes speaker names and exact timing for meetings up to 5 hours." },
+  { value: "soniox_async", label: "Soniox Async", model: "stt-async-v5", credentialModel: "soniox-async", recommended: true, nativeDiarization: true, fiveHourSupported: true, detail: "Keeps live and final transcription with the same service. Separates remote voices from system audio and keeps exact timing for meetings up to 5 hours." },
   { value: "assemblyai", label: "AssemblyAI", model: "Universal-3.5 Pro", credentialModel: "assemblyai", recommended: true, nativeDiarization: true, fiveHourSupported: true, detail: "Strong speaker naming and timing for meetings up to 5 hours." },
   { value: "mistral_async", label: "Mistral Voxtral", model: "Voxtral Mini Transcribe 2", credentialModel: "mistral-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Includes speaker names and timing for recordings up to 3 hours." },
   { value: "deepgram_async", label: "Deepgram", model: "Nova-3", credentialModel: "deepgram-async", recommended: false, nativeDiarization: true, fiveHourSupported: false, detail: "Includes word timing and speaker names. The current Scriber setup is not recommended for 5-hour meetings." },
@@ -1166,6 +1170,13 @@ export default function Settings() {
   const [speakerProfilePendingDelete, setSpeakerProfilePendingDelete] = useState<{ id: string; name: string } | null>(null);
   const [voiceLibraryDeleteOpen, setVoiceLibraryDeleteOpen] = useState(false);
   const [voiceLibraryDeletePending, setVoiceLibraryDeletePending] = useState(false);
+  const [voiceEnrollmentOpen, setVoiceEnrollmentOpen] = useState(false);
+  const [voiceEnrollmentName, setVoiceEnrollmentName] = useState("");
+  const [voiceEnrollmentDevice, setVoiceEnrollmentDevice] = useState(DEFAULT_VOICE_ENROLLMENT_DEVICE);
+  const [voiceEnrollmentStartedAt, setVoiceEnrollmentStartedAt] = useState<number | null>(null);
+  const [voiceEnrollmentProgress, setVoiceEnrollmentProgress] = useState(0);
+  const [voiceEnrollmentStage, setVoiceEnrollmentStage] = useState<"idle" | "preparing" | "recording" | "processing" | "success" | "error">("idle");
+  const [voiceEnrollmentResult, setVoiceEnrollmentResult] = useState<SpeakerEnrollmentResponse | null>(null);
 
   const [onnxAvailable, setOnnxAvailable] = useState<boolean | null>(null);
   const [onnxMessage, setOnnxMessage] = useState("");
@@ -1184,6 +1195,19 @@ export default function Settings() {
       if (!response.ok) throw new Error(`Saved speakers unavailable (${response.status})`);
       return response.json();
     },
+  });
+  const voiceEnrollmentDevicesQuery = useQuery<MeetingAudioDevicesResponse>({
+    queryKey: ["/api/meetings/audio-devices"],
+    queryFn: async ({ signal }) => {
+      const response = await fetchWithTimeout(apiUrl("/api/meetings/audio-devices"), {
+        credentials: "include",
+        signal,
+      }, 10_000);
+      if (!response.ok) throw new Error(`Microphones unavailable (${response.status})`);
+      return response.json();
+    },
+    enabled: voiceEnrollmentOpen,
+    staleTime: 10_000,
   });
   const meetingProfilesQuery = useQuery<MeetingProfilesResponse>({
     queryKey: ["/api/meeting-profiles"],
@@ -1247,6 +1271,36 @@ export default function Settings() {
     },
     onError: (error) => toast({ title: "Voice recognition download failed", description: error.message, variant: "destructive" }),
   });
+  const voiceEnrollmentMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/meetings/speaker-profiles/enroll", {
+        displayName: voiceEnrollmentName.trim(),
+        durationMs: VOICE_ENROLLMENT_DURATION_MS,
+        microphoneNativeEndpointIdHash: voiceEnrollmentDevice === DEFAULT_VOICE_ENROLLMENT_DEVICE ? "" : voiceEnrollmentDevice,
+      });
+      return response.json() as Promise<SpeakerEnrollmentResponse>;
+    },
+    onMutate: () => {
+      setVoiceEnrollmentResult(null);
+      setVoiceEnrollmentProgress(3);
+      setVoiceEnrollmentStage("preparing");
+      setVoiceEnrollmentStartedAt(Date.now());
+    },
+    onSuccess: (result) => {
+      setVoiceEnrollmentStartedAt(null);
+      setVoiceEnrollmentProgress(100);
+      setVoiceEnrollmentStage("success");
+      setVoiceEnrollmentResult(result);
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
+      toast({ title: `${result.profile.displayName} is ready`, description: "Scriber can match this voice in future meetings." });
+    },
+    onError: (error) => {
+      setVoiceEnrollmentStartedAt(null);
+      setVoiceEnrollmentProgress(0);
+      setVoiceEnrollmentStage("error");
+      toast({ title: "Voice sample could not be saved", description: error.message, variant: "destructive" });
+    },
+  });
   const mergeProfilesMutation = useMutation({
     mutationFn: async () => {
       const response = await apiRequest("POST", "/api/meetings/speaker-profiles/merge", {
@@ -1286,6 +1340,31 @@ export default function Settings() {
     });
     savedKeyResetTimersRef.current.clear();
   }, []);
+
+  useEffect(() => {
+    if (!voiceEnrollmentMutation.isPending || voiceEnrollmentStartedAt === null) {
+      return;
+    }
+    const updateEnrollmentProgress = () => {
+      const elapsedMs = Date.now() - voiceEnrollmentStartedAt;
+      if (elapsedMs < 600) {
+        setVoiceEnrollmentStage("preparing");
+        setVoiceEnrollmentProgress(Math.max(3, Math.round((elapsedMs / 600) * 8)));
+        return;
+      }
+      if (elapsedMs < VOICE_ENROLLMENT_DURATION_MS + 600) {
+        setVoiceEnrollmentStage("recording");
+        const recordingElapsed = elapsedMs - 600;
+        setVoiceEnrollmentProgress(Math.min(86, 8 + Math.round((recordingElapsed / VOICE_ENROLLMENT_DURATION_MS) * 78)));
+        return;
+      }
+      setVoiceEnrollmentStage("processing");
+      setVoiceEnrollmentProgress(92);
+    };
+    updateEnrollmentProgress();
+    const timer = window.setInterval(updateEnrollmentProgress, 150);
+    return () => window.clearInterval(timer);
+  }, [voiceEnrollmentMutation.isPending, voiceEnrollmentStartedAt]);
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -2364,6 +2443,20 @@ export default function Settings() {
     }
   };
 
+  const handleVoiceEnrollmentOpenChange = (open: boolean) => {
+    if (!open && voiceEnrollmentMutation.isPending) return;
+    setVoiceEnrollmentOpen(open);
+    if (open) {
+      setVoiceEnrollmentName("");
+      setVoiceEnrollmentDevice(DEFAULT_VOICE_ENROLLMENT_DEVICE);
+      setVoiceEnrollmentStartedAt(null);
+      setVoiceEnrollmentProgress(0);
+      setVoiceEnrollmentStage("idle");
+      setVoiceEnrollmentResult(null);
+      voiceEnrollmentMutation.reset();
+    }
+  };
+
   const handleDeleteVoiceprintLibrary = async () => {
     if (voiceLibraryDeletePending) return;
     setVoiceLibraryDeletePending(true);
@@ -3332,8 +3425,8 @@ export default function Settings() {
   );
 
   return (
-    <div className={cn(
-      "settings-page mx-auto w-full max-w-[1320px] px-4 py-5 text-[13px] transition-opacity duration-150 md:px-6 md:py-6",
+    <div data-page-shell="settings" className={cn(
+      "app-page-shell settings-page px-4 py-5 text-[13px] transition-opacity duration-150 md:px-6 md:py-6",
       settingsLoaded ? "opacity-100" : "opacity-0",
     )}>
       {settingsError && (
@@ -3708,6 +3801,9 @@ export default function Settings() {
                           ? "Works with meetings up to 5 hours."
                           : "Choose a 5-hour option for very long meetings."}
                     </p>
+                    <p className="mt-1.5 text-[10.5px] leading-4 text-slate-500 dark:text-slate-400">
+                      Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as <span className="font-semibold text-slate-700 dark:text-slate-200">You</span>.
+                    </p>
                     <div className="mt-2.5 grid gap-1 border-t border-slate-200/80 pt-2.5 text-[10.5px] dark:border-slate-800 sm:grid-cols-3">
                       <span className="text-slate-500">During meeting <strong className="block font-mono font-semibold text-slate-800 dark:text-slate-200">{meetingTranscriptionMode === "live_final" ? formatMeetingHourlyCost(meetingCostEstimate?.livePreviewPerMeetingHour) : "$0.00 / meeting hour"}</strong></span>
                       <span className="text-slate-500">After meeting <strong className="block font-mono font-semibold text-slate-800 dark:text-slate-200">{formatMeetingHourlyCost(finalOnlyHourlyCost)}</strong></span>
@@ -3897,7 +3993,7 @@ export default function Settings() {
                         voiceprintLibraryOptIn
                           ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
                           : "text-slate-500",
-                      )}>{voiceprintLibraryOptIn ? "Ready" : "Installed · off"}</Badge>
+                      )}>{voiceprintLibraryOptIn ? "Ready" : "Installed, off"}</Badge>
                     ) : (
                       <Button
                         type="button"
@@ -3912,24 +4008,51 @@ export default function Settings() {
                     )}
                   </SettingLine>
                 </div>
-                <div className="flex items-start justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+                <div className="flex flex-col gap-3 rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">
                       {speakerProfilesQuery.data?.enabled ? "Voice recognition is ready" : "Voice recognition is off"}
                     </p>
                     <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">
-                      Scriber adds a name only after the same voice has matched reliably more than once. Saved voice data never leaves this device.
+                      {voiceprintLibraryOptIn && speakerModelQuery.data?.installed
+                        ? "Add a short named sample now, or let Scriber learn familiar voices from meetings. Saved voice data never leaves this device."
+                        : voiceprintLibraryOptIn
+                          ? "Download voice recognition above before adding a named voice sample."
+                          : "Turn on familiar speaker recognition before adding a named voice sample."}
                     </p>
                   </div>
-                  <Badge variant="outline" className="shrink-0 text-[10px]">
-                    {speakerProfilesQuery.data?.items.length ?? 0} saved speakers
-                  </Badge>
+                  <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+                    <Badge variant="outline" className="text-[10px]">
+                      {speakerProfilesQuery.data?.items.length ?? 0} saved {(speakerProfilesQuery.data?.items.length ?? 0) === 1 ? "speaker" : "speakers"}
+                    </Badge>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="whitespace-nowrap active:scale-[0.98]"
+                      disabled={!voiceprintLibraryOptIn || !speakerModelQuery.data?.installed || speakerModelQuery.isLoading || voiceLibraryDeletePending}
+                      onClick={() => handleVoiceEnrollmentOpenChange(true)}
+                    >
+                      <Mic className="mr-1.5 h-3.5 w-3.5" />
+                      Add voice
+                    </Button>
+                  </div>
                 </div>
-                {speakerProfilesQuery.isLoading && <p className="px-1 text-[11px] text-slate-500">Loading saved speakers…</p>}
-                {speakerProfilesQuery.isError && <p className="px-1 text-[11px] text-amber-700 dark:text-amber-300">Saved speakers could not be loaded.</p>}
+                {speakerProfilesQuery.isLoading && (
+                  <div className="space-y-2" aria-label="Loading saved speakers">
+                    {[0, 1].map((item) => (
+                      <div key={item} className="h-12 animate-pulse rounded-lg bg-slate-100 motion-reduce:animate-none dark:bg-slate-900" />
+                    ))}
+                  </div>
+                )}
+                {speakerProfilesQuery.isError && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/35 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+                    <span>Saved speakers could not be loaded.</span>
+                    <Button type="button" size="sm" variant="outline" className="h-7" onClick={() => void speakerProfilesQuery.refetch()}>Try again</Button>
+                  </div>
+                )}
                 {speakerProfilesQuery.data?.items.length === 0 && (
                   <p className="rounded-lg border border-dashed border-slate-300 px-3 py-4 text-center text-[11px] text-slate-500 dark:border-slate-700">
-                    No saved speakers yet. Once enabled, Scriber learns familiar voices from new meetings on this device.
+                    No saved speakers yet. Add a named voice sample, or let Scriber learn familiar voices from future meetings.
                   </p>
                 )}
                 {speakerProfilesQuery.data?.items.map((profile) => (
@@ -3954,7 +4077,11 @@ export default function Settings() {
                         title="Rename saved speaker"
                       >
                         <span className="block truncate text-xs font-semibold text-slate-950 dark:text-slate-100">{profile.displayName}</span>
-                        <span className="block text-[10.5px] text-slate-500">{profile.sampleCount} voice matches · {profile.isNamed ? "named" : "name needed"}</span>
+                        <span className="block text-[10.5px] text-slate-500">
+                          {profile.enrolled
+                            ? `Named voice sample saved. ${profile.sampleCount} ${profile.sampleCount === 1 ? "sample" : "samples"} total.`
+                            : `${profile.sampleCount} meeting ${profile.sampleCount === 1 ? "match" : "matches"}. ${profile.isNamed ? "Name saved." : "Choose a name."}`}
+                        </span>
                       </button>
                     )}
                     {editingSpeakerProfileId === profile.id && (
@@ -3980,11 +4107,11 @@ export default function Settings() {
                     <div className="mt-2.5 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                       <Select value={mergeTargetProfileId} onValueChange={setMergeTargetProfileId}>
                         <SelectTrigger className="h-9 min-w-0 text-xs" aria-label="Saved speaker to keep"><SelectValue placeholder="Keep speaker…" /></SelectTrigger>
-                        <SelectContent>{speakerProfilesQuery.data?.items.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.displayName} · {profile.sampleCount}</SelectItem>)}</SelectContent>
+                        <SelectContent>{speakerProfilesQuery.data?.items.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.displayName}, {profile.sampleCount} {profile.sampleCount === 1 ? "sample" : "samples"}</SelectItem>)}</SelectContent>
                       </Select>
                       <Select value={mergeSourceProfileId} onValueChange={setMergeSourceProfileId}>
                         <SelectTrigger className="h-9 min-w-0 text-xs" aria-label="Duplicate saved speaker"><SelectValue placeholder="Merge duplicate…" /></SelectTrigger>
-                        <SelectContent>{speakerProfilesQuery.data?.items.filter((profile) => profile.id !== mergeTargetProfileId).map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.displayName} · {profile.sampleCount}</SelectItem>)}</SelectContent>
+                        <SelectContent>{speakerProfilesQuery.data?.items.filter((profile) => profile.id !== mergeTargetProfileId).map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.displayName}, {profile.sampleCount} {profile.sampleCount === 1 ? "sample" : "samples"}</SelectItem>)}</SelectContent>
                       </Select>
                       <Button type="button" size="sm" variant="outline" className="h-9" disabled={!mergeTargetProfileId || !mergeSourceProfileId || mergeTargetProfileId === mergeSourceProfileId || mergeProfilesMutation.isPending} onClick={() => mergeProfilesMutation.mutate()}>Merge speakers</Button>
                     </div>
@@ -4004,37 +4131,47 @@ export default function Settings() {
                     <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">
                       {outlookQuery.isLoading
                         ? "Checking Outlook"
+                        : outlookQuery.isError
+                          ? "Outlook status could not be checked"
                         : outlookQuery.data?.connected
                           ? "Outlook is connected"
                           : outlookQuery.data?.authorizationPending
                             ? "Finish signing in with Microsoft"
                             : outlookQuery.data?.configured
                               ? outlookQuery.data.lastError ? "Outlook needs to reconnect" : "Outlook is ready to connect"
-                              : "Outlook setup is unavailable in this copy"}
+                              : "Outlook is not available in this release"}
                     </p>
                     <Badge variant="outline" className={cn(
                       "text-[10px]",
                       outlookQuery.data?.connected && "border-emerald-500/40 text-emerald-700 dark:text-emerald-300",
                       !outlookQuery.isLoading && !outlookQuery.data?.connected && "border-amber-500/40 text-amber-700 dark:text-amber-300",
                     )}>
-                      {outlookQuery.isLoading ? "Checking" : outlookQuery.data?.connected ? "Connected" : outlookQuery.data?.authorizationPending ? "Waiting" : "Not connected"}
+                      {outlookQuery.isLoading ? "Checking" : outlookQuery.isError ? "Unavailable" : outlookQuery.data?.connected ? "Connected" : outlookQuery.data?.authorizationPending ? "Waiting" : "Not connected"}
                     </Badge>
                   </div>
                   <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">
                     {outlookQuery.data?.connected
                       ? "Upcoming meeting titles and participants now appear automatically. Scriber cannot edit your calendar or see your Microsoft password."
+                      : outlookQuery.isError
+                        ? "Scriber could not reach its local calendar service. Restart Scriber, then check this page again."
                       : outlookQuery.data?.authorizationPending
                         ? "Complete the Microsoft sign-in in your browser. This page updates automatically when you return."
                         : outlookQuery.data?.configured
                           ? "Click Connect Outlook below. Microsoft opens in your browser and asks for read-only calendar access."
-                          : "This copy cannot connect Outlook yet. Update or reinstall Scriber, restart it, then return here."}
+                          : "This release was published without Microsoft sign-in. Reinstalling the same version will not fix it. Check for a newer release that lists Outlook calendar support."}
                   </p>
                   {outlookQuery.data?.lastSyncAt && <p className="mt-1.5 font-mono text-[10.5px] text-slate-500">Last sync · {formatUpdateTimestamp(outlookQuery.data.lastSyncAt)}</p>}
                   {outlookQuery.data?.lastError && <p className="mt-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">What happened: {outlookQuery.data.lastError}</p>}
                 </div>
                 {!outlookQuery.isLoading && !outlookQuery.data?.connected && (
                   <ol className="grid gap-2 rounded-lg border border-slate-200/80 p-3 text-[11px] leading-4 text-slate-600 dark:border-slate-800 dark:text-slate-300">
-                    {(outlookQuery.data?.authorizationPending
+                    {(outlookQuery.isError
+                      ? [
+                          "Restart Scriber.",
+                          "Return to this page and check the Outlook status again.",
+                          "If the message remains, check for a newer Scriber release.",
+                        ]
+                      : outlookQuery.data?.authorizationPending
                       ? [
                           "Return to the Microsoft sign-in in your browser.",
                           "Finish signing in and allow read-only calendar access.",
@@ -4047,9 +4184,9 @@ export default function Settings() {
                           "Return to Scriber; upcoming meetings sync automatically.",
                           ]
                         : [
-                          "Install the latest Scriber release or update the app.",
-                          "Restart Scriber after installation.",
-                          "Return here and choose Connect Outlook.",
+                          "Check whether a newer Scriber version is available.",
+                          "Read its release notes and install a version that lists Outlook calendar support.",
+                          "Restart Scriber, then return here and choose Connect Outlook.",
                           ]).map((step, index) => (
                           <li key={step} className="flex items-start gap-2">
                             <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-blue-600 text-[10px] font-semibold text-white">{index + 1}</span>
@@ -4058,7 +4195,7 @@ export default function Settings() {
                         ))}
                   </ol>
                 )}
-                {!outlookQuery.isLoading && !outlookQuery.data?.configured && (
+                {!outlookQuery.isLoading && !outlookQuery.isError && !outlookQuery.data?.configured && (
                   <details className="rounded-lg border border-slate-200/80 px-3 py-2 dark:border-slate-800">
                     <summary className="cursor-pointer text-[11px] font-semibold text-slate-700 dark:text-slate-200">Help for self-built copies</summary>
                     <p className="mt-2 text-[10.5px] leading-4 text-slate-500 dark:text-slate-400">
@@ -4069,12 +4206,23 @@ export default function Settings() {
                 {outlookQuery.data?.nextEvent && (
                   <div className="rounded-lg border border-slate-200/80 px-3 py-2.5 dark:border-slate-800">
                     <p className="truncate text-xs font-semibold text-slate-950 dark:text-slate-100">{outlookQuery.data.nextEvent.subject}</p>
-                    <p className="mt-1 text-[10.5px] text-slate-500">Next event · {formatUpdateTimestamp(outlookQuery.data.nextEvent.start_at)} · {outlookQuery.data.nextEvent.participants.length} participants</p>
+                    <p className="mt-1 text-[10.5px] text-slate-500">Next event, {formatUpdateTimestamp(outlookQuery.data.nextEvent.start_at)}, {outlookQuery.data.nextEvent.participants.length} participants</p>
                   </div>
                 )}
                 <div className="flex flex-wrap justify-end gap-2">
-                  {outlookQuery.data?.connected ? (
-                    <Button size="sm" variant="outline" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("disconnect")}>Disconnect Outlook</Button>
+                  {outlookQuery.isError ? (
+                    <Button size="sm" variant="outline" disabled={outlookQuery.isFetching} onClick={() => void outlookQuery.refetch()}>
+                      <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", outlookQuery.isFetching && "animate-spin motion-reduce:animate-none")} />
+                      Check again
+                    </Button>
+                  ) : outlookQuery.data?.connected ? (
+                    <>
+                      <Button size="sm" variant="outline" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("sync")}>
+                        <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", outlookMutation.isPending && "animate-spin motion-reduce:animate-none")} />
+                        Sync now
+                      </Button>
+                      <Button size="sm" variant="ghost" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("disconnect")}>Disconnect Outlook</Button>
+                    </>
                   ) : outlookQuery.data?.configured ? (
                     <Button size="sm" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("connect")}>
                       {outlookMutation.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <ExternalLink className="mr-1.5 h-3.5 w-3.5" />}
@@ -4382,6 +4530,153 @@ export default function Settings() {
           </div>
         </SectionPanel>
       </div>
+      <Dialog open={voiceEnrollmentOpen} onOpenChange={handleVoiceEnrollmentOpenChange}>
+        <DialogContent
+          className={cn(
+            "max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] overflow-y-auto sm:max-w-[520px]",
+            voiceEnrollmentMutation.isPending && "[&>button:last-child]:pointer-events-none [&>button:last-child]:opacity-30",
+          )}
+          onEscapeKeyDown={(event) => {
+            if (voiceEnrollmentMutation.isPending) event.preventDefault();
+          }}
+          onInteractOutside={(event) => {
+            if (voiceEnrollmentMutation.isPending) event.preventDefault();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>Teach Scriber a voice</DialogTitle>
+            <DialogDescription>
+              Record one short sample so Scriber can show this person's name in future meeting transcripts.
+            </DialogDescription>
+          </DialogHeader>
+
+          {voiceEnrollmentStage === "success" && voiceEnrollmentResult ? (
+            <div className="space-y-4" aria-live="polite">
+              <div className="flex items-start gap-3 rounded-lg border border-emerald-500/35 bg-emerald-50 px-3 py-3 dark:bg-emerald-950/25">
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950">
+                  <Check className="h-5 w-5" aria-hidden="true" />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-emerald-950 dark:text-emerald-100">{voiceEnrollmentResult.profile.displayName} is ready</p>
+                  <p className="mt-1 text-xs leading-5 text-emerald-900/80 dark:text-emerald-100/80">
+                    Scriber can now match this voice in future meetings. You can rename or delete it from the list at any time.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-start gap-2.5 rounded-lg bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-600 dark:bg-slate-900/60 dark:text-slate-300">
+                <Shield className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-300" aria-hidden="true" />
+                <p>The recording was not saved or uploaded. Only the local voice profile remains on this device.</p>
+              </div>
+              <div className="flex justify-end">
+                <Button type="button" onClick={() => handleVoiceEnrollmentOpenChange(false)}>Done</Button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid gap-2">
+                <Label htmlFor="voice-enrollment-name">Person's name</Label>
+                <Input
+                  id="voice-enrollment-name"
+                  autoFocus
+                  maxLength={120}
+                  value={voiceEnrollmentName}
+                  disabled={voiceEnrollmentMutation.isPending}
+                  onChange={(event) => setVoiceEnrollmentName(event.target.value)}
+                  placeholder="For example, Alex"
+                  aria-describedby="voice-enrollment-name-help"
+                />
+                <p id="voice-enrollment-name-help" className="text-[11px] leading-4 text-muted-foreground">This name appears beside matching transcript segments.</p>
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="voice-enrollment-microphone">Microphone</Label>
+                <Select value={voiceEnrollmentDevice} disabled={voiceEnrollmentMutation.isPending} onValueChange={setVoiceEnrollmentDevice}>
+                  <SelectTrigger id="voice-enrollment-microphone" className="w-full" aria-describedby="voice-enrollment-microphone-help">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={DEFAULT_VOICE_ENROLLMENT_DEVICE}>Windows default microphone</SelectItem>
+                    {voiceEnrollmentDevicesQuery.data?.capture.map((endpoint) => (
+                      <SelectItem key={endpoint.endpointIdHash} value={endpoint.endpointIdHash}>
+                        {endpoint.friendlyName}{endpoint.isDefault ? " (currently default)" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div id="voice-enrollment-microphone-help" className="min-h-4 text-[11px] leading-4 text-muted-foreground">
+                  {voiceEnrollmentDevicesQuery.isLoading ? (
+                    <span className="inline-block h-3 w-44 animate-pulse rounded bg-slate-200 motion-reduce:animate-none dark:bg-slate-800" aria-label="Looking for microphones" />
+                  ) : voiceEnrollmentDevicesQuery.isError ? (
+                    <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-amber-700 dark:text-amber-300">
+                      Microphone choices could not be loaded. Windows default can still be used.
+                      <button type="button" className="font-semibold underline underline-offset-2" onClick={() => void voiceEnrollmentDevicesQuery.refetch()}>Try again</button>
+                    </span>
+                  ) : voiceEnrollmentDevicesQuery.data?.available ? (
+                    `${voiceEnrollmentDevicesQuery.data.capture.length} microphone ${voiceEnrollmentDevicesQuery.data.capture.length === 1 ? "choice" : "choices"} found.`
+                  ) : (
+                    "Windows default will be used."
+                  )}
+                </div>
+              </div>
+
+              {voiceEnrollmentMutation.isPending && (
+                <div className="rounded-lg border border-blue-500/30 bg-blue-50 px-3 py-3 dark:bg-blue-950/25" aria-live="polite">
+                  <div className="flex items-start gap-3">
+                    <Mic className="mt-0.5 h-5 w-5 shrink-0 text-blue-700 dark:text-blue-300" aria-hidden="true" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-blue-950 dark:text-blue-100">
+                        {voiceEnrollmentStage === "preparing"
+                          ? "Starting the microphone"
+                          : voiceEnrollmentStage === "processing"
+                            ? "Creating the voice profile"
+                            : `Listening to ${voiceEnrollmentName.trim()}`}
+                      </p>
+                      <p className="mt-1 text-xs leading-5 text-blue-900/80 dark:text-blue-100/80">
+                        {voiceEnrollmentStage === "processing"
+                          ? "Scriber is finishing the sample on this device. Keep the app open."
+                          : "Speak naturally in a quiet room until the recording finishes. Keep Scriber open."}
+                      </p>
+                      <Progress value={voiceEnrollmentProgress} className="mt-3 h-1.5" aria-label="Voice sample progress" />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {voiceEnrollmentStage === "error" && (
+                <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/35 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-900 dark:bg-amber-950/30 dark:text-amber-100" role="alert">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                  <div>
+                    <p className="font-semibold">The voice sample was not saved.</p>
+                    <p className="mt-0.5">{voiceEnrollmentMutation.error instanceof Error ? voiceEnrollmentMutation.error.message : "Check the microphone and try again."}</p>
+                  </div>
+                </div>
+              )}
+
+              {!voiceEnrollmentMutation.isPending && (
+                <div className="flex items-start gap-2.5 rounded-lg bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-600 dark:bg-slate-900/60 dark:text-slate-300">
+                  <Shield className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-300" aria-hidden="true" />
+                  <p>Scriber listens for about 8 seconds. The recording is not saved or uploaded. The local voice profile remains until you delete it.</p>
+                </div>
+              )}
+
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <Button type="button" variant="ghost" disabled={voiceEnrollmentMutation.isPending} onClick={() => handleVoiceEnrollmentOpenChange(false)}>Cancel</Button>
+                <Button
+                  type="button"
+                  className="whitespace-nowrap active:scale-[0.98]"
+                  disabled={!voiceEnrollmentName.trim() || voiceEnrollmentMutation.isPending}
+                  onClick={() => voiceEnrollmentMutation.mutate()}
+                >
+                  {voiceEnrollmentMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" /> : <Mic className="mr-2 h-4 w-4" />}
+                  {voiceEnrollmentMutation.isPending
+                    ? voiceEnrollmentStage === "processing" ? "Saving voice" : "Recording voice"
+                    : voiceEnrollmentStage === "error" ? "Try sample again" : "Record 8-second sample"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
       <AlertDialog open={Boolean(speakerProfilePendingDelete)} onOpenChange={(open) => { if (!open) setSpeakerProfilePendingDelete(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>

@@ -96,6 +96,7 @@ from src.data.meeting_store import (
     MeetingCreate,
     MeetingNotFound,
     MeetingStore,
+    VoiceLibraryDisabled,
 )
 from src.data.meeting_import_store import (
     InvalidMeetingImportTransition,
@@ -145,6 +146,7 @@ from src.transcript_artifacts import (
     stage_units_from_provider,
 )
 from src.speaker_intelligence import WeSpeakerModel
+from src.speaker_enrollment import VoiceEnrollmentCapture, assess_voice_sample
 from src.speaker_diarization import (
     DiarizationIneligibleError,
     SherpaOnnxDiarizer,
@@ -2026,6 +2028,26 @@ def _audio_admission_lock(controller: Any) -> asyncio.Lock:
     return lock
 
 
+def _voice_library_mutation_lock(controller: Any) -> asyncio.Lock:
+    """Serialize local voice-model/profile mutations across API requests."""
+
+    lock = getattr(controller, "_voice_library_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        controller._voice_library_lock = lock
+    return lock
+
+
+def _speaker_model_download_lock(controller: Any) -> asyncio.Lock:
+    """Deduplicate this controller's optional-model network download."""
+
+    lock = getattr(controller, "_speaker_model_download_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        controller._speaker_model_download_lock = lock
+    return lock
+
+
 _AUDIO_ADMISSION_TTL_SECONDS = 60.0
 _AUDIO_ADMISSION_HEARTBEAT_SECONDS = 15.0
 
@@ -2447,6 +2469,16 @@ async def _cleanup_meeting_capture_ownership_barrier(
 
 
 async def _live_mic_audio_conflict(controller: Any) -> ProviderUserError | None:
+    if bool(getattr(controller, "_voice_enrollment_active", False)):
+        return ProviderUserError(
+            provider="meeting",
+            provider_label="Voice Library",
+            title="Voice sample recording active",
+            message="Wait for the Voice Library sample to finish before starting Live Mic.",
+            category=ErrorCategory.CONFIG_INVALID,
+            code="voice_enrollment_active",
+            retryable=False,
+        )
     if bool(getattr(controller, "_meeting_device_test_active", False)):
         return ProviderUserError(
             provider="meeting",
@@ -2479,6 +2511,24 @@ async def _live_mic_audio_conflict(controller: Any) -> ProviderUserError | None:
         code="meeting_active",
         retryable=False,
     )
+
+
+async def _wait_for_voice_enrollment(duration_ms: int) -> None:
+    """Small test seam around the fixed local enrollment window."""
+    await asyncio.sleep(max(0, int(duration_ms)) / 1000.0)
+
+
+def _voice_enrollment_stop_confirmed(response: Any) -> bool:
+    """Return whether the Tauri shell accepted ownership of capture teardown.
+
+    ``audioCaptureStop`` owns the escalating sidecar shutdown path: once the
+    shell accepts the command it removes the capture from its registry and
+    waits for, or kills, the sidecar.  A transport-level failure is different:
+    the backend cannot know whether the shell received the request, so the
+    enrollment owner must not release its audio lease in that state.
+    """
+
+    return bool(isinstance(response, dict) and response.get("success") is True)
 
 
 class ScriberWebController:
@@ -2725,7 +2775,16 @@ class ScriberWebController:
         self._audio_admission_heartbeat_task: asyncio.Task | None = None
         self._audio_admission_lost_meetings: set[str] = set()
         self._meeting_store = MeetingStore()
-        self._meeting_store.initialize()
+        self._meeting_store.initialize(
+            speaker_library_enabled=bool(Config.VOICEPRINT_LIBRARY_OPT_IN)
+        )
+        durable_voice_library_enabled = self._meeting_store.speaker_library_enabled()
+        if durable_voice_library_enabled != bool(Config.VOICEPRINT_LIBRARY_OPT_IN):
+            # The SQLite privacy gate is authoritative if a process stopped
+            # after deleting/turning off voice data but before the debounced
+            # settings file reached disk.
+            Config.set_voiceprint_library_opt_in(durable_voice_library_enabled)
+            self._schedule_settings_persist()
         self._meeting_import_store = MeetingImportStore(Path(db._DB_PATH))
         self._outlook_calendar = OutlookCalendarService(call_shell_ipc, Config.OUTLOOK_CLIENT_ID)
         self._speaker_model = WeSpeakerModel()
@@ -2742,6 +2801,7 @@ class ScriberWebController:
             logger.warning("Recovered {} interrupted meeting workflow(s)", interrupted_meetings)
         self._meeting_recorders: dict[str, MeetingAudioRecorder] = {}
         self._meeting_device_test_active = False
+        self._voice_enrollment_active = False
         self._meeting_tasks: dict[str, asyncio.Task] = {}
         self._meeting_import_tasks: dict[str, asyncio.Task] = {}
         self._meeting_import_upload_tasks: dict[str, asyncio.Task] = {}
@@ -5014,6 +5074,7 @@ class ScriberWebController:
         recording_state = self._recording_state_machine.state
         return {
             "listening": self._is_listening,
+            "voiceEnrollmentActive": bool(self._voice_enrollment_active),
             "status": self._status,
             "inputWarning": self._mic_input_warning,
             "inputWarningCode": self._mic_input_warning_code,
@@ -10037,6 +10098,10 @@ class ScriberWebController:
 
         voiceprint_opt_in = _payload_bool(payload, "voiceprintLibraryOptIn")
         if voiceprint_opt_in is not None:
+            await asyncio.to_thread(
+                self._meeting_store.set_speaker_library_enabled,
+                voiceprint_opt_in,
+            )
             Config.set_voiceprint_library_opt_in(voiceprint_opt_in)
 
         post_processing_enabled = _payload_bool(payload, "postProcessingEnabled")
@@ -11624,6 +11689,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 return web.json_response(
                     {"message": "A meeting device test is already running."}, status=409
                 )
+            if bool(getattr(ctl, "_voice_enrollment_active", False)):
+                return web.json_response(
+                    {"message": "Wait for the Voice Library sample to finish."}, status=409
+                )
             try:
                 device_test_claim = await _claim_persistent_audio(
                     ctl,
@@ -13023,6 +13092,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 return web.json_response(
                     {"message": "Wait for the Meeting device test to finish."}, status=409
                 )
+            if bool(getattr(ctl, "_voice_enrollment_active", False)):
+                return web.json_response(
+                    {"message": "Wait for the Voice Library sample to finish."}, status=409
+                )
             if await _active_meeting_audio_conflict(ctl) is not None:
                 return web.json_response(
                     {"message": "Finish the active meeting before starting another one."}, status=409
@@ -13447,6 +13520,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 return web.json_response(
                     {"message": "Wait for the Meeting device test to finish."}, status=409
                 )
+            if bool(getattr(ctl, "_voice_enrollment_active", False)):
+                return web.json_response(
+                    {"message": "Wait for the Voice Library sample to finish."}, status=409
+                )
             if await _active_meeting_audio_conflict(
                 ctl, allow_meeting_id=meeting_id
             ) is not None:
@@ -13702,6 +13779,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
             if ctl._meeting_device_test_active:
                 return web.json_response(
                     {"message": "Wait for the Meeting device test to finish."}, status=409
+                )
+            if bool(getattr(ctl, "_voice_enrollment_active", False)):
+                return web.json_response(
+                    {"message": "Wait for the Voice Library sample to finish."}, status=409
                 )
             if await _active_meeting_audio_conflict(
                 ctl, allow_meeting_id=meeting_id
@@ -14361,6 +14442,334 @@ def create_app(controller: ScriberWebController) -> web.Application:
              "message": "Voice Library is local and opt-in; embeddings are excluded from this response."}
         )
 
+    async def enroll_speaker_profile(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        if not Config.VOICEPRINT_LIBRARY_OPT_IN:
+            return web.json_response(
+                {"message": "Turn on Voice Library in Settings before recording a voice."},
+                status=409,
+            )
+        if not ctl._speaker_model.status()["installed"]:
+            return web.json_response(
+                {"message": "Download the local voice recognition model before recording a voice."},
+                status=409,
+            )
+        if not shell_ipc_available():
+            return web.json_response(
+                {"message": "Native microphone capture is unavailable in this copy."}, status=503
+            )
+        try:
+            raw = await request.json()
+        except Exception:
+            return web.json_response({"message": "Expected JSON payload"}, status=400)
+        if not isinstance(raw, dict):
+            return web.json_response({"message": "Expected JSON object"}, status=400)
+        display_name = " ".join(str(raw.get("displayName", "")).split()).strip()
+        if not display_name:
+            return web.json_response({"message": "Enter the speaker's name first."}, status=400)
+        if len(display_name) > 120:
+            return web.json_response(
+                {"message": "Speaker name must be 120 characters or fewer."}, status=400
+            )
+        profile_id = str(raw.get("profileId", "") or "").strip()
+        if profile_id:
+            profiles = await asyncio.to_thread(ctl._meeting_store.speaker_profiles)
+            if not any(str(item.get("id", "")) == profile_id for item in profiles):
+                return web.json_response({"message": "Speaker profile not found"}, status=404)
+        microphone_hash = str(raw.get("microphoneNativeEndpointIdHash", "") or "").strip()
+        if microphone_hash and not re.fullmatch(r"[0-9a-fA-F]{8,128}", microphone_hash):
+            return web.json_response({"message": "Choose a valid microphone."}, status=400)
+        try:
+            duration_ms = max(6_000, min(10_000, int(raw.get("durationMs", 8_000) or 8_000)))
+        except (TypeError, ValueError):
+            return web.json_response({"message": "Invalid voice sample duration."}, status=400)
+
+        admission_lock = _audio_admission_lock(ctl)
+        enrollment_claim: AudioAdmissionClaim | None = None
+        claim_cancel: asyncio.CancelledError | None = None
+        async with admission_lock:
+            if ctl._is_listening or ctl._is_stopping:
+                return web.json_response(
+                    {"message": "Stop Live Mic before recording a voice sample."}, status=409
+                )
+            if await _active_meeting_audio_conflict(ctl) is not None:
+                return web.json_response(
+                    {"message": "Finish the active meeting before recording a voice sample."},
+                    status=409,
+                )
+            if ctl._meeting_device_test_active:
+                return web.json_response(
+                    {"message": "Wait for the Meeting device test to finish."}, status=409
+                )
+            if bool(getattr(ctl, "_voice_enrollment_active", False)):
+                return web.json_response(
+                    {"message": "A Voice Library sample is already being recorded."}, status=409
+                )
+            try:
+                claimed_audio, pending_cancel = await _await_with_delayed_cancellation(
+                    _claim_persistent_audio(
+                        ctl,
+                        owner_kind="voice_enrollment",
+                        owner_id=f"enrollment-{uuid4().hex}",
+                        heartbeat=False,
+                    )
+                )
+                # Record ownership before cancellation can unwind this handler.
+                # The persistent acquire runs in a worker thread and may commit
+                # even after its HTTP task was canceled.
+                enrollment_claim = claimed_audio
+                ctl._voice_enrollment_active = True
+                claim_cancel = pending_cancel
+            except AudioAdmissionConflict:
+                return web.json_response(
+                    {"message": "Another Scriber window is using the microphone."}, status=409
+                )
+
+        capture: VoiceEnrollmentCapture | None = None
+        stream_id = ""
+        handler_cancelled = False
+        try:
+            # Deliver an admission-time cancellation only after entering the
+            # common ownership cleanup boundary above.
+            if claim_cancel is not None:
+                raise claim_cancel
+            await ctl.broadcast(state_event(ctl.get_state()))
+            await ctl._pause_idle_mic_prewarm_for_capture()
+            response, pending_cancel = await _await_with_delayed_cancellation(
+                asyncio.to_thread(
+                    call_shell_ipc,
+                    "audioCaptureStart",
+                    {
+                        "sampleRate": 16_000,
+                        "channels": 1,
+                        "blockSize": 512,
+                        "devicePreference": "default",
+                        "nativeEndpointIdHash": microphone_hash or None,
+                        "prebufferMs": 0,
+                    },
+                    timeout_seconds=4.0,
+                )
+            )
+            payload = (
+                response.get("payload")
+                if isinstance(response, dict) and isinstance(response.get("payload"), dict)
+                else {}
+            )
+            if isinstance(response, dict) and response.get("success"):
+                stream_id = str(payload.get("streamId") or "")
+            if pending_cancel is not None:
+                raise pending_cancel
+            if not isinstance(response, dict):
+                raise RuntimeError("Native microphone capture returned an invalid response.")
+            if not response.get("success"):
+                return web.json_response(
+                    {
+                        "message": str(
+                            response.get("fallbackReason")
+                            or "The selected microphone could not start."
+                        )[:240]
+                    },
+                    status=503,
+                )
+            frame_pipe = str(payload.get("framePipe") or "")
+            if not stream_id or not frame_pipe:
+                return web.json_response(
+                    {"message": "Native microphone capture returned an incomplete response."},
+                    status=503,
+                )
+            try:
+                returned_sample_rate = int(payload.get("sampleRate"))
+                returned_channels = int(payload.get("channels"))
+            except (TypeError, ValueError):
+                returned_sample_rate = 0
+                returned_channels = 0
+            returned_sample_format = str(payload.get("sampleFormat") or "")
+            if (
+                returned_sample_rate != 16_000
+                or returned_channels != 1
+                or returned_sample_format != "pcm_i16_le"
+            ):
+                return web.json_response(
+                    {
+                        "message": (
+                            "Native microphone capture returned an unsupported "
+                            "audio format. Restart Scriber and try again."
+                        )
+                    },
+                    status=503,
+                )
+            capture = VoiceEnrollmentCapture(
+                sample_rate=16_000,
+                max_duration_seconds=(duration_ms + 1_000) / 1_000,
+            )
+            _, pending_cancel = await _await_with_delayed_cancellation(
+                asyncio.to_thread(capture.start, frame_pipe)
+            )
+            if pending_cancel is not None:
+                raise pending_cancel
+            await _wait_for_voice_enrollment(duration_ms)
+            expect_native_stop = getattr(capture, "expect_native_stop", None)
+            if callable(expect_native_stop):
+                expect_native_stop()
+            stop_response, pending_cancel = await _await_with_delayed_cancellation(
+                asyncio.to_thread(
+                    call_shell_ipc,
+                    "audioCaptureStop",
+                    {"streamId": stream_id},
+                    timeout_seconds=4.0,
+                )
+            )
+            if _voice_enrollment_stop_confirmed(stop_response):
+                stream_id = ""
+            else:
+                raise RuntimeError("Native microphone capture did not stop cleanly.")
+            if pending_cancel is not None:
+                raise pending_cancel
+            snapshot, pending_cancel = await _await_with_delayed_cancellation(
+                asyncio.to_thread(capture.stop)
+            )
+            if pending_cancel is not None:
+                raise pending_cancel
+            quality = assess_voice_sample(snapshot)
+            pcm = capture.pcm16()
+            async with _voice_library_mutation_lock(ctl):
+                if not Config.VOICEPRINT_LIBRARY_OPT_IN:
+                    return web.json_response(
+                        {"message": "Voice Library was turned off before the sample finished."},
+                        status=409,
+                    )
+                if not ctl._speaker_model.status()["installed"]:
+                    return web.json_response(
+                        {"message": "The local voice recognition model is no longer available."},
+                        status=409,
+                    )
+                embedding, pending_cancel = await _await_with_delayed_cancellation(
+                    ctl._speaker_model.extract_pcm16(pcm, sample_rate=16_000)
+                )
+                if pending_cancel is not None:
+                    raise pending_cancel
+                pcm = b""
+                profile = await _to_thread_cancellation_barrier(
+                    ctl._meeting_store.enroll_speaker_profile,
+                    display_name,
+                    embedding,
+                    quality=quality,
+                    profile_id=profile_id,
+                )
+            public_capture = {
+                "durationMs": int(snapshot.get("durationMs", 0) or 0),
+                "rms": round(float(snapshot.get("rms", 0.0) or 0.0), 4),
+                "peak": round(float(snapshot.get("peak", 0.0) or 0.0), 4),
+                "quality": quality,
+            }
+            return web.json_response(
+                {
+                    "apiVersion": REST_API_VERSION,
+                    "profile": profile,
+                    "capture": public_capture,
+                    "audioPersisted": False,
+                    "audioSentToProvider": False,
+                },
+                status=201,
+            )
+        except MeetingNotFound:
+            return web.json_response({"message": "Speaker profile not found"}, status=404)
+        except VoiceLibraryDisabled as exc:
+            return web.json_response({"message": str(exc)}, status=409)
+        except ValueError as exc:
+            return web.json_response({"message": str(exc)}, status=422)
+        except asyncio.CancelledError:
+            handler_cancelled = True
+            raise
+        except Exception as exc:
+            logger.warning("Voice Library enrollment failed: {}", type(exc).__name__)
+            return web.json_response(
+                {"message": "The voice sample could not be completed. Try again."}, status=503
+            )
+        finally:
+            async def cleanup_enrollment() -> None:
+                nonlocal stream_id
+                native_capture_released = not bool(stream_id)
+                if capture is not None:
+                    expect_native_stop = getattr(capture, "expect_native_stop", None)
+                    if callable(expect_native_stop):
+                        expect_native_stop()
+                if stream_id:
+                    try:
+                        stop_response = await asyncio.to_thread(
+                            call_shell_ipc,
+                            "audioCaptureStop",
+                            {"streamId": stream_id},
+                            timeout_seconds=4.0,
+                        )
+                        if _voice_enrollment_stop_confirmed(stop_response):
+                            stream_id = ""
+                            native_capture_released = True
+                        else:
+                            logger.error(
+                                "Voice Library native cleanup was not accepted by the shell"
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "Voice Library native cleanup failed: {}",
+                            type(exc).__name__,
+                        )
+                if capture is not None:
+                    try:
+                        await asyncio.to_thread(capture.stop)
+                    except Exception as exc:
+                        logger.warning(
+                            "Voice Library reader cleanup failed: {}",
+                            type(exc).__name__,
+                        )
+                    try:
+                        capture.clear()
+                    except Exception as exc:
+                        logger.warning(
+                            "Voice Library buffer cleanup failed: {}",
+                            type(exc).__name__,
+                        )
+                if native_capture_released:
+                    try:
+                        async with admission_lock:
+                            ctl._voice_enrollment_active = False
+                    except Exception as exc:
+                        logger.warning(
+                            "Voice Library admission cleanup failed: {}",
+                            type(exc).__name__,
+                        )
+                    try:
+                        await ctl.broadcast(state_event(ctl.get_state()))
+                    except Exception as exc:
+                        logger.warning(
+                            "Voice Library state cleanup broadcast failed: {}",
+                            type(exc).__name__,
+                        )
+                    try:
+                        await _release_persistent_audio(ctl, enrollment_claim)
+                    except Exception as exc:
+                        logger.warning(
+                            "Voice Library lease cleanup failed: {}",
+                            type(exc).__name__,
+                        )
+                    try:
+                        ctl._resume_idle_mic_prewarm_after_capture()
+                    except Exception as exc:
+                        logger.warning(
+                            "Voice Library prewarm resume failed: {}",
+                            type(exc).__name__,
+                        )
+                else:
+                    logger.error(
+                        "Voice Library retained native-audio ownership after unconfirmed cleanup"
+                    )
+
+            _, cleanup_cancel = await _await_with_delayed_cancellation(
+                cleanup_enrollment()
+            )
+            if cleanup_cancel is not None and not handler_cancelled:
+                raise cleanup_cancel
+
     async def delete_speaker_profile(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         deleted = await asyncio.to_thread(
@@ -14430,18 +14839,108 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response(
                 {"message": "Confirm the Voice Library biometric-processing opt-in first."}, status=409
             )
+        durable_enabled = getattr(ctl._meeting_store, "speaker_library_enabled", None)
+        if callable(durable_enabled) and not await asyncio.to_thread(durable_enabled):
+            return web.json_response(
+                {"message": "Voice Library was turned off before the download started."},
+                status=409,
+            )
+        staged = None
         try:
-            status = await ctl._speaker_model.download(request.app[APP_HTTP_SESSION])
+            async with _speaker_model_download_lock(ctl):
+                staged = await ctl._speaker_model.stage_download(
+                    request.app[APP_HTTP_SESSION]
+                )
+                async with _voice_library_mutation_lock(ctl):
+                    durable_enabled = getattr(
+                        ctl._meeting_store, "speaker_library_enabled", None
+                    )
+                    enabled_before_promotion = bool(
+                        Config.VOICEPRINT_LIBRARY_OPT_IN
+                        and (
+                            not callable(durable_enabled)
+                            or await asyncio.to_thread(durable_enabled)
+                        )
+                    )
+                    if not enabled_before_promotion:
+                        return web.json_response(
+                            {
+                                "message": (
+                                    "Voice Library was turned off while the local "
+                                    "download was running."
+                                )
+                            },
+                            status=409,
+                        )
+                    status, promotion_cancel = await _await_with_delayed_cancellation(
+                        asyncio.to_thread(
+                            ctl._speaker_model.promote_staged, staged
+                        )
+                    )
+                    staged = None
+                    # The SQLite gate is cross-process. Recheck it after the
+                    # atomic replace so an opt-out from another Scriber process
+                    # can never leave the model behind after deletion.
+                    enabled_after_promotion = bool(Config.VOICEPRINT_LIBRARY_OPT_IN)
+                    post_check_cancel = None
+                    if callable(durable_enabled):
+                        durable_after_promotion, post_check_cancel = (
+                            await _await_with_delayed_cancellation(
+                                asyncio.to_thread(durable_enabled)
+                            )
+                        )
+                        enabled_after_promotion = bool(
+                            enabled_after_promotion and durable_after_promotion
+                        )
+                    pending_cancel = promotion_cancel or post_check_cancel
+                    if not enabled_after_promotion:
+                        _, delete_cancel = await _await_with_delayed_cancellation(
+                            asyncio.to_thread(ctl._speaker_model.delete)
+                        )
+                        pending_cancel = pending_cancel or delete_cancel
+                        if pending_cancel is not None:
+                            raise pending_cancel
+                        return web.json_response(
+                            {
+                                "message": (
+                                    "Voice Library was turned off while the local "
+                                    "download was finishing."
+                                )
+                            },
+                            status=409,
+                        )
+                    if pending_cancel is not None:
+                        raise pending_cancel
             return web.json_response({"apiVersion": REST_API_VERSION, **status})
         except ValueError as exc:
             return web.json_response({"message": str(exc)}, status=502)
+        finally:
+            if staged is not None:
+                try:
+                    await asyncio.to_thread(
+                        ctl._speaker_model.discard_staged, staged
+                    )
+                except OSError:
+                    logger.warning("Voice Library staged model cleanup failed")
 
     async def delete_speaker_library(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        deleted_profiles = await asyncio.to_thread(ctl._meeting_store.delete_all_speaker_profiles)
-        await asyncio.to_thread(ctl._speaker_model.delete)
-        Config.set_voiceprint_library_opt_in(False)
-        ctl._schedule_settings_persist()
+
+        async def delete_all_voice_data() -> int:
+            deleted = await asyncio.to_thread(
+                ctl._meeting_store.delete_all_speaker_profiles
+            )
+            await asyncio.to_thread(ctl._speaker_model.delete)
+            Config.set_voiceprint_library_opt_in(False)
+            ctl._schedule_settings_persist()
+            return deleted
+
+        async with _voice_library_mutation_lock(ctl):
+            deleted_profiles, pending_cancel = await _await_with_delayed_cancellation(
+                delete_all_voice_data()
+            )
+            if pending_cancel is not None:
+                raise pending_cancel
         return web.json_response({
             "apiVersion": REST_API_VERSION, "deleted": True, "deletedProfiles": deleted_profiles
         })
@@ -14721,6 +15220,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/api/meetings/detection", get_meeting_detection)
     app.router.add_post("/api/meetings/detection/dismiss", dismiss_meeting_detection)
     app.router.add_get("/api/meetings/speaker-profiles", list_speaker_profiles)
+    app.router.add_post("/api/meetings/speaker-profiles/enroll", enroll_speaker_profile)
     app.router.add_post("/api/meetings/speaker-profiles/merge", merge_speaker_profiles)
     app.router.add_delete("/api/meetings/speaker-profiles/{profileId}", delete_speaker_profile)
     app.router.add_patch("/api/meetings/speaker-profiles/{profileId}", patch_speaker_profile)

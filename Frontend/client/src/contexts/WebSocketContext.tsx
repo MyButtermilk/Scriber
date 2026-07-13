@@ -32,6 +32,7 @@ export type ScriberWebSocketMessage =
     | (BaseWsMessage & {
         type: "state";
         listening: boolean;
+        voiceEnrollmentActive: boolean;
         status: string;
         inputWarning?: string;
         inputWarningCode?: string;

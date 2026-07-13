@@ -127,6 +127,13 @@ Meetings:
    onto the shared meeting timeline after recovery. The first failure or
    live-queue overflow is surfaced immediately as a visible degraded-preview
    state; it never implies loss from the upstream durable recorder.
+   Soniox realtime diarization is enabled on the system-audio preview stream;
+   the microphone preview remains the local `You` stream. Final live tokens are
+   split into contiguous speaker runs with their own timestamps instead of
+   collapsing a provider turn to its majority speaker. Raw speaker ids are
+   normalized by first appearance and namespaced to one WebSocket epoch because
+   Soniox may reuse them after reconnect. Canonical post-meeting transcription
+   remains authoritative.
    Recorder write failures are independently watched: disk-full stops capture
    visibly as `meeting_storage_full`, retains completed chunks, and leaves the
    open partial for startup quarantine instead of publishing it as complete.
@@ -297,9 +304,31 @@ bytes.
    Browser builds retain the ordinary download behavior.
 6. Optional speaker recognition is local and opt-in. The pinned WeSpeaker ONNX
    model is downloaded after installation, hash-verified before first use, and
-   never included in transcript/export payloads. Outlook Calendar uses public
-   desktop PKCE; its refresh token stays in Windows Credential Manager while
-   the backend keeps access tokens in memory only.
+   never included in transcript/export payloads. Settings can enroll a named
+   speaker through the shared Rust/WASAPI microphone path. The short mono sample
+   remains in a bounded memory buffer, is quality-checked, becomes one normalized
+   sample centroid from at least two speech-active windows locally, and is then
+   cleared without writing or uploading audio. The native start contract must
+   confirm mono 16 kHz `pcm_i16_le` before the private frame pipe is consumed.
+   The profile stores only a normalized aggregate enrollment
+   centroid plus count/effective-weight/resultant-norm/time metadata, never its
+   individual samples. The weighted sum is reconstructed only in memory, which
+   retains exact order-independent incremental and merge math. Meeting-derived
+   observations can refine the
+   combined centroid, while deletion, merge, and split preserve the deliberate
+   enrollment seed. A durable SQLite enabled gate serializes whole-library
+   deletion against late Meeting-finalizer registration, preventing deleted
+   voice data from being recreated. The optional model downloads to a unique,
+   checksum-verified staging file; promotion and a cross-process post-check use
+   the same enabled gate so an in-flight download cannot restore deleted data.
+   Outlook Calendar uses public desktop PKCE. Official builds embed the public
+   Entra application ID in the
+   Tauri shell, validate it as a canonical non-nil GUID, and forward it to the
+   backend worker without logging it. The system browser returns through the
+   registered `http://localhost:<port>/api/calendar/outlook/callback` loopback
+   shape, whose dynamic port follows the supervised backend. The refresh token
+   stays in Windows Credential Manager while the backend keeps access tokens in
+   memory only.
 
 ### Durable Meeting import protocol
 

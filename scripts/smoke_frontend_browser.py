@@ -74,6 +74,15 @@ FAST_TAB_SWITCH_SEQUENCE = [
     "/youtube", "/file", "/meetings", "/settings", "/", "/youtube", "/meetings", "/file", "/"
 ]
 
+PRIMARY_TAB_SHELLS = [
+    ("/", "live-mic"),
+    ("/meetings", "meetings"),
+    ("/youtube", "youtube"),
+    ("/file", "file"),
+    ("/debug", "console"),
+    ("/settings", "settings"),
+]
+
 
 def terminate_process_tree(process: Any) -> None:
     if process.poll() is not None:
@@ -131,9 +140,11 @@ class FrontendSmokeBackend:
         self.diarization_component_installed = False
         self.speaker_profiles = [
             {"id": "profile-smoke-a", "displayName": "Speaker a1b2c3", "sampleCount": 4,
-             "isNamed": False, "createdAt": "2026-06-01T10:00:00Z", "updatedAt": "2026-06-01T10:00:00Z"},
+             "isNamed": False, "enrolled": False, "enrollmentSampleCount": 0,
+             "enrolledAt": "", "createdAt": "2026-06-01T10:00:00Z", "updatedAt": "2026-06-01T10:00:00Z"},
             {"id": "profile-smoke-b", "displayName": "Grace Hopper", "sampleCount": 7,
-             "isNamed": True, "createdAt": "2026-06-01T10:00:00Z", "updatedAt": "2026-06-01T10:00:00Z"},
+             "isNamed": True, "enrolled": False, "enrollmentSampleCount": 0,
+             "enrolledAt": "", "createdAt": "2026-06-01T10:00:00Z", "updatedAt": "2026-06-01T10:00:00Z"},
         ]
         self.outlook_connected = False
         self.outlook_synced = False
@@ -191,6 +202,7 @@ class FrontendSmokeBackend:
         app.router.add_get("/api/meeting-profiles", self.meeting_profiles)
         app.router.add_get("/api/meetings/profiles", self.meeting_profiles)
         app.router.add_get("/api/meetings/speaker-profiles", self.meeting_speaker_profiles)
+        app.router.add_post("/api/meetings/speaker-profiles/enroll", self.enroll_meeting_speaker_profile)
         app.router.add_patch("/api/meetings/speaker-profiles/{profile_id}", self.patch_meeting_speaker_profile)
         app.router.add_delete("/api/meetings/speaker-profiles/{profile_id}", self.delete_meeting_speaker_profile)
         app.router.add_get("/api/meetings/speaker-model", self.meeting_speaker_model)
@@ -872,7 +884,9 @@ class FrontendSmokeBackend:
             "profiles": [{
                 "id": "soniox-balanced", "name": "Soniox live + final",
                 "description": "Live captions during the meeting, followed by a second transcription of the complete saved audio.",
+                "transcriptionMode": "live_final",
                 "liveProvider": "soniox", "finalProvider": "soniox_async",
+                "livePreviewAvailable": True, "livePreviewWarning": "",
                 "analysisModel": "gemini-flash-latest", "language": "auto",
                 "stages": [
                     {"id": "live", "label": "During the meeting", "provider": "Soniox Realtime", "model": "stt-rt-v5", "purpose": "Immediate captions for microphone and system audio."},
@@ -880,7 +894,18 @@ class FrontendSmokeBackend:
                     {"id": "analysis", "label": "Summary and actions", "provider": "Gemini", "model": "gemini-flash-latest", "purpose": "Creates the cited summary, decisions, questions, and action items."},
                 ],
                 "aecEnabled": True, "voiceLibraryEnabled": False,
+                "smartTurnEnabled": True, "autoAnalyze": True,
                 "audioRetentionDays": 0, "available": True,
+                "costEstimate": {
+                    "currency": "USD", "pricingUpdatedAt": "2026-07-13",
+                    "audioTrackAssumption": 2, "livePreviewPerMeetingHour": 0.24,
+                    "livePerMeetingHour": 0.24, "finalPerMeetingHour": 0.20,
+                    "singleTrackFinalPerAudioHour": 0.10,
+                    "totalPerMeetingHour": 0.44,
+                    "estimateKind": "published-list-price",
+                    "sources": [{"label": "Soniox pricing", "url": "https://soniox.com/pricing"}],
+                    "assumption": "Two captured audio tracks with live preview and a final pass.",
+                },
                 "fiveHourSupported": True,
                 "fiveHourReason": "Bounded WebM/Opus upload derivative.",
                 "maxDurationSeconds": 18_000,
@@ -945,6 +970,36 @@ class FrontendSmokeBackend:
         self.meeting_requests.append("speaker-profile-rename")
         return web.json_response({"apiVersion": "1", **profile})
 
+    async def enroll_meeting_speaker_profile(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        display_name = " ".join(str(payload.get("displayName") or "").split())
+        if not display_name:
+            return web.json_response({"message": "Enter the speaker's name first."}, status=400)
+        microphone_hash = str(payload.get("microphoneNativeEndpointIdHash") or "")
+        if microphone_hash not in {"", "a" * 32}:
+            return web.json_response({"message": "Choose a valid microphone."}, status=400)
+        now = datetime.now(timezone.utc).isoformat()
+        profile = {
+            "id": f"profile-smoke-enrolled-{len(self.speaker_profiles) + 1}",
+            "displayName": display_name,
+            "sampleCount": 1,
+            "isNamed": True,
+            "enrolled": True,
+            "enrollmentSampleCount": 1,
+            "enrolledAt": now,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        self.speaker_profiles.append(profile)
+        self.meeting_requests.append("speaker-profile-enroll")
+        return web.json_response({
+            "apiVersion": "1",
+            "profile": profile,
+            "capture": {"durationMs": 8_000, "rms": 0.12, "peak": 0.48, "quality": 0.88},
+            "audioPersisted": False,
+            "audioSentToProvider": False,
+        }, status=201)
+
     async def delete_meeting_speaker_profile(self, request: web.Request) -> web.Response:
         profile_id = request.match_info["profile_id"]
         previous = len(self.speaker_profiles)
@@ -956,9 +1011,9 @@ class FrontendSmokeBackend:
 
     async def meeting_speaker_model(self, request: web.Request) -> web.Response:
         return web.json_response({
-            "apiVersion": "1", "optedIn": False, "installed": False,
+            "apiVersion": "1", "optedIn": True, "installed": True,
             "model": "wespeaker-voxceleb-resnet34-LM", "revision": "smoke",
-            "byteSize": 0, "expectedByteSize": 26632299, "sha256": "",
+            "byteSize": 26632299, "expectedByteSize": 26632299, "sha256": "c" * 64,
             "license": "optional local model",
         })
 
@@ -1433,6 +1488,7 @@ class FrontendSmokeBackend:
             "meetingAutoAnalyze": True,
             "meetingAecEnabled": True,
             "meetingAudioRetentionDays": 0,
+            "voiceprintLibraryOptIn": True,
             "visualizerBarCount": 45,
             "micAlwaysOn": False,
             "onnxModel": "",
@@ -2061,8 +2117,9 @@ async def exercise_meeting_end_to_end(
   return {
     ok: !!dialog && text.includes('Import a meeting recording')
       && text.includes('Customer interview.webm')
-      && text.includes('Final STT')
-      && text.includes('Native when verified'),
+      && text.includes('Final transcript setting')
+      && text.includes('Speaker names')
+      && text.includes('Included'),
     hasDialog: !!dialog,
     text: dialog?.innerText.slice(0, 900) || '',
   };
@@ -2174,8 +2231,8 @@ async def exercise_meeting_end_to_end(
 """,
         )
 
-    await wait_text("meeting-five-hour-readiness", "Ready for up to 5 hours")
-    await wait_text("meeting-final-stt-five-hour", "Max 5:00:00")
+    await wait_text("meeting-five-hour-readiness", "Ready for a long meeting")
+    await wait_text("meeting-final-stt-five-hour", "Up to 5:00:00")
     await wait_text("meeting-detection-visible", "Zoom meeting detected")
     await click_button("Dismiss")
     await wait_for_interaction_state(
@@ -2184,7 +2241,7 @@ async def exercise_meeting_end_to_end(
     )
     await wait_button("Test microphone and playback")
     await click_button("Test microphone and playback")
-    await wait_text("meeting-device-test", "Test tone played")
+    await wait_text("meeting-device-test", "Speaker sound played")
     if screenshot_dir is not None:
         await cdp.evaluate(
             r"""
@@ -2220,8 +2277,8 @@ async def exercise_meeting_end_to_end(
         ))
     await wait_button("Start meeting")
     await click_button("Start meeting")
-    await wait_text("meeting-live-reconnecting", "Durable audio recording continues")
-    await wait_text("meeting-live-recovered", "Final transcription will recover from the local audio")
+    await wait_text("meeting-live-reconnecting", "live text is back")
+    await wait_text("meeting-live-recovered", "final transcript will be created from saved audio")
     if screenshot_dir is not None:
         screenshots.append(await capture_page_screenshot(
             cdp, output_dir=screenshot_dir, label="meeting-live-recovered"
@@ -2295,15 +2352,15 @@ async def exercise_meeting_end_to_end(
         raise RuntimeError(f"Meeting audio playback failed: {audio_playback}")
 
     await click_button("Overview")
-    await wait_text("meeting-analysis-available", "Generate analysis")
-    await click_button("Generate analysis")
+    await wait_text("meeting-analysis-available", "Create meeting brief")
+    await click_button("Create meeting brief")
     await wait_text("meeting-analysis-ready", "The team approved a Friday launch.")
     import_inbox_state = await cdp.evaluate(
         r"""
 (() => {
   const body = document.body?.innerText || '';
   const hasError = body.includes('Imports could not be loaded.');
-  const hasInbox = body.includes('Imports') && body.includes('Durable work across restarts');
+  const hasInbox = body.includes('Imports') && body.includes('Continues after you restart Scriber');
   return { ok: hasInbox && !hasError, hasInbox, hasError };
 })()
 """,
@@ -2355,7 +2412,7 @@ async def exercise_meeting_end_to_end(
   const marks = Array.from(document.querySelectorAll('mark')).map((node) => node.textContent || '');
   const target = document.querySelector('button[aria-label="Play transcript segment from 0:05 to 0:08"]');
   return {
-    ok: text.includes('1 of 2 segments')
+    ok: text.includes('1 of 2 parts')
       && text.includes('Customer approval remains open before release.')
       && !text.includes('We decided to launch the meeting workspace on Friday.')
       && marks.some((value) => value.toLowerCase().includes('customer approval'))
@@ -2524,7 +2581,7 @@ async def exercise_meeting_end_to_end(
     for export_index, export_format in enumerate(("JSON", "MD", "PDF", "DOCX"), start=1):
         await click_visible_button(
             cdp,
-            label="Export",
+            label="Save or share",
             selector="button",
             timeout_sec=timeout_sec,
             exact_text=False,
@@ -2566,7 +2623,7 @@ async def exercise_meeting_end_to_end(
 
     await click_visible_button(
         cdp,
-        label="Export",
+        label="Save or share",
         selector="button",
         timeout_sec=timeout_sec,
         exact_text=False,
@@ -2618,7 +2675,7 @@ async def exercise_meeting_end_to_end(
   const dialog = document.querySelector('[role="dialog"]');
   const markdown = dialog?.querySelector('input[name="meeting-email-attachment"][value="md"]');
   const downloadButton = Array.from(dialog?.querySelectorAll('button') || [])
-    .find((node) => (node.textContent || '').includes('Download email draft + MD') && !node.disabled);
+    .find((node) => (node.textContent || '').includes('Save email draft + MD') && !node.disabled);
   return { ok: !!markdown?.checked && !!downloadButton };
 })()
 """,
@@ -2645,7 +2702,7 @@ async def exercise_meeting_end_to_end(
     try:
         await click_visible_button(
             cdp,
-            label="Download email draft + MD",
+            label="Save email draft + MD",
             selector='[role="dialog"] button',
             timeout_sec=timeout_sec,
             exact_text=False,
@@ -2663,9 +2720,9 @@ async def exercise_meeting_end_to_end(
     .find((node) => (node.textContent || '').includes('Open email with summary'));
   return {
     ok: downloads.length === 1
-      && downloads[0].name.toLowerCase().endsWith('.eml')
-      && !!compose,
+      && downloads[0].name.toLowerCase().endsWith('.eml'),
     downloads,
+    dialogOpen: !!dialog,
     hasComposeAction: !!compose,
     recipientsVisible: (dialog?.textContent || '').includes('morgan@example.com')
       && (dialog?.textContent || '').includes('riley@example.com')
@@ -2689,13 +2746,14 @@ async def exercise_meeting_end_to_end(
         )
     if not email_export_state or not email_export_state.get("ok"):
         raise RuntimeError(f"Meeting email draft failed: {email_export_state}")
-    await click_visible_button(
-        cdp,
-        label="Close",
-        selector='[role="dialog"] button',
-        timeout_sec=timeout_sec,
-        prefer_last=False,
-    )
+    if email_export_state.get("dialogOpen"):
+        await click_visible_button(
+            cdp,
+            label="Close",
+            selector='[role="dialog"] button',
+            timeout_sec=timeout_sec,
+            prefer_last=False,
+        )
     await wait_for_interaction_state(
         cdp,
         label="meeting-email-dialog-closed",
@@ -3179,10 +3237,10 @@ async def exercise_meeting_settings(
   const section = document.querySelector('#settings-meetings');
   if (!section) return { ok: false, reason: 'missing meeting settings section' };
   const finalTrigger = section.querySelector('button[aria-label="Final meeting transcription model"]');
-  const analysisTrigger = section.querySelector('button[aria-label="Meeting analysis model"]');
+  const analysisTrigger = section.querySelector('button[aria-label="Meeting summary model"]');
   const retentionTrigger = section.querySelector('button[aria-label="Default meeting audio retention"]');
-  const smartTurn = section.querySelector('[role="switch"][aria-label="Use Smart Turn V3 for meeting live captions"]');
-  const aec = section.querySelector('[role="switch"][aria-label="Use AEC3 for meetings"]');
+  const smartTurn = section.querySelector('[role="switch"][aria-label="Keep meeting live sentences together across short pauses"]');
+  const aec = section.querySelector('[role="switch"][aria-label="Reduce speaker echo in meetings"]');
   const autoAnalyze = section.querySelector('[role="switch"][aria-label="Automatically analyze completed meetings"]');
   if (!finalTrigger || !analysisTrigger || !retentionTrigger || !smartTurn || !aec || !autoAnalyze) {
     return { ok: false, reason: 'missing meeting pipeline control' };
@@ -3242,9 +3300,9 @@ async def exercise_meeting_settings(
       && smartTurn.getAttribute('aria-checked') === 'false'
       && aec.getAttribute('aria-checked') === 'false'
       && autoAnalyze.getAttribute('aria-checked') === 'false'
-      && text.includes('Native timestamps and diarization')
-      && text.includes('Sherpa-ONNX offline diarization')
-      && text.includes('30-second recovery checkpoints'),
+      && text.includes('Includes speaker names and exact timing.')
+      && text.includes('Local speaker separation')
+      && text.includes('Protected every 30 seconds.'),
     finalModel: finalTrigger.textContent,
     analysisModel: analysisTrigger.textContent,
     retention: retentionTrigger.textContent,
@@ -3300,82 +3358,123 @@ async def exercise_meeting_identity_settings(
     node.dispatchEvent(new Event('change', { bubbles: true }));
   };
   if (stage === 0) {
+    const addVoice = Array.from(section.querySelectorAll('button'))
+      .find((node) => (node.textContent || '').trim() === 'Add voice');
+    if (!addVoice || addVoice.disabled) return { ok: false, waiting: 'add-voice' };
+    addVoice.scrollIntoView({ block: 'center' });
+    addVoice.click();
+    window.__scriberMeetingIdentityStage = 1;
+    return { ok: false, waiting: 'voice-enrollment-dialog' };
+  }
+  if (stage === 1) {
+    const dialog = Array.from(document.querySelectorAll('[role="dialog"]'))
+      .find((node) => (node.textContent || '').includes('Teach Scriber a voice'));
+    const input = dialog?.querySelector('#voice-enrollment-name');
+    if (!dialog || !input) return { ok: false, waiting: 'voice-enrollment-name' };
+    setNativeValue(input, 'Katherine Johnson');
+    window.__scriberMeetingIdentityStage = 2;
+    return { ok: false, waiting: 'voice-enrollment-name-state' };
+  }
+  if (stage === 2) {
+    const dialog = Array.from(document.querySelectorAll('[role="dialog"]'))
+      .find((node) => (node.textContent || '').includes('Teach Scriber a voice'));
+    const record = Array.from(dialog?.querySelectorAll('button') || [])
+      .find((node) => (node.textContent || '').includes('Record 8-second sample'));
+    if (!dialog || !record || record.disabled) return { ok: false, waiting: 'voice-enrollment-record' };
+    record.click();
+    window.__scriberMeetingIdentityStage = 3;
+    return { ok: false, waiting: 'voice-enrollment-result' };
+  }
+  if (stage === 3) {
+    const dialog = Array.from(document.querySelectorAll('[role="dialog"]'))
+      .find((node) => (node.textContent || '').includes('Katherine Johnson is ready'));
+    const done = Array.from(dialog?.querySelectorAll('button') || [])
+      .find((node) => (node.textContent || '').trim() === 'Done');
+    if (!dialog || !done) return { ok: false, waiting: 'voice-enrollment-success' };
+    done.click();
+    window.__scriberMeetingIdentityStage = 4;
+    return { ok: false, waiting: 'enrolled-profile-list' };
+  }
+  if (stage === 4) {
+    if (!text.includes('Katherine Johnson')) return { ok: false, waiting: 'enrolled-profile' };
     const profile = Array.from(section.querySelectorAll('button'))
       .find((node) => (node.textContent || '').includes('Speaker a1b2c3'));
     if (!profile) return { ok: false, waiting: 'anonymous-profile' };
     profile.scrollIntoView({ block: 'center' });
     profile.click();
-    window.__scriberMeetingIdentityStage = 1;
+    window.__scriberMeetingIdentityStage = 5;
     return { ok: false, waiting: 'profile-editor' };
   }
-  if (stage === 1) {
-    const input = section.querySelector('input[aria-label="Name voice profile Speaker a1b2c3"]');
+  if (stage === 5) {
+    const input = section.querySelector('input[aria-label="Name saved speaker Speaker a1b2c3"]');
     const save = Array.from(section.querySelectorAll('button')).find((node) => (node.textContent || '').trim() === 'Save');
     if (!input || !save) return { ok: false, waiting: 'profile-editor-controls' };
     setNativeValue(input, 'Ada Lovelace');
     save.click();
-    window.__scriberMeetingIdentityStage = 2;
+    window.__scriberMeetingIdentityStage = 6;
     return { ok: false, waiting: 'profile-rename' };
   }
-  if (stage === 2) {
+  if (stage === 6) {
     if (!text.includes('Ada Lovelace')) return { ok: false, waiting: 'renamed-profile' };
-    const remove = section.querySelector('button[aria-label="Delete voice profile Grace Hopper"]');
+    const remove = section.querySelector('button[aria-label="Delete saved speaker Grace Hopper"]');
     if (!remove) return { ok: false, waiting: 'profile-delete-control' };
     remove.click();
-    window.__scriberMeetingIdentityStage = 3;
+    window.__scriberMeetingIdentityStage = 7;
     return { ok: false, waiting: 'profile-delete' };
   }
-  if (stage === 3) {
+  if (stage === 7) {
     const dialog = document.querySelector('[role="alertdialog"]');
     const confirm = Array.from(dialog?.querySelectorAll('button') || [])
-      .find((node) => (node.textContent || '').trim() === 'Delete voice profile');
+      .find((node) => (node.textContent || '').trim() === 'Delete speaker');
     if (!dialog || !confirm) return { ok: false, waiting: 'profile-delete-confirmation' };
     confirm.click();
-    window.__scriberMeetingIdentityStage = 4;
+    window.__scriberMeetingIdentityStage = 8;
     return { ok: false, waiting: 'profile-delete-request' };
   }
-  if (stage === 4) {
+  if (stage === 8) {
     if (text.includes('Grace Hopper')) return { ok: false, waiting: 'deleted-profile-disappear' };
     const connect = Array.from(section.querySelectorAll('button'))
       .find((node) => (node.textContent || '').includes('Connect Outlook'));
     if (!connect || connect.disabled) return { ok: false, waiting: 'outlook-connect' };
     connect.scrollIntoView({ block: 'center' });
     connect.click();
-    window.__scriberMeetingIdentityStage = 5;
+    window.__scriberMeetingIdentityStage = 9;
     return { ok: false, waiting: 'outlook-connected' };
   }
-  if (stage === 5) {
-    if (!text.includes('Microsoft account connected')) return { ok: false, waiting: 'connected-status' };
+  if (stage === 9) {
+    if (!text.includes('Outlook is connected')) return { ok: false, waiting: 'connected-status' };
     const sync = Array.from(section.querySelectorAll('button'))
       .find((node) => (node.textContent || '').includes('Sync now'));
     if (!sync) return { ok: false, waiting: 'outlook-sync' };
     sync.click();
-    window.__scriberMeetingIdentityStage = 6;
+    window.__scriberMeetingIdentityStage = 10;
     return { ok: false, waiting: 'outlook-event' };
   }
-  if (stage === 6) {
+  if (stage === 10) {
     if (!text.includes('Architecture review')) return { ok: false, waiting: 'synced-event' };
     const disconnect = Array.from(section.querySelectorAll('button'))
-      .find((node) => (node.textContent || '').trim() === 'Disconnect');
+      .find((node) => (node.textContent || '').includes('Disconnect Outlook'));
     if (!disconnect) return { ok: false, waiting: 'outlook-disconnect' };
     disconnect.click();
-    window.__scriberMeetingIdentityStage = 7;
+    window.__scriberMeetingIdentityStage = 11;
     return { ok: false, waiting: 'outlook-disconnected' };
   }
   return {
     ok: text.includes('Ada Lovelace')
+      && text.includes('Katherine Johnson')
       && !text.includes('Grace Hopper')
-      && text.includes('Ready to connect')
-      && text.includes('1 profiles'),
+      && text.includes('Outlook is ready to connect')
+      && text.includes('2 saved speakers'),
     hasNamedProfile: text.includes('Ada Lovelace'),
-    profileCount: text.includes('1 profiles'),
-    outlookDisconnected: text.includes('Ready to connect')
+    hasEnrolledProfile: text.includes('Katherine Johnson'),
+    profileCount: text.includes('2 saved speakers'),
+    outlookDisconnected: text.includes('Outlook is ready to connect')
   };
 })()
 """,
     )
     required_requests = {
-        "speaker-profile-rename", "speaker-profile-delete",
+        "speaker-profile-enroll", "speaker-profile-rename", "speaker-profile-delete",
         "outlook-connect", "outlook-sync", "outlook-disconnect",
     }
     missing = required_requests.difference(backend.meeting_requests)
@@ -6383,6 +6482,201 @@ async def exercise_mobile_route_layouts(
     }
 
 
+async def exercise_desktop_page_shell_layouts(
+    cdp: CdpClient,
+    *,
+    frontend_base_url: str,
+    timeout_sec: float,
+    screenshot_dir: Path | None,
+) -> dict[str, Any]:
+    await cdp.call(
+        "Emulation.setDeviceMetricsOverride",
+        {"width": 2048, "height": 1252, "deviceScaleFactor": 1, "mobile": False},
+        timeout=5,
+    )
+    await cdp.call(
+        "Emulation.setTouchEmulationEnabled",
+        {"enabled": False},
+        timeout=5,
+    )
+
+    results: list[dict[str, Any]] = []
+    screenshots: list[str] = []
+    try:
+        for route, shell_id in PRIMARY_TAB_SHELLS:
+            await cdp.call("Page.navigate", {"url": f"{frontend_base_url}{route}"}, timeout=10)
+            await wait_for_route_ready(
+                cdp,
+                route=route,
+                expected_text=ROUTE_EXPECTATIONS[route],
+                expect_history_virtualized=route in {"/", "/youtube", "/file"},
+                timeout_sec=timeout_sec,
+            )
+            await cdp.evaluate(
+                r"""
+(() => {
+  window.scrollTo(0, 0);
+  document.querySelectorAll('[data-app-scroll-container], aside').forEach((node) => {
+    node.scrollTop = 0;
+    node.scrollLeft = 0;
+  });
+  return { ok: true };
+})()
+""",
+                timeout=5,
+            )
+            # Let route-level queries and lazy modules settle before measuring or
+            # capturing evidence; an initial paint that disappears is not a pass.
+            await asyncio.sleep(0.35)
+            state = await cdp.evaluate(
+                f"""
+(() => {{
+  const route = {json.dumps(route)};
+  const shellId = {json.dumps(shell_id)};
+  const shell = Array.from(document.querySelectorAll('[data-page-shell]'))
+    .find((node) => node.getAttribute('data-page-shell') === shellId);
+  const scrollContainer = document.querySelector('[data-app-scroll-container="true"]');
+  const desktopSidebar = document.querySelector('aside');
+  const sidebarStyle = desktopSidebar ? getComputedStyle(desktopSidebar) : null;
+  const smoke = window.__scriberSmoke || {{}};
+  if (!shell || !scrollContainer) {{
+    return {{
+      ok: false,
+      route,
+      shellId,
+      reason: !shell ? 'missing data-page-shell hook' : 'missing app scroll container',
+      bodyText: (document.body?.innerText || '').slice(0, 500),
+      consoleErrors: smoke.consoleErrors || [],
+      pageErrors: smoke.pageErrors || [],
+      unhandledRejections: smoke.unhandledRejections || []
+    }};
+  }}
+
+  const round = (value) => Math.round(value * 100) / 100;
+  const shellRect = shell.getBoundingClientRect();
+  const containerRect = scrollContainer.getBoundingClientRect();
+  const style = getComputedStyle(shell);
+  const paddingLeft = parseFloat(style.paddingLeft) || 0;
+  const paddingRight = parseFloat(style.paddingRight) || 0;
+  const computedMaxWidth = parseFloat(style.maxWidth);
+  const containerContentRight = containerRect.left + scrollContainer.clientWidth;
+  const leftGutter = shellRect.left - containerRect.left;
+  const rightGutter = containerContentRight - shellRect.right;
+  const containerCenter = containerRect.left + scrollContainer.clientWidth / 2;
+  const shellCenter = shellRect.left + shellRect.width / 2;
+  const availableSlack = scrollContainer.clientWidth - shellRect.width;
+  const maxWidthReached = Number.isFinite(computedMaxWidth)
+    && Math.abs(shellRect.width - computedMaxWidth) <= 2;
+
+  return {{
+    ok: shellRect.width > 0
+      && scrollContainer.clientWidth > 0
+      && leftGutter >= -2
+      && rightGutter >= -2
+      && sidebarStyle?.display !== 'none',
+    route,
+    shellId,
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+    rectWidth: round(shellRect.width),
+    contentWidth: round(shellRect.width - paddingLeft - paddingRight),
+    paddingLeft: round(paddingLeft),
+    paddingRight: round(paddingRight),
+    computedMaxWidth: Number.isFinite(computedMaxWidth) ? round(computedMaxWidth) : null,
+    maxWidthReached,
+    containerClientWidth: scrollContainer.clientWidth,
+    availableSlack: round(availableSlack),
+    leftGutter: round(leftGutter),
+    rightGutter: round(rightGutter),
+    gutterImbalance: round(Math.abs(leftGutter - rightGutter)),
+    centerDelta: round(Math.abs(shellCenter - containerCenter)),
+    desktopSidebarDisplay: sidebarStyle?.display || ''
+  }};
+}})()
+""",
+                timeout=5,
+            )
+            results.append(state or {
+                "ok": False,
+                "route": route,
+                "shellId": shell_id,
+                "reason": "layout measurement returned no state",
+            })
+            if screenshot_dir is not None:
+                screenshots.append(await capture_page_screenshot(
+                    cdp,
+                    output_dir=screenshot_dir,
+                    label=f"desktop-shell-{shell_id}",
+                ))
+    finally:
+        await cdp.call("Emulation.clearDeviceMetricsOverride", timeout=5)
+        await cdp.call("Emulation.setTouchEmulationEnabled", {"enabled": False}, timeout=5)
+
+    measured = [
+        item
+        for item in results
+        if all(isinstance(item.get(key), (int, float)) for key in (
+            "rectWidth", "contentWidth", "paddingLeft", "paddingRight",
+            "gutterImbalance", "centerDelta", "availableSlack",
+        ))
+    ]
+
+    def spread(key: str) -> float:
+        values = [float(item[key]) for item in measured]
+        return round(max(values) - min(values), 2) if values else 999_999.0
+
+    max_width_spread = spread("rectWidth")
+    max_content_width_spread = spread("contentWidth")
+    max_padding_spread = max(spread("paddingLeft"), spread("paddingRight"))
+    max_gutter_imbalance = max(
+        (float(item["gutterImbalance"]) for item in measured),
+        default=999_999.0,
+    )
+    max_center_delta = max(
+        (float(item["centerDelta"]) for item in measured),
+        default=999_999.0,
+    )
+    live = next((item for item in measured if item.get("route") == "/"), None)
+    meetings = next((item for item in measured if item.get("route") == "/meetings"), None)
+    meeting_at_most_live = bool(
+        live
+        and meetings
+        and float(meetings["rectWidth"]) <= float(live["rectWidth"]) + 1
+    )
+    max_width_reached = len(measured) == len(PRIMARY_TAB_SHELLS) and all(
+        item.get("maxWidthReached") is True and float(item["availableSlack"]) >= 96
+        for item in measured
+    )
+    ok = (
+        len(results) == len(PRIMARY_TAB_SHELLS)
+        and len(measured) == len(PRIMARY_TAB_SHELLS)
+        and all(item.get("ok") for item in results)
+        and max_width_spread <= 2
+        and max_content_width_spread <= 2
+        and max_padding_spread <= 2
+        and max_gutter_imbalance <= 2
+        and max_center_delta <= 2
+        and meeting_at_most_live
+        and max_width_reached
+    )
+    return {
+        "name": "desktop-page-shell-layouts",
+        "ok": ok,
+        "viewport": {"width": 2048, "height": 1252, "deviceScaleFactor": 1},
+        "routes": [route for route, _shell_id in PRIMARY_TAB_SHELLS],
+        "routeCount": len(results),
+        "maxWidthSpread": max_width_spread,
+        "maxContentWidthSpread": max_content_width_spread,
+        "maxPaddingSpread": max_padding_spread,
+        "maxGutterImbalance": max_gutter_imbalance,
+        "maxCenterDelta": max_center_delta,
+        "meetingAtMostLive": meeting_at_most_live,
+        "maxWidthReached": max_width_reached,
+        "results": results,
+        "screenshots": screenshots,
+    }
+
+
 async def inspect_token_required_browser_state(
     cdp: CdpClient,
     *,
@@ -6451,6 +6745,7 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
             transcript_cancel_check: dict[str, Any] | None = None
             rapid_theme_change_check: dict[str, Any] | None = None
             fast_tab_switch_check: dict[str, Any] | None = None
+            desktop_page_shell_layouts_check: dict[str, Any] | None = None
             mobile_navigation_check: dict[str, Any] | None = None
             mobile_route_layouts_check: dict[str, Any] | None = None
             token_required_check: dict[str, Any] | None = None
@@ -6606,6 +6901,13 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
                     evidence_dir=evidence_dir,
                 )
 
+            desktop_page_shell_layouts_check = await exercise_desktop_page_shell_layouts(
+                cdp,
+                frontend_base_url=frontend_base_url,
+                timeout_sec=args.page_timeout_sec,
+                screenshot_dir=screenshot_dir,
+            )
+
             mobile_navigation_check = await exercise_mobile_navigation(
                 cdp,
                 frontend_base_url=frontend_base_url,
@@ -6647,6 +6949,7 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
         and bool(transcript_cancel_check and transcript_cancel_check.get("ok"))
         and bool(rapid_theme_change_check and rapid_theme_change_check.get("ok"))
         and (fast_tab_switch_check is None or bool(fast_tab_switch_check.get("ok")))
+        and bool(desktop_page_shell_layouts_check and desktop_page_shell_layouts_check.get("ok"))
         and bool(mobile_navigation_check and mobile_navigation_check.get("ok"))
         and bool(mobile_route_layouts_check and mobile_route_layouts_check.get("ok"))
         and bool(token_required_check and token_required_check.get("ok"))
@@ -6675,6 +6978,8 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
         interaction_checks.append(rapid_theme_change_check)
     if fast_tab_switch_check:
         interaction_checks.append(fast_tab_switch_check)
+    if desktop_page_shell_layouts_check:
+        interaction_checks.append(desktop_page_shell_layouts_check)
     if mobile_navigation_check:
         interaction_checks.append(mobile_navigation_check)
     if mobile_route_layouts_check:
@@ -6700,6 +7005,7 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
         "transcriptCancelCheck": transcript_cancel_check,
         "rapidThemeChangeCheck": rapid_theme_change_check,
         "fastTabSwitchCheck": fast_tab_switch_check,
+        "desktopPageShellLayoutsCheck": desktop_page_shell_layouts_check,
         "mobileNavigationCheck": mobile_navigation_check,
         "mobileRouteLayoutsCheck": mobile_route_layouts_check,
         "tokenRequiredCheck": token_required_check,
@@ -6852,6 +7158,46 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
         ],
         "validateOnly": True,
     }
+    desktop_page_shell_layouts_check = {
+        "name": "desktop-page-shell-layouts",
+        "ok": True,
+        "viewport": {"width": 2048, "height": 1252, "deviceScaleFactor": 1},
+        "routes": [route for route, _shell_id in PRIMARY_TAB_SHELLS],
+        "routeCount": len(PRIMARY_TAB_SHELLS),
+        "maxWidthSpread": 0,
+        "maxContentWidthSpread": 0,
+        "maxPaddingSpread": 0,
+        "maxGutterImbalance": 0,
+        "maxCenterDelta": 0,
+        "meetingAtMostLive": True,
+        "maxWidthReached": True,
+        "results": [
+            {
+                "route": route,
+                "shellId": shell_id,
+                "ok": True,
+                "viewportWidth": 2048,
+                "viewportHeight": 1252,
+                "rectWidth": 1320,
+                "contentWidth": 1272,
+                "paddingLeft": 24,
+                "paddingRight": 24,
+                "computedMaxWidth": 1320,
+                "maxWidthReached": True,
+                "containerClientWidth": 1768,
+                "availableSlack": 448,
+                "leftGutter": 224,
+                "rightGutter": 224,
+                "gutterImbalance": 0,
+                "centerDelta": 0,
+                "desktopSidebarDisplay": "flex",
+                "validateOnly": True,
+            }
+            for route, shell_id in PRIMARY_TAB_SHELLS
+        ],
+        "screenshots": [],
+        "validateOnly": True,
+    }
     return {
         "schemaVersion": 1,
         "generatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -6867,7 +7213,7 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
             "unhandledRejectionCount": 0,
             "interactionCheckCount": (
                 sum(len(item.get("interactionChecks", [])) for item in scenarios)
-                + 7
+                + 8
                 + (1 if fast_tab_switch_check else 0)
             ),
             "interactionChecks": [
@@ -6880,6 +7226,7 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
                 "transcript-cancel-action",
                 "rapid-theme-change",
                 *(["fast-tab-switch"] if fast_tab_switch_check else []),
+                "desktop-page-shell-layouts",
                 "mobile-navigation",
                 "mobile-route-layouts",
                 "token-required-browser-state",
@@ -6909,6 +7256,7 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
             "validateOnly": True,
         },
         "fastTabSwitchCheck": fast_tab_switch_check,
+        "desktopPageShellLayoutsCheck": desktop_page_shell_layouts_check,
         "mobileNavigationCheck": {
             "name": "mobile-navigation",
             "ok": True,

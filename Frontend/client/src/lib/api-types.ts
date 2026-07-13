@@ -422,6 +422,9 @@ export interface SpeakerProfileSummary {
   displayName: string;
   sampleCount: number;
   isNamed: boolean;
+  enrolled: boolean;
+  enrollmentSampleCount: number;
+  enrolledAt: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -431,6 +434,19 @@ export interface SpeakerProfilesResponse {
   enabled: boolean;
   items: SpeakerProfileSummary[];
   message: string;
+}
+
+export interface SpeakerEnrollmentResponse {
+  apiVersion: typeof REST_API_VERSION;
+  profile: SpeakerProfileSummary;
+  capture: {
+    durationMs: number;
+    rms: number;
+    peak: number;
+    quality: number;
+  };
+  audioPersisted: false;
+  audioSentToProvider: false;
 }
 
 export interface SpeakerModelStatus {
@@ -463,6 +479,7 @@ export interface BackendHealthResponse {
 
 export interface BackendStateResponse {
   listening: boolean;
+  voiceEnrollmentActive: boolean;
   status: string;
   inputWarning?: string;
   inputWarningCode?: string;

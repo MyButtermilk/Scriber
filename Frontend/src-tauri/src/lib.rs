@@ -3,6 +3,7 @@ mod audio_frame_pipe;
 mod audio_sidecar_client;
 mod export_dialog;
 mod native_overlay;
+mod outlook_config;
 mod redaction;
 mod shell_ipc;
 
@@ -3584,6 +3585,13 @@ fn spawn_backend(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
+    // Official builds carry the public Entra application ID in the desktop
+    // binary. Development builds may inherit a valid process override. Remove
+    // the inherited value first so an invalid value never reaches the worker.
+    command.env_remove(outlook_config::CLIENT_ID_ENV);
+    if let Some(client_id) = outlook_config::configured_client_id() {
+        command.env(outlook_config::CLIENT_ID_ENV, client_id);
+    }
     for (name, value) in shell_ipc_env_pairs(shell_ipc_config) {
         command.env(name, value);
     }

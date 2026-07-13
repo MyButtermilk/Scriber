@@ -616,7 +616,7 @@ export default function Youtube() {
   }, [queryClient]);
 
   return (
-    <div className="transcription-page youtube-page mx-auto w-full max-w-[1320px] px-4 py-5 md:px-6 md:py-6">
+    <div className="app-page-shell transcription-page youtube-page px-4 py-5 md:px-6 md:py-6" data-page-shell="youtube">
       <PageIntro
         eyebrow="Media capture · 03"
         title="YouTube transcription"
