@@ -21,14 +21,21 @@ def parse_endpoint(value: str) -> str:
     return endpoint
 
 
-def configure_tauri_updater(config: dict, *, public_key: str, endpoints: list[str]) -> dict:
+def configure_tauri_updater(
+    config: dict,
+    *,
+    public_key: str,
+    endpoints: list[str],
+    create_artifacts: bool = True,
+) -> dict:
     if not public_key.strip():
         raise ValueError("Tauri updater public key is required.")
     if not endpoints:
         raise ValueError("At least one updater endpoint is required.")
 
-    bundle = config.setdefault("bundle", {})
-    bundle["createUpdaterArtifacts"] = True
+    if create_artifacts:
+        bundle = config.setdefault("bundle", {})
+        bundle["createUpdaterArtifacts"] = True
 
     plugins = config.setdefault("plugins", {})
     updater = plugins.setdefault("updater", {})
@@ -73,6 +80,7 @@ def build_release_overlay(
     updater_public_key: str,
     updater_endpoints: list[str],
     skip_updater_config: bool,
+    create_updater_artifacts: bool = True,
 ) -> dict:
     overlay: dict = {}
     configure_app_version(overlay, version)
@@ -80,7 +88,12 @@ def build_release_overlay(
     if remove_before_bundle:
         remove_before_bundle_command(overlay)
     if not skip_updater_config:
-        configure_tauri_updater(overlay, public_key=updater_public_key, endpoints=updater_endpoints)
+        configure_tauri_updater(
+            overlay,
+            public_key=updater_public_key,
+            endpoints=updater_endpoints,
+            create_artifacts=create_updater_artifacts,
+        )
     return overlay
 
 
@@ -112,6 +125,11 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-updater-config",
         action="store_true",
         help="Do not require signing keys or write updater plugin settings.",
+    )
+    parser.add_argument(
+        "--skip-updater-artifacts",
+        action="store_true",
+        help="Embed updater runtime settings without creating signed updater artifacts.",
     )
     parser.add_argument(
         "--public-key",
@@ -157,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
             updater_public_key=args.public_key,
             updater_endpoints=parsed_endpoints,
             skip_updater_config=args.skip_updater_config,
+            create_updater_artifacts=not args.skip_updater_artifacts,
         )
     else:
         config = base_config
@@ -165,7 +184,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.remove_before_bundle_command:
             remove_before_bundle_command(config)
         if not args.skip_updater_config:
-            configure_tauri_updater(config, public_key=args.public_key, endpoints=parsed_endpoints)
+            configure_tauri_updater(
+                config,
+                public_key=args.public_key,
+                endpoints=parsed_endpoints,
+                create_artifacts=not args.skip_updater_artifacts,
+            )
 
     output_path = Path(args.output).expanduser().resolve() if args.output else config_path
     written = args.write or bool(args.output)

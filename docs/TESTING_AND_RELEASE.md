@@ -640,6 +640,9 @@ It:
   on `main` or an explicit cache-refresh dispatch. Signed `v*` tag releases are
   restore-only for those large caches, so they do not spend post-job time
   uploading tag-scoped cache payloads that sibling tags cannot reliably reuse,
+- separates fast Actions-cache saves from durable GitHub release snapshots:
+  `main` warms Actions caches, while the large release-cache assets are
+  published only by a manual `refresh_release_cache_artifacts=true` run,
 - restores release caches for Python `.venv`, Python wheels, frontend
   `node_modules`, Rust/Tauri, backend sidecars, and Profile B media tools. The
   Node setup step also restores the npm package store from the normalized
@@ -661,8 +664,17 @@ It:
 - restores setup-python's pip download/build cache from
   `requirements-base.txt` and `requirements-build.txt` as a final fallback when
   both the prebuilt backend sidecar and wheelhouse/venv layers miss,
-- can import the newest internal Rust/Tauri cache artifact as a prefix fallback
-  when the exact Rust cache key is absent,
+- can import the newest internal Rust/Tauri cache artifact only when Actions
+  restore reports no matched key. A partial `cache-matched-key` is retained as
+  incremental state instead of downloading and expanding another 1.6 GB,
+- stores Cargo dependency state under a toolchain/Cargo-metadata key that does
+  not change for ordinary app source or UI edits. A separate exact Tauri app
+  binary cache is keyed by the complete app inputs, concrete version, commit,
+  toolchain, target/profile, and updater-runtime fingerprint. A validated hit
+  uses `tauri bundle`; misses use the normal `tauri build` path,
+- prunes `build\tauri-sidecar-cache` to the one metadata-attested internal key
+  before Actions save or durable publication, preventing cache generations
+  from recursively accumulating older complete PyInstaller sidecars,
 - reports exact Actions hits, ambiguous Actions `restore-key-or-miss` outputs,
   release-artifact fallbacks, and cheap path evidence separately. In GitHub
   cache terminology, `cache-hit=false` can mean a restore-key hit or a true
@@ -697,7 +709,8 @@ It:
   Cargo output from GitHub logs is counted reliably. Each captured line is
   timestamped, so the same summary also reports first-output-to-`makensis`,
   `makensis`-to-updater-signature, and first-output-to-last-output durations.
-  The capture path runs `npm run tauri:build` through
+  The capture path runs `npm run tauri:build` or, for an exact attested app
+  binary, `npm run tauri:bundle` through
   `cmd.exe /d /s /c "... 2>&1"` because Tauri/Node can write normal
   informational lines to stderr. Those lines are not release failures unless
   the native exit code is non-zero, and PowerShell must not surface them as
@@ -709,8 +722,8 @@ It:
   `inspect-tauri-cargo-fingerprints`, `measure-nsis-signing`, or
   `profile-nsis-compression-signing`,
 - includes the version-stable `tauri.conf.json`, Tauri capabilities, and app
-  icons in the main Rust release cache key so those real shell inputs still
-  invalidate the cache while patch-version-only churn does not,
+  icons in the exact Tauri app-binary key. The large Cargo dependency key is
+  intentionally limited to dependency/toolchain inputs,
 - keeps the backend sidecar version-neutral only because the Rust supervisor
   injects `SCRIBER_VERSION` and `src.version.app_version()` prefers that runtime
   value. The `tests/test_version_contract.py` regression tests protect this

@@ -823,12 +823,24 @@ Already implemented and should not be regressed:
   main Rust/Tauri build cache, Rust audio sidecar cache, and FFmpeg Profile B so
   sibling tag builds can reuse heavy outputs even when ref-scoped Actions caches
   miss. The main Rust/Tauri release artifact supports a latest-prefix fallback
-  as a warm start when the exact key is absent. Normal tag releases must restore
-  these large release-cache artifacts without repacking or clobbering them;
-  refresh them on `main` cache-warming pushes or through the manual
-  `release-windows.yml` `refresh_release_cache_artifacts=true` maintenance
-  path. Heavy Actions caches are restore-only on tag releases; explicit
-  `actions/cache/save` steps are allowed only on that refresh path.
+  only when Actions reports no matched key; a partial Actions restore must not
+  trigger the 1.6-GB fallback. `main` pushes warm exact Actions caches but do
+  not publish durable release snapshots. Those snapshots are refreshed only by
+  the manual `release-windows.yml`
+  `refresh_release_cache_artifacts=true` maintenance path. Heavy Actions caches
+  are restore-only on tag releases.
+- The Rust Actions cache is keyed by normalized Cargo dependency metadata plus
+  resolved toolchain/target/profile, not by ordinary app source. The exact
+  Tauri app binary is a separate small cache keyed by full Rust/frontend
+  sources, concrete version, commit, toolchain, target/profile, and updater
+  runtime fingerprint. A validated hit may run bundle-only packaging; NSIS,
+  updater signatures, checksums, and publication evidence are always fresh.
+- Before backend sidecar cache save/publication,
+  `scripts/ci/select_backend_sidecar_cache_entry.ps1` must validate and retain
+  exactly the current internal SHA-256 directory. Never publish the cumulative
+  `build/tauri-sidecar-cache` history. Rust/AEC/audio/diarization inputs remain
+  outside the frozen Python backend key because those independent products are
+  composed after the backend cache is created.
 - The release workflow's cache summary distinguishes exact Actions cache hits,
   ambiguous `restore-key-or-miss` Actions outputs, internal `release-artifact`
   fallbacks, and effective `miss` rows. GitHub reports both restore-key hits

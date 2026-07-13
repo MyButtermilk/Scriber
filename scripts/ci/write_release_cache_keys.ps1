@@ -161,6 +161,13 @@ Write-KeyFile -Name "frontend-dependencies.txt" -Entries $frontendEntries
 $cargoToml = Get-Content -LiteralPath (Join-Path $repoRoot "Frontend/src-tauri/Cargo.toml") -Raw
 $cargoLock = Get-Content -LiteralPath (Join-Path $repoRoot "Frontend/src-tauri/Cargo.lock") -Raw
 
+$rustDependencyEntries = New-EntryList
+Add-ContentEntry -Entries $rustDependencyEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
+Add-ContentEntry -Entries $rustDependencyEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
+$rustDependencyEntries.Add("constant`ttarget`tx86_64-pc-windows-msvc")
+$rustDependencyEntries.Add("constant`tprofile`trelease-incremental")
+Write-KeyFile -Name "rust-dependencies.txt" -Entries $rustDependencyEntries
+
 $rustEntries = New-EntryList
 Add-ContentEntry -Entries $rustEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
 Add-ContentEntry -Entries $rustEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
@@ -171,6 +178,35 @@ Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/capabilities
 Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/icons" -Filter "*"
 Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/src" -Filter "*.rs"
 Write-KeyFile -Name "rust-release.txt" -Entries $rustEntries
+
+$tauriAppEntries = New-EntryList
+foreach ($path in @(
+    "src/version.py",
+    "Frontend/package.json",
+    "Frontend/package-lock.json",
+    "Frontend/components.json",
+    "Frontend/postcss.config.js",
+    "Frontend/tsconfig.json",
+    "Frontend/vite-plugin-meta-images.ts",
+    "Frontend/vite.config.ts",
+    "Frontend/src-tauri/Cargo.toml",
+    "Frontend/src-tauri/Cargo.lock",
+    "Frontend/src-tauri/build.rs",
+    "Frontend/src-tauri/tauri.conf.json",
+    "scripts/build_windows.ps1",
+    "scripts/prepare_tauri_updater_config.py",
+    "THIRD_PARTY_NOTICES.md"
+)) {
+    Add-RawFileEntry -Entries $tauriAppEntries -Path $path
+}
+Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/client" -Filter "*"
+Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/shared" -Filter "*"
+Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/src-tauri/capabilities" -Filter "*.json"
+Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/src-tauri/icons" -Filter "*"
+Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/src-tauri/src" -Filter "*.rs"
+$tauriAppEntries.Add("constant`ttarget`tx86_64-pc-windows-msvc")
+$tauriAppEntries.Add("constant`tprofile`trelease")
+Write-KeyFile -Name "tauri-app-binary.txt" -Entries $tauriAppEntries
 
 $rustAudioEntries = New-EntryList
 Add-ContentEntry -Entries $rustAudioEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
@@ -213,26 +249,23 @@ foreach ($path in @(
     "requirements-build.txt",
     "packaging/scriber-backend.spec",
     "scripts/build_tauri_backend_sidecar.ps1",
-    "scripts/check_backend_runtime_imports.py",
-    "Frontend/src-tauri/build.rs",
-    "Frontend/src-tauri/src/audio_sidecar.rs",
-    "Frontend/src-tauri/src/audio_sidecar_client.rs",
-    "Frontend/src-tauri/src/audio_frame_pipe.rs",
-    "Frontend/src-tauri/src/meeting_aec.rs",
-    "Frontend/src-tauri/src/redaction.rs"
+    "scripts/check_backend_runtime_imports.py"
 )) {
     Add-RawFileEntry -Entries $backendEntries -Path $path
 }
 Add-FileGlobEntries -Entries $backendEntries -Root "pyloudnorm" -Filter "*.py"
-Add-ContentEntry -Entries $backendEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
-Add-ContentEntry -Entries $backendEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
-Add-FileGlobEntries -Entries $backendEntries -Root "src" -Filter "*.py" -ContentNormalizer {
-    param([string]$RelativePath, [string]$Content)
-    if ($RelativePath -eq "src/version.py") {
-        return Normalize-PythonVersionFile -Text $Content
+$backendSourceRoot = Join-Path $repoRoot "src"
+Get-ChildItem -LiteralPath $backendSourceRoot -Recurse -File |
+    Sort-Object FullName |
+    ForEach-Object {
+        $relative = Get-RelativePath $_.FullName
+        if ($relative -eq "src/version.py") {
+            $normalized = Normalize-PythonVersionFile -Text (Get-Content -LiteralPath $_.FullName -Raw)
+            $backendEntries.Add("content`t$relative`t$(Get-StringSha256 $normalized)")
+        } else {
+            $backendEntries.Add("file`t$relative`t$(Get-FileSha256 $_.FullName)")
+        }
     }
-    return $Content
-}
 $backendEntries.Add("constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v3")
-$backendEntries.Add("constant`tbackend-sidecar-flags`tBundleMediaTools;UseProfileB;ValidateSlim;BundleRustAudio;BundleRustDiarization")
+$backendEntries.Add("constant`tbackend-sidecar-flags`tBundleMediaTools;UseProfileB;ValidateSlim")
 Write-KeyFile -Name "backend-sidecar.txt" -Entries $backendEntries

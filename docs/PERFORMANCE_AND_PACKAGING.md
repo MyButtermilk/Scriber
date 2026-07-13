@@ -212,23 +212,31 @@ Packaging/build:
 - FFmpeg Profile B has a reusable GitHub release artifact fallback in addition
   to Actions cache restore, so new app tags do not need to rebuild FFmpeg when
   the Profile B source/ref/profile is unchanged.
-- GitHub release builds also restore the Python virtualenv, Python wheelhouse,
-  backend PyInstaller sidecar cache, main Rust/Tauri release cache, and Rust
-  audio sidecar cache from internal release artifacts when the normal Actions
-  cache misses. This is required because GitHub Actions caches are ref-scoped
-  and sibling app tags can miss even when their cache keys are identical.
+- GitHub release builds can also restore the Python virtualenv, Python
+  wheelhouse, backend PyInstaller sidecar cache, main Rust/Tauri release cache,
+  and Rust audio sidecar cache from internal release artifacts when the normal
+  Actions cache has no matching key. A non-empty Rust
+  `cache-matched-key` suppresses the multi-GB fallback because a partial
+  Actions restore is already useful incremental state.
 - The backend sidecar cache key includes the resolved Python version plus
   builder-relevant inputs such as `requirements-build.txt`, `pyloudnorm`, the
   runtime import checker, and release media/sidecar mode constants. This keeps
   the workflow-level backend sidecar cache aligned with the internal PyInstaller
   sidecar manifest, which matters because a restored backend sidecar skips
-  Python dependency installation.
+  Python dependency installation. Rust/Cargo/AEC/audio/diarization inputs are
+  deliberately excluded: those products are assembled after the frozen Python
+  cache and have independent keys, manifests, and self-tests.
 - Normal tag releases do not repack or clobber those large internal
-  release-cache artifacts. Cache asset refresh runs on `main` pushes, which are
-  the cache-warming path, and is also opt-in via the manual
-  `release-windows.yml` workflow input `refresh_release_cache_artifacts=true`.
-  Routine signed app releases avoid minutes of `.venv`/wheelhouse/Rust/backend
-  artifact compression and upload when only app code or prompts changed.
+  release-cache artifacts. `main` pushes warm exact Actions caches only;
+  durable release snapshots are published solely by the manual
+  `release-windows.yml` input `refresh_release_cache_artifacts=true`. Routine
+  main/tag builds therefore avoid minutes of `.venv`/wheelhouse/Rust/backend
+  artifact compression and upload.
+- Before saving or publishing `build\tauri-sidecar-cache`, the workflow runs
+  `scripts\ci\select_backend_sidecar_cache_entry.ps1`. It validates the
+  current metadata/manifest and removes every older internal hash directory.
+  This fixes the former cumulative archive shape in which every cache
+  generation contained all prior 180-287 MiB frozen sidecars.
 - Normal tag releases now use `actions/cache/restore` for heavyweight caches and
   never run the matching `actions/cache/save` steps. Explicit cache saves are
   gated to `main` and manual refresh runs. The backend sidecar restore is
@@ -270,30 +278,33 @@ Packaging/build:
   also removes Tauri's `beforeBuildCommand`; `backend-sidecar` prepares
   `Frontend\src-tauri\target\release\backend` plus
   `build\tauri-sidecar-cache`; `ffmpeg-profile-b` restores or builds
-  `build\ffmpeg-profile-b-msys2`; and `tauri-rust-target` runs the same
-  generated Tauri no-bundle config to warm `Frontend\src-tauri\target\release`
-  before the final `package-installer` job downloads those artifacts and runs
-  signed Tauri/NSIS packaging.
+  `build\ffmpeg-profile-b-msys2`; and the app compile produces an exact,
+  attested `scriber-desktop.exe` cache (normally about 14 MiB). The final
+  package phase restores that binary plus independently validated resources and
+  runs `tauri bundle`, NSIS, updater signing, and publication checks. Do not
+  transfer the multi-GB Rust target tree between runners by default.
 - Keep this parallel path opt-in or limited to cache-refresh runs until a
   measurement proves it beats the hot signed tag path. Hot runs with exact
   backend sidecar, Rust build, Rust audio sidecar, FFmpeg, frontend dependency,
   and Tauri bundler hits are already dominated by final Tauri/NSIS packaging;
   forcing artifact upload/download from parallel jobs can make those runs
   slower.
-- The Rust release cache and internal Rust release artifact include
-  `target\release\incremental`; CI builds set `CARGO_INCREMENTAL=1` for the main
-  Tauri release binary. This is deliberate because the release workflow also
-  keeps Cargo package metadata stable, so version-only app releases and small
-  Rust-shell edits can reuse more codegen work.
+- The Actions Rust cache is dependency/toolchain keyed rather than app-source
+  keyed and includes `target\release\incremental`; CI builds set
+  `CARGO_INCREMENTAL=1`. App/Rust/UI source changes therefore do not create a
+  fresh 1.3+ GiB dependency cache. The separate exact Tauri app binary key
+  covers concrete version, full Rust/frontend inputs, resolved toolchain,
+  target/profile, commit, and updater runtime fingerprint.
 - The Tauri shell library is built only as `rlib` for the Windows desktop
   release path. Tauri's `staticlib`/`cdylib` crate types are for mobile
   targets; keeping them in this Windows-first app produced extra library
   artifacts such as `scriber_desktop_lib.dll` and a large static `.lib` without
   helping the NSIS updater build.
-- The main Rust release cache key includes real Tauri shell inputs such as
-  `tauri.conf.json`, capabilities, and icons, while the release-only concrete
-  app version stays in the generated overlay. This avoids stale shell caches
-  without turning every patch version bump into a full Rust cache miss.
+- The exact Tauri app-binary key includes real shell inputs such as
+  `tauri.conf.json`, capabilities, icons, full frontend/Rust sources, and the
+  concrete version. The much larger Cargo dependency key excludes those app
+  inputs so a UI or shell edit does not create another multi-GB dependency
+  cache.
 - The release workflow can set Cargo fingerprint diagnostics through the
   optional `SCRIBER_CARGO_LOG` GitHub variable. Use
   `cargo::core::compiler::fingerprint=info` only for investigation runs where
@@ -419,7 +430,8 @@ Release workflow:
   wheelhouse of built wheels for package restores, `Frontend\node_modules`
   keyed by the frontend lockfile with npm's package cache as fallback,
   project-local Cargo registry/git caches plus selected `target\release`
-  dependency build directories keyed by the Rust lockfile/source set, the Tauri
+  dependency build directories keyed by normalized Cargo metadata and the
+  resolved Rust toolchain, the Tauri
   bundler download cache, the PyInstaller/Rust-audio sidecar caches, and the
   Profile B media-tool output keyed by FFmpeg ref plus a manual cache profile
   version. Cache hits and restore-key hits still run the relevant validation
@@ -428,12 +440,12 @@ Release workflow:
 - Actions cache is treated as the fast first layer, not the durable layer. When
   sibling tag refs cannot see each other's caches, the workflow restores
   durable internal release artifacts from `release-cache-python-venv-v1`,
-  `release-cache-python-wheelhouse-v2`, `release-cache-backend-sidecar-v1`,
+  `release-cache-python-wheelhouse-v2`, `release-cache-backend-sidecar-v2`,
   `release-cache-rust-build-v2`, `release-cache-rust-audio-sidecar-v1`, and
   `ffmpeg-profile-b-n7.0-v3`. Those releases are implementation caches, not
-  user-facing app updates, and are published with `--latest=false`. `main`
-  pushes may refresh them after real cache misses; signed `v*` tag releases
-  normally only restore them.
+  user-facing app updates, and are published with `--latest=false`. Only an
+  explicit manual cache-refresh dispatch publishes them; ordinary `main` and
+  signed `v*` runs do not.
 - The release workflow prints a cache-layer summary that separates exact
   Actions cache hits, ambiguous Actions `restore-key-or-miss` outputs, and
   internal release-artifact fallbacks. A yellow `Cache not found` line in an
@@ -562,15 +574,16 @@ Release workflow:
   the installed package version from Tauri package metadata instead of
   `CARGO_PKG_VERSION`, because Cargo's package version is a stable internal
   build-cache input.
-- The main Tauri desktop binary uses a two-layer Rust cache: Actions cache
-  first, then a normalized internal release artifact that contains Cargo
+- The main Tauri desktop build uses a stable Actions dependency cache first,
+  then an optional normalized internal release artifact that contains Cargo
   registry/git data plus selected `target\release` directories, including the
   release incremental cache.
   The artifact is intentionally scoped to reusable dependency build state, not
-  a blindly archived final installer output. If the exact Rust key is absent,
+  a blindly archived final installer output. If no Actions key matched,
   the workflow can import the newest `scriber-rust-build-Windows-*` artifact as
-  a warm-start and republishes a new exact artifact after Cargo has rebuilt the
-  changed crates.
+  a warm-start. Publishing a new exact durable snapshot is manual maintenance,
+  not part of ordinary main/tag runs. The compiled app itself is cached
+  separately as a small exact attested binary.
 - The signed release workflow installs only `requirements-base.txt` and
   `requirements-build.txt`. `requirements-dev.txt` is intentionally excluded
   because the packaging step skips the Python unit suite; run tests before

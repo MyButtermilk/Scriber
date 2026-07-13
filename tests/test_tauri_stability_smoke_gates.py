@@ -382,7 +382,10 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "--remove-before-bundle-command" in build
     assert "--skip-updater-config" in build
     assert "--nsis-compression" in build
-    assert "npm run tauri:build -- --bundles \"{0}\" --config \"{1}\" 2>&1" in build
+    assert "npm run tauri:build -- --bundles \"{0}\" --config \"{1}\" --ci 2>&1" in build
+    assert "npm run tauri:bundle -- --bundles \"{0}\" --config \"{1}\" --ci 2>&1" in build
+    assert "[switch]$UsePrebuiltTauriApp" in build
+    assert "[switch]$ConfigureTauriUpdaterRuntime" in build
     assert "function Add-TauriBeforeBundleCommandSwitch" not in build
     assert "function Add-TauriBeforeBundleCommandValueSwitch" not in build
     assert "function Set-Utf8NoBomContent" not in build
@@ -471,7 +474,10 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "Release cache key fingerprints" in workflow
     assert "If a cache misses, compare these fingerprints with the previous run" in workflow
     assert "build/cache-keys/frontend-dependencies.txt" in workflow
+    assert "build/cache-keys/rust-dependencies.txt" in workflow
     assert "build/cache-keys/rust-release.txt" in workflow
+    assert "build/cache-keys/tauri-app-binary.txt" in workflow
+    assert '"runtime`tsource-commit`t$env:GITHUB_SHA"' in workflow
     assert "build/cache-keys/rust-audio-sidecar.txt" in workflow
     assert "build/cache-keys/rust-diarization-sidecar.txt" in workflow
     assert "build/cache-keys/sherpa-onnx-archive.txt" in workflow
@@ -490,7 +496,7 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert 'Name = "npm package store"' in workflow
     assert "not-needed-node_modules" in workflow
     assert "hashFiles('build/cache-keys/frontend-dependencies.txt')" in workflow
-    assert "key: scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}" in workflow
+    assert "key: scriber-backend-sidecar-v2-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}" in workflow
     assert "scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip" in workflow
     assert "Resolve cached FFmpeg Profile B media tools" in workflow
     assert "Restore FFmpeg Profile B release artifact" in workflow
@@ -552,17 +558,25 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "Report release cache hits" in workflow
     assert "Export Rust build release artifact" in workflow
     assert (
-        "env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && "
-        "steps.rust-build-cache.outputs.cache-hit != 'true' && "
+        "env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && "
         "steps.rust-build-artifact.outputs.exact != 'true'"
     ) in workflow
+    assert "steps.rust-build-cache.outputs.cache-matched-key == ''" in workflow
+    assert "SCRIBER_SAVE_ACTIONS_CACHES" in workflow
+    assert "SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS" in workflow
+    assert "Select current backend sidecar cache entry" in workflow
+    assert "scripts\\ci\\select_backend_sidecar_cache_entry.ps1" in workflow
+    assert "Restore exact Tauri app binary" in workflow
+    assert "scripts\\ci\\sync_tauri_app_binary_cache.ps1" in workflow
 
 
 def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     script = read_script("scripts/ci/write_release_cache_keys.ps1")
 
     assert "frontend-dependencies.txt" in script
+    assert "rust-dependencies.txt" in script
     assert "rust-release.txt" in script
+    assert "tauri-app-binary.txt" in script
     assert "rust-audio-sidecar.txt" in script
     assert "rust-diarization-sidecar.txt" in script
     assert "sherpa-onnx-archive.txt" in script
@@ -578,7 +592,10 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert '"scripts/check_backend_runtime_imports.py"' in script
     assert 'Add-FileGlobEntries -Entries $backendEntries -Root "pyloudnorm" -Filter "*.py"' in script
     assert 'constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v3' in script
-    assert 'constant`tbackend-sidecar-flags`tBundleMediaTools;UseProfileB;ValidateSlim;BundleRustAudio;BundleRustDiarization' in script
+    assert 'constant`tbackend-sidecar-flags`tBundleMediaTools;UseProfileB;ValidateSlim' in script
+    backend_block = script.split("$backendEntries = New-EntryList", 1)[1]
+    assert "Frontend/src-tauri/Cargo.toml" not in backend_block
+    assert "Frontend/src-tauri/src/audio_sidecar.rs" not in backend_block
 
 
 def test_release_cache_key_outputs_are_stable_for_version_only_churn() -> None:
@@ -671,7 +688,10 @@ def test_release_cache_key_outputs_are_stable_for_version_only_churn() -> None:
 
         after = run_cache_key_script("after")
 
+        tauri_before = before.pop("tauri-app-binary.txt")
+        tauri_after = after.pop("tauri-app-binary.txt")
         assert before == after
+        assert tauri_before != tauri_after
     finally:
         for path, content in original_bytes.items():
             path.write_bytes(content)

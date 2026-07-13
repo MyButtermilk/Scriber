@@ -29,11 +29,16 @@ jobs:
       SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME: scriber-ffmpeg-profile-b-n7.0-v3-Windows.zip
       SCRIBER_PYTHON_VENV_ARTIFACT_TAG: release-cache-python-venv-v1
       SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG: release-cache-python-wheelhouse-v2
-      SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG: release-cache-backend-sidecar-v1
+      SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG: release-cache-backend-sidecar-v2
       SCRIBER_RUST_BUILD_ARTIFACT_TAG: release-cache-rust-build-v2
       SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG: release-cache-rust-audio-sidecar-v1
       SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG: release-cache-rust-diarization-sidecar-v1
-      SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'true' || 'false' }}
+      # Main warms the fast Actions caches used by the following tag build.
+      # Multi-hundred-MB/GB durable release snapshots are opt-in maintenance
+      # artifacts and must not delay every main build.
+      SCRIBER_SAVE_ACTIONS_CACHES: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'true' || 'false' }}
+      SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
+      SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}
       CARGO_HOME: ${{ github.workspace }}/.cargo
       CARGO_INCREMENTAL: "1"
@@ -53,7 +58,9 @@ jobs:
         run: |
           $keyFiles = @(
             "frontend-dependencies.txt",
+            "rust-dependencies.txt",
             "rust-release.txt",
+            "tauri-app-binary.txt",
             "rust-audio-sidecar.txt",
             "rust-diarization-sidecar.txt",
             "sherpa-onnx-archive.txt",
@@ -81,17 +88,14 @@ jobs:
           }
 
           if ($env:GITHUB_STEP_SUMMARY) {
-            $summary = @(
-              "### Release cache key fingerprints",
-              "",
-              "| Key file | Inputs | SHA-256 prefix |",
-              "| --- | ---: | --- |"
-            )
+            $summary = [System.Collections.Generic.List[string]]::new()
+            [void]$summary.Add("### Release cache key fingerprints")
+            [void]$summary.Add("")
             foreach ($row in $rows) {
-              $summary += ("| {0} | {1} | `{2}` |" -f $row.Name, $row.Entries, $row.Short)
+              [void]$summary.Add(("- {0}: {1} inputs, SHA-256 prefix ``{2}``" -f $row.Name, $row.Entries, $row.Short))
             }
-            $summary += ""
-            $summary += "If a cache misses, compare these fingerprints with the previous run before assuming dependencies were rebuilt unnecessarily."
+            [void]$summary.Add("")
+            [void]$summary.Add("If a cache misses, compare these fingerprints with the previous run before assuming dependencies were rebuilt unnecessarily.")
             $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           }
 
@@ -116,6 +120,57 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Add Rust toolchain cache fingerprint
+        shell: pwsh
+        env:
+          SCRIBER_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.SCRIBER_TAURI_UPDATER_PUBLIC_KEY }}
+          SCRIBER_TAURI_UPDATER_ENDPOINT: ${{ vars.SCRIBER_TAURI_UPDATER_ENDPOINT }}
+        run: |
+          $rustc = ((rustc -Vv) -join "`n").Trim()
+          $cargo = ((cargo -Vv) -join "`n").Trim()
+          foreach ($path in @("build\cache-keys\rust-dependencies.txt", "build\cache-keys\tauri-app-binary.txt")) {
+            "toolchain`trustc`t$rustc" | Add-Content -LiteralPath $path -Encoding utf8
+            "toolchain`tcargo`t$cargo" | Add-Content -LiteralPath $path -Encoding utf8
+          }
+          $sha = [System.Security.Cryptography.SHA256]::Create()
+          try {
+            $publicKeyBytes = [System.Text.Encoding]::UTF8.GetBytes([string]$env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY)
+            $publicKeyHash = [Convert]::ToHexString($sha.ComputeHash($publicKeyBytes)).ToLowerInvariant()
+          } finally {
+            $sha.Dispose()
+          }
+          $endpoint = [string]$env:SCRIBER_TAURI_UPDATER_ENDPOINT
+          if ([string]::IsNullOrWhiteSpace($endpoint)) {
+            $endpoint = "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json"
+          }
+          "runtime`tupdater-public-key-sha256`t$publicKeyHash" | Add-Content -LiteralPath "build\cache-keys\tauri-app-binary.txt" -Encoding utf8
+          "runtime`tupdater-endpoint`t$endpoint" | Add-Content -LiteralPath "build\cache-keys\tauri-app-binary.txt" -Encoding utf8
+          "runtime`tsource-commit`t$env:GITHUB_SHA" | Add-Content -LiteralPath "build\cache-keys\tauri-app-binary.txt" -Encoding utf8
+          $dynamicRows = @()
+          foreach ($path in @("build\cache-keys\rust-dependencies.txt", "build\cache-keys\tauri-app-binary.txt")) {
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            $dynamicRows += [ordered]@{
+              Name = Split-Path -Leaf $path
+              Entries = @(Get-Content -LiteralPath $path).Count
+              Hash = $hash
+            }
+            Write-Host ("Final dynamic cache fingerprint {0}: entries={1}; sha256={2}" -f (Split-Path -Leaf $path), @(Get-Content -LiteralPath $path).Count, $hash.Substring(0, 12))
+          }
+          if ($env:GITHUB_STEP_SUMMARY) {
+            $summary = [System.Collections.Generic.List[string]]::new()
+            foreach ($line in @(
+              "### Toolchain-bound cache fingerprints",
+              ""
+            )) {
+              [void]$summary.Add($line)
+            }
+            foreach ($row in $dynamicRows) {
+              [void]$summary.Add(("- {0}: {1} inputs, SHA-256 prefix ``{2}``" -f $row.Name, $row.Entries, $row.Hash.Substring(0, 12)))
+            }
+            [void]$summary.Add("")
+            $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
       - name: Restore Rust build cache
         id: rust-build-cache
         uses: actions/cache/restore@v6
@@ -128,14 +183,18 @@ jobs:
             Frontend/src-tauri/target/release/build
             Frontend/src-tauri/target/release/deps
             Frontend/src-tauri/target/release/incremental
-          key: scriber-rust-release-v2-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-release.txt') }}
+          key: scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}
           restore-keys: |
+            scriber-rust-dependencies-v1-${{ runner.os }}-
             scriber-rust-release-v2-${{ runner.os }}-
             scriber-rust-release-${{ runner.os }}-
 
       - name: Restore Rust build release artifact
         id: rust-build-artifact
-        if: steps.rust-build-cache.outputs.cache-hit != 'true'
+        # A restore-key hit already supplied a useful incremental target. Do
+        # not replace it with a 1.6 GB durable fallback merely because
+        # actions/cache reports cache-hit=false for partial matches.
+        if: steps.rust-build-cache.outputs.cache-matched-key == ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -157,6 +216,29 @@ jobs:
             -CacheRoot build\rust-release-cache `
             -CargoHome $env:CARGO_HOME `
             -TargetDir Frontend\src-tauri\target
+
+      - name: Restore exact Tauri app binary
+        id: tauri-app-binary-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: build/tauri-app-binary-cache
+          key: scriber-tauri-app-binary-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
+
+      - name: Import exact Tauri app binary
+        id: tauri-app-binary-import
+        if: steps.tauri-app-binary-cache.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          $version = (python -c "from scripts.create_release_metadata import read_version; print(read_version())").Trim()
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\sync_tauri_app_binary_cache.ps1 `
+            -Mode Import `
+            -CacheKey "${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}" `
+            -Version $version
+
+      - name: Remove app outputs from restored Rust dependency state
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\prune_rust_dependency_cache.ps1
 
       - name: Restore Rust audio sidecar cache
         id: rust-audio-sidecar-cache
@@ -197,9 +279,9 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: build/tauri-sidecar-cache
-          key: scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}
+          key: scriber-backend-sidecar-v2-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}
           restore-keys: |
-            scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-
+            scriber-backend-sidecar-v2-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-
 
       - name: Restore backend sidecar release artifact
         id: backend-sidecar-artifact
@@ -399,6 +481,7 @@ jobs:
           $backendSidecarArtifactRestored = Normalize-CacheOutput "${{ steps.backend-sidecar-artifact.outputs.restored }}"
           $backendSidecarPrebuilt = ($backendSidecarCacheHit -eq "true") -or ($backendSidecarArtifactRestored -eq "true")
           $rustBuildCacheHit = Normalize-CacheOutput "${{ steps.rust-build-cache.outputs.cache-hit }}"
+          $rustBuildCacheMatchedKey = Normalize-CacheOutput "${{ steps.rust-build-cache.outputs.cache-matched-key }}"
           $rustBuildArtifactRestored = Normalize-CacheOutput "${{ steps.rust-build-artifact.outputs.restored }}"
           $rustBuildArtifactExact = Normalize-CacheOutput "${{ steps.rust-build-artifact.outputs.exact }}"
           $rustBuildArtifactImported = Normalize-CacheOutput "${{ steps.rust-build-artifact-import.outputs.imported }}"
@@ -414,6 +497,7 @@ jobs:
           $ffmpegProfileBCacheHit = Normalize-CacheOutput "${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}"
           $ffmpegProfileBArtifactRestored = Normalize-CacheOutput "${{ steps.ffmpeg-profile-b-artifact.outputs.restored }}"
           $tauriBundlerCacheHit = Normalize-CacheOutput "${{ steps.tauri-bundler-cache.outputs.cache-hit }}"
+          $tauriAppBinaryCacheHit = Normalize-CacheOutput "${{ steps.tauri-app-binary-cache.outputs.cache-hit }}"
 
           if ($rustBuildCacheHit -eq "true") {
             $rustBuildEffective = "actions-cache-exact"
@@ -440,6 +524,7 @@ jobs:
             [ordered]@{ Name = "npm package store"; Actions = (Get-ActionsCacheLayer $npmPackageStoreCacheHit); ReleaseArtifact = "n/a"; Effective = $npmPackageStoreEffective }
             [ordered]@{ Name = "Backend sidecar"; Actions = (Get-ActionsCacheLayer $backendSidecarCacheHit); ReleaseArtifact = $backendSidecarArtifactRestored; Effective = (Get-EffectiveCacheSource $backendSidecarCacheHit $backendSidecarArtifactRestored) }
             [ordered]@{ Name = "Rust build"; Actions = (Get-ActionsCacheLayer $rustBuildCacheHit); ReleaseArtifact = $rustBuildArtifactRestored; Effective = $rustBuildEffective }
+            [ordered]@{ Name = "Tauri app binary"; Actions = (Get-ActionsCacheLayer $tauriAppBinaryCacheHit); ReleaseArtifact = "n/a"; Effective = (Get-EffectiveCacheSource $tauriAppBinaryCacheHit "empty") }
             [ordered]@{ Name = "Rust audio sidecar"; Actions = (Get-ActionsCacheLayer $rustAudioSidecarCacheHit); ReleaseArtifact = $rustAudioSidecarArtifactRestored; Effective = (Get-EffectiveCacheSource $rustAudioSidecarCacheHit $rustAudioSidecarArtifactRestored) }
             [ordered]@{ Name = "Rust diarization sidecar"; Actions = (Get-ActionsCacheLayer $rustDiarizationSidecarCacheHit); ReleaseArtifact = $rustDiarizationSidecarArtifactRestored; Effective = (Get-EffectiveCacheSource $rustDiarizationSidecarCacheHit $rustDiarizationSidecarArtifactRestored) }
             [ordered]@{ Name = "Sherpa ONNX static archive"; Actions = (Get-ActionsCacheLayer $sherpaOnnxArchiveCacheHit); ReleaseArtifact = "n/a"; Effective = (Get-EffectiveCacheSource $sherpaOnnxArchiveCacheHit "empty") }
@@ -455,6 +540,7 @@ jobs:
             Get-PathEvidence "Rust build" @(".cargo\registry\index", ".cargo\registry\cache", ".cargo\git\db", "Frontend\src-tauri\target\release\.fingerprint", "Frontend\src-tauri\target\release\deps", "Frontend\src-tauri\target\release\incremental")
             Get-PathEvidence "Rust build Cargo cache" @(".cargo\registry\index", ".cargo\registry\cache", ".cargo\git\db")
             Get-PathEvidence "Rust build target cache" @("Frontend\src-tauri\target\release\.fingerprint", "Frontend\src-tauri\target\release\deps", "Frontend\src-tauri\target\release\incremental")
+            Get-PathEvidence "Tauri app binary" @("build\tauri-app-binary-cache\scriber-desktop.exe")
             Get-PathEvidence "Rust audio sidecar" @("build\rust-audio-sidecar-cache")
             Get-PathEvidence "Rust diarization sidecar" @("build\rust-diarization-sidecar-cache")
             Get-PathEvidence "Sherpa ONNX static archive" @("build\sherpa-onnx-archive-cache")
@@ -475,10 +561,13 @@ jobs:
           [ordered]@{
             generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
             refreshReleaseCacheArtifacts = $env:SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS
+            saveActionsCaches = $env:SCRIBER_SAVE_ACTIONS_CACHES
+            publishReleaseCacheArtifacts = $env:SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS
             note = "Actions cache layer restore-key-or-miss means GitHub returned cache-hit=false; inspect pathEvidence and releaseArtifact fields before treating it as a rebuild."
             rows = $rows
             pathEvidence = $pathRows
             rustBuildReleaseArtifact = [ordered]@{
+              actionsMatchedKey = $rustBuildCacheMatchedKey
               exact = $rustBuildArtifactExact
               restored = $rustBuildArtifactRestored
               imported = $rustBuildArtifactImported
@@ -568,7 +657,7 @@ jobs:
           }
 
       - name: Publish Python venv release artifact
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && (steps.python-dependencies.outputs.venv-rebuilt == 'true' || (steps.python-venv-cache.outputs.cache-hit != 'true' && steps.python-venv-artifact.outputs.restored != 'true'))
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && (steps.python-dependencies.outputs.venv-rebuilt == 'true' || (steps.python-venv-cache.outputs.cache-hit != 'true' && steps.python-venv-artifact.outputs.restored != 'true'))
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -581,7 +670,7 @@ jobs:
             -Title "Scriber Python Virtualenv Cache v1"
 
       - name: Publish Python wheelhouse release artifact
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true' && steps.python-wheelhouse-artifact.outputs.restored != 'true'
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true' && steps.python-wheelhouse-artifact.outputs.restored != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -594,14 +683,14 @@ jobs:
             -Title "Scriber Python Wheelhouse Cache v2"
 
       - name: Save Python dependency cache
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.python-venv-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.python-venv-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: .venv
           key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
 
       - name: Save Python wheelhouse cache
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: build/python-wheelhouse
@@ -624,7 +713,7 @@ jobs:
           Write-Host "Using cached Frontend/node_modules with npm install metadata."
 
       - name: Save frontend dependency cache
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: Frontend/node_modules
@@ -737,7 +826,7 @@ jobs:
           & $report.ffprobe.path -version
 
       - name: Publish FFmpeg Profile B release artifact
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.ffmpeg-profile-b-resolve.outputs.usable != 'true'
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.ffmpeg-profile-b-resolve.outputs.usable != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -749,7 +838,7 @@ jobs:
             -BuildRoot build\ffmpeg-profile-b-msys2
 
       - name: Save FFmpeg Profile B cache
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.ffmpeg-profile-b-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.ffmpeg-profile-b-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: |
@@ -812,6 +901,14 @@ jobs:
             Write-Host "Skipping source media preparation smoke because this cached sidecar fast path did not install Python dependencies."
           }
           $isTagRelease = $env:GITHUB_REF_TYPE -eq "tag"
+          $usePrebuiltTauriApp = (
+            "${{ steps.tauri-app-binary-import.outputs.usable }}" -eq "true" -and
+            $env:SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE -ne "1"
+          )
+          if ($usePrebuiltTauriApp) {
+            $buildArgs += "-UsePrebuiltTauriApp"
+            Write-Host "Using exact attested Tauri app binary; this run will execute bundle/sign/package only."
+          }
           if ($isTagRelease) {
             $effectiveNsisCompression = $env:SCRIBER_NSIS_COMPRESSION
             if (-not $effectiveNsisCompression) {
@@ -849,6 +946,13 @@ jobs:
           } elseif ($hasUpdaterSigning) {
             Write-Host "Skipping Tauri updater signing for non-tag workflow build; installer artifacts will be uploaded to GitHub Actions only."
           }
+          if (-not $isTagRelease -and $env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY) {
+            $buildArgs += @("-ConfigureTauriUpdaterRuntime", "-UpdaterPublicKey", $env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY)
+            if ($env:SCRIBER_TAURI_UPDATER_ENDPOINT) {
+              $buildArgs += @("-UpdaterEndpoint", $env:SCRIBER_TAURI_UPDATER_ENDPOINT)
+            }
+            Write-Host "Embedding the release updater runtime configuration in the non-tag app binary without creating signed updater artifacts."
+          }
           if ($env:SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE -eq "1") {
             $buildArgs += "-RequireAuthenticodeSignature"
             if ($env:SCRIBER_AUTHENTICODE_PUBLISHER) {
@@ -859,6 +963,24 @@ jobs:
             }
           }
           powershell @buildArgs
+
+      - name: Export exact Tauri app binary
+        id: tauri-app-binary-export
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.tauri-app-binary-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $version = (python -c "from scripts.create_release_metadata import read_version; print(read_version())").Trim()
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\sync_tauri_app_binary_cache.ps1 `
+            -Mode Export `
+            -CacheKey "${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}" `
+            -Version $version
+
+      - name: Save exact Tauri app binary
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.tauri-app-binary-cache.outputs.cache-hit != 'true' && steps.tauri-app-binary-export.outputs.usable == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: build/tauri-app-binary-cache
+          key: scriber-tauri-app-binary-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
 
       - name: Report Windows installer timing
         if: always()
@@ -935,9 +1057,16 @@ jobs:
           if-no-files-found: warn
           compression-level: 0
 
+      - name: Select current backend sidecar cache entry
+        id: backend-sidecar-cache-selection
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' || env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true'
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\select_backend_sidecar_cache_entry.ps1
+
       - name: Export Rust build release artifact
         id: rust-build-artifact-export
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true' && steps.rust-build-artifact.outputs.exact != 'true'
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true'
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\sync_rust_release_cache_artifact.ps1 `
@@ -947,7 +1076,7 @@ jobs:
             -TargetDir Frontend\src-tauri\target
 
       - name: Publish Rust build release artifact
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true' && steps.rust-build-artifact.outputs.exact != 'true' && steps.rust-build-artifact-export.outputs.staged == 'true'
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true' && steps.rust-build-artifact-export.outputs.staged == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -959,8 +1088,16 @@ jobs:
             -SourcePath build\rust-release-cache `
             -Title "Scriber Rust Build Cache v2"
 
+      - name: Remove app outputs before saving Rust dependency cache
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\prune_rust_dependency_cache.ps1
+
       - name: Save Rust build cache
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true'
+        # Save stable dependency output only. App/library fingerprints and
+        # objects are covered by the small exact Tauri binary cache instead.
         uses: actions/cache/save@v6
         with:
           path: |
@@ -971,10 +1108,10 @@ jobs:
             Frontend/src-tauri/target/release/build
             Frontend/src-tauri/target/release/deps
             Frontend/src-tauri/target/release/incremental
-          key: scriber-rust-release-v2-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-release.txt') }}
+          key: scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}
 
       - name: Publish Rust audio sidecar release artifact
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-audio-sidecar-artifact.outputs.restored != 'true'
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-audio-sidecar-artifact.outputs.restored != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -987,14 +1124,14 @@ jobs:
             -Title "Scriber Rust Audio Sidecar Cache v1"
 
       - name: Save Rust audio sidecar cache
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: build/rust-audio-sidecar-cache
           key: scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}
 
       - name: Publish Rust diarization sidecar release artifact
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-diarization-sidecar-artifact.outputs.restored != 'true'
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-diarization-sidecar-artifact.outputs.restored != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1007,21 +1144,21 @@ jobs:
             -Title "Scriber Rust Diarization Sidecar Cache v1"
 
       - name: Save Rust diarization sidecar cache
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: build/rust-diarization-sidecar-cache
           key: scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}
 
       - name: Save Sherpa ONNX static archive cache
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.sherpa-onnx-archive-cache.outputs.cache-hit != 'true' && hashFiles('build/sherpa-onnx-archive-cache/**') != ''
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.sherpa-onnx-archive-cache.outputs.cache-hit != 'true' && hashFiles('build/sherpa-onnx-archive-cache/**') != ''
         uses: actions/cache/save@v6
         with:
           path: build/sherpa-onnx-archive-cache
           key: scriber-sherpa-onnx-archive-${{ runner.os }}-${{ hashFiles('build/cache-keys/sherpa-onnx-archive.txt') }}
 
       - name: Publish backend sidecar release artifact
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true'
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.backend-sidecar-cache-selection.outputs.selected == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1031,17 +1168,17 @@ jobs:
             -Tag $env:SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG `
             -AssetName "scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip" `
             -SourcePath build\tauri-sidecar-cache `
-            -Title "Scriber Backend Sidecar Cache v1"
+            -Title "Scriber Backend Sidecar Cache v2"
 
       - name: Save backend sidecar cache
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-cache-selection.outputs.selected == 'true'
         uses: actions/cache/save@v6
         with:
           path: build/tauri-sidecar-cache
-          key: scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}
+          key: scriber-backend-sidecar-v2-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}
 
       - name: Save Tauri bundler cache
-        if: env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.tauri-bundler-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.tauri-bundler-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: |
@@ -1097,6 +1234,9 @@ jobs:
           Copy-Item Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt release-artifacts\
           if (Test-Path -LiteralPath build\release-cache-summary.json -PathType Leaf) {
             Copy-Item -LiteralPath build\release-cache-summary.json -Destination release-artifacts\
+          }
+          if (Test-Path -LiteralPath build\backend-sidecar-cache-selection.json -PathType Leaf) {
+            Copy-Item -LiteralPath build\backend-sidecar-cache-selection.json -Destination release-artifacts\
           }
 
       - name: Summarize release artifact timing

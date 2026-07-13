@@ -18,6 +18,8 @@ param(
     [string[]]$Bundles = @("nsis"),
     [string]$ReleaseBaseUrl = "",
     [switch]$EnableTauriUpdater,
+    [switch]$ConfigureTauriUpdaterRuntime,
+    [switch]$UsePrebuiltTauriApp,
     [string]$UpdaterEndpoint = "",
     [string]$UpdaterPublicKey = "",
     [switch]$RequireUpdaterSignatures,
@@ -365,6 +367,12 @@ if ($UseProfileBFfmpeg) {
 if ($FastLocalInstaller -and $FastLocalStagedApp) {
     throw "Use either -FastLocalInstaller or -FastLocalStagedApp, not both."
 }
+if ($EnableTauriUpdater -and $ConfigureTauriUpdaterRuntime) {
+    throw "Use either -EnableTauriUpdater or -ConfigureTauriUpdaterRuntime, not both."
+}
+if ($UsePrebuiltTauriApp -and $FastLocalStagedApp) {
+    throw "-UsePrebuiltTauriApp cannot be combined with -FastLocalStagedApp."
+}
 if ($FastLocalStagedApp -and $NsisCompression) {
     throw "-NsisCompression only applies to installer builds, not -FastLocalStagedApp."
 }
@@ -514,12 +522,15 @@ try {
                 if ($NsisCompression) {
                     $configArgs += @("--nsis-compression", $NsisCompression)
                 }
-                if ($EnableTauriUpdater) {
+                if ($EnableTauriUpdater -or $ConfigureTauriUpdaterRuntime) {
                     if ($UpdaterEndpoint) {
                         $configArgs += @("--endpoint", $UpdaterEndpoint)
                     }
                     if ($UpdaterPublicKey) {
                         $configArgs += @("--public-key", $UpdaterPublicKey)
+                    }
+                    if ($ConfigureTauriUpdaterRuntime) {
+                        $configArgs += @("--skip-signing-key-check", "--skip-updater-artifacts")
                     }
                 } else {
                     $configArgs += "--skip-updater-config"
@@ -572,7 +583,15 @@ try {
                 $tauriLogWriter = [System.IO.StreamWriter]::new($tauriBundleLogPath, $false, $tauriLogEncoding)
                 $quotedConfigPath = $tauriBuildConfigPath.Replace('"', '\"')
                 $quotedBundleArg = $bundleArg.Replace('"', '\"')
-                $tauriCommand = 'npm run tauri:build -- --bundles "{0}" --config "{1}" 2>&1' -f $quotedBundleArg, $quotedConfigPath
+                if ($UsePrebuiltTauriApp) {
+                    $prebuiltExe = Join-Path $RepoRoot "Frontend\src-tauri\target\release\scriber-desktop.exe"
+                    if (-not (Test-Path -LiteralPath $prebuiltExe -PathType Leaf)) {
+                        throw "Prebuilt Tauri app executable was not found: $prebuiltExe"
+                    }
+                    $tauriCommand = 'npm run tauri:bundle -- --bundles "{0}" --config "{1}" --ci 2>&1' -f $quotedBundleArg, $quotedConfigPath
+                } else {
+                    $tauriCommand = 'npm run tauri:build -- --bundles "{0}" --config "{1}" --ci 2>&1' -f $quotedBundleArg, $quotedConfigPath
+                }
                 try {
                     cmd.exe /d /s /c $tauriCommand |
                         ForEach-Object {
@@ -1046,6 +1065,8 @@ try {
         devOnly = [bool]($FastLocalInstaller -or $FastLocalStagedApp -or $LocalPyInstallerNoClean)
         fastLocalInstaller = [bool]$FastLocalInstaller
         fastLocalStagedApp = [bool]$FastLocalStagedApp
+        prebuiltTauriApp = [bool]$UsePrebuiltTauriApp
+        updaterRuntimeConfigured = [bool]($EnableTauriUpdater -or $ConfigureTauriUpdaterRuntime)
         installerBuilt = [bool]($artifacts.Count -gt 0)
         installerSmokeValidated = [bool]$installedPackageSmoke["ran"]
         diarizationWorkerStagedSmokeValidated = $true
@@ -1060,6 +1081,7 @@ try {
         ok = $true
         bundles = $Bundles
         updaterEnabled = [bool]$EnableTauriUpdater
+        updaterRuntimeConfigured = [bool]($EnableTauriUpdater -or $ConfigureTauriUpdaterRuntime)
         releaseExe = $releaseExe
         artifacts = $artifacts
         metadataDir = $metadataDir
@@ -1088,6 +1110,8 @@ try {
         devOnly = [bool]($FastLocalInstaller -or $FastLocalStagedApp -or $LocalPyInstallerNoClean)
         fastLocalInstaller = [bool]$FastLocalInstaller
         fastLocalStagedApp = [bool]$FastLocalStagedApp
+        prebuiltTauriApp = [bool]$UsePrebuiltTauriApp
+        updaterRuntimeConfigured = [bool]($EnableTauriUpdater -or $ConfigureTauriUpdaterRuntime)
         installerBuilt = $false
         installerSmokeValidated = $false
         nsisCompression = if ($NsisCompression) { $NsisCompression } else { "tauri-default" }

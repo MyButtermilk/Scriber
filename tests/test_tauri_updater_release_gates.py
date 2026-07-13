@@ -325,6 +325,34 @@ def test_prepare_tauri_updater_config_empty_env_endpoint_uses_default(tmp_path: 
     assert generated["bundle"]["createUpdaterArtifacts"] is True
 
 
+def test_prepare_tauri_updater_config_can_embed_runtime_without_artifacts(tmp_path: Path) -> None:
+    config = tmp_path / "tauri.conf.json"
+    output = tmp_path / "tauri.generated.conf.json"
+    config.write_text("{}", encoding="utf-8")
+
+    result = run_script(
+        PREPARE_SCRIPT,
+        "--config",
+        str(config),
+        "--output",
+        str(output),
+        "--version",
+        "0.5.3",
+        "--public-key",
+        "PUBLIC_KEY",
+        "--endpoint",
+        "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json",
+        "--skip-signing-key-check",
+        "--skip-updater-artifacts",
+        env={"TAURI_SIGNING_PRIVATE_KEY": "", "TAURI_SIGNING_PRIVATE_KEY_PATH": ""},
+    )
+
+    assert result.returncode == 0, result.stderr
+    generated = json.loads(output.read_text(encoding="utf-8"))
+    assert generated["plugins"]["updater"]["pubkey"] == "PUBLIC_KEY"
+    assert "bundle" not in generated or "createUpdaterArtifacts" not in generated["bundle"]
+
+
 def test_prepare_tauri_updater_config_reads_public_key_from_env(tmp_path: Path) -> None:
     config = tmp_path / "tauri.conf.json"
     output = tmp_path / "tauri.generated.conf.json"
