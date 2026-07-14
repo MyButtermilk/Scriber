@@ -21,14 +21,52 @@ def meeting_detail() -> dict:
         "createdAt": "2026-07-11T08:59:00Z",
         "captureMetadata": {
             "calendarEvent": {
+                "organizer": {
+                    "name": "Olivia Organizer",
+                    "address": "OWNER@example.com",
+                },
+                "currentUser": {
+                    "name": "Current User",
+                    "address": "current.user@primary.example",
+                    "aliases": [
+                        "current.user@primary.example",
+                        "current.user@example.com",
+                    ],
+                },
                 "participants": [
                     {"name": "Márta Example", "address": "MARTA@example.com"},
                     {"name": "Duplicate", "address": "marta@example.com"},
                     {"name": "Invalid", "address": "not-an-email"},
                     {"name": "Header\r\nInjection", "address": "safe@example.org"},
+                    {
+                        "name": "Current User",
+                        "address": "current.user@example.com",
+                        "type": "required",
+                        "response": "accepted",
+                    },
+                    {
+                        "name": "Board room",
+                        "address": "board-room@example.com",
+                        "type": "resource",
+                        "response": "accepted",
+                    },
+                    {
+                        "name": "Declined participant",
+                        "address": "declined@example.com",
+                        "type": "optional",
+                        "response": "declined",
+                    },
                 ]
             }
         },
+        # Confirmed mappings improve Meeting-local labels only. They never add
+        # an address that was not part of the frozen Outlook event.
+        "speakers": [{
+            "confirmedAttendee": {
+                "name": "Not an event recipient",
+                "address": "mapping-only@example.net",
+            }
+        }],
         "segments": [
             {
                 "id": "segment-1", "source": "microphone", "speakerLabel": "Alex",
@@ -82,6 +120,7 @@ def test_email_template_uses_unique_valid_outlook_participants_without_false_att
     template = build_meeting_email(detail)
 
     assert recipients == [
+        {"name": "Olivia Organizer", "address": "owner@example.com"},
         {"name": "Márta Example", "address": "marta@example.com"},
         {"name": "Header Injection", "address": "safe@example.org"},
     ]
@@ -102,8 +141,11 @@ def test_eml_draft_is_rfc822_parseable_and_carries_selected_attachment():
     message = BytesParser(policy=policy.default).parsebytes(payload)
 
     assert message["Bcc"] is None
+    assert "owner@example.com" in str(message["To"])
     assert "marta@example.com" in str(message["To"])
     assert "safe@example.org" in str(message["To"])
+    assert "current.user@example.com" not in str(message["To"])
+    assert "mapping-only@example.net" not in str(message["To"])
     assert "Attached: Roadmap review.md" in message.get_body(preferencelist=("plain",)).get_content()
     attachments = list(message.iter_attachments())
     assert len(attachments) == 1

@@ -1170,6 +1170,66 @@ def test_voice_profile_matching_requires_two_independent_segments_before_auto_na
     assert store.detail(second["id"])["segments"][0]["speakerLabel"] == "Taylor"
 
 
+def test_confirmed_outlook_participant_is_atomic_and_manual_rename_clears_link(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    store.add_segments(
+        meeting["id"],
+        [{
+            "id": "speaker-segment",
+            "revision": "canonical",
+            "source": "system",
+            "sequence": 0,
+            "startMs": 0,
+            "endMs": 3_000,
+            "text": "Hello",
+            "speakerLabel": "Speaker 1",
+        }],
+    )
+    speaker = store.detail(meeting["id"])["speakers"][0]
+
+    assignment = store.assign_speaker_participant(
+        meeting["id"],
+        speaker["id"],
+        {"name": "", "address": "person@example.com"},
+        source="account",
+    )
+    assert assignment["confirmedAttendee"] == {
+        "name": "person@example.com",
+        "address": "person@example.com",
+    }
+    detail = store.detail(meeting["id"])
+    assert detail["speakers"][0]["participantLinkSource"] == "account"
+    assert detail["speakers"][0]["confirmedAttendee"]["address"] == "person@example.com"
+    assert detail["segments"][0]["speakerLabel"] == "person@example.com"
+
+    store.rename_speaker(meeting["id"], speaker["id"], "Shared microphone")
+    renamed = store.detail(meeting["id"])
+    assert renamed["speakers"][0]["confirmedAttendee"] is None
+    assert renamed["speakers"][0]["participantLinkSource"] == ""
+    assert renamed["segments"][0]["speakerLabel"] == "Shared microphone"
+
+
+def test_removing_confirmed_participant_restores_anonymous_label(store: MeetingStore):
+    meeting = store.create(create_request())
+    store.add_segments(meeting["id"], [{
+        "id": "remove-link", "revision": "canonical", "source": "system",
+        "sequence": 0, "startMs": 0, "endMs": 1_000, "text": "Hi",
+        "speakerLabel": "Speaker 2",
+    }])
+    speaker = store.detail(meeting["id"])["speakers"][0]
+    store.assign_speaker_participant(
+        meeting["id"], speaker["id"],
+        {"name": "Márta", "address": "marta@example.com"}, source="llm",
+    )
+    removed = store.assign_speaker_participant(
+        meeting["id"], speaker["id"], None, source="manual"
+    )
+    assert removed["confirmedAttendee"] is None
+    assert store.detail(meeting["id"])["segments"][0]["speakerLabel"] == "Speaker 2"
+
+
 def test_audio_retention_removes_only_audio_records(store: MeetingStore):
     meeting = store.create(create_request(audio_retention_days=1))
     store.add_segments(meeting["id"], [{

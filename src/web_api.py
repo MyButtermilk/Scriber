@@ -258,6 +258,10 @@ _AUDIO_DIAGNOSTIC_IMPORT_CACHE: dict[str, dict[str, Any]] | None = None
 _SESSION_TOKEN_HEADER = "X-Scriber-Token"
 _SESSION_TOKEN_QUERY = "scriberToken"
 _WS_SEND_TIMEOUT_SECONDS = 1.0
+# Shared by the app-owned HTTP session and background Outlook maintenance.
+# A bare aiohttp ClientSession defaults to a roughly five-minute total timeout,
+# which can otherwise hold the Outlook mutation lane and delay Disconnect.
+_OUTBOUND_HTTP_TIMEOUT = ClientTimeout(total=15)
 _NATIVE_DEVICE_EVENT_VALUES = {"auto", "0", "1"}
 _NATIVE_REFRESH_STRING_LIMIT = 128
 _TRANSCRIPT_SEARCH_MAX_CHARS = 500
@@ -1097,6 +1101,17 @@ def _validate_provider_ready(provider: str) -> None:
     error = _provider_readiness_error(provider)
     if error:
         raise RuntimeError(error)
+
+
+def _meeting_llm_model_ready(model: str) -> bool:
+    normalized = str(model or "").strip()
+    if normalized.startswith("gpt-"):
+        return bool(Config.OPENAI_API_KEY)
+    if normalized.startswith("gemini-"):
+        return bool(Config.GOOGLE_API_KEY)
+    if normalized.startswith("cerebras/"):
+        return bool(Config.CEREBRAS_API_KEY)
+    return "/" in normalized and bool(Config.OPENROUTER_API_KEY)
 
 
 def _validate_local_provider_ready(provider: str) -> None:
@@ -2879,7 +2894,7 @@ class ScriberWebController:
             try:
                 outlook_status = await self._outlook_calendar.status()
                 if outlook_status.get("configured") and outlook_status.get("connected"):
-                    async with ClientSession() as session:
+                    async with ClientSession(timeout=_OUTBOUND_HTTP_TIMEOUT) as session:
                         await self._outlook_calendar.sync(session)
                     calendar_backoff_seconds = 15 * 60
             except asyncio.CancelledError:
@@ -10689,8 +10704,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app[APP_CONTROLLER] = controller
 
     async def http_session_ctx(app_: web.Application):
-        timeout = ClientTimeout(total=15)
-        session = ClientSession(timeout=timeout)
+        session = ClientSession(timeout=_OUTBOUND_HTTP_TIMEOUT)
         app_[APP_HTTP_SESSION] = session
         yield
         await session.close()
@@ -12261,9 +12275,31 @@ def create_app(controller: ScriberWebController) -> web.Application:
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         try:
             changed = await ctl._outlook_calendar.sync(request.app[APP_HTTP_SESSION])
-            return web.json_response({"apiVersion": REST_API_VERSION, "changed": changed})
+            status = await ctl._outlook_calendar.status()
+            return web.json_response(
+                {"apiVersion": REST_API_VERSION, "changed": changed, **status}
+            )
         except ValueError as exc:
             return web.json_response({"message": str(exc)}, status=409)
+
+    async def outlook_events(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        if ctl._outlook_calendar.authorization_pending:
+            return web.json_response(
+                {"message": "Finish the Outlook sign-in before loading calendar events."},
+                status=409,
+            )
+        try:
+            payload = await asyncio.to_thread(
+                ctl._outlook_calendar.events_for_day,
+                day_value=request.query.get("date", ""),
+                time_zone_name=request.query.get("timeZone", ""),
+                start_value=request.query.get("start", ""),
+                end_value=request.query.get("end", ""),
+            )
+            return web.json_response({"apiVersion": REST_API_VERSION, **payload})
+        except ValueError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
 
     async def outlook_disconnect(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -12934,8 +12970,42 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 {"message": "Install the optional WeSpeaker model before enabling Voice Library."},
                 status=409,
             )
+        # Resolve only against the token-protected local Graph cache. Participant
+        # details sent by a WebView are never trusted. The snapshot is frozen now
+        # so a concurrent calendar refresh cannot silently change recipients.
+        explicit_calendar_selection = "calendarEventId" in raw
+        selected_calendar_event: dict[str, Any] | None = None
+        outlook_calendar = getattr(ctl, "_outlook_calendar", None)
+        if explicit_calendar_selection:
+            selected_event_id = str(raw.get("calendarEventId") or "").strip()
+            if selected_event_id:
+                selected_calendar_event = (
+                    await asyncio.to_thread(
+                        outlook_calendar.event_snapshot, selected_event_id
+                    )
+                    if outlook_calendar is not None
+                    else None
+                )
+                if selected_calendar_event is None:
+                    return web.json_response(
+                        {
+                            "message": (
+                                "The selected Outlook event is no longer available. "
+                                "Refresh the calendar and choose it again."
+                            )
+                        },
+                        status=409,
+                    )
+        elif outlook_calendar is not None:
+            selected_calendar_event = await asyncio.to_thread(
+                outlook_calendar.current_event
+            )
+        requested_title = str(raw.get("title", "")).strip()
         create_request = MeetingCreate(
-            title=str(raw.get("title", "")),
+            title=(
+                requested_title
+                or str((selected_calendar_event or {}).get("subject") or "")
+            ),
             language=str(raw.get("language", "auto")),
             transcription_mode=requested_transcription_mode,
             live_provider=str(raw.get("liveProvider", "soniox")),
@@ -13084,14 +13154,17 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 capture_metadata["captureStartLatencyMs"] = round(
                     (time.perf_counter() - request_started) * 1000.0, 1
                 )
-                outlook_calendar = getattr(ctl, "_outlook_calendar", None)
-                calendar_event = (
-                    outlook_calendar.current_event()
-                    if outlook_calendar is not None
-                    else None
+                if selected_calendar_event:
+                    capture_metadata["calendarEvent"] = selected_calendar_event
+                capture_metadata["calendarEventSelection"] = (
+                    "explicit"
+                    if explicit_calendar_selection and selected_calendar_event
+                    else "none"
+                    if explicit_calendar_selection
+                    else "automatic"
+                    if selected_calendar_event
+                    else "unavailable"
                 )
-                if calendar_event:
-                    capture_metadata["calendarEvent"] = calendar_event
                 requested_mic_id = str(raw.get("microphoneDeviceId", "")).strip()
                 requested_render_id = str(raw.get("renderDeviceId", "")).strip()
                 mic_hash = str(raw.get("microphoneNativeEndpointIdHash", "")).strip()
@@ -14540,6 +14613,176 @@ def create_app(controller: ScriberWebController) -> web.Application:
         except ValueError as exc:
             return web.json_response({"message": str(exc)}, status=400)
 
+    async def meeting_speaker_assignments(request: web.Request):
+        from src.meeting_participant_matching import build_assignment_context
+
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        meeting_id = request.match_info.get("id", "")
+        try:
+            detail, profiles = await asyncio.gather(
+                asyncio.to_thread(ctl._meeting_store.detail, meeting_id),
+                asyncio.to_thread(ctl._meeting_store.speaker_profiles),
+            )
+            context = build_assignment_context(detail, profiles)
+            model = str(detail.get("analysisModel") or Config.MEETING_ANALYSIS_MODEL)
+            model_ready = _meeting_llm_model_ready(model)
+            context["llmSuggestionAvailable"] = bool(
+                context["llmSuggestionAvailable"] and model_ready
+            )
+            return web.json_response(
+                {"apiVersion": REST_API_VERSION, **context, "llmModel": model}
+            )
+        except MeetingNotFound:
+            return web.json_response({"message": "Meeting not found"}, status=404)
+
+    async def suggest_meeting_speaker_assignments(request: web.Request):
+        from src.meeting_participant_matching import (
+            build_assignment_context,
+            build_llm_prompt,
+            parse_llm_suggestions,
+        )
+        from src.summarization import generate_text_with_model
+
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        meeting_id = request.match_info.get("id", "")
+        try:
+            detail, profiles = await asyncio.gather(
+                asyncio.to_thread(ctl._meeting_store.detail, meeting_id),
+                asyncio.to_thread(ctl._meeting_store.speaker_profiles),
+            )
+            local_context = build_assignment_context(detail, profiles)
+            model = str(detail.get("analysisModel") or Config.MEETING_ANALYSIS_MODEL)
+            if not _meeting_llm_model_ready(model):
+                return web.json_response(
+                    {
+                        "message": (
+                            "Configure the API key for the selected Meeting analysis model first."
+                        )
+                    },
+                    status=409,
+                )
+            prompt, speaker_keys, person_keys = build_llm_prompt(
+                detail, local_context
+            )
+            if not speaker_keys or not person_keys:
+                return web.json_response(
+                    {
+                        "apiVersion": REST_API_VERSION,
+                        **local_context,
+                        "llmSuggestionAvailable": False,
+                        "llmModel": model,
+                        "llmRequested": False,
+                        "privacy": "Outlook email addresses are not sent to the language model.",
+                    }
+                )
+            raw = await generate_text_with_model(
+                prompt,
+                model or None,
+                max_output_tokens=2048,
+            )
+            llm_suggestions = parse_llm_suggestions(
+                raw, speaker_keys, person_keys
+            )
+            context = build_assignment_context(
+                detail, profiles, llm_suggestions=llm_suggestions
+            )
+            return web.json_response(
+                {
+                    "apiVersion": REST_API_VERSION,
+                    **context,
+                    "llmSuggestionAvailable": False,
+                    "llmModel": model,
+                    "llmRequested": True,
+                    "privacy": "Outlook email addresses are not sent to the language model.",
+                }
+            )
+        except MeetingNotFound:
+            return web.json_response({"message": "Meeting not found"}, status=404)
+        except Exception as exc:
+            logger.warning(
+                "Meeting participant suggestion failed: {}", type(exc).__name__
+            )
+            return web.json_response(
+                {
+                    "message": "Speaker suggestions could not be generated. No assignment was changed."
+                },
+                status=502,
+            )
+
+    async def confirm_meeting_speaker_attendee(request: web.Request):
+        from src.meeting_participant_matching import confirmation_people
+
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        meeting_id = request.match_info.get("id", "")
+        speaker_id = request.match_info.get("speakerId", "")
+        try:
+            raw = await request.json()
+        except Exception:
+            return web.json_response({"message": "Expected JSON payload"}, status=400)
+        if not isinstance(raw, dict):
+            return web.json_response({"message": "Expected JSON object"}, status=400)
+        if raw.get("confirmed") is not True:
+            return web.json_response(
+                {"message": "Speaker assignments require explicit confirmation."},
+                status=400,
+            )
+        if "participantId" not in raw:
+            return web.json_response(
+                {"message": "participantId is required (use null to remove an assignment)."},
+                status=400,
+            )
+        try:
+            detail = await asyncio.to_thread(ctl._meeting_store.detail, meeting_id)
+            event = detail.get("captureMetadata", {}).get("calendarEvent")
+            requested_participant_id = str(raw.get("participantId") or "").strip()
+            participant = None
+            if requested_participant_id:
+                participant = next(
+                    (
+                        item
+                        for item in confirmation_people(event)
+                        if str(item.get("participantId") or "")
+                        == requested_participant_id
+                    ),
+                    None,
+                )
+                if participant is None:
+                    return web.json_response(
+                        {
+                            "message": (
+                                "Choose a participant from the calendar snapshot saved with this meeting."
+                            )
+                        },
+                        status=409,
+                    )
+            source = str(raw.get("suggestionSource") or "manual").strip()
+            if source not in {"manual", "voice_profile", "account", "llm"}:
+                source = "manual"
+            assignment = await asyncio.to_thread(
+                ctl._meeting_store.assign_speaker_participant,
+                meeting_id,
+                speaker_id,
+                participant,
+                source=source,
+            )
+            if participant is not None:
+                assignment["confirmedAttendee"] = participant
+            return web.json_response(
+                {
+                    "apiVersion": REST_API_VERSION,
+                    "assignment": assignment,
+                    "requiresConfirmation": False,
+                }
+            )
+        except MeetingNotFound as exc:
+            message = str(exc)
+            return web.json_response(
+                {"message": message},
+                status=404,
+            )
+        except ValueError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
+
     async def list_speaker_profiles(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         items = await asyncio.to_thread(ctl._meeting_store.speaker_profiles)
@@ -15330,6 +15573,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_post("/api/calendar/outlook/connect", outlook_connect)
     app.router.add_get("/api/calendar/outlook/callback", outlook_callback)
     app.router.add_post("/api/calendar/outlook/sync", outlook_sync)
+    app.router.add_get("/api/calendar/outlook/events", outlook_events)
     app.router.add_delete("/api/calendar/outlook", outlook_disconnect)
     app.router.add_post("/api/meetings/hotkey", meeting_hotkey)
     app.router.add_get("/api/meetings/detection", get_meeting_detection)
@@ -15368,7 +15612,18 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_patch("/api/meetings/{id}/action-items/{itemId}", patch_meeting_action_item)
     app.router.add_get("/api/meetings/{id}/chat", meeting_chat_threads)
     app.router.add_post("/api/meetings/{id}/chat", meeting_chat)
+    app.router.add_get(
+        "/api/meetings/{id}/speaker-assignments", meeting_speaker_assignments
+    )
+    app.router.add_post(
+        "/api/meetings/{id}/speaker-assignments/suggest",
+        suggest_meeting_speaker_assignments,
+    )
     app.router.add_patch("/api/meetings/{id}/speakers/{speakerId}", patch_meeting_speaker)
+    app.router.add_patch(
+        "/api/meetings/{id}/speakers/{speakerId}/attendee",
+        confirm_meeting_speaker_attendee,
+    )
     app.router.add_post(
         "/api/meetings/{id}/speakers/{speakerId}/split-profile", split_speaker_profile
     )

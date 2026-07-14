@@ -322,6 +322,9 @@ class MeetingStore:
                     source_hint TEXT NOT NULL DEFAULT '',
                     profile_id TEXT,
                     confidence REAL,
+                    participant_name TEXT NOT NULL DEFAULT '',
+                    participant_address TEXT NOT NULL DEFAULT '',
+                    participant_link_source TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -588,6 +591,15 @@ class MeetingStore:
                     """UPDATE meeting_speakers SET display_name_source='profile'
                        WHERE profile_id IS NOT NULL AND display_name<>label"""
                 )
+            for name in (
+                "participant_name",
+                "participant_address",
+                "participant_link_source",
+            ):
+                if name not in speaker_columns:
+                    conn.execute(
+                        f"ALTER TABLE meeting_speakers ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
+                    )
             checkpoint_columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(meeting_transcript_checkpoints)")
@@ -2639,6 +2651,7 @@ class MeetingStore:
             ).fetchone()
             speaker_update = conn.execute(
                 """UPDATE meeting_speakers SET display_name = ?, display_name_source='manual',
+                   participant_name='',participant_address='',participant_link_source='',
                    updated_at = ? WHERE meeting_id = ? AND id = ?""",
                 (display_name, now, meeting_id, speaker_id),
             )
@@ -2653,6 +2666,94 @@ class MeetingStore:
                 )
             conn.commit()
         return max(int(speaker_update.rowcount), int(segment_update.rowcount))
+
+    def assign_speaker_participant(
+        self,
+        meeting_id: str,
+        speaker_id: str,
+        participant: dict[str, Any] | None,
+        *,
+        source: str = "manual",
+    ) -> dict[str, Any]:
+        """Persist only an explicitly confirmed Outlook participant link."""
+        self.get(meeting_id)
+        if source not in {"manual", "voice_profile", "account", "llm"}:
+            raise ValueError("Invalid participant assignment source.")
+        now = _utc_now()
+        with db._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                """SELECT * FROM meeting_speakers
+                   WHERE meeting_id=? AND id=?""",
+                (meeting_id, speaker_id),
+            ).fetchone()
+            if current is None:
+                raise MeetingNotFound("Meeting speaker not found")
+
+            if participant is None:
+                profile = (
+                    conn.execute(
+                        "SELECT display_name,is_named FROM speaker_profiles WHERE id=?",
+                        (current["profile_id"],),
+                    ).fetchone()
+                    if current["profile_id"]
+                    else None
+                )
+                if profile is not None and bool(profile["is_named"]):
+                    display_name = str(profile["display_name"])
+                    display_source = "profile"
+                else:
+                    display_name = str(current["label"] or "")
+                    display_source = "anonymous"
+                participant_name = ""
+                participant_address = ""
+                link_source = ""
+            else:
+                participant_address = str(participant.get("address") or "").strip().lower()
+                participant_name = str(
+                    participant.get("name") or participant_address
+                ).strip()[:200]
+                if (
+                    len(participant_name) > 200
+                    or len(participant_address) > 320
+                    or not re.fullmatch(r"[^\s@<>]+@[^\s@<>]+", participant_address)
+                ):
+                    raise ValueError("The selected Outlook participant is invalid.")
+                display_name = participant_name
+                display_source = "manual"
+                link_source = source
+
+            conn.execute(
+                """UPDATE meeting_speakers SET display_name=?,display_name_source=?,
+                   participant_name=?,participant_address=?,participant_link_source=?,
+                   updated_at=? WHERE meeting_id=? AND id=?""",
+                (
+                    display_name,
+                    display_source,
+                    participant_name,
+                    participant_address,
+                    link_source,
+                    now,
+                    meeting_id,
+                    speaker_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE meeting_segments SET speaker_label=? WHERE meeting_id=? AND speaker_id=?",
+                (display_name, meeting_id, speaker_id),
+            )
+            conn.commit()
+        return {
+            "speakerId": speaker_id,
+            "displayName": display_name,
+            "confirmedAttendee": (
+                {"name": participant_name, "address": participant_address}
+                if participant_address
+                else None
+            ),
+            "source": link_source,
+            "confirmedAt": now,
+        }
 
     def create_chat_thread(self, meeting_id: str, title: str = "") -> dict[str, Any]:
         self.get(meeting_id)
@@ -3822,6 +3923,11 @@ class MeetingStore:
             {"id": row["id"], "meetingId": row["meeting_id"], "label": row["label"],
              "displayName": row["display_name"], "sourceHint": row["source_hint"],
              "profileId": row["profile_id"], "confidence": row["confidence"],
+             "confirmedAttendee": (
+                 {"name": row["participant_name"], "address": row["participant_address"]}
+                 if row["participant_address"] else None
+             ),
+             "participantLinkSource": row["participant_link_source"],
              "createdAt": row["created_at"], "updatedAt": row["updated_at"]}
             for row in speaker_rows
         ]

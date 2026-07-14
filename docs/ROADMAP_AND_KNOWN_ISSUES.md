@@ -98,11 +98,14 @@ Meetings:
   track no longer discards speech from the other track; all-silent input and
   provider/normalization failures still fail finalization.
 - Outlook Calendar has public-desktop PKCE, Windows Credential Manager refresh
-  token storage, incremental Graph delta sync, periodic refresh, and offline
-  backoff. Settings exposes configuration state, connect, sync, disconnect,
-  last sync, and the next event. Official tag builds now fail before expensive
-  setup when the public Entra client ID is absent or invalid, instead of
-  silently publishing a release whose Outlook setup can never start.
+  token storage, atomic paginated Graph delta sync, periodic refresh, and
+  offline backoff. Its daily view uses browser-computed DST-correct UTC
+  boundaries and exposes all events with organizer and attendee names/addresses.
+  `/me` preserves both mail and UPN aliases for self identification. Settings
+  exposes configuration state, connect, sync, verified disconnect, and last
+  sync; Meetings can refresh, choose one event or no event, inspect its details,
+  and freeze the selection at Start. Official tag builds fail before expensive
+  setup when the public Entra client ID is absent or invalid.
 - Optional WeSpeaker embeddings are local, opt-in, hash-pinned, and excluded
   from exports/support bundles. Settings can record a short named sample through
   Rust/WASAPI; PCM stays bounded in memory, is never saved or uploaded, and only
@@ -732,8 +735,8 @@ Priority order:
 | `UX-MTG-02` | P0 | Global active-Meeting pill and capture health | Recording remains visible and recoverable on every app route |
 | `UX-MTG-03` | P0 | Non-destructive transcript corrections | Users can repair ASR text without losing provenance |
 | `UX-MTG-04` | P1 | Retranscribe/reprocess from canonical audio | A poor model choice no longer requires reimport or rerecording |
-| `UX-MTG-05` | P1 | Explicit calendar-event selection and participant snapshot | The correct event and recipients are attached before recording |
-| `UX-MTG-06` | P1 | Confidence-driven speaker review | Ambiguous speakers can be resolved quickly and safely |
+| `UX-MTG-05` | P1 | Explicit calendar-event selection and participant snapshot (implemented) | The correct event and recipients are attached before recording |
+| `UX-MTG-06` | P1 | Confidence-driven speaker review (core implemented) | Ambiguous speakers can be resolved quickly and safely |
 | `UX-MTG-07` | P1 | Playback follow, match navigation, and bookmarks | Review becomes one synchronized timeline workflow |
 | `UX-MTG-08` | P1 | Versioned analysis/output templates | Standups, 1:1s, sales calls, and interviews produce the right output |
 | `UX-MTG-09` | P2 | Rich Ask Meeting and action workspace | Answers and tasks become reusable, cited outcomes |
@@ -755,6 +758,12 @@ canonical segments support inline correction and undo with optimistic
 concurrency, immutable edit history, FTS refresh, WebSocket cache updates, and
 visibly stale analysis outputs. Automatic playback following, templates, and
 global library search remain unimplemented until usage evidence justifies them.
+`UX-MTG-05` is implemented with a refreshable all-day Outlook event picker,
+explicit no-event selection, participant details, and an immutable event
+snapshot. `UX-MTG-06` now implements the safe core: Voice/account-first local
+suggestions, user-triggered privacy-bounded LLM suggestions for unresolved
+speakers, and individually confirmed Meeting-local assignments. Audio-example
+review, bulk apply, and one-step assignment undo remain open.
 
 #### `UX-MTG-01` - Adaptive Meeting workspace shell
 
@@ -881,6 +890,10 @@ Ask, export, and playback citations.
 
 #### `UX-MTG-05` - Explicit calendar event and participant snapshot
 
+**Status:** implemented. The Meetings preflight lists the selected local day's
+events, supports manual refresh and explicit no-event selection, shows event and
+participant details, and freezes the selected evidence at Start.
+
 **Problem**
 
 Selecting only the nearest/current event is ambiguous for early starts,
@@ -889,45 +902,63 @@ also address an email draft to the wrong people.
 
 **Interaction specification**
 
-- The Outlook preflight card lists the current and next three plausible events
-  plus `No calendar event`. Selection shows title, time, organizer,
-  participants, and join link before Start.
+- The Outlook preflight card lists every cached event for the current local day
+  plus `No calendar event`. Selection shows title, time, location, organizer,
+  participants, and join link before Start; Refresh requests the newest calendar
+  state without silently changing the user's selection.
 - Freeze the chosen event for the Meeting. Later calendar changes may be shown
   as an update, but must not silently replace recipients or speaker context.
 
 **Backend/data and tests**
 
-Start with explicit `calendarEventId`; persist an immutable snapshot containing
-event id, subject, organizer, attendees, time range, join URL, ETag, and sync
-time. Keep heuristic matching only as a visible fallback when no explicit event
-was selected. Test overlap, cancellation/edit, offline start, duplicate/missing
-addresses, Outlook disconnect after start, recovery, and that email preview uses
-exactly the frozen participant set.
+Start with explicit `calendarEventId` or explicit `null`; persist an immutable
+snapshot containing event id, subject, organizer, attendees, connected-account
+aliases, time range, join URL, ETag, and sync time. Daily boundaries are
+browser-computed local midnights converted to UTC so DST works without frozen
+backend `tzdata`. Graph delta pages are staged and committed atomically without
+unsupported `$select`. Email preview/export reads only the frozen participant
+set, excludes self aliases, declined/resource attendees, and never derives
+recipients from speaker mappings or LLM output. Regression coverage must
+continue to preserve overlap, cancellation/edit, offline start,
+duplicate/missing addresses, Outlook disconnect after start, recovery, and
+explicit no-event selection.
 
 #### `UX-MTG-06` - Confidence-driven speaker review
 
+**Status:** selective core implemented. Local Voice/account suggestions,
+on-demand LLM suggestions, and explicit single-speaker confirmation are shipped;
+audio examples, bulk reassignment, and one-step assignment undo remain open.
+
 **Problem**
 
-Voice profiles and speaker rename/split exist, but low-confidence or conflicting
-matches have no focused review queue. Users should not have to inspect every
-segment or understand clustering internals.
+Voice profiles and the connected-account identity now generate the first local
+candidate layer. Unknown speakers can receive optional LLM candidates, but the
+remaining advanced review queue must still make low-confidence or conflicting
+cases fast to compare without requiring users to understand clustering internals.
 
 **Interaction specification**
 
-- Show `Review N speakers` only for low-confidence, low-margin, conflicting, or
-  unknown matches. A side sheet presents a few short local audio examples,
-  transcript examples, source, and plain-language confidence.
-- Map to a frozen Outlook participant, an existing Voice profile, a new named
-  person, or Unknown. Support apply-to-selected/all and one-step undo. Linking a
-  reusable biometric profile is explicit opt-in, never a side effect of rename.
+- Keep unique local Voice matches first and protect the microphone/account
+  identity. For unresolved speakers, send an LLM only participant names, opaque
+  ids, and short email-redacted excerpts after an explicit user action; Outlook
+  email addresses remain local. Require confirmation before persistence.
+- Remaining work: show `Review N speakers` only for low-confidence, low-margin,
+  conflicting, or unknown matches. A side sheet presents a few short local
+  audio examples, transcript examples, source, and plain-language confidence.
+- Remaining work: support apply-to-selected/all and one-step undo. Linking a
+  reusable biometric profile remains explicit opt-in, never a side effect of
+  rename or participant assignment.
 
 **Backend/data and tests**
 
-Persist match candidates with model/revision/confidence/margin/review state and
-atomic bulk reassignment. Protect the Mic `You` identity by default. Test
-overlap, same names, no calendar, purged audio, deleted/opted-out profiles,
-transaction rollback, high-confidence no-banner behavior, and that accepted
-changes update transcript, Search, analysis-stale state, and export.
+Confirmed Meeting-local participant links are persisted only after human action;
+LLM output itself never controls email recipients. Remaining work is durable
+candidate review state with model/revision/confidence/margin, atomic bulk
+reassignment, audio-example handling, and undo. Protect the Mic `You` identity
+by default. Test overlap, same names, no calendar, purged audio,
+deleted/opted-out profiles, transaction rollback, privacy payloads,
+high-confidence no-banner behavior, and that accepted changes update transcript
+and Search without changing the frozen export-recipient set.
 
 #### `UX-MTG-07` - One synchronized review timeline
 

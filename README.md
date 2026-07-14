@@ -95,7 +95,13 @@ summary, decisions, action items, cited chat answers, and reusable exports.
   models are downloaded, shared by File, YouTube, Meetings, and Meeting imports
 - Import an existing audio or video recording directly into the Meeting workspace
 - Optional local speaker library with explicit biometric opt-in and deletion
-- Optional Outlook Calendar PKCE/delta context; no meeting bot joins the call
+- Optional Outlook Calendar connection with a refreshable list of today's
+  events, organizer and attendee details, and an explicit event/no-event choice;
+  the selected details are frozen with the Meeting and no bot joins the call
+- Voice Library and local-account matches are suggested first after the Meeting;
+  optional AI suggestions for unresolved speakers always require confirmation
+- Email drafts reuse the selected event's suitable participant addresses and
+  show recipients for review before sending
 - Markdown, JSON, PDF, DOCX, multitrack FLAC, and synchronized Opus playback
 
 ## ✨ The transcript is the beginning, not the result

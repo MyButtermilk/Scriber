@@ -6,6 +6,7 @@ from email.parser import BytesParser
 import hashlib
 import json
 from pathlib import Path
+import re
 import socket
 import threading
 from types import SimpleNamespace
@@ -45,6 +46,16 @@ def test_default_device_reconnect_starts_durable_reader_before_live_preview():
     assert reconnect.index("recorder.start(sources)") < reconnect.index(
         "await _start_meeting_live_preview_best_effort"
     )
+
+
+def test_background_outlook_sync_uses_the_shared_bounded_http_timeout():
+    text = Path(web_api.__file__).read_text(encoding="utf-8")
+    start = text.index("    async def _meeting_maintenance_loop")
+    maintenance = text[start:text.index(
+        "    async def _resume_pending_meeting_pcm_purges", start
+    )]
+    assert "ClientSession(timeout=_OUTBOUND_HTTP_TIMEOUT)" in maintenance
+    assert web_api._OUTBOUND_HTTP_TIMEOUT.total == 15
 
 
 class FakeRecorder:
@@ -331,6 +342,194 @@ def _route_handler(app, method, canonical):
         if route.method == method and route.resource.canonical == canonical:
             return route.handler
     raise AssertionError(f"Route not found: {method} {canonical}")
+
+
+@pytest.mark.asyncio
+async def test_speaker_attendee_confirmation_resolves_opaque_id_from_frozen_snapshot():
+    captured = {}
+
+    class Store:
+        @staticmethod
+        def detail(meeting_id):
+            assert meeting_id == "meeting-participants"
+            return {
+                "captureMetadata": {
+                    "calendarEvent": {
+                        "organizer": None,
+                        "participants": [{
+                            "participantId": "opaque-participant",
+                            "name": "Márta Example",
+                            "address": "marta@example.com",
+                            "type": "required",
+                            "response": "accepted",
+                        }],
+                        "currentUser": None,
+                    }
+                },
+                "speakers": [],
+                "segments": [],
+            }
+
+        @staticmethod
+        def assign_speaker_participant(
+            meeting_id, speaker_id, participant, *, source
+        ):
+            captured.update(
+                meeting_id=meeting_id,
+                speaker_id=speaker_id,
+                participant=participant,
+                source=source,
+            )
+            return {
+                "speakerId": speaker_id,
+                "confirmedAttendee": {
+                    "name": participant["name"],
+                    "address": participant["address"],
+                },
+            }
+
+    controller = SimpleNamespace(_meeting_store=Store())
+    app = web_api.create_app(controller)
+    handler = _route_handler(
+        app, "PATCH", "/api/meetings/{id}/speakers/{speakerId}/attendee"
+    )
+    request = _DirectRequest(
+        app,
+        meeting_id="meeting-participants",
+        payload={
+            "participantId": "opaque-participant",
+            "confirmed": True,
+            "suggestionSource": "llm",
+            # These untrusted values are ignored; the cache snapshot wins.
+            "name": "Attacker",
+            "address": "attacker@example.net",
+        },
+    )
+    request.match_info["speakerId"] = "speaker-1"
+    response = await handler(request)
+    payload = json.loads(response.body)
+
+    assert response.status == 200
+    assert captured == {
+        "meeting_id": "meeting-participants",
+        "speaker_id": "speaker-1",
+        "participant": {
+            "participantId": "opaque-participant",
+            "name": "Márta Example",
+            "address": "marta@example.com",
+            "type": "required",
+            "response": "accepted",
+            "isCurrentUser": False,
+        },
+        "source": "llm",
+    }
+    assert payload["assignment"]["confirmedAttendee"]["participantId"] == "opaque-participant"
+
+
+@pytest.mark.asyncio
+async def test_speaker_attendee_confirmation_rejects_unknown_opaque_id():
+    class Store:
+        @staticmethod
+        def detail(_meeting_id):
+            return {
+                "captureMetadata": {"calendarEvent": {"participants": []}},
+                "speakers": [],
+                "segments": [],
+            }
+
+    app = web_api.create_app(SimpleNamespace(_meeting_store=Store()))
+    handler = _route_handler(
+        app, "PATCH", "/api/meetings/{id}/speakers/{speakerId}/attendee"
+    )
+    request = _DirectRequest(
+        app,
+        meeting_id="meeting-participants",
+        payload={"participantId": "unknown", "confirmed": True},
+    )
+    request.match_info["speakerId"] = "speaker-1"
+    response = await handler(request)
+    assert response.status == 409
+
+
+@pytest.mark.asyncio
+async def test_legacy_calendar_snapshot_gets_opaque_id_that_patch_can_confirm():
+    captured = {}
+    legacy_event = {
+        "id": "legacy-graph-event",
+        "organizer": {
+            "name": "Owner",
+            "address": "owner@example.com",
+        },
+        "participants": [{
+            "name": "Legacy Participant",
+            "address": "legacy@example.com",
+            "type": "required",
+            "response": "accepted",
+        }],
+    }
+
+    class Store:
+        @staticmethod
+        def detail(_meeting_id):
+            return {
+                "captureMetadata": {"calendarEvent": legacy_event},
+                "speakers": [{
+                    "id": "speaker-legacy",
+                    "label": "Speaker 1",
+                    "displayName": "Speaker 1",
+                    "sourceHint": "system",
+                }],
+                "segments": [],
+                "analysisModel": "gpt-5-mini",
+            }
+
+        @staticmethod
+        def speaker_profiles():
+            return []
+
+        @staticmethod
+        def assign_speaker_participant(
+            meeting_id, speaker_id, participant, *, source
+        ):
+            captured.update(
+                meeting_id=meeting_id,
+                speaker_id=speaker_id,
+                participant=participant,
+                source=source,
+            )
+            return {"speakerId": speaker_id}
+
+    app = web_api.create_app(SimpleNamespace(_meeting_store=Store()))
+    get_handler = _route_handler(
+        app, "GET", "/api/meetings/{id}/speaker-assignments"
+    )
+    get_response = await get_handler(
+        _DirectRequest(app, meeting_id="meeting-legacy")
+    )
+    get_payload = json.loads(get_response.body)
+    participant_id = get_payload["calendarEvent"]["participants"][0][
+        "participantId"
+    ]
+
+    assert get_response.status == 200
+    assert re.fullmatch(r"[0-9a-f]{20}", participant_id)
+    assert participant_id != "legacy@example.com"
+
+    patch_handler = _route_handler(
+        app, "PATCH", "/api/meetings/{id}/speakers/{speakerId}/attendee"
+    )
+    patch_request = _DirectRequest(
+        app,
+        meeting_id="meeting-legacy",
+        payload={"participantId": participant_id, "confirmed": True},
+    )
+    patch_request.match_info["speakerId"] = "speaker-legacy"
+    patch_response = await patch_handler(patch_request)
+
+    assert patch_response.status == 200
+    assert captured["participant"]["participantId"] == participant_id
+    assert captured["participant"]["address"] == "legacy@example.com"
+    assert captured["source"] == "manual"
 
 
 @pytest.mark.asyncio
@@ -732,6 +931,40 @@ def _capture_cancellation_controller(monkeypatch, tmp_path, db_name):
     return controller, store, lives
 
 
+def _calendar_start_controller(monkeypatch, tmp_path, db_name, calendar):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / db_name)
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    controller = FakeController(store)
+    controller._outlook_calendar = calendar
+    controller.on_meeting_pcm = lambda *_args, **_kwargs: None
+    TrackingRecorder.instances = []
+    monkeypatch.setattr(web_api, "MeetingAudioRecorder", TrackingRecorder)
+
+    def shell_call(command, _payload, **_kwargs):
+        if command == "audioMeetingStart":
+            return {
+                "success": True,
+                "payload": {
+                    "captureId": f"capture-{db_name}",
+                    "sampleRate": 16_000,
+                    "frameDurationMs": 10,
+                    "aecActive": True,
+                    "sources": [],
+                },
+            }
+        if command == "audioMeetingStop":
+            return {"success": True, "payload": {"stopped": True}}
+        raise AssertionError(command)
+
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    return controller, store
+
+
 def _audio_race_controller(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "audio-admission.db")
@@ -858,6 +1091,134 @@ async def test_meeting_start_keeps_durable_capture_when_live_preview_fails(
     } == {("microphone", "degraded"), ("system", "degraded")}
     await web_api._release_persistent_audio(controller)
     database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_meeting_start_freezes_only_the_locally_resolved_calendar_event(
+    monkeypatch, tmp_path
+):
+    frozen_event = {
+        "id": "graph-event-1",
+        "subject": "Customer planning",
+        "start_at": "2026-07-14T08:00:00+00:00",
+        "end_at": "2026-07-14T09:00:00+00:00",
+        "organizer": {
+            "participantId": "organizer-id",
+            "name": "Olivia Owner",
+            "address": "olivia@example.com",
+            "isCurrentUser": False,
+        },
+        "participants": [{
+            "participantId": "participant-id",
+            "name": "Pat Participant",
+            "address": "pat@example.com",
+            "type": "required",
+            "response": "accepted",
+            "isCurrentUser": False,
+        }],
+        "currentUser": {
+            "participantId": "self-id",
+            "name": "Alex Example",
+            "address": "alex@example.com",
+            "isCurrentUser": True,
+        },
+        "calendarSyncedAt": "2026-07-14T07:55:00+00:00",
+        "snapshotCreatedAt": "2026-07-14T07:59:00+00:00",
+    }
+
+    class Calendar:
+        snapshot_calls: list[str] = []
+
+        def event_snapshot(self, event_id):
+            self.snapshot_calls.append(event_id)
+            return json.loads(json.dumps(frozen_event))
+
+        def current_event(self):
+            raise AssertionError("explicit selection must not use current_event")
+
+    calendar = Calendar()
+    controller, _store = _calendar_start_controller(
+        monkeypatch, tmp_path, "selected-calendar.db", calendar
+    )
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings")
+    response = await handler(_DirectRequest(app, payload={
+        "calendarEventId": "graph-event-1",
+        "transcriptionMode": "final_only",
+        # Untrusted WebView context must be ignored entirely.
+        "calendarEvent": {
+            "subject": "Spoofed title",
+            "participants": [{"address": "attacker@example.net"}],
+        },
+        "participants": [{"address": "attacker@example.net"}],
+    }))
+    payload = json.loads(response.body)
+
+    assert response.status == 201
+    assert calendar.snapshot_calls == ["graph-event-1"]
+    assert payload["title"] == "Customer planning"
+    assert payload["captureMetadata"]["calendarEventSelection"] == "explicit"
+    assert payload["captureMetadata"]["calendarEvent"] == frozen_event
+    assert "attacker@example.net" not in json.dumps(payload)
+    await web_api._release_persistent_audio(controller)
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_meeting_start_with_explicit_null_calendar_event_skips_legacy_lookup(
+    monkeypatch, tmp_path
+):
+    class Calendar:
+        def event_snapshot(self, _event_id):
+            raise AssertionError("null selection must not resolve a snapshot")
+
+        def current_event(self):
+            raise AssertionError("null selection must not use current_event")
+
+    controller, _store = _calendar_start_controller(
+        monkeypatch, tmp_path, "no-calendar.db", Calendar()
+    )
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings")
+    response = await handler(_DirectRequest(app, payload={
+        "title": "Unscheduled conversation",
+        "calendarEventId": None,
+        "transcriptionMode": "final_only",
+    }))
+    payload = json.loads(response.body)
+
+    assert response.status == 201
+    assert payload["captureMetadata"]["calendarEventSelection"] == "none"
+    assert "calendarEvent" not in payload["captureMetadata"]
+    await web_api._release_persistent_audio(controller)
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_meeting_start_rejects_stale_selected_calendar_event_before_capture():
+    class Calendar:
+        def __init__(self):
+            self.calls = []
+
+        def event_snapshot(self, event_id):
+            self.calls.append(event_id)
+            return None
+
+        def current_event(self):
+            raise AssertionError("explicit selection must not use current_event")
+
+    calendar = Calendar()
+    app = web_api.create_app(SimpleNamespace(_outlook_calendar=calendar))
+    handler = _route_handler(app, "POST", "/api/meetings")
+    response = await handler(_DirectRequest(app, payload={
+        "title": "Stale calendar item",
+        "calendarEventId": "deleted-event",
+    }))
+    payload = json.loads(response.body)
+
+    assert response.status == 409
+    assert calendar.calls == ["deleted-event"]
+    assert "no longer available" in payload["message"]
 
 
 @pytest.mark.asyncio

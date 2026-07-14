@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -56,6 +58,21 @@ def test_public_client_id_requires_a_non_nil_canonical_guid():
         "00000000-0000-0000-0000-000000000000",
     ):
         assert _normalize_public_client_id(invalid) == ""
+
+
+def test_account_identity_preserves_mail_and_upn_aliases():
+    assert OutlookCalendarService._account_payload({
+        "displayName": "Guest User",
+        "mail": "guest@external.example",
+        "userPrincipalName": "guest_external.example#ext#@tenant.example",
+    }) == {
+        "name": "Guest User",
+        "address": "guest@external.example",
+        "aliases": [
+            "guest@external.example",
+            "guest_external.example#ext#@tenant.example",
+        ],
+    }
 
 
 def test_system_browser_redirect_uses_registered_localhost_path(service, monkeypatch):
@@ -142,6 +159,168 @@ async def test_disconnect_preserves_local_state_when_shell_deletion_fails(monkey
 
 
 @pytest.mark.asyncio
+async def test_disconnect_is_idempotent_and_clears_all_local_account_state(
+    monkeypatch, tmp_path
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "outlook-disconnect.db")
+    database.init_database()
+    credential_stored = True
+    calls: list[str] = []
+
+    def shell_call(command, _payload, **_kwargs):
+        nonlocal credential_stored
+        calls.append(command)
+        if command == "outlookCredentialDelete":
+            credential_stored = False
+            return {
+                "success": True,
+                "payload": {"deleted": True, "credentialStored": False},
+            }
+        if command == "outlookCredentialStatus":
+            return {
+                "success": True,
+                "payload": {"credentialStored": credential_stored},
+            }
+        raise AssertionError(command)
+
+    calendar = OutlookCalendarService(
+        shell_call, "11111111-1111-1111-1111-111111111111"
+    )
+    calendar._access_token = "access-token"
+    calendar._access_token_expires_at = 99_999_999.0
+    calendar.begin_connect(open_browser=False)
+    with database._get_connection() as conn:
+        conn.execute(
+            """UPDATE outlook_calendar_state SET delta_link=?,window_start=?,
+               window_end=?,last_sync_at=?,last_error=?,account_json=? WHERE id=1""",
+            (
+                "https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=old",
+                "2026-07-01T00:00:00+00:00",
+                "2026-08-01T00:00:00+00:00",
+                "2026-07-14T08:00:00+00:00",
+                "OldError",
+                '{"name":"Alex","address":"alex@example.com"}',
+            ),
+        )
+        conn.execute(
+            """INSERT INTO outlook_calendar_events
+               (id,start_at,end_at,updated_at) VALUES (?,?,?,?)""",
+            (
+                "event-1",
+                "2026-07-14T10:00:00+00:00",
+                "2026-07-14T11:00:00+00:00",
+                "now",
+            ),
+        )
+        conn.commit()
+
+    # Repeating disconnect is intentionally safe: Windows Credential Manager
+    # deletion is idempotent and local state remains empty.
+    await calendar.disconnect()
+    await calendar.disconnect()
+
+    assert calls.count("outlookCredentialDelete") == 2
+    assert calendar._access_token == ""
+    assert calendar._access_token_expires_at == 0.0
+    assert calendar.authorization_pending is False
+    conn = database._get_connection()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM outlook_calendar_events"
+    ).fetchone()[0] == 0
+    state = conn.execute(
+        "SELECT * FROM outlook_calendar_state WHERE id=1"
+    ).fetchone()
+    assert state["delta_link"] == ""
+    assert state["window_start"] == ""
+    assert state["window_end"] == ""
+    assert state["last_sync_at"] == ""
+    assert state["last_error"] == ""
+    assert state["account_json"] == "{}"
+    status = await calendar.status()
+    assert status["connected"] is False
+    assert status["account"] is None
+    assert status["nextEvent"] is None
+    assert calendar.events_for_day(
+        day_value="2026-07-14",
+        time_zone_name="Europe/Berlin",
+        start_value="2026-07-13T22:00:00Z",
+        end_value="2026-07-14T22:00:00Z",
+    )["items"] == []
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_callback_waiting_for_mutation_lane_revalidates_canceled_state(service):
+    calendar, calls = service
+    started = calendar.begin_connect(open_browser=False)
+    state = parse_qs(urlparse(started["authorizationUrl"]).query)["state"][0]
+
+    async with calendar._mutation_lock:
+        completion = asyncio.create_task(
+            calendar.complete_connect(state, "authorization-code")
+        )
+        await asyncio.sleep(0)
+        calendar.cancel_connect(state)
+
+    with pytest.raises(ValueError, match="invalid or expired"):
+        await completion
+    assert all(command != "outlookAuthorizationCodeExchange" for command, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_shell_exchange_deletes_the_stale_new_credential(
+    monkeypatch, tmp_path
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "outlook-cancel-race.db")
+    database.init_database()
+    exchange_entered = threading.Event()
+    exchange_release = threading.Event()
+    credential_stored = False
+    calls: list[str] = []
+
+    def shell_call(command, _payload, **_kwargs):
+        nonlocal credential_stored
+        calls.append(command)
+        if command == "outlookAuthorizationCodeExchange":
+            credential_stored = True
+            exchange_entered.set()
+            assert exchange_release.wait(timeout=2.0)
+            return {
+                "success": True,
+                "payload": {"accessToken": "stale-token", "expiresIn": 3600},
+            }
+        if command == "outlookCredentialDelete":
+            credential_stored = False
+            return {
+                "success": True,
+                "payload": {"deleted": True, "credentialStored": False},
+            }
+        raise AssertionError(command)
+
+    calendar = OutlookCalendarService(
+        shell_call, "11111111-1111-1111-1111-111111111111"
+    )
+    started = calendar.begin_connect(open_browser=False)
+    state = parse_qs(urlparse(started["authorizationUrl"]).query)["state"][0]
+    completion = asyncio.create_task(
+        calendar.complete_connect(state, "authorization-code")
+    )
+    assert await asyncio.to_thread(exchange_entered.wait, 1.0)
+    calendar.cancel_connect(state)
+    exchange_release.set()
+
+    with pytest.raises(ValueError, match="invalid or expired"):
+        await completion
+    assert calls == ["outlookAuthorizationCodeExchange", "outlookCredentialDelete"]
+    assert credential_stored is False
+    assert calendar._access_token == ""
+    assert calendar.authorization_pending is False
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
 async def test_repeated_connect_does_not_invalidate_first_state_and_cancel_is_terminal(service):
     calendar, _calls = service
     first = calendar.begin_connect(open_browser=False)
@@ -155,6 +334,32 @@ async def test_repeated_connect_does_not_invalidate_first_state_and_cancel_is_te
     assert (await calendar.status())["authorizationPending"] is True
     await calendar.complete_connect(second_state, "authorization-code")
     assert (await calendar.status())["authorizationPending"] is False
+
+
+@pytest.mark.asyncio
+async def test_pending_authorization_hides_previous_account_and_events(service):
+    calendar, _calls = service
+    with database._get_connection() as conn:
+        conn.execute(
+            "UPDATE outlook_calendar_state SET last_sync_at=?,account_json=? WHERE id=1",
+            ("2026-07-12T08:00:00+00:00", '{"name":"Old","address":"old@example.com"}'),
+        )
+        conn.execute(
+            "INSERT INTO outlook_calendar_events(id,start_at,end_at,updated_at) VALUES (?,?,?,?)",
+            ("old", "2026-07-12T09:00:00+00:00", "2026-07-12T10:00:00+00:00", "now"),
+        )
+        conn.commit()
+
+    calendar.begin_connect(open_browser=False)
+    status = await calendar.status()
+    assert status["authorizationPending"] is True
+    assert status["account"] is None
+    assert status["nextEvent"] is None
+    assert status["lastSyncAt"] == ""
+    assert calendar.current_event() is None
+    assert calendar.event_snapshot("old") is None
+    with pytest.raises(ValueError, match="Finish the Outlook sign-in"):
+        calendar.events_for_day()
 
 
 @pytest.mark.asyncio
@@ -202,15 +407,156 @@ async def test_expired_delta_window_reseeds_and_reconciles_cache(service):
 
         def get(self, url, **_kwargs):
             self.urls.append(url)
+            if "/v1.0/me?" in url:
+                return ResponseWithPayload({
+                    "displayName": "Alex Example",
+                    "mail": "alex@example.com",
+                    "userPrincipalName": "alex@example.com",
+                })
             return Response()
+
+    class ResponseWithPayload(Response):
+        def __init__(self, value):
+            self.value = value
+
+        async def json(self):
+            return self.value
 
     session = Session()
     assert await calendar.sync(session) == 1
-    assert len(session.urls) == 1
-    assert "$deltatoken=old" not in session.urls[0]
-    assert "startDateTime=" in session.urls[0]
+    assert len(session.urls) == 2
+    delta_url = next(url for url in session.urls if "/calendarView/delta?" in url)
+    assert "$deltatoken=old" not in delta_url
+    assert "startDateTime=" in delta_url
+    assert "%24select=" not in delta_url
     rows = database._get_connection().execute(
         "SELECT id,start_at,end_at FROM outlook_calendar_events ORDER BY id"
     ).fetchall()
     assert [row["id"] for row in rows] == ["future"]
     assert rows[0]["start_at"].endswith("+00:00")
+
+
+@pytest.mark.asyncio
+async def test_new_authorization_clears_old_account_calendar_before_first_sync(service):
+    calendar, _calls = service
+    with database._get_connection() as conn:
+        conn.execute(
+            """INSERT INTO outlook_calendar_events
+               (id,start_at,end_at,updated_at) VALUES (?,?,?,?)""",
+            ("old-account-event", "2026-07-12T10:00:00+00:00", "2026-07-12T11:00:00+00:00", "now"),
+        )
+        conn.execute(
+            """UPDATE outlook_calendar_state SET delta_link=?,window_start=?,
+               window_end=?,account_json=? WHERE id=1""",
+            (
+                "https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=old",
+                "2026-07-01T00:00:00+00:00",
+                "2026-08-01T00:00:00+00:00",
+                '{"name":"Old User","address":"old@example.com"}',
+            ),
+        )
+        conn.commit()
+
+    started = calendar.begin_connect(open_browser=False)
+    state = parse_qs(urlparse(started["authorizationUrl"]).query)["state"][0]
+    await calendar.complete_connect(state, "authorization-code")
+
+    conn = database._get_connection()
+    assert conn.execute("SELECT COUNT(*) FROM outlook_calendar_events").fetchone()[0] == 0
+    reset = conn.execute("SELECT * FROM outlook_calendar_state WHERE id=1").fetchone()
+    assert reset["delta_link"] == ""
+    assert reset["account_json"] == "{}"
+
+
+def test_day_events_preserve_attendee_context_and_signed_in_identity(service):
+    calendar, _calls = service
+    with database._get_connection() as conn:
+        conn.execute(
+            "UPDATE outlook_calendar_state SET last_sync_at=?,account_json=? WHERE id=1",
+            (
+                "2026-07-12T08:00:00+00:00",
+                '{"name":"Alex Example","address":"alex@example.com"}',
+            ),
+        )
+        conn.execute(
+            """INSERT INTO outlook_calendar_events
+               (id,subject,start_at,end_at,organizer_json,attendees_json,join_url,
+                location,is_all_day,is_cancelled,etag,synced_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "event-berlin",
+                "Daily planning",
+                "2026-07-11T22:30:00+00:00",
+                "2026-07-11T23:30:00+00:00",
+                '{"emailAddress":{"name":"Organizer","address":"owner@example.com"}}',
+                """[
+                  {"emailAddress":{"name":"Alex Example","address":"alex@example.com"},
+                   "type":"required","status":{"response":"accepted"}},
+                  {"emailAddress":{"name":"Board room","address":"room@example.com"},
+                   "type":"resource","status":{"response":"accepted"}},
+                  {"emailAddress":{"name":"No thanks","address":"declined@example.com"},
+                   "type":"optional","status":{"response":"declined"}}
+                ]""",
+                "https://teams.example/join",
+                "Online",
+                0,
+                0,
+                'W/"etag-1"',
+                "2026-07-12T08:00:00+00:00",
+                "2026-07-12T07:55:00+00:00",
+            ),
+        )
+        conn.commit()
+
+    payload = calendar.events_for_day(
+        day_value="2026-07-12",
+        time_zone_name="Europe/Berlin",
+        start_value="2026-07-11T22:00:00.000Z",
+        end_value="2026-07-12T22:00:00.000Z",
+    )
+    assert payload["date"] == "2026-07-12"
+    assert payload["timeZone"] == "Europe/Berlin"
+    assert payload["account"] == {
+        "name": "Alex Example",
+        "address": "alex@example.com",
+    }
+    assert len(payload["items"]) == 1
+    event = payload["items"][0]
+    assert event["etag"] == 'W/"etag-1"'
+    assert event["organizer"]["address"] == "owner@example.com"
+    assert event["currentUser"]["participantId"]
+    assert event["participants"][0]["isCurrentUser"] is True
+    assert event["participants"][1]["type"] == "resource"
+    assert event["participants"][2]["response"] == "declined"
+    assert all(item["participantId"] for item in event["participants"])
+
+
+def test_day_events_reject_invalid_date_and_timezone(service):
+    calendar, _calls = service
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        calendar.events_for_day(
+            day_value="12.07.2026",
+            time_zone_name="Europe/Berlin",
+            start_value="2026-07-11T22:00:00Z",
+            end_value="2026-07-12T22:00:00Z",
+        )
+    with pytest.raises(ValueError, match="timeZone"):
+        calendar.events_for_day(
+            day_value="2026-07-12",
+            time_zone_name="bad zone!",
+            start_value="2026-07-11T22:00:00Z",
+            end_value="2026-07-12T22:00:00Z",
+        )
+
+
+def test_browser_supplied_day_boundaries_preserve_dst_without_tzdata(service):
+    calendar, _calls = service
+    day, zone, start, end = calendar._resolve_day_window(
+        "2026-03-29",
+        "Europe/Berlin",
+        "2026-03-28T23:00:00Z",
+        "2026-03-29T22:00:00Z",
+    )
+    assert day.isoformat() == "2026-03-29"
+    assert zone == "Europe/Berlin"
+    assert (end - start).total_seconds() == 23 * 60 * 60

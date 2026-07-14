@@ -73,6 +73,7 @@ export interface MeetingCaptureMetadata extends Record<string, unknown> {
   aecMetrics?: MeetingAecMetrics;
   nativeStopSessions?: MeetingNativeStopSnapshot[];
   audioPurgedAt?: string;
+  calendarEvent?: OutlookCalendarEvent;
 }
 
 export interface MeetingSummary {
@@ -400,23 +401,92 @@ export interface MeetingDetectionResponse {
   };
 }
 
+export interface OutlookCalendarContact {
+  participantId?: string;
+  name: string;
+  address: string;
+  aliases?: string[];
+  isCurrentUser?: boolean;
+  type?: "required" | "optional" | "resource" | string;
+  response?: "none" | "organizer" | "tentativelyAccepted" | "accepted" | "declined" | "notResponded" | string;
+}
+
+export interface OutlookCalendarEvent {
+  id: string;
+  subject: string;
+  start_at: string;
+  end_at: string;
+  join_url: string;
+  organizer: OutlookCalendarContact | null;
+  participants: OutlookCalendarContact[];
+  currentUser?: OutlookCalendarContact | null;
+  isCurrentUserOrganizer?: boolean;
+  etag?: string;
+  location?: string;
+  isAllDay?: boolean;
+  lastModifiedAt?: string;
+  syncedAt?: string;
+  calendarSyncedAt?: string;
+  snapshotCreatedAt?: string;
+}
+
 export interface OutlookCalendarStatus {
   apiVersion: typeof REST_API_VERSION;
   configured: boolean;
   connected: boolean;
+  credentialStatusAvailable: boolean;
   authorizationPending: boolean;
   scopes: string[];
   lastSyncAt: string;
   lastError: string;
-  nextEvent: {
-    id: string;
-    subject: string;
-    start_at: string;
-    end_at: string;
-    join_url: string;
-    organizer: { name: string; address: string } | null;
-    participants: Array<{ name: string; address: string }>;
+  account: OutlookCalendarContact | null;
+  nextEvent: OutlookCalendarEvent | null;
+}
+
+export interface OutlookCalendarEventsResponse {
+  apiVersion: typeof REST_API_VERSION;
+  date: string;
+  timeZone: string;
+  lastSyncAt: string;
+  account: OutlookCalendarContact | null;
+  truncated: boolean;
+  items: OutlookCalendarEvent[];
+}
+
+export type MeetingSpeakerSuggestionSource = "account" | "voice_profile" | "llm";
+
+export interface MeetingSpeakerSuggestion {
+  attendee: OutlookCalendarContact;
+  source: MeetingSpeakerSuggestionSource;
+  confidence: number | null;
+  reason: string;
+  requiresConfirmation?: boolean;
+}
+
+export interface MeetingSpeakerAssignment {
+  speakerId: string;
+  speakerLabel: string;
+  currentDisplayName: string;
+  sourceHint?: string;
+  profileMatch: {
+    profileId: string;
+    displayName: string;
+    confidence: number | null;
   } | null;
+  suggestions: MeetingSpeakerSuggestion[];
+  confirmedAttendee: OutlookCalendarContact | null;
+  participantLinkSource?: "manual" | MeetingSpeakerSuggestionSource | string;
+}
+
+export interface MeetingSpeakerAssignmentsResponse {
+  apiVersion: typeof REST_API_VERSION;
+  calendarEvent: OutlookCalendarEvent | null;
+  items: MeetingSpeakerAssignment[];
+  requiresConfirmation: true;
+  llmSuggestionAvailable: boolean;
+  llmModel?: string;
+  llmRequested?: boolean;
+  privacy?: string;
 }
 
 export interface SpeakerProfileSummary {

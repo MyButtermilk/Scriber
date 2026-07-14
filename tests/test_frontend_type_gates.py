@@ -1696,8 +1696,73 @@ def test_outlook_meeting_settings_explain_each_connection_state_plainly() -> Non
     assert "Reconnect Outlook" in meeting_settings
     assert "Sync now" in meeting_settings
     assert "const outlookMutation" not in meetings
-    assert "Connect Outlook in Settings to use meeting titles and participants automatically." in meetings
+    assert "<OutlookMeetingPicker" in meetings
     assert 'setLocation("/settings")' in meetings
+
+
+def test_outlook_meeting_picker_uses_fresh_daily_events_and_explicit_selection() -> None:
+    client = REPO_ROOT / "Frontend" / "client" / "src"
+    meetings = (client / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
+    picker = (client / "components" / "meeting" / "OutlookMeetingPicker.tsx").read_text(
+        encoding="utf-8"
+    )
+    api_types = (client / "lib" / "api-types.ts").read_text(encoding="utf-8")
+
+    assert '"/api/calendar/outlook/events"' in meetings
+    assert "date: outlookCalendarDate" in meetings
+    assert "timeZone: outlookTimeZone" in meetings
+    assert "start: outlookCalendarWindow.start" in meetings
+    assert "end: outlookCalendarWindow.end" in meetings
+    assert "outlookQuery.data?.lastSyncAt ?? \"\"" in meetings
+    assert "!outlookQuery.data.lastSyncAt && outlookQuery.data.lastError" in meetings
+    assert "calendarEventId: selectedCalendarEventId || null" in meetings
+    assert "setSelectedCalendarEventId(event?.id ?? \"\")" in meetings
+    assert "if (calendarEvent?.id) {" in meetings
+    assert "setSelectedCalendarEventId(calendarEvent.id);" in meetings
+    assert "selectedCalendarSubjectRef.current = calendarEvent.subject;" in meetings
+    assert "Refresh calendar" in picker
+    assert "Use no calendar event" in picker
+    assert "Open online meeting" in picker
+    assert 'url.protocol !== "https:"' in picker
+    assert "No Outlook meetings today." in picker
+    assert "Today&apos;s meetings could not be loaded." in picker
+    assert "event.isAllDay ? \"All day\"" in picker
+    assert "event.location" in picker
+    assert "participant.type === \"resource\"" in picker
+    assert "events?.truncated" in picker
+    assert "credentialStatusAvailable: boolean" in api_types
+    assert "export interface OutlookCalendarEventsResponse" in api_types
+    assert "truncated: boolean" in api_types
+
+
+def test_outlook_disconnect_and_speaker_assignments_require_explicit_confirmation() -> None:
+    client = REPO_ROOT / "Frontend" / "client" / "src"
+    settings = (client / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    meetings = (client / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
+    assignments = (
+        client / "components" / "meeting" / "SpeakerAttendeeAssignments.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "outlookDisconnectOpen" in settings
+    assert "Disconnect Outlook?" in settings
+    assert "Keep connected" in settings
+    assert 'outlookMutation.mutate("disconnect")' in settings
+    assert 'queryKey: ["/api/calendar/outlook/events"]' in settings
+    assert 'queryClient.removeQueries({ queryKey: ["/api/calendar/outlook/events"] });' in settings
+    assert "credentialStatusAvailable === false" in settings
+    assert "Previously synchronized calendar entries stay on this device" in settings
+
+    assert "<SpeakerAttendeeAssignments" in meetings
+    assert "speaker-assignments/suggest" in assignments
+    assert 'confirmed: true' in assignments
+    assert "participantId" in assignments
+    assert "suggestionSource" in assignments
+    assert 'contact.type === "resource"' in assignments
+    assert "declined invitation" in assignments
+    assert "Saved voice and account matches run first on this device." in assignments
+    assert "Outlook email addresses are not sent." in assignments
+    assert "Every suggestion stays unconfirmed until you approve it." in assignments
+    assert "Confirmed mappings improve speaker names in the transcript." in assignments
 
 
 def test_meeting_copy_uses_plain_outcome_focused_language() -> None:

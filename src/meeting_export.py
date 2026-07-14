@@ -133,14 +133,45 @@ def build_meeting_markdown(detail: dict[str, Any], *, include_transcript: bool =
 
 def meeting_email_recipients(detail: dict[str, Any]) -> list[dict[str, str]]:
     event = detail.get("captureMetadata", {}).get("calendarEvent", {})
-    candidates = event.get("participants", []) if isinstance(event, dict) else []
+    raw_participants = event.get("participants") if isinstance(event, dict) else None
+    participants = raw_participants if isinstance(raw_participants, list) else []
+    candidates = [event.get("organizer"), *participants] if isinstance(event, dict) else []
+    current_user = event.get("currentUser") if isinstance(event, dict) else None
+    current_user_addresses: set[str] = set()
+    if isinstance(current_user, dict):
+        raw_aliases = current_user.get("aliases")
+        aliases = raw_aliases if isinstance(raw_aliases, list) else []
+        for value in [current_user.get("address"), *aliases]:
+            address = _single_line(value, limit=320).casefold()
+            if re.fullmatch(r"[^\s@<>]+@[^\s@<>]+", address):
+                current_user_addresses.add(address)
     recipients: list[dict[str, str]] = []
     seen: set[str] = set()
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
+        attendee_type = _single_line(
+            candidate.get("type") or candidate.get("role"), limit=40
+        ).casefold()
+        response = _single_line(
+            candidate.get("response") or candidate.get("responseStatus"), limit=40
+        ).casefold()
+        # Calendar rooms/resources are not people, declined attendees should not
+        # receive an unsolicited recap, and the connected account should not be
+        # addressed in its own follow-up draft. Older Meeting snapshots omit
+        # these fields and intentionally retain the previous include behavior.
+        if (
+            bool(candidate.get("isCurrentUser"))
+            or attendee_type == "resource"
+            or response in {"declined", "decline"}
+        ):
+            continue
         address = _single_line(candidate.get("address"), limit=320).lower()
-        if not re.fullmatch(r"[^\s@<>]+@[^\s@<>]+", address) or address in seen:
+        if (
+            not re.fullmatch(r"[^\s@<>]+@[^\s@<>]+", address)
+            or address in seen
+            or address.casefold() in current_user_addresses
+        ):
             continue
         seen.add(address)
         recipients.append({"name": _single_line(candidate.get("name"), limit=200), "address": address})

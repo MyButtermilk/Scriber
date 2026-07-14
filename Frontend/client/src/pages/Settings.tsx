@@ -149,6 +149,21 @@ function formatUpdateTimestamp(value?: string): string {
   }).format(parsed);
 }
 
+function outlookSyncErrorMessage(value?: string): string {
+  const code = String(value || "").toLocaleLowerCase();
+  if (!code) return "";
+  if (code.includes("cancel")) {
+    return "The last Microsoft sign-in was canceled. Connect again when you are ready.";
+  }
+  if (code.includes("author") || code.includes("token") || code.includes("credential")) {
+    return "Microsoft needs you to connect Outlook again before the calendar can refresh.";
+  }
+  if (code.includes("timeout") || code.includes("connector") || code.includes("network")) {
+    return "Outlook could not be reached. Check your connection, then choose Sync now.";
+  }
+  return "The last calendar refresh did not finish. Your previously saved meetings are unchanged; choose Sync now to retry.";
+}
+
 function restoreScrollSnapshot(snapshot: ScrollSnapshot) {
   if (typeof window === "undefined" || typeof document === "undefined") {
     return;
@@ -1169,6 +1184,7 @@ export default function Settings() {
   const [isTranscriptionModelDropdownOpen, setIsTranscriptionModelDropdownOpen] = useState(false);
   const [speakerProfilePendingDelete, setSpeakerProfilePendingDelete] = useState<{ id: string; name: string } | null>(null);
   const [voiceLibraryDeleteOpen, setVoiceLibraryDeleteOpen] = useState(false);
+  const [outlookDisconnectOpen, setOutlookDisconnectOpen] = useState(false);
   const [voiceLibraryDeletePending, setVoiceLibraryDeletePending] = useState(false);
   const [voiceEnrollmentOpen, setVoiceEnrollmentOpen] = useState(false);
   const [voiceEnrollmentName, setVoiceEnrollmentName] = useState("");
@@ -1324,10 +1340,17 @@ export default function Settings() {
     },
     onSuccess: (_result, action) => {
       void queryClient.invalidateQueries({ queryKey: ["/api/calendar/outlook/status"] });
+      if (action === "sync") {
+        void queryClient.invalidateQueries({ queryKey: ["/api/calendar/outlook/events"] });
+      } else {
+        queryClient.removeQueries({ queryKey: ["/api/calendar/outlook/events"] });
+      }
+      if (action === "disconnect") setOutlookDisconnectOpen(false);
       toast({ title: action === "connect" ? "Continue in your browser" : action === "sync" ? "Outlook calendar synchronized" : "Outlook disconnected" });
     },
     onError: (error) => toast({ title: "Outlook action failed", description: error.message, variant: "destructive" }),
   });
+  const outlookCredentialStatusUnavailable = outlookQuery.data?.credentialStatusAvailable === false;
 
   useEffect(() => {
     return subscribeDesktopUpdateStatus(setDesktopUpdate);
@@ -4130,7 +4153,7 @@ export default function Settings() {
                     <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">
                       {outlookQuery.isLoading
                         ? "Checking Outlook"
-                        : outlookQuery.isError
+                        : outlookQuery.isError || outlookCredentialStatusUnavailable
                           ? "Outlook status could not be checked"
                         : outlookQuery.data?.connected
                           ? "Outlook is connected"
@@ -4142,29 +4165,34 @@ export default function Settings() {
                     </p>
                     <Badge variant="outline" className={cn(
                       "text-[10px]",
-                      outlookQuery.data?.connected && "border-emerald-500/40 text-emerald-700 dark:text-emerald-300",
+                      outlookQuery.data?.connected && !outlookCredentialStatusUnavailable && "border-emerald-500/40 text-emerald-700 dark:text-emerald-300",
                       !outlookQuery.isLoading && !outlookQuery.data?.connected && "border-amber-500/40 text-amber-700 dark:text-amber-300",
                     )}>
-                      {outlookQuery.isLoading ? "Checking" : outlookQuery.isError ? "Unavailable" : outlookQuery.data?.connected ? "Connected" : outlookQuery.data?.authorizationPending ? "Waiting" : "Not connected"}
+                      {outlookQuery.isLoading ? "Checking" : outlookQuery.isError || outlookCredentialStatusUnavailable ? "Unavailable" : outlookQuery.data?.connected ? "Connected" : outlookQuery.data?.authorizationPending ? "Waiting" : "Not connected"}
                     </Badge>
                   </div>
                   <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">
-                    {outlookQuery.data?.connected
+                    {outlookQuery.isError || outlookCredentialStatusUnavailable
+                        ? "Scriber could not check the protected Outlook sign-in right now. Previously synchronized calendar entries stay on this device; choose Check again before reconnecting."
+                      : outlookQuery.data?.connected
                       ? "Upcoming meeting titles and participants now appear automatically. Scriber cannot edit your calendar or see your Microsoft password."
-                      : outlookQuery.isError
-                        ? "Scriber could not reach its local calendar service. Restart Scriber, then check this page again."
                       : outlookQuery.data?.authorizationPending
                         ? "Complete the Microsoft sign-in in your browser. This page updates automatically when you return."
                         : outlookQuery.data?.configured
                           ? "Click Connect Outlook below. Microsoft opens in your browser and asks for read-only calendar access."
                           : "This release was published without Microsoft sign-in. Reinstalling the same version will not fix it. Check for a newer release that lists Outlook calendar support."}
                   </p>
+                  {outlookQuery.data?.connected && outlookQuery.data.account && (
+                    <p className="mt-1.5 truncate text-[10.5px] text-slate-500">
+                      Connected as {outlookQuery.data.account.name || outlookQuery.data.account.address} · {outlookQuery.data.account.address}
+                    </p>
+                  )}
                   {outlookQuery.data?.lastSyncAt && <p className="mt-1.5 font-mono text-[10.5px] text-slate-500">Last sync · {formatUpdateTimestamp(outlookQuery.data.lastSyncAt)}</p>}
-                  {outlookQuery.data?.lastError && <p className="mt-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">What happened: {outlookQuery.data.lastError}</p>}
+                  {outlookQuery.data?.lastError && <p className="mt-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">{outlookSyncErrorMessage(outlookQuery.data.lastError)}</p>}
                 </div>
                 {!outlookQuery.isLoading && !outlookQuery.data?.connected && (
                   <ol className="grid gap-2 rounded-lg border border-slate-200/80 p-3 text-[11px] leading-4 text-slate-600 dark:border-[var(--workspace-border)] dark:text-slate-300">
-                    {(outlookQuery.isError
+                    {(outlookQuery.isError || outlookCredentialStatusUnavailable
                       ? [
                           "Restart Scriber.",
                           "Return to this page and check the Outlook status again.",
@@ -4209,7 +4237,7 @@ export default function Settings() {
                   </div>
                 )}
                 <div className="flex flex-wrap justify-end gap-2">
-                  {outlookQuery.isError ? (
+                  {outlookQuery.isError || outlookCredentialStatusUnavailable ? (
                     <Button size="sm" variant="outline" disabled={outlookQuery.isFetching} onClick={() => void outlookQuery.refetch()}>
                       <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", outlookQuery.isFetching && "animate-spin motion-reduce:animate-none")} />
                       Check again
@@ -4220,7 +4248,7 @@ export default function Settings() {
                         <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", outlookMutation.isPending && "animate-spin motion-reduce:animate-none")} />
                         Sync now
                       </Button>
-                      <Button size="sm" variant="ghost" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("disconnect")}>Disconnect Outlook</Button>
+                      <Button size="sm" variant="outline" className="border-destructive/45 text-destructive hover:bg-destructive/10" disabled={outlookMutation.isPending} onClick={() => setOutlookDisconnectOpen(true)}>Disconnect Outlook</Button>
                     </>
                   ) : outlookQuery.data?.configured ? (
                     <Button size="sm" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("connect")}>
@@ -4695,6 +4723,36 @@ export default function Settings() {
               }}
             >
               Delete speaker
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={outlookDisconnectOpen} onOpenChange={(open) => { if (!outlookMutation.isPending) setOutlookDisconnectOpen(open); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Disconnect Outlook?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Scriber will remove the protected Microsoft sign-in and its locally synchronized calendar entries. Existing meetings, transcripts, and exports stay available. You can connect this or another Microsoft account again later.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {outlookQuery.data?.account && (
+            <div className="rounded-lg border border-border/70 bg-muted/35 px-3 py-2.5 text-sm">
+              <p className="font-medium">{outlookQuery.data.account.name || outlookQuery.data.account.address}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">{outlookQuery.data.account.address}</p>
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={outlookMutation.isPending}>Keep connected</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={outlookMutation.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                outlookMutation.mutate("disconnect");
+              }}
+            >
+              {outlookMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Disconnect Outlook
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

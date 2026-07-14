@@ -316,6 +316,42 @@ Packaging and scripts:
   process-local opaque token returned by that save; never accept a frontend
   path for those commands. Browser builds keep the normal download fallback.
 
+### Outlook Calendar and Participant Identity
+
+- Outlook daily-event reads accept the browser-computed local-day start and next
+  local-day start as UTC instants. This keeps DST boundaries correct using the
+  WebView's system timezone; do not add a packaged Python `tzdata` dependency or
+  reconstruct the requested local-day boundary from an IANA timezone inside the
+  frozen backend.
+- Microsoft Graph `calendarView/delta` requests must not use `$select`, which the
+  delta API does not support. Validate every pagination URL, stage every page,
+  and commit events plus the final delta cursor atomically so a failed or
+  interrupted multi-page sync cannot expose a partial day or advance its cursor.
+- `/me` is the account identity boundary. Preserve both `mail` and
+  `userPrincipalName` as normalized aliases so the connected user is recognized
+  even when an invitation uses the other address. Never expose access or refresh
+  tokens in REST payloads, logs, or support bundles.
+- Outlook Disconnect succeeds only after the Credential Manager refresh token
+  has been removed; it then clears the local Outlook account, delta state, and
+  cached events. Existing Meetings keep their immutable event snapshots.
+- Meeting start must distinguish an explicit `calendarEventId` from explicit
+  `null`. Resolve an id only against the token-protected local Outlook cache and
+  freeze the selected event, organizer, account identity, participants, and
+  addresses into the Meeting. `null` means no calendar context and must not fall
+  back to a nearby event.
+- Post-Meeting identity suggestions are layered: unique local Voice Library
+  matches first, then the microphone track's connected-account identity, then
+  an optional LLM request only when the user asks for suggestions. The LLM may
+  receive participant names, opaque ids, and short email-redacted transcript
+  excerpts, but never Outlook email addresses. Treat the entire Meeting context
+  sent to the model—including calendar names, speaker labels, and transcript
+  text—as untrusted input, and require explicit human confirmation before
+  persisting any proposed speaker-to-participant link.
+- Email/export recipients come exclusively from the Meeting's frozen calendar
+  event, never from Voice matches, LLM output, or confirmed speaker mappings.
+  Validate and deduplicate addresses and exclude the connected user (including
+  aliases), resource/room attendees, and declined attendees.
+
 ### Microphone and Device Handling
 
 - Keep PortAudio access guarded through the shared device guard lock.

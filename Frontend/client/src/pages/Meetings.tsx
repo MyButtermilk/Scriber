@@ -73,6 +73,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { PageIntro } from "@/components/page-intro";
+import { OutlookMeetingPicker } from "@/components/meeting/OutlookMeetingPicker";
+import { SpeakerAttendeeAssignments } from "@/components/meeting/SpeakerAttendeeAssignments";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
@@ -106,6 +108,8 @@ import type {
   MeetingState,
   MeetingSummary,
   MeetingsResponse,
+  OutlookCalendarEvent,
+  OutlookCalendarEventsResponse,
   OutlookCalendarStatus,
   SpeakerModelStatus,
 } from "@/lib/api-types";
@@ -153,6 +157,19 @@ function formatMoment(value: string | null): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function localCalendarDate(value = new Date()): string {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function localCalendarDayWindow(value = new Date()): { start: string; end: string } {
+  const start = new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  const end = new Date(value.getFullYear(), value.getMonth(), value.getDate() + 1);
+  return { start: start.toISOString(), end: end.toISOString() };
 }
 
 const formatOffset = formatMeetingOffset;
@@ -753,6 +770,9 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [title, setTitle] = useState("");
+  const [selectedCalendarEventId, setSelectedCalendarEventId] = useState("");
+  const calendarSelectionInitializedRef = useRef(false);
+  const selectedCalendarSubjectRef = useRef("");
   const [note, setNote] = useState("");
   const [noteHydratedFor, setNoteHydratedFor] = useState("");
   const lastSavedNote = useRef("");
@@ -858,13 +878,94 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     queryKey: ["/api/calendar/outlook/status"],
     queryFn: ({ signal }) => fetchJson("/api/calendar/outlook/status", signal),
     staleTime: 15_000,
-    refetchInterval: (query) => query.state.data?.authorizationPending ? 2_000 : 30_000,
+    refetchInterval: (query) => (
+      query.state.data?.authorizationPending
+        || (
+          query.state.data?.connected
+          && !query.state.data.lastSyncAt
+          && !query.state.data.lastError
+        )
+        ? 2_000
+        : 30_000
+    ),
+  });
+  const outlookCalendarNow = new Date();
+  const outlookCalendarDate = localCalendarDate(outlookCalendarNow);
+  const outlookTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const outlookCalendarWindow = localCalendarDayWindow(outlookCalendarNow);
+  const outlookEventsQuery = useQuery<OutlookCalendarEventsResponse>({
+    queryKey: ["/api/calendar/outlook/events", outlookCalendarDate, outlookTimeZone, outlookQuery.data?.lastSyncAt ?? ""],
+    queryFn: ({ signal }) => {
+      const query = new URLSearchParams({
+        date: outlookCalendarDate,
+        timeZone: outlookTimeZone,
+        start: outlookCalendarWindow.start,
+        end: outlookCalendarWindow.end,
+      });
+      return fetchJson(`/api/calendar/outlook/events?${query.toString()}`, signal);
+    },
+    enabled: Boolean(outlookQuery.data?.connected && !outlookQuery.data.authorizationPending && outlookQuery.data.lastSyncAt),
+    staleTime: 15_000,
+  });
+  const outlookSyncMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/calendar/outlook/sync");
+      return response.json() as Promise<{ changed: number }>;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["/api/calendar/outlook/status"] });
+      void queryClient.invalidateQueries({ queryKey: ["/api/calendar/outlook/events"] });
+      toast({ title: "Outlook calendar refreshed" });
+    },
+    onError: (error) => toast({ variant: "destructive", title: "Outlook calendar could not refresh", description: error.message }),
   });
   const speakerModelQuery = useQuery<SpeakerModelStatus>({
     queryKey: ["/api/meetings/speaker-model"],
     queryFn: ({ signal }) => fetchJson("/api/meetings/speaker-model", signal),
     staleTime: 30_000,
   });
+  useEffect(() => {
+    if (
+      outlookQuery.data
+      && outlookQuery.data.credentialStatusAvailable !== false
+      && (!outlookQuery.data.connected || outlookQuery.data.authorizationPending)
+    ) {
+      setSelectedCalendarEventId("");
+      calendarSelectionInitializedRef.current = false;
+      selectedCalendarSubjectRef.current = "";
+      return;
+    }
+    const events = outlookEventsQuery.data?.items;
+    if (!events) return;
+    if (!calendarSelectionInitializedRef.current) {
+      calendarSelectionInitializedRef.current = true;
+      const suggested = events.find((event) => event.id === outlookQuery.data?.nextEvent?.id)
+        ?? (events.length === 1 ? events[0] : null);
+      if (suggested) {
+        setSelectedCalendarEventId(suggested.id);
+        setTitle((current) => current.trim() ? current : suggested.subject);
+        selectedCalendarSubjectRef.current = suggested.subject;
+      }
+      return;
+    }
+    const selected = events.find((event) => event.id === selectedCalendarEventId);
+    if (selectedCalendarEventId && !selected) {
+      setSelectedCalendarEventId("");
+      selectedCalendarSubjectRef.current = "";
+      return;
+    }
+    if (selected) {
+      const previousSubject = selectedCalendarSubjectRef.current;
+      if (selected.subject !== previousSubject) {
+        setTitle((currentTitle) => (
+          !currentTitle.trim() || currentTitle === previousSubject
+            ? selected.subject
+            : currentTitle
+        ));
+        selectedCalendarSubjectRef.current = selected.subject;
+      }
+    }
+  }, [outlookEventsQuery.data?.items, outlookQuery.data, outlookQuery.data?.nextEvent?.id, selectedCalendarEventId]);
   const detailQuery = useQuery<MeetingDetail>({
     queryKey: ["/api/meetings", selectedId],
     queryFn: ({ signal }) => fetchJson(`/api/meetings/${selectedId}`, signal),
@@ -1063,11 +1164,15 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         autoAnalyze: profile?.autoAnalyze ?? true,
         microphoneNativeEndpointIdHash: microphoneEndpointHash,
         renderNativeEndpointIdHash: renderEndpointHash,
+        calendarEventId: selectedCalendarEventId || null,
       });
       return response.json() as Promise<MeetingSummary>;
     },
     onSuccess: (meeting) => {
       setTitle("");
+      setSelectedCalendarEventId("");
+      calendarSelectionInitializedRef.current = false;
+      selectedCalendarSubjectRef.current = "";
       invalidateMeetings(meeting.id);
       setLocation(`/meetings/${meeting.id}`);
     },
@@ -1908,33 +2013,39 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       <p className="text-sm font-medium">Meeting activity detected</p>
                       <p className="mt-1 truncate text-sm text-muted-foreground">{detectionQuery.data.detection.label}</p>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        <Button type="button" size="sm" onClick={() => setTitle(detectionQuery.data?.detection?.calendarEvent?.subject || detectionQuery.data?.detection?.label || "Meeting")}>Use suggestion</Button>
+                        <Button type="button" size="sm" onClick={() => {
+                          const calendarEvent = detectionQuery.data?.detection?.calendarEvent;
+                          setTitle(calendarEvent?.subject || detectionQuery.data?.detection?.label || "Meeting");
+                          if (calendarEvent?.id) {
+                            setSelectedCalendarEventId(calendarEvent.id);
+                            selectedCalendarSubjectRef.current = calendarEvent.subject;
+                          }
+                        }}>Use suggestion</Button>
                         <Button type="button" size="sm" variant="ghost" disabled={detectionDismissMutation.isPending} onClick={() => detectionDismissMutation.mutate(detectionQuery.data!.detection!.detectionId)}>Dismiss</Button>
                       </div>
                     </div>
                   </div>
                 </div>}
-                {outlookQuery.data?.configured && <div className="rounded-2xl border border-border/70 bg-background/55 p-4">
-                  <div className="flex items-start gap-3">
-                    <CalendarClock className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium">Outlook calendar</p>
-                      {outlookQuery.data.connected ? (
-                        <>
-                          {outlookQuery.data.nextEvent ? <button type="button" className="mt-2 block w-full rounded-xl bg-muted/55 p-3 text-left" onClick={() => setTitle(outlookQuery.data?.nextEvent?.subject ?? "")}>
-                            <span className="block truncate text-sm font-medium">{outlookQuery.data.nextEvent.subject || "Untitled Outlook meeting"}</span>
-                            <span className="mt-1 block text-xs text-muted-foreground">{formatMoment(outlookQuery.data.nextEvent.start_at)} · Use as meeting title</span>
-                          </button> : <p className="mt-1 text-xs text-muted-foreground">Connected · no upcoming meeting found.</p>}
-                        </>
-                      ) : (
-                        <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
-                          <p className="text-xs leading-5 text-muted-foreground">Connect Outlook in Settings to use meeting titles and participants automatically.</p>
-                          <Button type="button" size="sm" variant="outline" onClick={openMeetingSettings}>Open settings</Button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>}
+                <OutlookMeetingPicker
+                  status={outlookQuery.data}
+                  events={outlookEventsQuery.data}
+                  statusLoading={outlookQuery.isLoading}
+                  statusError={outlookQuery.isError || outlookQuery.data?.credentialStatusAvailable === false}
+                  eventsLoading={outlookEventsQuery.isLoading || Boolean(outlookQuery.data?.connected && !outlookQuery.data.lastSyncAt && !outlookQuery.data.lastError)}
+                  eventsError={outlookEventsQuery.isError || Boolean(outlookQuery.data?.connected && !outlookQuery.data.lastSyncAt && outlookQuery.data.lastError)}
+                  refreshing={outlookSyncMutation.isPending || outlookQuery.isFetching || outlookEventsQuery.isFetching}
+                  selectedEventId={selectedCalendarEventId}
+                  onSelect={(event: OutlookCalendarEvent | null) => {
+                    setSelectedCalendarEventId(event?.id ?? "");
+                    selectedCalendarSubjectRef.current = event?.subject ?? "";
+                    if (event) setTitle(event.subject || "Meeting");
+                  }}
+                  onRefresh={() => {
+                    if (outlookQuery.data?.connected) outlookSyncMutation.mutate();
+                    else void outlookQuery.refetch();
+                  }}
+                  onOpenSettings={openMeetingSettings}
+                />
                 <div className="grid min-w-0 gap-4 overflow-hidden rounded-2xl border border-border/70 bg-background/55 p-4">
                   <div className="min-w-0">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -2245,6 +2356,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 </div>
               )}
 
+              {!OPEN_STATES.has(detail.state) && detail.captureMetadata.calendarEvent && (
+                <SpeakerAttendeeAssignments
+                  meetingId={detail.id}
+                  calendarEvent={detail.captureMetadata.calendarEvent}
+                  onAssignmentsChanged={() => invalidateMeetings(detail.id)}
+                />
+              )}
+
               <MeetingWorkspaceTabs value={workspaceView} onChange={setWorkspaceView} />
               {detail.segments.length > 0 && hasPlayableAudio && (
                 <div className="mx-5 mt-3 flex flex-col gap-2 rounded-xl bg-muted/45 px-3 py-2 sm:mx-6 sm:flex-row sm:flex-wrap sm:items-center">
@@ -2530,7 +2649,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-[680px]">
           <DialogHeader>
             <DialogTitle>Share meeting by email</DialogTitle>
-            <DialogDescription>Create a populated email in your default mail app, or download an Outlook-compatible draft with the meeting document attached.</DialogDescription>
+            <DialogDescription>Create a populated email in your default mail app, or save an Outlook-compatible draft. Suitable recipients come from the linked Outlook event and remain visible for review here.</DialogDescription>
           </DialogHeader>
           {emailPreviewQuery.isLoading ? (
             <div className="grid gap-3 py-3"><div className="h-12 animate-pulse rounded-xl bg-muted" /><div className="h-40 animate-pulse rounded-xl bg-muted" /></div>
@@ -2539,7 +2658,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
           ) : (
             <div className="space-y-4">
               <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/25 p-3 text-sm">
-                <div><p className="text-[11px] font-semibold text-muted-foreground">To</p><p className="mt-1 break-words">{emailPreviewQuery.data.recipients.length > 0 ? emailPreviewQuery.data.recipients.map((item) => item.name ? `${item.name} <${item.address}>` : item.address).join(", ") : "No Outlook participants were stored. Add recipients in your mail app."}</p></div>
+                <div><p className="text-[11px] font-semibold text-muted-foreground">To · from linked Outlook event</p><p className="mt-1 break-words">{emailPreviewQuery.data.recipients.length > 0 ? emailPreviewQuery.data.recipients.map((item) => item.name ? `${item.name} <${item.address}>` : item.address).join(", ") : "No suitable Outlook participants were stored. Add recipients in your mail app."}</p></div>
                 <div><p className="text-[11px] font-semibold text-muted-foreground">Subject</p><p className="mt-1 font-medium">{emailPreviewQuery.data.subject}</p></div>
               </div>
               <div>

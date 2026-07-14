@@ -323,14 +323,44 @@ bytes.
    voice data from being recreated. The optional model downloads to a unique,
    checksum-verified staging file; promotion and a cross-process post-check use
    the same enabled gate so an in-flight download cannot restore deleted data.
-   Outlook Calendar uses public desktop PKCE. Official builds embed the public
-   Entra application ID in the
-   Tauri shell, validate it as a canonical non-nil GUID, and forward it to the
-   backend worker without logging it. The system browser returns through the
-   registered `http://localhost:<port>/api/calendar/outlook/callback` loopback
-   shape, whose dynamic port follows the supervised backend. The refresh token
-   stays in Windows Credential Manager while the backend keeps access tokens in
-   memory only.
+   After finalization, speaker identity resolution is deliberately layered.
+   Scriber first proposes unique local Voice Library matches, then assigns the
+   microphone track to the connected Outlook account where possible. Only an
+   explicit user action may ask the configured LLM about unresolved speakers.
+   That request contains opaque speaker/participant ids, participant names, and
+   short email-redacted transcript excerpts; Outlook email addresses are never
+   included. Calendar names, speaker labels, and transcript excerpts are all
+   wrapped as untrusted data rather than instructions, and every LLM proposal
+   remains unconfirmed until the user accepts it. A confirmed link updates
+   Meeting-local speaker labels but does
+   not silently enroll or alter a reusable biometric profile.
+7. Outlook Calendar uses public desktop PKCE. Official builds embed the public
+   Entra application ID in the Tauri shell, validate it as a canonical non-nil
+   GUID, and forward it to the backend worker without logging it. The system
+   browser returns through the registered
+   `http://localhost:<port>/api/calendar/outlook/callback` loopback shape, whose
+   dynamic port follows the supervised backend. The refresh token stays in
+   Windows Credential Manager while the backend keeps access tokens in memory
+   only. A verified Disconnect removes that credential and then clears the
+   local account, delta cursor, and cached events; immutable event snapshots in
+   existing Meetings remain available.
+   Sync reads `/me` and retains both `mail` and `userPrincipalName` as account
+   aliases. Graph `calendarView/delta` is paginated without unsupported
+   `$select`; every response page is staged before events and the final cursor
+   are committed atomically. Daily event queries receive local-midnight and
+   next-local-midnight boundaries already converted to UTC by the browser. This
+   makes 23- and 25-hour DST days correct without bundling Python `tzdata`.
+   The Meeting preflight can refresh and list every cached event for that local
+   day, select one event with its title, time, location/join link, organizer,
+   participant names and addresses, or deliberately select no event. Start
+   carries either an explicit `calendarEventId` or explicit `null`; an id is
+   resolved only in the authenticated local cache and frozen as an immutable
+   Meeting snapshot. Later calendar edits, syncs, account disconnects, and LLM
+   suggestions cannot rewrite that evidence.
+   Email previews and exports derive recipients only from the frozen event,
+   independently of speaker suggestions and confirmed mappings. Address
+   validation and deduplication exclude the connected user's `mail`/UPN
+   aliases, declined invitees, and room/resource attendees.
 
 ### Durable Meeting import protocol
 
