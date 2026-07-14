@@ -39,6 +39,7 @@ param(
     [string]$NsisCompression = "",
     [switch]$LocalPyInstallerNoClean,
     [switch]$RustAudioIsolatedTarget,
+    [switch]$ParallelizeIndependentBuilds,
     [switch]$RunRuntimeDependencyFootprint,
     [double]$MaxScipyRuntimeDependencyMB = 0,
     [double]$MaxOnnxRuntimeDependencyMB = 0,
@@ -136,6 +137,176 @@ function Invoke-Checked {
     }
 }
 
+function ConvertTo-NativeProcessArgument {
+    param([AllowEmptyString()][string]$Value)
+
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') {
+        return $Value
+    }
+
+    $builder = [System.Text.StringBuilder]::new()
+    [void]$builder.Append([char]34)
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq [char]92) {
+            $backslashes += 1
+            continue
+        }
+        if ($character -eq [char]34) {
+            if ($backslashes -gt 0) {
+                [void]$builder.Append([char]92, (2 * $backslashes))
+            }
+            [void]$builder.Append([char]92)
+            [void]$builder.Append([char]34)
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) {
+            [void]$builder.Append([char]92, $backslashes)
+            $backslashes = 0
+        }
+        [void]$builder.Append($character)
+    }
+    if ($backslashes -gt 0) {
+        [void]$builder.Append([char]92, (2 * $backslashes))
+    }
+    [void]$builder.Append([char]34)
+    return $builder.ToString()
+}
+
+function Start-TrackedReleaseProcess {
+    param(
+        [string]$Label,
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [string]$WorkingDirectory
+    )
+
+    $safeLabel = $Label.ToLowerInvariant() -replace '[^a-z0-9]+', '-'
+    $logRoot = Join-Path $RepoRoot "build\parallel-release-tasks"
+    New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
+    $stdoutPath = Join-Path $logRoot "$safeLabel.stdout.log"
+    $stderrPath = Join-Path $logRoot "$safeLabel.stderr.log"
+    foreach ($path in @($stdoutPath, $stderrPath)) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            Remove-Item -LiteralPath $path -Force
+        }
+    }
+    $argumentLine = @($Arguments | ForEach-Object { ConvertTo-NativeProcessArgument -Value ([string]$_) }) -join " "
+    Write-Host "==> $Label (parallel)"
+    $startedAt = (Get-Date).ToUniversalTime()
+    $process = Start-Process `
+        -FilePath $FilePath `
+        -ArgumentList $argumentLine `
+        -WorkingDirectory $WorkingDirectory `
+        -NoNewWindow `
+        -PassThru `
+        -RedirectStandardOutput $stdoutPath `
+        -RedirectStandardError $stderrPath
+    # Windows PowerShell 5.1 can return a Process object from Start-Process
+    # without retaining its native process handle. Once that child exits,
+    # ExitCode and ExitTime then resolve to $null even after WaitForExit().
+    # Acquire the handle while the child is alive so the later parallel join
+    # can reliably inspect its result.
+    try {
+        $null = $process.Handle
+    } catch {
+        $handleError = $_.Exception.Message
+        try {
+            if (-not $process.HasExited) {
+                $process.Kill()
+                $process.WaitForExit()
+            }
+        } catch {
+            # Preserve the original handle-acquisition failure.
+        } finally {
+            $process.Dispose()
+        }
+        throw "Failed to retain the process handle for '$Label': $handleError"
+    }
+    return [pscustomobject]@{
+        Label = $Label
+        Process = $process
+        StartedAt = $startedAt
+        CompletedAt = $null
+        StdoutPath = $stdoutPath
+        StderrPath = $stderrPath
+    }
+}
+
+function Complete-TrackedReleaseProcesses {
+    param([object[]]$Tasks)
+
+    $nextProgressAt = (Get-Date).ToUniversalTime().AddSeconds(20)
+    while ($true) {
+        $now = (Get-Date).ToUniversalTime()
+        foreach ($task in $Tasks) {
+            if (-not $task.CompletedAt -and $task.Process.HasExited) {
+                $task.CompletedAt = $now
+            }
+        }
+        if (@($Tasks | Where-Object { -not $_.CompletedAt }).Count -eq 0) {
+            break
+        }
+        if ($now -ge $nextProgressAt) {
+            $status = @(
+                $Tasks | ForEach-Object {
+                    $state = if ($_.Process.HasExited) { "done" } else { "running" }
+                    "$($_.Label)=$state"
+                }
+            ) -join "; "
+            Write-Host "Parallel release preparation: $status"
+            $nextProgressAt = $now.AddSeconds(20)
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    $failures = [System.Collections.Generic.List[string]]::new()
+    foreach ($task in $Tasks) {
+        $task.Process.WaitForExit()
+        if (Test-Path -LiteralPath $task.StdoutPath -PathType Leaf) {
+            Get-Content -LiteralPath $task.StdoutPath | Out-Host
+        }
+        if (Test-Path -LiteralPath $task.StderrPath -PathType Leaf) {
+            Get-Content -LiteralPath $task.StderrPath | Out-Host
+        }
+        $finishedAt = $task.CompletedAt
+        $ok = $task.Process.ExitCode -eq 0
+        $script:BuildTimingPhases.Add([ordered]@{
+            label = $task.Label
+            durationMs = [Math]::Max(0, [int64](($finishedAt - $task.StartedAt).TotalMilliseconds))
+            ok = $ok
+            parallel = $true
+        }) | Out-Null
+        if (-not $ok) {
+            $failures.Add("$($task.Label) failed with exit code $($task.Process.ExitCode).") | Out-Null
+        }
+        $task.Process.Dispose()
+    }
+
+    if ($failures.Count -gt 0) {
+        throw ($failures -join " ")
+    }
+}
+
+function Stop-TrackedReleaseProcesses {
+    param([object[]]$Tasks)
+
+    foreach ($task in $Tasks) {
+        try {
+            if ($task.Process -and -not $task.Process.HasExited) {
+                $task.Process.Kill()
+                $task.Process.WaitForExit()
+            }
+            if ($task.Process) {
+                $task.Process.Dispose()
+            }
+        } catch {
+            Write-Warning "Could not stop parallel release task '$($task.Label)': $($_.Exception.Message)"
+        }
+    }
+}
+
 function New-SidecarBuildScriptArguments {
     $sidecarArgs = @(
         "-NoProfile",
@@ -168,8 +339,11 @@ function New-SidecarBuildScriptArguments {
     if ($LocalPyInstallerNoClean) {
         $sidecarArgs += "-LocalPyInstallerNoClean"
     }
-    if ($RustAudioIsolatedTarget) {
+    if ($RustAudioIsolatedTarget -or $ParallelizeIndependentBuilds) {
         $sidecarArgs += "-RustAudioIsolatedTarget"
+    }
+    if ($ParallelizeIndependentBuilds) {
+        $sidecarArgs += "-ParallelizeIndependentBuilds"
     }
     return $sidecarArgs
 }
@@ -373,6 +547,9 @@ if ($EnableTauriUpdater -and $ConfigureTauriUpdaterRuntime) {
 if ($UsePrebuiltTauriApp -and $FastLocalStagedApp) {
     throw "-UsePrebuiltTauriApp cannot be combined with -FastLocalStagedApp."
 }
+if ($ParallelizeIndependentBuilds -and $FastLocalStagedApp) {
+    throw "-ParallelizeIndependentBuilds cannot be combined with -FastLocalStagedApp."
+}
 if ($FastLocalStagedApp -and $NsisCompression) {
     throw "-NsisCompression only applies to installer builds, not -FastLocalStagedApp."
 }
@@ -482,7 +659,8 @@ if (-not $SkipChecks -and -not $SkipPythonTests) {
     }
 }
 
-if (-not $SkipChecks -and -not $SkipFrontendTypeCheck) {
+$runFrontendTypeCheck = -not $SkipChecks -and -not $SkipFrontendTypeCheck
+if ($runFrontendTypeCheck -and -not $ParallelizeIndependentBuilds) {
     Invoke-Checked -Label "Frontend type check" -Command {
         Push-Location $frontendRoot
         try {
@@ -562,13 +740,70 @@ try {
             }
         }
     } else {
-        Invoke-Checked -Label "Tauri sidecar preparation" -Command {
-            Push-Location $RepoRoot
+        $parallelTasks = @()
+        $parallelTauriAppBuilt = $false
+        if ($ParallelizeIndependentBuilds) {
             try {
+                $powershellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
+                $prepareTauriScript = Join-Path $RepoRoot "scripts\ci\prepare_tauri_app.ps1"
+                if (-not (Test-Path -LiteralPath $prepareTauriScript -PathType Leaf)) {
+                    throw "Parallel Tauri preparation helper was not found: $prepareTauriScript"
+                }
+                if ($runFrontendTypeCheck) {
+                    $parallelTasks += Start-TrackedReleaseProcess `
+                        -Label "Frontend type check" `
+                        -FilePath $powershellExe `
+                        -Arguments @(
+                            "-NoProfile", "-ExecutionPolicy", "Bypass",
+                            "-File", $prepareTauriScript,
+                            "-Mode", "TypeCheck",
+                            "-RepoRoot", $RepoRoot
+                        ) `
+                        -WorkingDirectory $RepoRoot
+                }
+
                 $sidecarArgs = New-SidecarBuildScriptArguments
-                powershell @sidecarArgs
-            } finally {
-                Pop-Location
+                $parallelTasks += Start-TrackedReleaseProcess `
+                    -Label "Tauri sidecar preparation" `
+                    -FilePath $powershellExe `
+                    -Arguments $sidecarArgs `
+                    -WorkingDirectory $RepoRoot
+
+                if (-not $UsePrebuiltTauriApp) {
+                    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $tauriBundleLogPath) | Out-Null
+                    if (Test-Path -LiteralPath $tauriBundleLogPath -PathType Leaf) {
+                        Remove-Item -LiteralPath $tauriBundleLogPath -Force
+                    }
+                    $parallelTasks += Start-TrackedReleaseProcess `
+                        -Label "Tauri app binary build" `
+                        -FilePath $powershellExe `
+                        -Arguments @(
+                            "-NoProfile", "-ExecutionPolicy", "Bypass",
+                            "-File", $prepareTauriScript,
+                            "-Mode", "BuildBinary",
+                            "-RepoRoot", $RepoRoot,
+                            "-ConfigPath", $tauriBuildConfigPath,
+                            "-TauriLogPath", $tauriBundleLogPath
+                        ) `
+                        -WorkingDirectory $RepoRoot
+                    $parallelTauriAppBuilt = $true
+                }
+
+                Complete-TrackedReleaseProcesses -Tasks $parallelTasks
+                $parallelTasks = @()
+            } catch {
+                Stop-TrackedReleaseProcesses -Tasks $parallelTasks
+                throw
+            }
+        } else {
+            Invoke-Checked -Label "Tauri sidecar preparation" -Command {
+                Push-Location $RepoRoot
+                try {
+                    $sidecarArgs = New-SidecarBuildScriptArguments
+                    powershell @sidecarArgs
+                } finally {
+                    Pop-Location
+                }
             }
         }
 
@@ -576,14 +811,15 @@ try {
             Push-Location $frontendRoot
             try {
                 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $tauriBundleLogPath) | Out-Null
-                if (Test-Path -LiteralPath $tauriBundleLogPath -PathType Leaf) {
+                $bundleExistingTauriApp = $UsePrebuiltTauriApp -or $parallelTauriAppBuilt
+                if (-not $parallelTauriAppBuilt -and (Test-Path -LiteralPath $tauriBundleLogPath -PathType Leaf)) {
                     Remove-Item -LiteralPath $tauriBundleLogPath -Force
                 }
                 $tauriLogEncoding = New-Object System.Text.UTF8Encoding($false)
-                $tauriLogWriter = [System.IO.StreamWriter]::new($tauriBundleLogPath, $false, $tauriLogEncoding)
+                $tauriLogWriter = [System.IO.StreamWriter]::new($tauriBundleLogPath, $parallelTauriAppBuilt, $tauriLogEncoding)
                 $quotedConfigPath = $tauriBuildConfigPath.Replace('"', '\"')
                 $quotedBundleArg = $bundleArg.Replace('"', '\"')
-                if ($UsePrebuiltTauriApp) {
+                if ($bundleExistingTauriApp) {
                     $prebuiltExe = Join-Path $RepoRoot "Frontend\src-tauri\target\release\scriber-desktop.exe"
                     if (-not (Test-Path -LiteralPath $prebuiltExe -PathType Leaf)) {
                         throw "Prebuilt Tauri app executable was not found: $prebuiltExe"
@@ -1066,6 +1302,8 @@ try {
         fastLocalInstaller = [bool]$FastLocalInstaller
         fastLocalStagedApp = [bool]$FastLocalStagedApp
         prebuiltTauriApp = [bool]$UsePrebuiltTauriApp
+        parallelizeIndependentBuilds = [bool]$ParallelizeIndependentBuilds
+        tauriAppBuiltInParallel = [bool]$parallelTauriAppBuilt
         updaterRuntimeConfigured = [bool]($EnableTauriUpdater -or $ConfigureTauriUpdaterRuntime)
         installerBuilt = [bool]($artifacts.Count -gt 0)
         installerSmokeValidated = [bool]$installedPackageSmoke["ran"]
@@ -1111,6 +1349,8 @@ try {
         fastLocalInstaller = [bool]$FastLocalInstaller
         fastLocalStagedApp = [bool]$FastLocalStagedApp
         prebuiltTauriApp = [bool]$UsePrebuiltTauriApp
+        parallelizeIndependentBuilds = [bool]$ParallelizeIndependentBuilds
+        tauriAppBuiltInParallel = [bool]$parallelTauriAppBuilt
         updaterRuntimeConfigured = [bool]($EnableTauriUpdater -or $ConfigureTauriUpdaterRuntime)
         installerBuilt = $false
         installerSmokeValidated = $false

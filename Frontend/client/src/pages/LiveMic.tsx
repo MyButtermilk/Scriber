@@ -392,8 +392,23 @@ const GlossyMicButton = memo(function GlossyMicButton({
       return;
     }
 
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      smoothedGainRef.current = 0.35;
+      wrapperRef.current?.style.setProperty("--audio-gain", "0.350");
+      setRipples([]);
+      clearRippleTimeouts();
+      return;
+    }
+
     let rafId = 0;
+    let lastVisualFrame = 0;
     const update = (now: number) => {
+      if (now - lastVisualFrame < 33) {
+        rafId = requestAnimationFrame(update);
+        return;
+      }
+      lastVisualFrame = now;
+
       const rawInput = Number.isFinite(audioLevelRef.current) ? audioLevelRef.current : 0;
       const currentGain = micVisualGainFromAudioLevel(rawInput);
       const nextGain = (smoothedGainRef.current * 0.75) + (currentGain * 0.25);

@@ -36,6 +36,10 @@ jobs:
       # one workflow run instead of a main warm-up followed by the tag build.
       SCRIBER_SAVE_ACTIONS_CACHES: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
+      # Successful tags self-heal bounded finished-product caches. This avoids
+      # rebuilding an unchanged PyInstaller backend or Rust sidecar on every
+      # sibling tag without uploading the multi-GB Cargo target or Python venv.
+      SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS: ${{ (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true')) && 'true' || 'false' }}
       SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}
       SCRIBER_OUTLOOK_CLIENT_ID: ${{ vars.SCRIBER_OUTLOOK_CLIENT_ID }}
@@ -846,18 +850,6 @@ jobs:
           & $report.ffmpeg.path -version
           & $report.ffprobe.path -version
 
-      - name: Publish FFmpeg Profile B release artifact
-        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.ffmpeg-profile-b-resolve.outputs.usable != 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ffmpeg\publish_profile_b_release_artifact.ps1 `
-            -Repo "${{ github.repository }}" `
-            -Tag $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG `
-            -AssetName $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME `
-            -BuildRoot build\ffmpeg-profile-b-msys2
-
       - name: Save FFmpeg Profile B cache
         if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.ffmpeg-profile-b-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
@@ -898,6 +890,7 @@ jobs:
             $env:SCRIBER_RELEASE_MEDIA_TOOLS_DIR,
             "-ValidateSlimMediaTools",
             "-ReuseSidecarIfUnchanged",
+            "-ParallelizeIndependentBuilds",
             "-MaxScipyRuntimeDependencyMB",
             "0.001",
             "-MaxOnnxRuntimeDependencyMB",
@@ -1080,7 +1073,7 @@ jobs:
 
       - name: Select current backend sidecar cache entry
         id: backend-sidecar-cache-selection
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' || env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' || env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' || env.SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS == 'true'
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\select_backend_sidecar_cache_entry.ps1
@@ -1131,38 +1124,12 @@ jobs:
             Frontend/src-tauri/target/release/incremental
           key: scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}
 
-      - name: Publish Rust audio sidecar release artifact
-        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-audio-sidecar-artifact.outputs.restored != 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_release_cache_artifact.ps1 `
-            -Repo "${{ github.repository }}" `
-            -Tag $env:SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG `
-            -AssetName "scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}.zip" `
-            -SourcePath build\rust-audio-sidecar-cache `
-            -Title "Scriber Rust Audio Sidecar Cache v1"
-
       - name: Save Rust audio sidecar cache
         if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: build/rust-audio-sidecar-cache
           key: scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}
-
-      - name: Publish Rust diarization sidecar release artifact
-        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-diarization-sidecar-artifact.outputs.restored != 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_release_cache_artifact.ps1 `
-            -Repo "${{ github.repository }}" `
-            -Tag $env:SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG `
-            -AssetName "scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}.zip" `
-            -SourcePath build\rust-diarization-sidecar-cache `
-            -Title "Scriber Rust Diarization Sidecar Cache v1"
 
       - name: Save Rust diarization sidecar cache
         if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true'
@@ -1177,19 +1144,6 @@ jobs:
         with:
           path: build/sherpa-onnx-archive-cache
           key: scriber-sherpa-onnx-archive-${{ runner.os }}-${{ hashFiles('build/cache-keys/sherpa-onnx-archive.txt') }}
-
-      - name: Publish backend sidecar release artifact
-        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.backend-sidecar-cache-selection.outputs.selected == 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_release_cache_artifact.ps1 `
-            -Repo "${{ github.repository }}" `
-            -Tag $env:SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG `
-            -AssetName "scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip" `
-            -SourcePath build\tauri-sidecar-cache `
-            -Title "Scriber Backend Sidecar Cache v2"
 
       - name: Save backend sidecar cache
         if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-cache-selection.outputs.selected == 'true'
@@ -1328,3 +1282,32 @@ jobs:
           path: release-artifacts/updater-publication.json
           if-no-files-found: error
           compression-level: 0
+
+      - name: Publish bounded finished component caches in parallel
+        id: publish-finished-component-caches
+        if: env.SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS == 'true'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCRIBER_PUBLISH_FFMPEG_FINISHED_CACHE: ${{ steps.ffmpeg-profile-b-resolve.outputs.usable != 'true' && 'true' || 'false' }}
+          SCRIBER_PUBLISH_RUST_AUDIO_FINISHED_CACHE: ${{ steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-audio-sidecar-artifact.outputs.restored != 'true' && 'true' || 'false' }}
+          SCRIBER_PUBLISH_RUST_DIARIZATION_FINISHED_CACHE: ${{ steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-diarization-sidecar-artifact.outputs.restored != 'true' && 'true' || 'false' }}
+          SCRIBER_PUBLISH_BACKEND_FINISHED_CACHE: ${{ steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.backend-sidecar-cache-selection.outputs.selected == 'true' && 'true' || 'false' }}
+        run: |
+          $publishArguments = @(
+            "-Repo", "${{ github.repository }}",
+            "-FfmpegTag", $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG,
+            "-FfmpegAssetName", $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME,
+            "-RustAudioTag", $env:SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG,
+            "-RustAudioAssetName", "scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}.zip",
+            "-RustDiarizationTag", $env:SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG,
+            "-RustDiarizationAssetName", "scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}.zip",
+            "-BackendTag", $env:SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG,
+            "-BackendAssetName", "scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip"
+          )
+          if ($env:SCRIBER_PUBLISH_FFMPEG_FINISHED_CACHE -eq "true") { $publishArguments += "-PublishFfmpeg" }
+          if ($env:SCRIBER_PUBLISH_RUST_AUDIO_FINISHED_CACHE -eq "true") { $publishArguments += "-PublishRustAudio" }
+          if ($env:SCRIBER_PUBLISH_RUST_DIARIZATION_FINISHED_CACHE -eq "true") { $publishArguments += "-PublishRustDiarization" }
+          if ($env:SCRIBER_PUBLISH_BACKEND_FINISHED_CACHE -eq "true") { $publishArguments += "-PublishBackend" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_finished_component_caches_parallel.ps1 @publishArguments

@@ -23,7 +23,7 @@ const ToastViewport = React.forwardRef<
 ToastViewport.displayName = ToastPrimitives.Viewport.displayName
 
 const toastVariants = cva(
-  "group pointer-events-auto relative flex w-full items-center justify-between gap-4 overflow-hidden rounded-xl border p-4 pr-9 shadow-[0_18px_45px_rgba(15,23,42,0.14)] backdrop-blur-sm transition-all duration-200 data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[swipe=end]:animate-out data-[state=closed]:fade-out-80 data-[state=closed]:slide-out-to-right-full data-[state=open]:slide-in-from-top-full data-[state=open]:sm:slide-in-from-bottom-full",
+  "group pointer-events-auto relative flex w-full items-center justify-between gap-4 overflow-hidden rounded-xl border p-4 pr-9 shadow-[0_18px_45px_rgba(15,23,42,0.14)] backdrop-blur-sm transition-transform duration-[var(--duration-medium)] ease-[var(--ease-smooth-out)] data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none data-[state=open]:animate-in data-[state=open]:duration-[var(--duration-slow)] data-[state=open]:slide-in-from-top-full data-[state=open]:sm:slide-in-from-bottom-full data-[state=closed]:animate-out data-[state=closed]:duration-[var(--duration-medium)] data-[state=closed]:fade-out-80 data-[state=closed]:slide-out-to-right-full data-[swipe=end]:animate-out motion-reduce:[--tw-enter-translate-x:0] motion-reduce:[--tw-enter-translate-y:0] motion-reduce:[--tw-exit-translate-x:0] motion-reduce:[--tw-exit-translate-y:0]",
   {
     variants: {
       variant: {
@@ -62,7 +62,7 @@ const ToastAction = React.forwardRef<
   <ToastPrimitives.Action
     ref={ref}
     className={cn(
-      "inline-flex h-8 shrink-0 items-center justify-center rounded-lg border bg-transparent px-3 text-sm font-semibold ring-offset-background transition-colors hover:bg-secondary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 active:translate-y-px disabled:pointer-events-none disabled:opacity-50 group-[.destructive]:border-white/30 group-[.destructive]:hover:bg-white/10 group-[.destructive]:focus:ring-white/40 group-[.update]:border-blue-600 group-[.update]:bg-blue-600 group-[.update]:text-white group-[.update]:shadow-[0_10px_22px_rgba(37,99,235,0.22)] group-[.update]:hover:bg-blue-700 group-[.update]:focus:ring-blue-500",
+      "inline-flex h-8 shrink-0 items-center justify-center rounded-lg border bg-transparent px-3 text-sm font-semibold ring-offset-background transition-colors duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)] hover:bg-secondary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 active:translate-y-px disabled:pointer-events-none disabled:opacity-50 group-[.destructive]:border-white/30 group-[.destructive]:hover:bg-white/10 group-[.destructive]:focus:ring-white/40 group-[.update]:border-blue-600 group-[.update]:bg-blue-600 group-[.update]:text-white group-[.update]:shadow-[0_10px_22px_rgba(37,99,235,0.22)] group-[.update]:hover:bg-blue-700 group-[.update]:focus:ring-blue-500 motion-reduce:transition-none motion-reduce:active:translate-y-0",
       className
     )}
     {...props}
@@ -77,7 +77,7 @@ const ToastClose = React.forwardRef<
   <ToastPrimitives.Close
     ref={ref}
     className={cn(
-      "absolute right-2 top-2 rounded-md p-1 text-foreground/50 opacity-0 transition-opacity hover:text-foreground focus:opacity-100 focus:outline-none focus:ring-2 group-hover:opacity-100 group-[.destructive]:text-red-100 group-[.destructive]:hover:text-white group-[.destructive]:focus:ring-white/40 group-[.update]:text-blue-700/70 group-[.update]:hover:text-blue-950 group-[.update]:focus:ring-blue-500 dark:group-[.update]:text-blue-200/70 dark:group-[.update]:hover:text-blue-50",
+      "absolute right-2 top-2 rounded-md p-1 text-foreground/50 opacity-0 transition-opacity duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)] hover:text-foreground focus:opacity-100 focus:outline-none focus:ring-2 group-hover:opacity-100 group-[.destructive]:text-red-100 group-[.destructive]:hover:text-white group-[.destructive]:focus:ring-white/40 group-[.update]:text-blue-700/70 group-[.update]:hover:text-blue-950 group-[.update]:focus:ring-blue-500 dark:group-[.update]:text-blue-200/70 dark:group-[.update]:hover:text-blue-50 motion-reduce:transition-none",
       className
     )}
     toast-close=""

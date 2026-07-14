@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -305,6 +306,14 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "sidecar-build-metadata.json" in sidecar
     assert "sidecar-cache-save" in sidecar
     assert "rust-audio-sidecar-build" in sidecar
+    assert "[switch]$ParallelizeIndependentBuilds" in sidecar
+    assert "[switch]$RustAudioOnly" in sidecar
+    assert "Starting Rust audio sidecar preparation in parallel with the Python backend." in sidecar
+    assert "-UseIsolatedTarget $true" in sidecar
+    assert "Parallel Rust audio sidecar build did not write its result" in sidecar
+    assert "durationMs = [int64]$rustAudioWatch.ElapsedMilliseconds" in sidecar
+    assert 'Get-ObjectPropertyValue -Object $rustAudioParallelPayload -Name "durationMs"' in sidecar
+    assert "overlappedWallDurationMs = $rustAudioParallelJoinDurationMs" in sidecar
     assert "Stale audio sidecar resource" in sidecar
     assert "Stale packaged audio sidecar resource" in sidecar
     assert "function Get-Sha256Hex" in sidecar
@@ -385,6 +394,14 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "npm run tauri:build -- --bundles \"{0}\" --config \"{1}\" --ci 2>&1" in build
     assert "npm run tauri:bundle -- --bundles \"{0}\" --config \"{1}\" --ci 2>&1" in build
     assert "[switch]$UsePrebuiltTauriApp" in build
+    assert "[switch]$ParallelizeIndependentBuilds" in build
+    assert "function Start-TrackedReleaseProcess" in build
+    assert "function Complete-TrackedReleaseProcesses" in build
+    assert "$null = $process.Handle" in build
+    assert 'Join-Path $RepoRoot "scripts\\ci\\prepare_tauri_app.ps1"' in build
+    assert '-Label "Tauri app binary build"' in build
+    assert "$bundleExistingTauriApp = $UsePrebuiltTauriApp -or $parallelTauriAppBuilt" in build
+    assert "$RustAudioIsolatedTarget -or $ParallelizeIndependentBuilds" in build
     assert "[switch]$ConfigureTauriUpdaterRuntime" in build
     assert "function Add-TauriBeforeBundleCommandSwitch" not in build
     assert "function Add-TauriBeforeBundleCommandValueSwitch" not in build
@@ -401,7 +418,7 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "$MaxMediaToolsRuntimeDependencyMB = if ($UseProfileBFfmpeg) { 115 } else { 315 }" in build
     assert "$MaxPySide6RuntimeDependencyMB = 65" not in build
     assert "if (-not $SkipChecks -and -not $SkipPythonTests)" in build
-    assert "if (-not $SkipChecks -and -not $SkipFrontendTypeCheck)" in build
+    assert "$runFrontendTypeCheck = -not $SkipChecks -and -not $SkipFrontendTypeCheck" in build
 
 
 def test_tauri_before_bundle_uses_profile_b_standard_media_tools() -> None:
@@ -514,7 +531,7 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip" in workflow
     assert "Resolve cached FFmpeg Profile B media tools" in workflow
     assert "Restore FFmpeg Profile B release artifact" in workflow
-    assert "Publish FFmpeg Profile B release artifact" in workflow
+    assert "Publish bounded finished component caches in parallel" in workflow
     assert "Restore Rust audio sidecar cache" in workflow
     assert "Frontend/src-tauri/target/release/incremental" in workflow
     assert "scriber-rust-release-v2-${{ runner.os }}" in workflow
@@ -560,7 +577,7 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "Release artifact timing brief" in workflow
     assert "release-artifacts\\release-artifact-summary.json" in workflow
     assert "restore_profile_b_release_artifact.ps1" in workflow
-    assert "publish_profile_b_release_artifact.ps1" in workflow
+    assert "publish_finished_component_caches_parallel.ps1" in workflow
     assert "ffmpeg-profile-b-n7.0-v4" in workflow
     assert 'Name = "FFmpeg Profile B"' in workflow
     assert "$ffmpegProfileBArtifactRestored" in workflow
@@ -578,14 +595,101 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "steps.rust-build-cache.outputs.cache-matched-key == ''" in workflow
     assert "SCRIBER_SAVE_ACTIONS_CACHES" in workflow
     assert "SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS" in workflow
+    assert "SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS" in workflow
+    assert 'startsWith(github.ref, \'refs/tags/\')' in workflow
+    assert '"-ParallelizeIndependentBuilds"' in workflow
+    assert "SCRIBER_PUBLISH_RUST_AUDIO_FINISHED_CACHE: ${{ steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-audio-sidecar-artifact.outputs.restored != 'true'" in workflow
+    assert "SCRIBER_PUBLISH_BACKEND_FINISHED_CACHE: ${{ steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.backend-sidecar-cache-selection.outputs.selected == 'true'" in workflow
+    assert "if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true'" in workflow
     assert "Select current backend sidecar cache entry" in workflow
     assert "scripts\\ci\\select_backend_sidecar_cache_entry.ps1" in workflow
     assert "Restore exact Tauri app binary" in workflow
     assert "scripts\\ci\\sync_tauri_app_binary_cache.ps1" in workflow
 
 
+def test_finished_component_cache_publication_is_parallel_and_post_release() -> None:
+    workflow = read_script(".github/workflows/release-windows.yml")
+    helper = read_script("scripts/ci/publish_finished_component_caches_parallel.ps1")
+
+    collect_index = workflow.index("Collect release artifacts")
+    release_index = workflow.index("Publish GitHub release")
+    verify_index = workflow.index("Verify published updater metadata")
+    evidence_index = workflow.index("Upload publication evidence")
+    caches_index = workflow.index("Publish bounded finished component caches in parallel")
+    assert collect_index < release_index < verify_index < evidence_index < caches_index
+    assert workflow.count("Publish bounded finished component caches in parallel") == 1
+    assert "continue-on-error: true" in workflow[caches_index:]
+    assert "SCRIBER_PUBLISH_FFMPEG_FINISHED_CACHE" in workflow[caches_index:]
+    assert "SCRIBER_PUBLISH_RUST_AUDIO_FINISHED_CACHE" in workflow[caches_index:]
+    assert "SCRIBER_PUBLISH_RUST_DIARIZATION_FINISHED_CACHE" in workflow[caches_index:]
+    assert "SCRIBER_PUBLISH_BACKEND_FINISHED_CACHE" in workflow[caches_index:]
+    assert "Publish FFmpeg Profile B release artifact" not in workflow
+    assert "Publish Rust audio sidecar release artifact" not in workflow
+    assert "Publish Rust diarization sidecar release artifact" not in workflow
+    assert "Publish backend sidecar release artifact" not in workflow
+
+    assert "Start-Job" in helper
+    assert "Wait-Job -Job $publisherJobs -Timeout $PublicationTimeoutSeconds" in helper
+    assert "[int]$PublicationTimeoutSeconds = 900" in helper
+    assert "-Timeout $PublicationTimeoutSeconds" in helper
+    assert "Stop-Job -Job $timedOutJobs" in helper
+    assert '$env:GITHUB_OUTPUT = $ChildOutputPath' in helper
+    assert '"{0}.github-output.txt" -f $component.Slug' in helper
+    assert "mode = \"parallel-best-effort\"" in helper
+    assert "The verified app release remains valid" in helper
+    assert "::warning title=Scriber cache publication::" in helper
+    assert "publish_profile_b_release_artifact.ps1" in helper
+    assert "publish_release_cache_artifact.ps1" in helper
+    assert "powershell.exe -NoProfile -File" in helper
+    assert ("Invoke-" + "Expression") not in helper
+    assert ("-Encoded" + "Command") not in helper
+
+
+def test_release_automation_avoids_dynamic_powershell_payloads() -> None:
+    candidates = [
+        REPO_ROOT / ".github" / "workflows" / "release-windows.yml",
+        REPO_ROOT / "scripts" / "build_windows.ps1",
+        REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1",
+        REPO_ROOT / "tests" / "test_backend_runtime_import_check.py",
+    ]
+    candidates.extend(sorted((REPO_ROOT / "scripts" / "ci").glob("*.ps1")))
+    forbidden_literals = (
+        "Invoke-" + "Expression",
+        "-Encoded" + "Command",
+        "FromBase64" + "String",
+    )
+
+    for path in candidates:
+        source = path.read_text(encoding="utf-8")
+        for literal in forbidden_literals:
+            assert literal not in source, f"{path.relative_to(REPO_ROOT)} contains {literal}"
+        assert not re.search(
+            r"\b(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\b[^\r\n]{0,240}-Command\b",
+            source,
+            flags=re.IGNORECASE,
+        ), f"{path.relative_to(REPO_ROOT)} contains an inline PowerShell command"
+
+
+def test_parallel_tauri_prepare_helper_keeps_compile_and_bundle_contracts_separate() -> None:
+    helper = read_script("scripts/ci/prepare_tauri_app.ps1")
+
+    assert '[ValidateSet("TypeCheck", "BuildBinary")]' in helper
+    assert "npm run check" in helper
+    assert 'npm run tauri:build -- --no-bundle --config "{0}" --ci 2>&1' in helper
+    assert "npm run tauri:bundle" not in helper
+    assert "Assert-UnderRoot" in helper
+    assert '$writer.WriteLine(("{0}`t{1}"' in helper
+
+
 def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     script = read_script("scripts/ci/write_release_cache_keys.ps1")
+    contract = json.loads(read_script("packaging/backend-sidecar-output-contract.json"))
+
+    assert contract == {
+        "schemaVersion": 1,
+        "name": "scriber-backend-onedir",
+        "revision": 1,
+    }
 
     assert "frontend-dependencies.txt" in script
     assert "rust-dependencies.txt" in script
@@ -606,8 +710,19 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert '"scripts/check_backend_runtime_imports.py"' in script
     assert 'Add-FileGlobEntries -Entries $backendEntries -Root "pyloudnorm" -Filter "*.py"' in script
     assert 'constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v4' in script
-    assert 'constant`tbackend-sidecar-flags`tBundleMediaTools;UseProfileB;ValidateSlim' in script
+    assert "Get-BackendSidecarOutputContract" in script
+    assert 'packaging/backend-sidecar-output-contract.json' in script
+    assert 'contract`trevision`t$($backendContract.revision)' in script
+    assert 'flag`tbundleMediaTools`ttrue' in script
+    assert 'flag`tuseProfileBFfmpeg`ttrue' in script
+    assert 'flag`tuseGyanFfmpegEssentials`tfalse' in script
+    assert 'flag`tskipBundledFfprobe`tfalse' in script
+    assert 'flag`tvalidateSlimMediaTools`ttrue' in script
+    assert 'flag`tpyInstallerClean`ttrue' in script
+    assert '$_.FullName -notmatch "\\\\__pycache__\\\\"' in script
+    assert '$_.Extension -notin @(".pyc", ".pyo")' in script
     backend_block = script.split("$backendEntries = New-EntryList", 1)[1]
+    assert '"scripts/build_tauri_backend_sidecar.ps1"' not in backend_block
     assert "Frontend/src-tauri/Cargo.toml" not in backend_block
     assert "Frontend/src-tauri/src/audio_sidecar.rs" not in backend_block
 
@@ -752,7 +867,13 @@ def test_native_recording_overlay_is_tauri_owned() -> None:
     assert "src.overlay" not in native_overlay_py
     assert "recording-overlay" in native_overlay_rs
     assert "scriber-overlay-state" in native_overlay_rs
+    assert 'index.html?overlay=1&overlayMode=initializing' in native_overlay_rs
+    assert '"rendererReady"' in native_overlay_rs
+    assert "pub fn mark_renderer_ready()" in native_overlay_rs
     assert "create_overlay_window(app)" in lib_rs
+    assert "fn native_overlay_renderer_ready()" in lib_rs
+    assert "native_overlay::mark_renderer_ready()" in lib_rs
+    assert "native_overlay_renderer_ready," in lib_rs
     assert "native overlay hidden window precreated" in lib_rs
     assert '"windowCreated"' in native_overlay_rs
     assert "overlayPrepare" in shell_ipc

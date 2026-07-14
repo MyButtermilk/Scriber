@@ -16,7 +16,7 @@ export function SidebarSearch({ placeholder = "Search", onOpenCommandPalette }: 
     return (
         <button
             type="button"
-            className="neu-search-inset flex w-full items-center gap-2 px-3 py-2.5 rounded-xl text-left cursor-pointer transition-all duration-200 hover:bg-accent/50"
+            className="neu-search-inset flex w-full cursor-pointer items-center gap-2 rounded-xl px-3 py-2.5 text-left transition-colors duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)] hover:bg-accent/50 motion-reduce:transition-none"
             aria-label="Open command palette"
             onClick={() => onOpenCommandPalette?.()}
         >

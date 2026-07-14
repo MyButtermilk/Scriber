@@ -37,6 +37,10 @@ the user explicitly asks for a temporary investigation note.
 - Runtime is Windows-first. Linux/macOS support is mostly fallback/dev support.
 - Legacy Python tray/UI code was removed. The Tauri shell owns desktop UI,
   tray/menu actions, global hotkeys, and the recording overlay.
+- The pre-created recording-overlay WebView must register its native event
+  listener before completing `native_overlay_renderer_ready`; that handshake
+  returns the authoritative current snapshot so a hotkey fired during lazy
+  renderer startup cannot leave a visible but transparent popup.
 
 ## Repository Map
 
@@ -82,6 +86,11 @@ Frontend and shell:
 - `Frontend/client/src/index.css`: Tailwind v4 CSS-first design system. The six
   primary tabs share the `app-page-shell` 1320 px desktop frame and expose a
   stable `data-page-shell` hook; do not introduce per-tab maximum widths.
+  Motion follows the shared transitions.dev Refine/Polish tokens in `:root`.
+  Match duration and easing tokens by interaction type, keep frequent tab and
+  keyboard navigation immediate, use faster closes than opens for transient
+  surfaces, never add `transition: all`, gate hover-only transforms to fine
+  pointers, and preserve the existing reduced-motion fallbacks.
 - `Frontend/src-tauri/src/audio_sidecar.rs`: separate Rust audio sidecar with
   `--self-test`, `--stdio` JSON-lines protocol, a test-only
   `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1` frame-pipe transport harness, and
@@ -111,7 +120,11 @@ Packaging and scripts:
 - `packaging/scriber-backend.spec`: PyInstaller onedir backend sidecar spec.
 - `scripts/build_tauri_backend_sidecar.ps1`: sidecar build, runtime import
   checks, media-tool bundling, optional cache reuse.
-- `scripts/build_windows.ps1`: Windows installer orchestration.
+- `scripts/build_windows.ps1`: Windows installer orchestration. Official GitHub
+  releases use `-ParallelizeIndependentBuilds`: frontend typecheck, Tauri
+  `--no-bundle`, and sidecar preparation overlap; sidecar preparation likewise
+  overlaps PyInstaller with the isolated-target Rust audio build. NSIS, updater
+  signing, and verification start only after every producer succeeds.
 - `native/scriber-diarization-sidecar/`: isolated, statically linked
   Sherpa-ONNX worker; release preparation stages its attested EXE under backend
   `tools/diarization`. Its worker cache and pinned Sherpa archive cache remain
@@ -840,7 +853,13 @@ Already implemented and should not be regressed:
   The sidecar cache key normalizes `src/version.py`, uses media-tool content
   hashes instead of timestamps, and must be computed before requiring
   PyInstaller/backend runtime imports so restored sidecars skip Python
-  dependency work.
+  dependency work. Both the internal manifest and
+  `scripts\ci\write_release_cache_keys.ps1` use
+  `packaging\backend-sidecar-output-contract.json` instead of hashing the whole
+  sidecar orchestration script. Bump that contract revision whenever builder
+  behavior can change frozen backend or bundled-media bytes without changing a
+  hashed source/spec/requirements/tool/flag input. Do not bump it for logging,
+  timing, or parallel-process orchestration changes.
 - Target-current sidecar metadata that skips restoring/copying the backend tree
   when `target\release\backend` already matches the current cache key and
   release resource flags.
@@ -917,11 +936,18 @@ Already implemented and should not be regressed:
   miss. The main Rust/Tauri release artifact supports a latest-prefix fallback
   only when Actions reports no matched key; a partial Actions restore must not
   trigger the 1.6-GB fallback. Ordinary `main` pushes do not run the full
-  installer workflow. Exact Actions caches and durable snapshots are refreshed
-  only by the manual `release-windows.yml`
-  `refresh_release_cache_artifacts=true` maintenance path. Heavy Actions caches
-  are restore-only on tag releases, so a routine release has one complete
-  tag-triggered build rather than a duplicate main warm-up plus tag build.
+  installer workflow. Exact Actions caches and large Cargo/venv/wheelhouse
+  snapshots are refreshed only by the manual `release-windows.yml`
+  `refresh_release_cache_artifacts=true` maintenance path. Tag releases do,
+  however, self-heal a missing bounded exact backend, FFmpeg, audio, or
+  diarization finished-product artifact after a successful rebuild. Publish
+  and verify the app release first, then upload those four independent cache
+  products in parallel with one private `GITHUB_OUTPUT` file per child. Cache
+  publication is best-effort and must not delay or invalidate an already
+  verified updater release. Heavy
+  Actions caches remain restore-only on tags, so a routine release has one
+  complete tag-triggered build rather than a duplicate main warm-up plus tag
+  build.
 - The Rust Actions cache is keyed by normalized Cargo dependency metadata plus
   resolved toolchain/target/profile, not by ordinary app source. The exact
   Tauri app binary is a separate small cache keyed by full Rust/frontend
@@ -1189,6 +1215,33 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   -RequireRustAudioSidecarSmoke `
   -RustAudioSidecarDurationSec 600
 ```
+
+## Endpoint-Security-Safe Automation
+
+- Treat enterprise EDR visibility as a design constraint. Never use
+  `Invoke-Expression`/`iex`, `-EncodedCommand`, downloaded or generated script
+  text, or AST extraction followed by execution. Do not pass generated
+  multi-line source through `powershell.exe -Command`.
+- Put reusable PowerShell logic in reviewed, checked-in `.ps1` or `.psm1`
+  files with typed, allowlisted parameters. Invoke those files with `-File`;
+  prefer direct Python, Rust, npm, Cargo, or GitHub Actions primitives when
+  PowerShell adds no value.
+- PowerShell tests may parse a script to validate syntax, but must not
+  re-evaluate extracted function bodies. Prefer static contract tests or a
+  narrow invocation of the real checked-in script with fixed arguments.
+- Do not routinely add `-ExecutionPolicy Bypass` to new local commands. It is
+  not an EDR bypass or a security boundary. Existing documented invocations
+  may retain it for compatibility until they are deliberately migrated.
+- Keep full installer builds, parallel cache publication, and large process
+  trees on GitHub-hosted runners unless the user explicitly requests a local
+  build. Locally, run the smallest focused gate once and avoid repeatedly
+  replaying an EDR-sensitive command while debugging.
+- Never recommend disabling CrowdStrike or excluding `powershell.exe`, a user,
+  the whole repository, or all child processes. After removing the suspicious
+  technique, any still-reproducible benign alert must be reviewed by the
+  administrator and, if necessary, receive only a narrow, time-bounded IOA or
+  signed-publisher exception scoped to the exact script, command line, host
+  group, and detection pattern.
 
 ## Editing Guidance
 

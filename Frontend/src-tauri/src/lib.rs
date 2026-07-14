@@ -857,6 +857,11 @@ fn get_backend_access(manager: tauri::State<'_, BackendManager>) -> BackendAcces
 }
 
 #[tauri::command]
+fn native_overlay_renderer_ready() -> serde_json::Value {
+    native_overlay::mark_renderer_ready()
+}
+
+#[tauri::command]
 fn backend_status(manager: tauri::State<'_, BackendManager>) -> BackendStatus {
     manager.status()
 }
@@ -1209,6 +1214,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_backend_base_url,
             get_backend_access,
+            native_overlay_renderer_ready,
             backend_status,
             ensure_backend_running,
             restart_backend,

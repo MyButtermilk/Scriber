@@ -55,6 +55,11 @@ function normalizeMode(value: unknown): OverlayMode {
   return "hidden";
 }
 
+function modeFromNativeOverlayState(payload: OverlayEventPayload | null | undefined): OverlayMode {
+  if (!payload || payload.visible === false) return "hidden";
+  return normalizeMode(payload.mode);
+}
+
 function devOverlayModeFromLocation(): OverlayMode {
   if (typeof window === "undefined") return "hidden";
   const params = new URLSearchParams(window.location.search);
@@ -241,7 +246,7 @@ function StatusContent({ mode }: { mode: "initializing" | "transcribing" }) {
   const color = mode === "initializing" ? "text-blue-300" : "text-blue-400";
   return (
     <div className={`flex h-full w-full items-center justify-center gap-1.5 ${color}`}>
-      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
       <span className="text-[12px] font-medium leading-none">{label}</span>
     </div>
   );
@@ -250,8 +255,8 @@ function StatusContent({ mode }: { mode: "initializing" | "transcribing" }) {
 function overlayLayerClass(active: boolean): string {
   return [
     "absolute inset-0 flex items-center",
-    "transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
-    active ? "translate-y-0 scale-100 opacity-100" : "pointer-events-none translate-y-1 scale-[0.98] opacity-0",
+    "transition-[opacity,filter] duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)] motion-reduce:transition-none",
+    active ? "opacity-100 blur-0" : "pointer-events-none opacity-0 blur-[2px]",
   ].join(" ");
 }
 
@@ -351,16 +356,29 @@ export default function NativeRecordingOverlay() {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
+    let receivedNativeEvent = false;
     void listen<OverlayEventPayload>("scriber-overlay-state", (event) => {
-      const payload = event.payload || {};
-      const nextMode = payload.visible === false ? "hidden" : normalizeMode(payload.mode);
-      setMode(nextMode);
+      receivedNativeEvent = true;
+      setMode(modeFromNativeOverlayState(event.payload));
     })
-      .then((cleanup) => {
+      .then(async (cleanup) => {
         if (disposed) {
           cleanup();
-        } else {
-          unlisten = cleanup;
+          return;
+        }
+
+        // Register the event listener first, then reconcile the authoritative native snapshot.
+        // The WebView is pre-created while hidden, so the first hotkey event may otherwise arrive
+        // while this lazy-loaded component is still mounting and leave a transparent window.
+        unlisten = cleanup;
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const snapshot = await invoke<OverlayEventPayload>("native_overlay_renderer_ready");
+          if (!disposed && !receivedNativeEvent) {
+            setMode(modeFromNativeOverlayState(snapshot));
+          }
+        } catch (error) {
+          console.debug("Native overlay renderer handshake failed.", error);
         }
       })
       .catch((error) => console.debug("Native overlay event listener failed.", error));

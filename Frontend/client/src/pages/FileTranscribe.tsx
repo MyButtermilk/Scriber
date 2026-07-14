@@ -576,7 +576,7 @@ export default function FileTranscribe() {
       >
         <div className="file-upload-core flex flex-col items-center justify-center gap-4 p-6 text-center md:p-8">
         <input {...getInputProps()} />
-        <div className={`file-upload-mark flex h-[72px] w-[72px] items-center justify-center rounded-full transition-transform duration-700 ease-[cubic-bezier(0.32,0.72,0,1)] ${isDragActive ? 'scale-110' : 'group-hover:scale-105'}`}>
+        <div className="file-upload-mark flex h-[72px] w-[72px] items-center justify-center rounded-full">
           {isUploading ? (
             <Loader2 className="h-8 w-8 animate-spin text-primary" />
           ) : (

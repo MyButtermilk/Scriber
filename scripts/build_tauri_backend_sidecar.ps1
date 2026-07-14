@@ -41,6 +41,9 @@ param(
     [string]$SherpaOnnxArchiveCacheRoot = "",
     [string]$RustDiarizationTargetRoot = "",
     [switch]$RustAudioIsolatedTarget,
+    [switch]$ParallelizeIndependentBuilds,
+    [switch]$RustAudioOnly,
+    [string]$RustAudioResultPath = "",
     [switch]$LocalPyInstallerNoClean,
     [switch]$CopyToTauriRelease
 )
@@ -289,9 +292,40 @@ function Get-SidecarFlagState {
     }
 }
 
+function Get-BackendSidecarOutputContract {
+    param([string]$Root)
+
+    $contractPath = Join-Path $Root "packaging\backend-sidecar-output-contract.json"
+    if (-not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
+        throw "Missing backend sidecar output contract: $contractPath"
+    }
+
+    try {
+        $contract = Get-Content -LiteralPath $contractPath -Raw | ConvertFrom-Json
+    } catch {
+        throw "Backend sidecar output contract is not valid JSON: $contractPath"
+    }
+
+    if (
+        [int](Get-ObjectPropertyValue -Object $contract -Name "schemaVersion") -ne 1 -or
+        [string](Get-ObjectPropertyValue -Object $contract -Name "name") -ne "scriber-backend-onedir" -or
+        [int](Get-ObjectPropertyValue -Object $contract -Name "revision") -lt 1
+    ) {
+        throw "Backend sidecar output contract is invalid: $contractPath"
+    }
+
+    # Select only the canonical fields so harmless JSON formatting changes do
+    # not invalidate the frozen backend. Bump revision whenever output-affecting
+    # builder behavior changes without changing one of the hashed inputs below.
+    return [ordered]@{
+        schemaVersion = 1
+        name = "scriber-backend-onedir"
+        revision = [int]$contract.revision
+    }
+}
+
 function Get-ToolMetadataEntry {
     param(
-        [string]$Root,
         [string]$Path,
         [string]$Name
     )
@@ -306,8 +340,6 @@ function Get-ToolMetadataEntry {
     $item = Get-Item -LiteralPath $Path
     return [ordered]@{
         name = $Name
-        path = (Get-RelativePath -Root $Root -Path $item.FullName)
-        resolvedPath = $item.FullName
         exists = $true
         length = [int64]$item.Length
         sha256 = Get-Sha256Hex -Path $item.FullName
@@ -334,14 +366,13 @@ function Get-SidecarInputManifest {
         "requirements-base.txt",
         "requirements-build.txt",
         "pyloudnorm",
-        "scripts\build_tauri_backend_sidecar.ps1",
         "scripts\check_backend_runtime_imports.py"
     )
     $tools = @()
     if ($BundleTools -or $SearchDir) {
-        $tools += Get-ToolMetadataEntry -Root $Root -Path (Resolve-MediaTool -Names @("ffmpeg.exe", "ffmpeg") -SearchDir $SearchDir) -Name "ffmpeg"
+        $tools += Get-ToolMetadataEntry -Path (Resolve-MediaTool -Names @("ffmpeg.exe", "ffmpeg") -SearchDir $SearchDir) -Name "ffmpeg"
         if (-not $SkipFfprobe) {
-            $tools += Get-ToolMetadataEntry -Root $Root -Path (Resolve-MediaTool -Names @("ffprobe.exe", "ffprobe") -SearchDir $SearchDir) -Name "ffprobe"
+            $tools += Get-ToolMetadataEntry -Path (Resolve-MediaTool -Names @("ffprobe.exe", "ffprobe") -SearchDir $SearchDir) -Name "ffprobe"
         }
         # yt-dlp and Deno are exact pins in requirements-base.txt, which is
         # already hashed above. Do not resolve them from the active Python
@@ -349,7 +380,8 @@ function Get-SidecarInputManifest {
         # venv when the backend sidecar cache is exact.
     }
     return [ordered]@{
-        apiVersion = "1"
+        apiVersion = "2"
+        outputContract = Get-BackendSidecarOutputContract -Root $Root
         python = $pythonVersion
         flags = [ordered]@{
             bundleMediaTools = $BundleTools
@@ -1624,6 +1656,36 @@ Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationSidecarCacheRoot -Label "
 Assert-UnderRoot -Root $RepoRoot -Path $SherpaOnnxArchiveCacheRoot -Label "SherpaOnnxArchiveCacheRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationTargetRoot -Label "RustDiarizationTargetRoot"
 
+if ($RustAudioOnly) {
+    if (-not $RustAudioResultPath) {
+        throw "-RustAudioOnly requires -RustAudioResultPath."
+    }
+    $RustAudioResultPath = Convert-ToFullPath -Path $RustAudioResultPath
+    Assert-UnderRoot -Root $RepoRoot -Path $RustAudioResultPath -Label "RustAudioResultPath"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $RustAudioResultPath) | Out-Null
+    $rustAudioWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $rustAudioResult = $null
+    $rustAudioOk = $false
+    try {
+        $rustAudioResult = Copy-RustAudioSidecarToTauriRelease `
+            -Root $RepoRoot `
+            -UseIsolatedTarget $true
+        $rustAudioOk = $true
+    } finally {
+        $rustAudioWatch.Stop()
+    }
+    $rustAudioPayload = [ordered]@{
+        ok = $rustAudioOk
+        durationMs = [int64]$rustAudioWatch.ElapsedMilliseconds
+        result = $rustAudioResult
+    }
+    $rustAudioTempPath = "$RustAudioResultPath.$PID.tmp"
+    $rustAudioPayload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $rustAudioTempPath -Encoding utf8
+    Move-Item -LiteralPath $rustAudioTempPath -Destination $RustAudioResultPath -Force
+    $rustAudioPayload | ConvertTo-Json -Depth 8 -Compress
+    return
+}
+
 if (-not (Test-Path $SpecPath)) {
     throw "Missing PyInstaller spec: $SpecPath"
 }
@@ -1866,6 +1928,59 @@ if ($cacheEnabled) {
     }
 }
 
+$rustAudioParallelProcess = $null
+$rustAudioParallelResultPath = ""
+$rustAudioParallelStdoutPath = ""
+$rustAudioParallelStderrPath = ""
+$rustAudioParallelStopwatch = $null
+$rustAudioParallelStdoutTask = $null
+$rustAudioParallelStderrTask = $null
+if ($ParallelizeIndependentBuilds -and $BundleRustAudioSidecar) {
+    $rustAudioParallelResultPath = Join-Path $WorkRoot "rust-audio-parallel-$PID.json"
+    $rustAudioParallelStdoutPath = Join-Path $WorkRoot "rust-audio-parallel-$PID.stdout.log"
+    $rustAudioParallelStderrPath = Join-Path $WorkRoot "rust-audio-parallel-$PID.stderr.log"
+    foreach ($path in @($rustAudioParallelResultPath, $rustAudioParallelStdoutPath, $rustAudioParallelStderrPath)) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            Remove-Item -LiteralPath $path -Force
+        }
+    }
+    $rustAudioParallelArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", "scripts\build_tauri_backend_sidecar.ps1",
+        "-RepoRoot", ('"{0}"' -f $RepoRoot),
+        "-RustAudioOnly",
+        "-RustAudioIsolatedTarget",
+        "-RustAudioResultPath", ('"{0}"' -f $rustAudioParallelResultPath)
+    )
+    Write-Host "Starting Rust audio sidecar preparation in parallel with the Python backend."
+    $rustAudioParallelStartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $rustAudioParallelStartInfo.FileName = (Get-Command powershell.exe -ErrorAction Stop).Source
+    $rustAudioParallelStartInfo.Arguments = ($rustAudioParallelArgs -join " ")
+    $rustAudioParallelStartInfo.WorkingDirectory = $RepoRoot
+    $rustAudioParallelStartInfo.UseShellExecute = $false
+    $rustAudioParallelStartInfo.CreateNoWindow = $true
+    $rustAudioParallelStartInfo.RedirectStandardOutput = $true
+    $rustAudioParallelStartInfo.RedirectStandardError = $true
+    $rustAudioParallelProcess = [System.Diagnostics.Process]::new()
+    $rustAudioParallelProcess.StartInfo = $rustAudioParallelStartInfo
+    $rustAudioParallelStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        if (-not $rustAudioParallelProcess.Start()) {
+            throw "Parallel Rust audio sidecar process did not start."
+        }
+        # Drain both streams immediately so a verbose Cargo build cannot fill a
+        # pipe and block while the Python sidecar is being prepared in parallel.
+        $rustAudioParallelStdoutTask = $rustAudioParallelProcess.StandardOutput.ReadToEndAsync()
+        $rustAudioParallelStderrTask = $rustAudioParallelProcess.StandardError.ReadToEndAsync()
+    } catch {
+        $rustAudioParallelStopwatch.Stop()
+        $rustAudioParallelProcess.Dispose()
+        $rustAudioParallelProcess = $null
+        throw
+    }
+}
+
 if (-not $cacheHit) {
     if (-not (Test-PyInstaller -Python $PythonPath)) {
         if (-not $InstallPyInstaller) {
@@ -1967,10 +2082,66 @@ if ($CopyToTauriRelease) {
 }
 
 if ($BundleRustAudioSidecar) {
-    Invoke-TimedStep -Label "rust-audio-sidecar-build" -Command {
-        $script:RustAudioSidecarCopied = Copy-RustAudioSidecarToTauriRelease -Root $RepoRoot -UseIsolatedTarget ([bool]$RustAudioIsolatedTarget)
+    if ($rustAudioParallelProcess) {
+        $rustAudioParallelOk = $false
+        $rustAudioChildDurationMs = $null
+        try {
+            $rustAudioParallelProcess.WaitForExit()
+            $rustAudioParallelProcess.Refresh()
+            $rustAudioParallelStdout = $rustAudioParallelStdoutTask.GetAwaiter().GetResult()
+            $rustAudioParallelStderr = $rustAudioParallelStderrTask.GetAwaiter().GetResult()
+            $utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
+            [System.IO.File]::WriteAllText($rustAudioParallelStdoutPath, $rustAudioParallelStdout, $utf8WithoutBom)
+            [System.IO.File]::WriteAllText($rustAudioParallelStderrPath, $rustAudioParallelStderr, $utf8WithoutBom)
+            if (Test-Path -LiteralPath $rustAudioParallelStdoutPath -PathType Leaf) {
+                Get-Content -LiteralPath $rustAudioParallelStdoutPath | Out-Host
+            }
+            if (Test-Path -LiteralPath $rustAudioParallelStderrPath -PathType Leaf) {
+                Get-Content -LiteralPath $rustAudioParallelStderrPath | Out-Host
+            }
+            if ($rustAudioParallelProcess.ExitCode -ne 0) {
+                throw "Parallel Rust audio sidecar build failed with exit code $($rustAudioParallelProcess.ExitCode)."
+            }
+            if (-not (Test-Path -LiteralPath $rustAudioParallelResultPath -PathType Leaf)) {
+                throw "Parallel Rust audio sidecar build did not write its result: $rustAudioParallelResultPath"
+            }
+            $rustAudioParallelPayload = Get-Content -LiteralPath $rustAudioParallelResultPath -Raw | ConvertFrom-Json
+            if (-not $rustAudioParallelPayload.ok -or -not $rustAudioParallelPayload.result) {
+                throw "Parallel Rust audio sidecar result was invalid."
+            }
+            $rustAudioChildDurationValue = Get-ObjectPropertyValue -Object $rustAudioParallelPayload -Name "durationMs"
+            if ($null -eq $rustAudioChildDurationValue) {
+                throw "Parallel Rust audio sidecar result did not report its build duration."
+            }
+            $rustAudioChildDurationMs = [int64]$rustAudioChildDurationValue
+            if ($rustAudioChildDurationMs -lt 0) {
+                throw "Parallel Rust audio sidecar result reported an invalid duration."
+            }
+            $rustAudioSidecarCopied = $rustAudioParallelPayload.result
+            $rustAudioParallelOk = $true
+        } finally {
+            $rustAudioParallelStopwatch.Stop()
+            $rustAudioParallelJoinDurationMs = [int64]$rustAudioParallelStopwatch.ElapsedMilliseconds
+            $rustAudioParallelDurationMs = if ($null -ne $rustAudioChildDurationMs) {
+                [int64]$rustAudioChildDurationMs
+            } else {
+                $rustAudioParallelJoinDurationMs
+            }
+            $script:BuildTimingPhases.Add([ordered]@{
+                label = "rust-audio-sidecar-build"
+                durationMs = $rustAudioParallelDurationMs
+                ok = $rustAudioParallelOk
+                parallel = $true
+                overlappedWallDurationMs = $rustAudioParallelJoinDurationMs
+            }) | Out-Null
+            $rustAudioParallelProcess.Dispose()
+        }
+    } else {
+        Invoke-TimedStep -Label "rust-audio-sidecar-build" -Command {
+            $script:RustAudioSidecarCopied = Copy-RustAudioSidecarToTauriRelease -Root $RepoRoot -UseIsolatedTarget ([bool]$RustAudioIsolatedTarget)
+        }
+        $rustAudioSidecarCopied = $script:RustAudioSidecarCopied
     }
-    $rustAudioSidecarCopied = $script:RustAudioSidecarCopied
 }
 
 if ($BundleRustDiarizationSidecar) {

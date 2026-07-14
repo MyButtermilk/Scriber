@@ -1440,6 +1440,15 @@ def test_native_recording_overlay_uses_fixed_size_state_layers() -> None:
     assert 'data-testid="native-recording-shadow"' not in source
     assert "absolute inset-0 flex items-center" in source
     assert "overlayMode" in source
+    assert 'listen<OverlayEventPayload>("scriber-overlay-state"' in source
+    assert 'invoke<OverlayEventPayload>("native_overlay_renderer_ready")' in source
+    assert source.index('listen<OverlayEventPayload>("scriber-overlay-state"') < source.index(
+        'invoke<OverlayEventPayload>("native_overlay_renderer_ready")'
+    )
+    assert "modeFromNativeOverlayState(snapshot)" in source
+    assert "let receivedNativeEvent = false;" in source
+    assert "receivedNativeEvent = true;" in source
+    assert "if (!disposed && !receivedNativeEvent)" in source
     assert "let reconnectTimer: number | null = null;" in source
     assert "reconnectTimer = window.setTimeout(connect, 750);" in source
 
@@ -1829,3 +1838,84 @@ def test_boot_shell_applies_theme_before_react_and_uses_contrasting_logo() -> No
     assert 'document.documentElement.classList.toggle("dark", dark)' in theme
     assert ".dark .boot-logo-dark" in css
     assert "prefers-reduced-motion: reduce" in css
+
+
+def test_frontend_motion_uses_transitions_dev_refine_and_polish_contract() -> None:
+    client_src = REPO_ROOT / "Frontend" / "client" / "src"
+    styles = (client_src / "index.css").read_text(encoding="utf-8")
+
+    for token in (
+        "--duration-quick: 150ms;",
+        "--duration-fast: 250ms;",
+        "--duration-medium: 350ms;",
+        "--duration-slow: 400ms;",
+        "--ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);",
+        "--scale-large: 0.96;",
+        "--scale-medium: 0.97;",
+        "--scale-small: 0.98;",
+        "--scale-tiny: 0.99;",
+    ):
+        assert token in styles
+
+    # Daily tab navigation is immediate; only newly created results reveal.
+    assert "liveMicEnter" not in styles
+    assert "debugConsoleEnter" not in styles
+    assert "transcriptionResultReveal" in styles
+    assert "animation: transcriptionResultReveal var(--duration-slow)" in styles
+    assert "@media (hover: hover) and (pointer: fine)" in styles
+
+    dialog = (client_src / "components" / "ui" / "dialog.tsx").read_text(encoding="utf-8")
+    sheet = (client_src / "components" / "ui" / "sheet.tsx").read_text(encoding="utf-8")
+    select = (client_src / "components" / "ui" / "select.tsx").read_text(encoding="utf-8")
+    tooltip = (client_src / "components" / "ui" / "tooltip.tsx").read_text(encoding="utf-8")
+    command = (client_src / "components" / "ui" / "command.tsx").read_text(encoding="utf-8")
+
+    assert "data-[state=open]:duration-[var(--duration-fast)]" in dialog
+    assert "data-[state=closed]:duration-[var(--duration-quick)]" in dialog
+    assert "data-[state=open]:zoom-in-[0.96]" in dialog
+    assert "data-[state=closed]:zoom-out-[0.99]" in dialog
+    assert "data-[state=open]:duration-[var(--duration-slow)]" in sheet
+    assert "data-[state=closed]:duration-[var(--duration-medium)]" in sheet
+    assert "data-[state=open]:zoom-in-[0.97]" in select
+    assert "data-[state=closed]:zoom-out-[0.99]" in select
+    assert "delayDuration = 80" in tooltip
+    assert "zoom-in-[0.98]" in tooltip
+    assert "data-[state=closed]:duration-[50ms]" in tooltip
+    assert "data-[state=open]:duration-0" in command
+    assert "<DialogTitle" in command
+    assert "<DialogDescription" in command
+
+    # Refine forbids broad transitions in active frontend code.
+    for path in client_src.rglob("*"):
+        if path.suffix not in {".css", ".tsx"}:
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert "transition-all" not in source, path
+        assert "transition: all" not in source, path
+
+
+def test_frontend_motion_honors_reduced_motion_and_bounds_audio_visuals() -> None:
+    client_src = REPO_ROOT / "Frontend" / "client" / "src"
+    live_mic = (client_src / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
+    overlay = (client_src / "components" / "NativeRecordingOverlay.tsx").read_text(
+        encoding="utf-8"
+    )
+    skeleton = (client_src / "components" / "ui" / "skeleton.tsx").read_text(
+        encoding="utf-8"
+    )
+    spinner = (client_src / "components" / "ui" / "spinner.tsx").read_text(
+        encoding="utf-8"
+    )
+    youtube = (client_src / "pages" / "Youtube.tsx").read_text(encoding="utf-8")
+    file_page = (client_src / "pages" / "FileTranscribe.tsx").read_text(encoding="utf-8")
+
+    assert 'matchMedia?.("(prefers-reduced-motion: reduce)").matches' in live_mic
+    assert "now - lastVisualFrame < 33" in live_mic
+    assert "motion-reduce:transition-none" in overlay
+    assert "transition-[opacity,filter]" in overlay
+    assert "motion-reduce:animate-none" in skeleton
+    assert "motion-reduce:animate-none" in spinner
+    assert "transcription-thumbnail" in youtube
+    assert "duration-700" not in youtube
+    assert 'className="file-upload-mark' in file_page
+    assert "duration-700" not in file_page

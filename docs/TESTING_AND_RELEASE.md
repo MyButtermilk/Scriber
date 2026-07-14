@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-07-12
+Last verified: 2026-07-14
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -68,6 +68,21 @@ The 2026-07-10 reliability/performance sweep passed `1099` Python tests with
 `2` expected skips, the frontend type check and production build, `110` Rust
 library tests, `27` Rust audio-sidecar tests, `cargo fmt --check`, and Clippy
 with warnings denied.
+
+### Managed endpoint safety
+
+On enterprise-managed Windows hosts, keep local validation focused and run the
+complete installer/signing/cache-publication graph on GitHub-hosted runners.
+Release automation and tests must not evaluate source strings, execute
+AST-extracted function bodies, use encoded PowerShell commands, or pass
+generated multi-line source through `powershell.exe -Command`. Reusable logic
+belongs in reviewed, checked-in scripts invoked with fixed `-File` parameters.
+The release stability tests include a source guard for these patterns.
+
+Do not solve a behavioral detection with a broad exclusion for PowerShell or
+the repository. Remove the suspicious technique first. A still-reproducible
+benign alert may receive only an administrator-approved, narrow and
+time-bounded exception for the exact detection pattern after review.
 
 Frontend browser smoke:
 
@@ -664,14 +679,21 @@ It:
 - reports entry counts and short SHA-256 fingerprints for each normalized cache
   key file in the GitHub Step Summary. Compare these fingerprints between runs
   before assuming a cache miss means unnecessary dependency rebuilding,
-- restores heavyweight caches with `actions/cache/restore` and saves them only
-  on an explicit cache-refresh dispatch. Signed `v*` tag releases are
-  restore-only for those large caches, so they do not spend post-job time
-  uploading tag-scoped cache payloads that sibling tags cannot reliably reuse,
-- keeps both Actions-cache saves and durable GitHub release snapshots behind
-  the manual `refresh_release_cache_artifacts=true` maintenance path. A normal
-  release therefore compiles, packages, signs, verifies, and publishes in one
-  tag-triggered workflow run,
+- restores heavyweight caches with `actions/cache/restore` and saves the large
+  tag-scoped Cargo, `.venv`, and wheelhouse trees only on an explicit cache
+  refresh. A successful tag does promote a missing exact frozen backend,
+  Profile B FFmpeg, or focused Rust sidecar snapshot to its internal cache
+  release so sibling tags do not repeat the same unchanged build,
+- keeps full Actions-cache saves and multi-GB durable snapshots behind
+  `refresh_release_cache_artifacts=true`; bounded finished-product self-healing
+  is automatic. A normal release still compiles, packages, signs, verifies, and
+  publishes exactly one installer in one tag-triggered workflow run,
+- publishes and verifies the signed app/updater before bounded cache
+  maintenance. Missing FFmpeg, backend, audio, and diarization cache products
+  are then uploaded concurrently by
+  `scripts\ci\publish_finished_component_caches_parallel.ps1`; each child has
+  a private `GITHUB_OUTPUT`, and failures remain visible warnings without
+  delaying or invalidating the verified app release,
 - restores release caches for Python `.venv`, Python wheels, frontend
   `node_modules`, Rust/Tauri, backend sidecars, and Profile B media tools. The
   Node setup step also restores the npm package store from the normalized
@@ -700,7 +722,8 @@ It:
   not change for ordinary app source or UI edits. A separate exact Tauri app
   binary cache is keyed by the complete app inputs, concrete version, commit,
   toolchain, target/profile, and updater-runtime fingerprint. A validated hit
-  uses `tauri bundle`; misses use the normal `tauri build` path,
+  uses `tauri bundle`. A miss uses `tauri build --no-bundle` concurrently with
+  sidecar preparation, then joins before the same `tauri bundle` path,
 - prunes `build\tauri-sidecar-cache` to the one metadata-attested internal key
   before Actions save or durable publication, preventing cache generations
   from recursively accumulating older complete PyInstaller sidecars,
@@ -738,8 +761,9 @@ It:
   Cargo output from GitHub logs is counted reliably. Each captured line is
   timestamped, so the same summary also reports first-output-to-`makensis`,
   `makensis`-to-updater-signature, and first-output-to-last-output durations.
-  The capture path runs `npm run tauri:build` or, for an exact attested app
-  binary, `npm run tauri:bundle` through
+  The capture path runs `npm run tauri:build -- --no-bundle` followed by
+  `npm run tauri:bundle`, or only the latter for an exact attested app binary,
+  through
   `cmd.exe /d /s /c "... 2>&1"` because Tauri/Node can write normal
   informational lines to stderr. Those lines are not release failures unless
   the native exit code is non-zero, and PowerShell must not surface them as
@@ -807,14 +831,13 @@ It:
 - optionally validates Authenticode signatures and Tauri updater metadata when
   signing/updater secrets are configured.
 
-Normal tag releases restore internal release-cache artifacts but do not
-automatically repack and clobber the large Python `.venv`, wheelhouse, Rust,
-backend sidecar, Rust audio sidecar, or FFmpeg cache assets. `main` pushes are
-the cache-warming path and may refresh those internal artifacts after real cache
-misses. A manual maintenance refresh is also available through
-`workflow_dispatch` with `refresh_release_cache_artifacts=true`. Signed app
-release tags should spend time on changed installer inputs, not on re-uploading
-unchanged reusable cache payloads.
+Normal tag releases restore internal release-cache artifacts and never repack
+the large Python `.venv`, wheelhouse, or Rust target automatically. When a
+bounded exact backend, audio/diarization sidecar, or Profile B asset was missing
+and had to be rebuilt, the successful tag publishes that one attested product
+for later sibling tags. Unchanged assets are not uploaded again. A full manual
+maintenance refresh remains available through `workflow_dispatch` with
+`refresh_release_cache_artifacts=true`.
 
 The Python backend sidecar cache is allowed to be version-neutral for
 `src/version.py` because the Tauri supervisor passes the installed app version
@@ -823,7 +846,12 @@ environment override. Keep that runtime contract intact when changing version
 reporting; otherwise a cached sidecar could report the wrong installed version.
 The Rust shell uses Tauri package metadata for that value, not
 `CARGO_PKG_VERSION`, because Cargo package metadata is deliberately stable for
-cache reuse.
+cache reuse. Its internal and GitHub-level cache keys share
+`packaging\backend-sidecar-output-contract.json` rather than hashing
+`scripts\build_tauri_backend_sidecar.ps1`. Bump the contract revision when
+sidecar-builder behavior changes output without changing the hashed
+source/spec/requirements/media-tool/flag inputs; do not bump it for diagnostic,
+timing, or parallel orchestration edits.
 
 For build-time triage, use the GitHub Step Summary and
 `release-metadata\build-timing.json` before removing checks. The v0.4.15 GitHub

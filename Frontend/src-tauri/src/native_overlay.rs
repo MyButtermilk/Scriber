@@ -26,6 +26,7 @@ struct OverlayState {
     visible: bool,
     last_rms: f64,
     window_created: bool,
+    renderer_ready: bool,
     #[cfg_attr(test, allow(dead_code))]
     position_initialized: bool,
 }
@@ -37,6 +38,7 @@ impl Default for OverlayState {
             visible: false,
             last_rms: 0.0,
             window_created: false,
+            renderer_ready: false,
             position_initialized: false,
         }
     }
@@ -72,7 +74,9 @@ pub fn create_overlay_window(app: &tauri::App) -> tauri::Result<()> {
     let window = WebviewWindowBuilder::new(
         app,
         OVERLAY_WINDOW_LABEL,
-        WebviewUrl::App("index.html?overlay=1".into()),
+        // If Windows defers loading a hidden WebView until its first show, render a useful first
+        // frame while the listener + native snapshot handshake completes.
+        WebviewUrl::App("index.html?overlay=1&overlayMode=initializing".into()),
     )
     .title("Scriber Recording Overlay")
     .inner_size(OVERLAY_WIDTH, OVERLAY_HEIGHT)
@@ -86,6 +90,7 @@ pub fn create_overlay_window(app: &tauri::App) -> tauri::Result<()> {
     .visible(false)
     .build()?;
     mark_overlay_window_created();
+    mark_overlay_renderer_unready();
     position_overlay_window(&window)?;
     mark_overlay_position_initialized();
     Ok(())
@@ -169,6 +174,18 @@ fn show_overlay_mode(mode: String) -> Result<Value, String> {
     app.emit_to(OVERLAY_WINDOW_LABEL, OVERLAY_EVENT, event_payload)
         .map_err(|err| format!("overlay event emit failed: {err}"))?;
     Ok(status_payload())
+}
+
+/// Completes the renderer handshake and returns the authoritative native state.
+///
+/// The overlay WebView is pre-created while hidden. A hotkey can therefore update native state
+/// before React has registered its event listener. Returning the current snapshot after listener
+/// registration makes that first transition durable instead of relying on one transient event.
+pub fn mark_renderer_ready() -> Value {
+    update_state(|state| {
+        state.renderer_ready = true;
+    });
+    status_payload()
 }
 
 fn overlay_mutation_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -275,6 +292,7 @@ fn ensure_overlay_window(
     .build()
     .map_err(|err| format!("overlay window create failed: {err}"))?;
     mark_overlay_window_created();
+    mark_overlay_renderer_unready();
     position_overlay_window(&window).map_err(|err| format!("overlay position failed: {err}"))?;
     mark_overlay_position_initialized();
     Ok(window)
@@ -353,6 +371,13 @@ fn mark_overlay_window_created() {
     });
 }
 
+#[cfg(not(test))]
+fn mark_overlay_renderer_unready() {
+    update_state(|state| {
+        state.renderer_ready = false;
+    });
+}
+
 fn overlay_position_for_work_area(
     work_x: f64,
     work_y: f64,
@@ -398,6 +423,7 @@ fn status_payload() -> Value {
         "visible": state.visible,
         "lastRms": state.last_rms,
         "windowCreated": state.window_created,
+        "rendererReady": state.renderer_ready,
         "positionInitialized": state.position_initialized,
     })
 }
@@ -445,6 +471,21 @@ mod tests {
         let status = status_payload();
         assert_eq!(status["renderer"], "tauri-webview");
         assert_eq!(status["available"], false);
+    }
+
+    #[test]
+    fn renderer_ready_handshake_returns_authoritative_snapshot() {
+        update_state(|state| {
+            state.mode = "recording".to_string();
+            state.visible = true;
+            state.renderer_ready = false;
+        });
+
+        let status = mark_renderer_ready();
+
+        assert_eq!(status["mode"], "recording");
+        assert_eq!(status["visible"], true);
+        assert_eq!(status["rendererReady"], true);
     }
 
     #[test]
