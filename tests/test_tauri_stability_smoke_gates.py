@@ -700,6 +700,16 @@ def test_release_workflow_parallelizes_only_disjoint_finished_cache_fallbacks() 
     assert "Restore Rust audio sidecar release artifact" not in workflow
     assert "Restore Rust diarization sidecar release artifact" not in workflow
     assert "Restore FFmpeg Profile B release artifact" not in workflow
+    restore_block = workflow[
+        restore_index : workflow.index("Restore pip package store", restore_index)
+    ]
+    assert "$restoreArgs = @{" in restore_block
+    assert "$restoreArgs.RestoreRustAudio = $true" in restore_block
+    assert "$restoreArgs.RestoreRustDiarization = $true" in restore_block
+    assert "$restoreArgs.RestoreFfmpeg = $true" in restore_block
+    assert "@restoreArgs" in restore_block
+    assert "$restoreArgs = @(" not in restore_block
+    assert '$restoreArgs += "-Restore' not in restore_block
 
     assert "Start-Job" in helper
     assert "Wait-Job -Job $restoreJobs" in helper
@@ -744,6 +754,14 @@ def test_finished_component_cache_publication_is_parallel_and_post_release() -> 
     assert "Publish Rust audio sidecar release artifact" not in workflow
     assert "Publish Rust diarization sidecar release artifact" not in workflow
     assert "Publish backend sidecar release artifact" not in workflow
+    assert "$publishArguments = @{" in cache_publish_block
+    assert "$publishArguments.PublishFfmpeg = $true" in cache_publish_block
+    assert "$publishArguments.PublishRustAudio = $true" in cache_publish_block
+    assert "$publishArguments.PublishRustDiarization = $true" in cache_publish_block
+    assert "$publishArguments.PublishBackend = $true" in cache_publish_block
+    assert "@publishArguments" in cache_publish_block
+    assert "$publishArguments = @(" not in cache_publish_block
+    assert '$publishArguments += "-Publish' not in cache_publish_block
 
     assert "Start-Job" in helper
     assert "Wait-Job -Job $publisherJobs -Timeout $PublicationTimeoutSeconds" in helper

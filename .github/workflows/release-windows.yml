@@ -452,23 +452,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $restoreArgs = @(
-            "-Repo", "${{ github.repository }}",
-            "-RustAudioTag", $env:SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG,
-            "-RustAudioAssetName", "scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}.zip",
-            "-RustDiarizationTag", $env:SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG,
-            "-RustDiarizationAssetName", "scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}.zip",
-            "-FfmpegTag", $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG,
-            "-FfmpegAssetName", $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME
-          )
+          $restoreArgs = @{
+            Repo = "${{ github.repository }}"
+            RustAudioTag = $env:SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG
+            RustAudioAssetName = "scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}.zip"
+            RustDiarizationTag = $env:SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG
+            RustDiarizationAssetName = "scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}.zip"
+            FfmpegTag = $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG
+            FfmpegAssetName = $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME
+          }
           if ("${{ steps.rust-audio-sidecar-cache.outputs.cache-hit }}" -ne "true") {
-            $restoreArgs += "-RestoreRustAudio"
+            $restoreArgs.RestoreRustAudio = $true
           }
           if ("${{ steps.rust-diarization-sidecar-cache.outputs.cache-hit }}" -ne "true") {
-            $restoreArgs += "-RestoreRustDiarization"
+            $restoreArgs.RestoreRustDiarization = $true
           }
           if ("${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}" -ne "true") {
-            $restoreArgs += "-RestoreFfmpeg"
+            $restoreArgs.RestoreFfmpeg = $true
           }
           & .\scripts\ci\restore_component_cache_artifacts_parallel.ps1 @restoreArgs
 
@@ -1398,21 +1398,21 @@ jobs:
           SCRIBER_PUBLISH_RUST_DIARIZATION_FINISHED_CACHE: ${{ (env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' || (steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true' && steps.component-cache-artifacts.outputs.rust-diarization-sidecar-restored != 'true')) && 'true' || 'false' }}
           SCRIBER_PUBLISH_BACKEND_FINISHED_CACHE: ${{ steps.backend-sidecar-cache-selection.outputs.selected == 'true' && (env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' || (steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true')) && 'true' || 'false' }}
         run: |
-          $publishArguments = @(
-            "-Repo", "${{ github.repository }}",
-            "-FfmpegTag", $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG,
-            "-FfmpegAssetName", $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME,
-            "-RustAudioTag", $env:SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG,
-            "-RustAudioAssetName", "scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}.zip",
-            "-RustDiarizationTag", $env:SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG,
-            "-RustDiarizationAssetName", "scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}.zip",
-            "-BackendTag", $env:SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG,
-            "-BackendAssetName", "scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip"
-          )
-          if ($env:SCRIBER_PUBLISH_FFMPEG_FINISHED_CACHE -eq "true") { $publishArguments += "-PublishFfmpeg" }
-          if ($env:SCRIBER_PUBLISH_RUST_AUDIO_FINISHED_CACHE -eq "true") { $publishArguments += "-PublishRustAudio" }
-          if ($env:SCRIBER_PUBLISH_RUST_DIARIZATION_FINISHED_CACHE -eq "true") { $publishArguments += "-PublishRustDiarization" }
-          if ($env:SCRIBER_PUBLISH_BACKEND_FINISHED_CACHE -eq "true") { $publishArguments += "-PublishBackend" }
+          $publishArguments = @{
+            Repo = "${{ github.repository }}"
+            FfmpegTag = $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG
+            FfmpegAssetName = $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME
+            RustAudioTag = $env:SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG
+            RustAudioAssetName = "scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}.zip"
+            RustDiarizationTag = $env:SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG
+            RustDiarizationAssetName = "scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}.zip"
+            BackendTag = $env:SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG
+            BackendAssetName = "scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip"
+          }
+          if ($env:SCRIBER_PUBLISH_FFMPEG_FINISHED_CACHE -eq "true") { $publishArguments.PublishFfmpeg = $true }
+          if ($env:SCRIBER_PUBLISH_RUST_AUDIO_FINISHED_CACHE -eq "true") { $publishArguments.PublishRustAudio = $true }
+          if ($env:SCRIBER_PUBLISH_RUST_DIARIZATION_FINISHED_CACHE -eq "true") { $publishArguments.PublishRustDiarization = $true }
+          if ($env:SCRIBER_PUBLISH_BACKEND_FINISHED_CACHE -eq "true") { $publishArguments.PublishBackend = $true }
           & .\scripts\ci\publish_finished_component_caches_parallel.ps1 @publishArguments
 
       - name: Prune obsolete release caches
