@@ -2019,7 +2019,7 @@ fn tray_icon_image(kind: TrayIconKind) -> Image<'static> {
 }
 
 fn desktop_window_icon_image() -> Image<'static> {
-    tray_icon_image(TrayIconKind::Normal)
+    Image::new(include_bytes!("../icons/window-icon.rgba"), 256, 256)
 }
 
 fn apply_desktop_window_icon<R: Runtime>(app: &AppHandle<R>) {
@@ -4107,11 +4107,12 @@ mod tests {
         shortcut_id_for_hotkey, should_hide_window_instead_of_closing,
         should_refresh_hotkey_after_backend_ready, should_show_initializing_overlay_for_hotkey,
         should_show_window_for_tray_click, should_wait_for_hotkey_backend, split_http_response,
-        tray_icon_image, wait_for_child_exit, BackendAccess, DesktopHotkeyState,
+        tray_icon_image, tray_icon_kind, wait_for_child_exit, BackendAccess, DesktopHotkeyState,
         NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry, ShellMenuSmokeAction,
-        TrayIconKind, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV,
-        DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
-        MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        TrayIconKind, TrayStatus, TrayStatusInner, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
+        BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE,
+        MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
+        MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
         SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
         TRAY_RECENT_TRANSCRIPT_LIMIT,
@@ -5103,13 +5104,44 @@ mod tests {
     }
 
     #[test]
-    fn desktop_taskbar_icon_reuses_the_contrast_safe_tray_icon() {
+    fn desktop_taskbar_icon_uses_the_high_resolution_contrast_safe_identity() {
         let desktop_icon = desktop_window_icon_image();
         let tray_icon = tray_icon_image(TrayIconKind::Normal);
 
-        assert_eq!(desktop_icon.width(), 32);
-        assert_eq!(desktop_icon.height(), 32);
-        assert_eq!(desktop_icon.rgba(), tray_icon.rgba());
+        assert_eq!(desktop_icon.width(), 256);
+        assert_eq!(desktop_icon.height(), 256);
+        assert_eq!(desktop_icon.rgba().len(), 256 * 256 * 4);
+        assert_eq!(tray_icon.width(), 32);
+        assert_eq!(tray_icon.height(), 32);
+    }
+
+    #[test]
+    fn tray_icon_state_prioritizes_recording_then_update_then_normal() {
+        let normal = TrayStatus::from(&TrayStatusInner::default());
+        assert_eq!(tray_icon_kind(&normal), TrayIconKind::Normal);
+
+        let update = TrayStatus::from(&TrayStatusInner {
+            update_available: true,
+            ..TrayStatusInner::default()
+        });
+        assert_eq!(tray_icon_kind(&update), TrayIconKind::Update);
+
+        let installing = TrayStatus::from(&TrayStatusInner {
+            update_installing: true,
+            ..TrayStatusInner::default()
+        });
+        assert_eq!(tray_icon_kind(&installing), TrayIconKind::Update);
+
+        let recording_during_update = TrayStatus::from(&TrayStatusInner {
+            recording_active: true,
+            update_available: true,
+            update_installing: true,
+            ..TrayStatusInner::default()
+        });
+        assert_eq!(
+            tray_icon_kind(&recording_during_update),
+            TrayIconKind::Recording
+        );
     }
 
     #[test]

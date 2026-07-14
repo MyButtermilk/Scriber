@@ -764,10 +764,15 @@ that release updater configuration is missing.
 - Own Windows autostart through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - Own tray/menu shell actions: open/focus, restart backend, quit, and tray
   status/icon updates for recording and available desktop updates.
-- Keep the Windows PE/taskbar identity and the normal tray identity on the same
-  contrast-safe white-disc feather. Tauri reapplies that icon before the main
-  window is revealed or restored, while the WebView brand mark remains
-  theme-aware and unboxed on light surfaces.
+- Keep the Windows PE/taskbar identity and every tray state on the same
+  contrast-safe white-disc feather. The source remains the canonical vector
+  feather in `Frontend/client/public/favicon.svg`; the Windows generator wraps
+  it in the disc and renders each ICO frame natively rather than enlarging the
+  32 px tray bitmap. Tauri reapplies the dedicated 256 px runtime window image
+  before the main window is revealed or restored. Update and recording states
+  add only a bounded blue or red lower-right badge, generated together with
+  their raw RGBA runtime pairs by `scripts/generate_tray_state_icons.py`. The
+  WebView brand mark remains theme-aware and unboxed on light surfaces.
 - Render the recording overlay as a non-taskbar, non-focusable window; on
   Windows it is shown without activation so hotkey recordings do not flash the
   main taskbar icon while the user is working in another app.

@@ -202,11 +202,22 @@ def test_windows_taskbar_identity_uses_the_contrast_safe_tray_artwork() -> None:
     build_source = (tauri_root / "build.rs").read_text(encoding="utf-8")
     lib_source = (tauri_root / "src" / "lib.rs").read_text(encoding="utf-8")
     bundle_icon = tauri_root / "icons" / "icon.ico"
+    master_svg = (tauri_root / "icons" / "windows-app-icon.svg").read_text(
+        encoding="utf-8"
+    )
 
     assert config["bundle"]["icon"] == ["icons/icon.ico"]
     assert bundle_icon.read_bytes().startswith(b"\x00\x00\x01\x00")
     with Image.open(bundle_icon) as icon:
-        assert (32, 32) in icon.ico.sizes()
+        assert icon.ico.sizes() == {
+            (16, 16),
+            (24, 24),
+            (32, 32),
+            (48, 48),
+            (64, 64),
+            (128, 128),
+            (256, 256),
+        }
         taskbar_frame = icon.ico.getimage((32, 32)).convert("RGBA")
     with Image.open(tauri_root / "icons" / "tray-normal.png") as tray_icon:
         tray_frame = tray_icon.convert("RGBA")
@@ -223,10 +234,69 @@ def test_windows_taskbar_identity_uses_the_contrast_safe_tray_artwork() -> None:
         for red, green, blue, alpha in taskbar_frame.getdata()
     ) >= 450
     assert taskbar_frame.getpixel((0, 0))[3] == 0
+    assert "generate_windows_app_icon.py" in master_svg
+    assert 'fill="#FFFFFF"' in master_svg
+    with Image.open(tauri_root / "icons" / "window-icon.png") as window_icon:
+        window_frame = window_icon.convert("RGBA")
+    assert window_frame.size == (256, 256)
+    assert (tauri_root / "icons" / "window-icon.rgba").read_bytes() == window_frame.tobytes()
     assert 'cargo:rerun-if-changed=icons/icon.ico' in build_source
-    assert "tray_icon_image(TrayIconKind::Normal)" in lib_source
+    assert 'include_bytes!("../icons/window-icon.rgba"), 256, 256' in lib_source
     assert 'apply_desktop_window_icon_to_window(window, "initial reveal")' in lib_source
     assert 'apply_desktop_window_icon_to_window(&window, "main window restore")' in lib_source
+
+
+def test_all_tray_states_preserve_white_disc_identity_and_semantic_badges() -> None:
+    icon_dir = REPO_ROOT / "Frontend" / "src-tauri" / "icons"
+    icons: dict[str, Image.Image] = {}
+
+    for state in ("normal", "update", "recording"):
+        png_path = icon_dir / f"tray-{state}.png"
+        rgba_path = icon_dir / f"tray-{state}.rgba"
+        assert png_path.read_bytes().startswith(b"\x89PNG")
+        with Image.open(png_path) as source:
+            icon = source.convert("RGBA")
+        assert icon.size == (32, 32)
+        assert rgba_path.read_bytes() == icon.tobytes()
+        icons[state] = icon
+
+    normal = icons["normal"]
+    for state in ("update", "recording"):
+        state_icon = icons[state]
+        # State is a badge, not a replacement identity: the upper and left
+        # portions remain byte-identical to the normal white-disc feather.
+        for y in range(32):
+            for x in range(32):
+                if x < 16 or y < 16:
+                    assert state_icon.getpixel((x, y)) == normal.getpixel((x, y))
+
+        white_disc_pixels = sum(
+            alpha >= 220 and red >= 235 and green >= 235 and blue >= 235
+            for red, green, blue, alpha in state_icon.getdata()
+        )
+        assert white_disc_pixels >= 330
+
+        # The identity remains visibly light after Windows scales a tray icon
+        # to 16 px and composites it onto a representative dark taskbar.
+        small = state_icon.resize((16, 16), Image.Resampling.LANCZOS)
+        dark_taskbar = Image.new("RGBA", (16, 16), (32, 34, 37, 255))
+        composited = Image.alpha_composite(dark_taskbar, small)
+        light_pixels = sum(
+            red >= 205 and green >= 205 and blue >= 205
+            for red, green, blue, _alpha in composited.getdata()
+        )
+        assert light_pixels >= 65
+
+    update_blue_pixels = sum(
+        alpha >= 180 and blue >= 150 and blue > red * 1.4 and blue > green * 1.1
+        for red, green, blue, alpha in icons["update"].getdata()
+    )
+    recording_red_pixels = sum(
+        alpha >= 180 and red >= 160 and red > green * 1.5 and red > blue * 1.5
+        for red, green, blue, alpha in icons["recording"].getdata()
+    )
+    assert update_blue_pixels >= 50
+    assert recording_red_pixels >= 50
 
 
 def test_settings_microphones_use_shared_api_types() -> None:

@@ -170,8 +170,16 @@ Packaging and scripts:
   30 seconds by default), then use the authenticated graceful shutdown path
   before the existing hard-termination fallback and restart it.
 - Keep Windows shell identity contrast-safe. The installed PE bundle icon
-  (`Frontend/src-tauri/icons/icon.ico`), the normal tray artwork, and the
-  runtime main-window icon use the same white-disc feather at taskbar sizes;
+  (`Frontend/src-tauri/icons/icon.ico`), all normal/update/recording tray
+  artwork, and the runtime main-window icon use the same white-disc feather at
+  taskbar sizes. The canonical feather stays in
+  `Frontend/client/public/favicon.svg`; regenerate the high-occupancy SVG
+  master, native 16/24/32/48/64/128/256 px ICO frames, 256 px runtime window
+  image, and normal tray pair with
+  `venv\Scripts\python.exe scripts\generate_windows_app_icon.py`. Tray state
+  changes add only a bounded blue update or red recording badge; regenerate
+  their PNG/raw-RGBA pairs afterwards with
+  `venv\Scripts\python.exe scripts\generate_tray_state_icons.py`;
   `build.rs` must watch the ICO so incremental release builds cannot retain an
   older executable resource. This does not change the in-WebView brand mark:
   it stays unboxed on light surfaces and gains its white disc only in dark mode.

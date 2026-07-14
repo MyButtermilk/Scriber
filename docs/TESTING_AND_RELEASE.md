@@ -37,6 +37,17 @@ cd Frontend\src-tauri
 cargo test
 ```
 
+Windows shell artwork uses one contrast-safe white-disc feather across the PE,
+runtime window, normal tray, update, and recording states. The first command
+extracts the original vector paths from the canonical favicon and renders every
+ICO size independently; the second adds the tray state badges:
+
+```powershell
+venv\Scripts\python.exe scripts\generate_windows_app_icon.py
+venv\Scripts\python.exe scripts\generate_tray_state_icons.py
+venv\Scripts\python.exe scripts\generate_windows_app_icon.py --check
+```
+
 The 2026-07-10 reliability/performance sweep passed `1099` Python tests with
 `2` expected skips, the frontend type check and production build, `110` Rust
 library tests, `27` Rust audio-sidecar tests, `cargo fmt --check`, and Clippy
