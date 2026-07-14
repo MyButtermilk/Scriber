@@ -1783,6 +1783,45 @@ def test_primary_tabs_share_the_same_max_width_page_shell() -> None:
     assert 'max-w-[1440px]' not in meetings
 
 
+def test_primary_tabs_share_youtube_dark_workspace_palette() -> None:
+    styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(
+        encoding="utf-8"
+    )
+    dark_shell = styles.split(".dark .app-page-shell {", 1)[1].split("}", 1)[0]
+
+    expected_tokens = {
+        "--live-core: rgba(22, 26, 34, 0.88);",
+        "--live-control: rgba(18, 22, 30, 0.72);",
+        "--live-transcript: rgba(34, 38, 47, 0.7);",
+        "--live-well: rgba(13, 17, 24, 0.72);",
+        "--live-card: rgba(27, 32, 41, 0.8);",
+        "--live-card-hover: rgba(34, 40, 51, 0.94);",
+        "--workspace-border: rgba(255, 255, 255, 0.09);",
+        "--background: 220 21% 11%;",
+        "--card: 222 19% 13%;",
+        "--muted: 224 15% 15%;",
+    }
+    for token in expected_tokens:
+        assert token in dark_shell
+
+    assert ".dark .live-mic-page,\n.dark .transcription-page" not in styles
+    assert "--dc-surface: var(--live-card);" in styles
+    assert "--dc-surface-raised: var(--live-card-hover);" in styles
+    assert "--dc-surface-deep: var(--live-well);" in styles
+
+    settings = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+    live_mic = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx"
+    ).read_text(encoding="utf-8")
+    assert "dark:bg-[var(--live-core)]" in settings
+    assert "dark:bg-[var(--live-card)]" in settings
+    assert "dark:bg-[var(--live-well)]" in settings
+    assert "dark:border-[var(--workspace-border)]" in settings
+    assert "dark:bg-[var(--live-card)]" in live_mic
+
+
 def test_meeting_export_uses_native_save_as_and_visible_follow_up_actions() -> None:
     meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
         encoding="utf-8"

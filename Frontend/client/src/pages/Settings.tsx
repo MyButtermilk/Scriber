@@ -660,7 +660,7 @@ function SectionPanel({
     <section
       id={id}
       className={cn(
-        "settings-section min-w-0 scroll-mt-28 rounded-2xl border border-slate-200/80 bg-white/35 p-4 shadow-[0_18px_44px_-40px_rgba(15,23,42,0.45)] dark:border-white/[0.065] dark:bg-white/[0.025]",
+        "settings-section min-w-0 scroll-mt-28 rounded-2xl border border-slate-200/80 bg-white/35 p-4 shadow-[0_18px_44px_-40px_rgba(15,23,42,0.45)] dark:border-[var(--workspace-border)] dark:bg-[var(--live-core)]",
         className,
       )}
     >
@@ -724,14 +724,14 @@ function SettingsSubsection({
   return (
     <div
       className={cn(
-        "rounded-xl border border-slate-200/65 bg-white/65 p-3.5 shadow-[0_12px_32px_-30px_rgba(15,23,42,0.5)] dark:border-white/[0.055] dark:bg-slate-950/30",
+        "settings-subsection rounded-xl border border-slate-200/65 bg-white/65 p-3.5 shadow-[0_12px_32px_-30px_rgba(15,23,42,0.5)] dark:border-[var(--workspace-border)] dark:bg-[var(--live-card)]",
         className,
       )}
     >
       <div className="mb-3 flex min-w-0 items-start justify-between gap-3">
         <div className="flex min-w-0 flex-1 items-start gap-2">
           {Icon ? (
-            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white/80 text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.07)] dark:bg-slate-950/50 dark:text-slate-400">
+            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white/80 text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.07)] dark:bg-[var(--live-well)] dark:text-slate-400">
               <Icon className="h-3.5 w-3.5" aria-hidden="true" />
             </span>
           ) : null}
@@ -809,7 +809,7 @@ function ProviderChoice({
           ? "cursor-pointer text-slate-700 hover:bg-amber-50/75 dark:text-slate-300 dark:hover:bg-amber-950/20"
           : selected
           ? "bg-blue-50 text-blue-950 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.18)] dark:bg-blue-950/35 dark:text-blue-100"
-          : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-slate-900",
+          : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-[var(--live-card-hover)]",
       )}
     >
       {option.icon ? (
@@ -837,7 +837,7 @@ function ProviderChoice({
             ? "border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/30"
             : selected
               ? "border-blue-600 bg-blue-600"
-              : "border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-950",
+              : "border-slate-300 bg-white dark:border-[var(--workspace-border)] dark:bg-[var(--live-well)]",
         )}
         aria-hidden="true"
       >
@@ -886,7 +886,7 @@ function SummaryModelChoice({
           ? "cursor-pointer text-slate-700 hover:bg-amber-50/75 dark:text-slate-300 dark:hover:bg-amber-950/20"
           : selected
           ? "bg-blue-50 text-blue-950 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.18)] dark:bg-blue-950/35 dark:text-blue-100"
-          : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-slate-900",
+          : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-[var(--live-card-hover)]",
       )}
     >
       <ProviderIcon icon={option.icon} label={option.label} />
@@ -910,7 +910,7 @@ function SummaryModelChoice({
             ? "border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/30"
             : selected
               ? "border-blue-600 bg-blue-600"
-              : "border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-950",
+              : "border-slate-300 bg-white dark:border-[var(--workspace-border)] dark:bg-[var(--live-well)]",
         )}
         aria-hidden="true"
       >
@@ -988,7 +988,7 @@ function ApiCredentialRow({
         <button
           type="button"
           data-credential-id={credentialId}
-          className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 rounded-lg px-2 py-1.5 text-left outline-none transition-colors hover:bg-slate-100/80 focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:hover:bg-slate-900"
+          className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 rounded-lg px-2 py-1.5 text-left outline-none transition-colors hover:bg-slate-100/80 focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:hover:bg-[var(--live-card-hover)]"
         >
           <span className="flex min-w-0 items-center gap-2">
             <ProviderIcon icon={icon} label={provider} className="h-5.5 w-5.5 rounded-[7px] p-1" />
@@ -3092,7 +3092,7 @@ export default function Settings() {
         onChange={(event) => setCustomVocabulary(event.target.value)}
         onBlur={handleCustomVocabBlur}
         placeholder="Enter terms, one per line..."
-        className="min-h-[54px] resize-none bg-white/70 font-mono text-[12px] leading-5 dark:bg-slate-950/60"
+        className="min-h-[54px] resize-none bg-white/70 font-mono text-[12px] leading-5 dark:bg-[var(--live-well)]"
       />
     </FieldShell>
   );
@@ -3139,7 +3139,7 @@ export default function Settings() {
           detail="Use a low-cost, low-latency model for simple dictation cleanup."
         >
           <Select value={postProcessingModel} onValueChange={(value) => void handlePostProcessingModelChange(value)}>
-            <SelectTrigger className="h-10 bg-white/70 dark:bg-slate-950/40">
+            <SelectTrigger className="h-10 bg-white/70 dark:bg-[var(--live-well)]">
               {selectedPostProcessingModelOption ? (
                 <div className="flex min-w-0 items-center gap-2 text-left">
                   <ProviderIcon
@@ -3204,7 +3204,7 @@ export default function Settings() {
               void handlePostProcessingPromptBlur();
             }}
             placeholder={DEFAULT_POST_PROCESSING_PROMPT}
-            className="min-h-[64px] resize-none overflow-hidden break-words bg-white/70 text-sm transition-[height,box-shadow,transform,border-color] duration-300 ease-out focus:-translate-y-0.5 focus:border-blue-300 focus:shadow-[0_18px_45px_-30px_rgba(37,99,235,0.75)] motion-reduce:transform-none motion-reduce:transition-none dark:bg-slate-950/60 dark:focus:border-blue-700"
+            className="min-h-[64px] resize-none overflow-hidden break-words bg-white/70 text-sm transition-[height,box-shadow,transform,border-color] duration-300 ease-out focus:-translate-y-0.5 focus:border-blue-300 focus:shadow-[0_18px_45px_-30px_rgba(37,99,235,0.75)] motion-reduce:transform-none motion-reduce:transition-none dark:bg-[var(--live-well)] dark:focus:border-blue-700"
             disabled={!postProcessingEnabled}
           />
           <div className="mt-2 flex min-w-0 flex-wrap items-center justify-between gap-2">
@@ -3237,13 +3237,13 @@ export default function Settings() {
           void handleSummarizationPromptBlur();
         }}
         placeholder="Summarize the key points, decisions, and action items. Keep it concise and structured."
-        className="min-h-[60px] resize-none overflow-hidden bg-white/70 text-sm transition-[height,box-shadow,transform,border-color] duration-300 ease-out focus:-translate-y-0.5 focus:border-blue-300 focus:shadow-[0_18px_45px_-30px_rgba(37,99,235,0.75)] motion-reduce:transform-none motion-reduce:transition-none dark:bg-slate-950/60 dark:focus:border-blue-700"
+        className="min-h-[60px] resize-none overflow-hidden bg-white/70 text-sm transition-[height,box-shadow,transform,border-color] duration-300 ease-out focus:-translate-y-0.5 focus:border-blue-300 focus:shadow-[0_18px_45px_-30px_rgba(37,99,235,0.75)] motion-reduce:transform-none motion-reduce:transition-none dark:bg-[var(--live-well)] dark:focus:border-blue-700"
       />
     </FieldShell>
   );
 
   const onnxLocalModelSettings = (
-    <div className="rounded-xl bg-white/70 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-950/40">
+    <div className="rounded-xl bg-white/70 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-well)]">
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[13px] font-bold text-slate-950 dark:text-slate-100">ONNX model</p>
@@ -3352,7 +3352,7 @@ export default function Settings() {
       description="Choose the primary transcription provider."
       icon={Cloud}
     >
-      <div className="mb-2.5 rounded-xl bg-slate-50 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+      <div className="mb-2.5 rounded-xl bg-slate-50 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
         <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Current provider</p>
         <div className="mt-1 flex items-center gap-2">
           <ProviderIcon
@@ -3382,7 +3382,7 @@ export default function Settings() {
               key={group.key}
               role="radiogroup"
               aria-label={`${group.label} transcription providers`}
-              className="rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60"
+              className="rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]"
             >
               <div className="mb-1.5">
                 <div className="min-w-0">
@@ -3412,7 +3412,7 @@ export default function Settings() {
                 })}
               </div>
               {group.key === "local" && activeLocalModelSettings ? (
-                <div className="mt-2 border-t border-slate-200/80 pt-2 dark:border-slate-800/80">
+                <div className="mt-2 border-t border-slate-200/80 pt-2 dark:border-[var(--workspace-border)]">
                   {activeLocalModelSettings}
                 </div>
               ) : null}
@@ -3443,7 +3443,7 @@ export default function Settings() {
         description="Configure capture, transcription providers, AI processing, credentials, updates, and language behavior."
         bottomContent={(
           <nav aria-label="Settings sections" className="settings-section-nav overflow-x-auto">
-            <div className="flex w-max items-center gap-1 rounded-xl bg-slate-100/80 p-1 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.05)] dark:bg-slate-950/45">
+            <div className="flex w-max items-center gap-1 rounded-xl bg-slate-100/80 p-1 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.05)] dark:bg-[var(--live-well)]">
               {[
                 { section: "transcription", href: "#settings-transcription", label: "Transcription", icon: Mic },
                 { section: "providers", href: "#settings-providers", label: "Speech-to-text", icon: Cloud },
@@ -3461,7 +3461,7 @@ export default function Settings() {
                     window.history.replaceState(null, "", item.href);
                     revealRequestedSettingsSection(item.section);
                   }}
-                  className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[10.5px] font-semibold text-slate-500 no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 hover:bg-white hover:text-slate-950 hover:shadow-sm active:translate-y-px focus-visible:ring-2 focus-visible:ring-blue-500/60 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[10.5px] font-semibold text-slate-500 no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 hover:bg-white hover:text-slate-950 hover:shadow-sm active:translate-y-px focus-visible:ring-2 focus-visible:ring-blue-500/60 dark:hover:bg-[var(--live-card-hover)] dark:hover:text-slate-100"
                 >
                   <item.icon className="h-3.5 w-3.5" aria-hidden="true" />
                   {item.label}
@@ -3497,7 +3497,7 @@ export default function Settings() {
               description="Choose the active device and keep capture warm when low latency matters."
               icon={Mic}
             >
-              <div className="divide-y divide-slate-200/80 dark:divide-slate-800">
+              <div className="divide-y divide-slate-200/80 dark:divide-[var(--workspace-border)]">
                 <SettingLine label="Input device" description="Select the active microphone.">
                   <div className={cn("mic-device-dropdown w-full", isMicDropdownOpen && "is-open")}>
                     <button
@@ -3600,13 +3600,13 @@ export default function Settings() {
               description="Configure the main hotkey, trigger mode, and overlay density."
               icon={Keyboard}
             >
-              <div className="divide-y divide-slate-200/80 dark:divide-slate-800">
+              <div className="divide-y divide-slate-200/80 dark:divide-[var(--workspace-border)]">
                 <SettingLine label="Recording mode" description="Choose how the hotkey behaves.">
                   <ToggleGroup
                     type="single"
                     value={recordingMode}
                     onValueChange={(value) => value && void handleRecordingModeChange(value)}
-                    className="grid w-[220px] max-w-full grid-cols-2 rounded-lg bg-slate-100 p-1 dark:bg-slate-900"
+                    className="grid w-[220px] max-w-full grid-cols-2 rounded-lg bg-slate-100 p-1 dark:bg-[var(--live-well)]"
                   >
                     <ToggleGroupItem value="start_stop" className="h-8 rounded-md text-[11px] data-[state=on]:bg-white data-[state=on]:text-blue-700 data-[state=on]:shadow-sm dark:data-[state=on]:bg-slate-800">
                       <ToggleLeft className="h-4 w-4" />
@@ -3702,7 +3702,7 @@ export default function Settings() {
               description="Choose whether to see live text or wait for the accurate transcript after the meeting."
               icon={Mic}
             >
-              <div className="divide-y divide-slate-200/80 dark:divide-slate-800">
+              <div className="divide-y divide-slate-200/80 dark:divide-[var(--workspace-border)]">
                 <div className="pb-3" role="radiogroup" aria-label="Meeting transcription timing">
                   <div className="grid gap-2 sm:grid-cols-2">
                     {([
@@ -3739,7 +3739,7 @@ export default function Settings() {
                             "rounded-xl px-3.5 py-3 text-left outline-none transition-[background-color,box-shadow,transform] duration-150 focus-visible:ring-2 focus-visible:ring-primary/60 active:scale-[0.99]",
                             selected
                               ? "bg-primary/[0.08] shadow-[inset_0_0_0_1.5px_hsl(var(--primary)/0.42)]"
-                              : "bg-slate-50 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.07)] hover:bg-slate-100/80 dark:bg-slate-900/55 dark:hover:bg-slate-900",
+                              : "bg-slate-50 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.07)] hover:bg-slate-100/80 dark:bg-[var(--live-card)] dark:hover:bg-[var(--live-card-hover)]",
                           )}
                         >
                           <span className="flex items-start justify-between gap-3">
@@ -3782,7 +3782,7 @@ export default function Settings() {
                   </Select>
                 </SettingLine>
                 <div className="py-3">
-                  <div className="rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+                  <div className="rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">{selectedMeetingFinalOption.label}</p>
                       <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -3803,7 +3803,7 @@ export default function Settings() {
                     <p className="mt-1.5 text-[10.5px] leading-4 text-slate-500 dark:text-slate-400">
                       Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as <span className="font-semibold text-slate-700 dark:text-slate-200">You</span>.
                     </p>
-                    <div className="mt-2.5 grid gap-1 border-t border-slate-200/80 pt-2.5 text-[10.5px] dark:border-slate-800 sm:grid-cols-3">
+                    <div className="mt-2.5 grid gap-1 border-t border-slate-200/80 pt-2.5 text-[10.5px] dark:border-[var(--workspace-border)] sm:grid-cols-3">
                       <span className="text-slate-500">During meeting <strong className="block font-mono font-semibold text-slate-800 dark:text-slate-200">{meetingTranscriptionMode === "live_final" ? formatMeetingHourlyCost(meetingCostEstimate?.livePreviewPerMeetingHour) : "$0.00 / meeting hour"}</strong></span>
                       <span className="text-slate-500">After meeting <strong className="block font-mono font-semibold text-slate-800 dark:text-slate-200">{formatMeetingHourlyCost(finalOnlyHourlyCost)}</strong></span>
                       <span className="text-slate-500">Estimated total <strong className="block font-mono font-semibold text-primary">{formatMeetingHourlyCost(meetingTranscriptionMode === "live_final" ? liveAndFinalHourlyCost : finalOnlyHourlyCost)}</strong></span>
@@ -3822,7 +3822,7 @@ export default function Settings() {
                   />
                 </SettingLine>
                 {speakerDiarizationFallbackEnabled && <div className="py-3">
-                  <div className="rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+                  <div className="rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
@@ -3883,7 +3883,7 @@ export default function Settings() {
               description="Choose how Scriber creates the meeting brief and how long it keeps local audio."
               icon={Sparkles}
             >
-              <div className="divide-y divide-slate-200/80 dark:divide-slate-800">
+              <div className="divide-y divide-slate-200/80 dark:divide-[var(--workspace-border)]">
                 <SettingLine label="Meeting shortcut" description="Open the meeting workspace from anywhere in Windows.">
                   <Dialog open={isRecordingMeetingHotkey} onOpenChange={setIsRecordingMeetingHotkey}>
                     <DialogTrigger asChild>
@@ -3947,7 +3947,7 @@ export default function Settings() {
                   </Select>
                 </SettingLine>
                 <div className="py-3">
-                  <div className="flex items-start gap-2.5 rounded-lg bg-slate-50 px-3 py-2.5 text-[11.5px] leading-4 text-slate-600 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60 dark:text-slate-300">
+                  <div className="flex items-start gap-2.5 rounded-lg bg-slate-50 px-3 py-2.5 text-[11.5px] leading-4 text-slate-600 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)] dark:text-slate-300">
                     <Shield className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-300" />
                     <p><span className="font-semibold text-slate-950 dark:text-slate-100">Protected every 30 seconds.</span> Scriber saves audio and transcript progress while the meeting runs, so a crash should not lose the whole meeting.</p>
                   </div>
@@ -3961,7 +3961,7 @@ export default function Settings() {
               icon={Users}
             >
               <div className="space-y-2.5">
-                <div className="divide-y divide-slate-200/80 rounded-lg border border-slate-200/80 px-3 dark:divide-slate-800 dark:border-slate-800">
+                <div className="divide-y divide-slate-200/80 rounded-lg border border-slate-200/80 px-3 dark:divide-[var(--workspace-border)] dark:border-[var(--workspace-border)]">
                   <SettingLine
                     label="Recognize familiar speakers"
                     description="Turn this on only when everyone has agreed. Saved voice data stays on this device."
@@ -4007,7 +4007,7 @@ export default function Settings() {
                     )}
                   </SettingLine>
                 </div>
-                <div className="flex flex-col gap-3 rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-col gap-3 rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)] sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">
                       {speakerProfilesQuery.data?.enabled ? "Voice recognition is ready" : "Voice recognition is off"}
@@ -4039,7 +4039,7 @@ export default function Settings() {
                 {speakerProfilesQuery.isLoading && (
                   <div className="space-y-2" aria-label="Loading saved speakers">
                     {[0, 1].map((item) => (
-                      <div key={item} className="h-12 animate-pulse rounded-lg bg-slate-100 motion-reduce:animate-none dark:bg-slate-900" />
+                      <div key={item} className="h-12 animate-pulse rounded-lg bg-slate-100 motion-reduce:animate-none dark:bg-[var(--live-card)]" />
                     ))}
                   </div>
                 )}
@@ -4050,12 +4050,12 @@ export default function Settings() {
                   </div>
                 )}
                 {speakerProfilesQuery.data?.items.length === 0 && (
-                  <p className="rounded-lg border border-dashed border-slate-300 px-3 py-4 text-center text-[11px] text-slate-500 dark:border-slate-700">
+                  <p className="rounded-lg border border-dashed border-slate-300 px-3 py-4 text-center text-[11px] text-slate-500 dark:border-[var(--workspace-border)]">
                     No saved speakers yet. Add a named voice sample, or let Scriber learn familiar voices from future meetings.
                   </p>
                 )}
                 {speakerProfilesQuery.data?.items.map((profile) => (
-                  <div key={profile.id} className="flex min-w-0 items-center gap-2 rounded-lg border border-slate-200/80 px-2.5 py-2 dark:border-slate-800">
+                  <div key={profile.id} className="flex min-w-0 items-center gap-2 rounded-lg border border-slate-200/80 px-2.5 py-2 dark:border-[var(--workspace-border)]">
                     {editingSpeakerProfileId === profile.id ? (
                       <Input
                         autoFocus
@@ -4100,7 +4100,7 @@ export default function Settings() {
                   </div>
                 ))}
                 {(speakerProfilesQuery.data?.items.length ?? 0) >= 2 && (
-                  <div className="rounded-lg border border-slate-200/80 p-3 dark:border-slate-800">
+                  <div className="rounded-lg border border-slate-200/80 p-3 dark:border-[var(--workspace-border)]">
                     <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">Merge duplicate speakers</p>
                     <p className="mt-1 text-[11px] leading-4 text-slate-500">Keep the correct speaker and merge the duplicate into it.</p>
                     <div className="mt-2.5 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
@@ -4125,7 +4125,7 @@ export default function Settings() {
               icon={CalendarClock}
             >
               <div className="space-y-3">
-                <div className="rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+                <div className="rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">
                       {outlookQuery.isLoading
@@ -4163,7 +4163,7 @@ export default function Settings() {
                   {outlookQuery.data?.lastError && <p className="mt-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">What happened: {outlookQuery.data.lastError}</p>}
                 </div>
                 {!outlookQuery.isLoading && !outlookQuery.data?.connected && (
-                  <ol className="grid gap-2 rounded-lg border border-slate-200/80 p-3 text-[11px] leading-4 text-slate-600 dark:border-slate-800 dark:text-slate-300">
+                  <ol className="grid gap-2 rounded-lg border border-slate-200/80 p-3 text-[11px] leading-4 text-slate-600 dark:border-[var(--workspace-border)] dark:text-slate-300">
                     {(outlookQuery.isError
                       ? [
                           "Restart Scriber.",
@@ -4195,15 +4195,15 @@ export default function Settings() {
                   </ol>
                 )}
                 {!outlookQuery.isLoading && !outlookQuery.isError && !outlookQuery.data?.configured && (
-                  <details className="rounded-lg border border-slate-200/80 px-3 py-2 dark:border-slate-800">
+                  <details className="rounded-lg border border-slate-200/80 px-3 py-2 dark:border-[var(--workspace-border)]">
                     <summary className="cursor-pointer text-[11px] font-semibold text-slate-700 dark:text-slate-200">Help for self-built copies</summary>
                     <p className="mt-2 text-[10.5px] leading-4 text-slate-500 dark:text-slate-400">
-                      Before starting Scriber, set <code className="rounded bg-slate-100 px-1 py-0.5 font-mono dark:bg-slate-900">SCRIBER_OUTLOOK_CLIENT_ID</code> to the application ID from your Microsoft Entra public-client registration.
+                      Before starting Scriber, set <code className="rounded bg-slate-100 px-1 py-0.5 font-mono dark:bg-[var(--live-well)]">SCRIBER_OUTLOOK_CLIENT_ID</code> to the application ID from your Microsoft Entra public-client registration.
                     </p>
                   </details>
                 )}
                 {outlookQuery.data?.nextEvent && (
-                  <div className="rounded-lg border border-slate-200/80 px-3 py-2.5 dark:border-slate-800">
+                  <div className="rounded-lg border border-slate-200/80 px-3 py-2.5 dark:border-[var(--workspace-border)]">
                     <p className="truncate text-xs font-semibold text-slate-950 dark:text-slate-100">{outlookQuery.data.nextEvent.subject}</p>
                     <p className="mt-1 text-[10.5px] text-slate-500">Next event, {formatUpdateTimestamp(outlookQuery.data.nextEvent.start_at)}, {outlookQuery.data.nextEvent.participants.length} participants</p>
                   </div>
@@ -4270,7 +4270,7 @@ export default function Settings() {
             )}
 
             {!hasAnyManagedCloudSttCredential && (
-              <div className="rounded-xl bg-slate-50 p-2.5 text-[11px] leading-[15px] text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+              <div className="rounded-xl bg-slate-50 p-2.5 text-[11px] leading-[15px] text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
                 No cloud STT credentials are saved yet.
               </div>
             )}
@@ -4321,7 +4321,7 @@ export default function Settings() {
               {summaryModelGroups.map((group) => (
                 <div
                   key={group.key}
-                  className="rounded-xl bg-slate-50/90 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60"
+                  className="rounded-xl bg-slate-50/90 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]"
                 >
                   <div className="mb-1">
                     <h3 className="text-[13px] !font-bold leading-4 text-slate-950 dark:text-slate-100">
@@ -4349,7 +4349,7 @@ export default function Settings() {
               ))}
             </div>
 
-            <div className="grid gap-x-4 border-t border-slate-200/80 pt-2 dark:border-slate-800/80 sm:grid-cols-2">
+            <div className="grid gap-x-4 border-t border-slate-200/80 pt-2 dark:border-[var(--workspace-border)] sm:grid-cols-2">
               <SettingLine
                 label="Auto-summarize"
                 description="Summarize new transcripts automatically."
@@ -4360,7 +4360,7 @@ export default function Settings() {
               <SettingLine
                 label="YouTube captions first"
                 description="Prefer available captions, then fall back to audio."
-                className="border-t border-slate-200/80 py-1.5 pt-2 dark:border-slate-800/80 sm:grid-cols-[minmax(0,1fr)_auto] sm:border-l sm:border-t-0 sm:pl-4 sm:pt-1.5"
+                className="border-t border-slate-200/80 py-1.5 pt-2 dark:border-[var(--workspace-border)] sm:grid-cols-[minmax(0,1fr)_auto] sm:border-l sm:border-t-0 sm:pl-4 sm:pt-1.5"
               >
                 <Switch
                   checked={youtubePreferCaptions}
@@ -4381,14 +4381,14 @@ export default function Settings() {
         >
           <div className="flex flex-1 flex-col justify-between gap-3">
             <div className="grid gap-2 sm:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] sm:items-stretch">
-              <div className="grid gap-2 rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+              <div className="grid gap-2 rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                 <div>
                   <p className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Update status</p>
                   <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">{desktopUpdate.message}</p>
                 </div>
                 <Badge variant={desktopUpdateBadgeVariant}>{desktopUpdateBadgeLabel}</Badge>
               </div>
-              <div className="grid gap-2 rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center dark:bg-slate-900/60">
+              <div className="grid gap-2 rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center dark:bg-[var(--live-card)]">
                 <div>
                   <p className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Automatic checks</p>
                   <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">Weekly background checks via GitHub.</p>
@@ -4398,19 +4398,19 @@ export default function Settings() {
             </div>
 
             <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
-              <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+              <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
                 <p className="text-[10px] leading-3 text-slate-500">Current</p>
                 <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">{desktopUpdate.currentVersion || "Unknown"}</p>
               </div>
-              <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+              <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
                 <p className="text-[10px] leading-3 text-slate-500">Available</p>
                 <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">{desktopUpdateAvailableVersionLabel}</p>
               </div>
-              <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+              <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
                 <p className="text-[10px] leading-3 text-slate-500">Last check</p>
                 <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">{desktopUpdateLastCheckedLabel}</p>
               </div>
-              <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/60">
+              <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
                 <p className="text-[10px] leading-3 text-slate-500">Next check</p>
                 <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">{desktopUpdateNextCheckLabel}</p>
               </div>

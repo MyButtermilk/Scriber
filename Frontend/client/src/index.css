@@ -1042,10 +1042,6 @@ html:has(body[data-scroll-locked]) {
   width: 100%;
   max-width: 1320px;
   margin-inline: auto;
-}
-
-.live-mic-page,
-.transcription-page {
   --live-shell-top: rgba(255, 255, 255, 0.74);
   --live-shell-bottom: rgba(207, 215, 226, 0.58);
   --live-core: rgba(241, 244, 248, 0.82);
@@ -1063,8 +1059,21 @@ html:has(body[data-scroll-locked]) {
   font-family: "Switzer", ui-sans-serif, system-ui, sans-serif;
 }
 
-.dark .live-mic-page,
-.dark .transcription-page {
+.dark .app-page-shell {
+  /* YouTube is the canonical dark workspace palette. Scope its neutral
+     semantics to primary page content so dialogs, startup, and the sidebar
+     retain their own shell-level contrast. */
+  --neu-bg: #11141b;
+  --neu-surface: #1b1f28;
+  --neu-surface-alt: #222732;
+  --background: 220 21% 11%;
+  --card: 222 19% 13%;
+  --popover: 221 19% 17%;
+  --secondary: 218 22% 10%;
+  --muted: 224 15% 15%;
+  --accent: 221 19% 17%;
+  --border: 220 8% 19%;
+  --input: 218 22% 10%;
   --live-shell-top: rgba(255, 255, 255, 0.075);
   --live-shell-bottom: rgba(4, 8, 15, 0.26);
   --live-core: rgba(22, 26, 34, 0.88);
@@ -3636,10 +3645,10 @@ html:has(body[data-scroll-locked]) {
 }
 
 .dark .debug-console-page {
-  --dc-surface: #22242a;
-  --dc-surface-raised: #292c33;
-  --dc-surface-deep: #181b22;
-  --dc-stroke: rgba(255, 255, 255, 0.09);
+  --dc-surface: var(--live-card);
+  --dc-surface-raised: var(--live-card-hover);
+  --dc-surface-deep: var(--live-well);
+  --dc-stroke: var(--workspace-border);
   --dc-stroke-strong: rgba(255, 255, 255, 0.16);
   --dc-muted: rgba(233, 235, 241, 0.54);
   --dc-accent: #93a7d4;

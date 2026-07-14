@@ -828,6 +828,8 @@ def test_parallel_tauri_prepare_helper_keeps_compile_and_bundle_contracts_separa
     assert "npm run tauri:bundle" not in helper
     assert "Assert-UnderRoot" in helper
     assert "function New-CompileOnlyTauriConfig" in helper
+    assert '$source.bundle.PSObject.Properties["resources"]' in helper
+    assert "Add-Member" in helper
     assert "$source.bundle.resources = @()" in helper
     assert '"tauri.compile-only.conf.json"' in helper
     assert "$compileConfigPath.Replace" in helper
@@ -835,67 +837,69 @@ def test_parallel_tauri_prepare_helper_keeps_compile_and_bundle_contracts_separa
 
 
 def test_parallel_tauri_compile_config_strips_only_bundle_resources(tmp_path: Path) -> None:
-    frontend = tmp_path / "Frontend"
-    frontend.mkdir()
-    config_path = tmp_path / "build" / "tauri.generated.conf.json"
-    config_path.parent.mkdir()
-    source = {
-        "identifier": "com.example.scriber",
-        "bundle": {
-            "active": True,
-            "resources": {
+    for include_resources in (True, False):
+        case_root = tmp_path / ("with-resources" if include_resources else "without-resources")
+        frontend = case_root / "Frontend"
+        frontend.mkdir(parents=True)
+        config_path = case_root / "build" / "tauri.generated.conf.json"
+        config_path.parent.mkdir()
+        bundle = {"active": True}
+        if include_resources:
+            bundle["resources"] = {
                 "target/release/backend/": "backend/",
                 "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
-            },
-        },
-        "plugins": {
-            "updater": {
-                "endpoints": ["https://example.invalid/latest.json"],
-                "pubkey": "public-test-key",
             }
-        },
-    }
-    config_path.write_text(json.dumps(source), encoding="utf-8")
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
-    (fake_bin / "npm.cmd").write_text("@echo off\r\nexit /b 0\r\n", encoding="utf-8")
-    log_path = tmp_path / "build" / "tauri.log"
-    env = os.environ.copy()
-    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+        source = {
+            "identifier": "com.example.scriber",
+            "bundle": bundle,
+            "plugins": {
+                "updater": {
+                    "endpoints": ["https://example.invalid/latest.json"],
+                    "pubkey": "public-test-key",
+                }
+            },
+        }
+        config_path.write_text(json.dumps(source), encoding="utf-8")
+        fake_bin = case_root / "fake-bin"
+        fake_bin.mkdir()
+        (fake_bin / "npm.cmd").write_text("@echo off\r\nexit /b 0\r\n", encoding="utf-8")
+        log_path = case_root / "build" / "tauri.log"
+        env = os.environ.copy()
+        env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
 
-    powershell = shutil.which("powershell") or shutil.which("pwsh")
-    assert powershell, "PowerShell is required for the Tauri compile-config regression test"
-    result = subprocess.run(
-        [
-            powershell,
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(REPO_ROOT / "scripts" / "ci" / "prepare_tauri_app.ps1"),
-            "-Mode",
-            "BuildBinary",
-            "-RepoRoot",
-            str(tmp_path),
-            "-ConfigPath",
-            str(config_path),
-            "-TauriLogPath",
-            str(log_path),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-        env=env,
-    )
-    assert result.returncode == 0, result.stderr
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        assert powershell, "PowerShell is required for the Tauri compile-config regression test"
+        result = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(REPO_ROOT / "scripts" / "ci" / "prepare_tauri_app.ps1"),
+                "-Mode",
+                "BuildBinary",
+                "-RepoRoot",
+                str(case_root),
+                "-ConfigPath",
+                str(config_path),
+                "-TauriLogPath",
+                str(log_path),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
 
-    compile_config = json.loads(
-        (config_path.parent / "tauri.compile-only.conf.json").read_text(encoding="utf-8")
-    )
-    assert compile_config["bundle"]["resources"] == []
-    assert compile_config["bundle"]["active"] is True
-    assert compile_config["plugins"] == source["plugins"]
-    assert json.loads(config_path.read_text(encoding="utf-8")) == source
+        compile_config = json.loads(
+            (config_path.parent / "tauri.compile-only.conf.json").read_text(encoding="utf-8")
+        )
+        assert compile_config["bundle"]["resources"] == []
+        assert compile_config["bundle"]["active"] is True
+        assert compile_config["plugins"] == source["plugins"]
+        assert json.loads(config_path.read_text(encoding="utf-8")) == source
 
 
 def test_release_cache_key_script_normalizes_version_only_churn() -> None:

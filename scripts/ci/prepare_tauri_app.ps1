@@ -52,7 +52,16 @@ function New-CompileOnlyTauriConfig {
     # Tauri merges `--config` with the checked-in base config. An empty object
     # would preserve the existing resource map under JSON Merge Patch rules;
     # an empty array changes the value type and therefore replaces it.
-    $source.bundle.resources = @()
+    $resourcesProperty = $source.bundle.PSObject.Properties["resources"]
+    if ($null -eq $resourcesProperty) {
+        Add-Member `
+            -InputObject $source.bundle `
+            -MemberType NoteProperty `
+            -Name "resources" `
+            -Value @()
+    } else {
+        $source.bundle.resources = @()
+    }
     $destination = Join-Path (Split-Path -Parent $SourcePath) "tauri.compile-only.conf.json"
     $destination = Assert-UnderRoot -Path $destination -Label "Compile-only Tauri config"
     $json = $source | ConvertTo-Json -Depth 100
