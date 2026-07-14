@@ -227,11 +227,11 @@ Packaging/build:
   deliberately excluded: those products are assembled after the frozen Python
   cache and have independent keys, manifests, and self-tests.
 - Normal tag releases do not repack or clobber those large internal
-  release-cache artifacts. `main` pushes warm exact Actions caches only;
-  durable release snapshots are published solely by the manual
-  `release-windows.yml` input `refresh_release_cache_artifacts=true`. Routine
-  main/tag builds therefore avoid minutes of `.venv`/wheelhouse/Rust/backend
-  artifact compression and upload.
+  release-cache artifacts. Ordinary `main` pushes no longer invoke the full
+  installer workflow. Exact Actions-cache saves and durable release snapshots
+  are both explicit maintenance through the manual `release-windows.yml` input
+  `refresh_release_cache_artifacts=true`; routine tag builds avoid minutes of
+  `.venv`/wheelhouse/Rust/backend artifact compression and upload.
 - Before saving or publishing `build\tauri-sidecar-cache`, the workflow runs
   `scripts\ci\select_backend_sidecar_cache_entry.ps1`. It validates the
   current metadata/manifest and removes every older internal hash directory.
@@ -239,7 +239,7 @@ Packaging/build:
   generation contained all prior 180-287 MiB frozen sidecars.
 - Normal tag releases now use `actions/cache/restore` for heavyweight caches and
   never run the matching `actions/cache/save` steps. Explicit cache saves are
-  gated to `main` and manual refresh runs. The backend sidecar restore is
+  gated to manual refresh runs. The backend sidecar restore is
   attempted before Python `.venv`/wheelhouse restore, so a durable prebuilt
   sidecar can skip the Python dependency install path entirely.
 - Release artifact upload through `actions/upload-artifact` uses
@@ -979,14 +979,18 @@ route remains below its documented 2-GB boundary and has no audio-duration cap.
 - `_apply_speaker_intelligence` materializes track audio and processes candidate
   samples serially. Some store/detail and profile registration calls also run
   synchronously from the async finalizer.
-- `WeSpeakerModel._extract_sync` allocates a three-row input batch but fills and
-  consumes only row zero. Each registration separately scans profiles,
-  calculates similarities, updates a centroid, and commits SQLite work.
+- The pinned WeSpeaker export declares fixed batch-one inputs (`[1, 160000]`
+  waveform and `[1, 589]` mask). Enrollment therefore runs each usable window
+  separately; sending a synthetic three-row batch is invalid for this model.
+  Each registration separately scans profiles, calculates similarities, updates
+  a centroid, and commits SQLite work.
 
 **Implementation boundary**
 
-- Add `extract_many`: open each prepared track once, fill up to three real batch
-  rows, validate every returned row, and run ONNX once per batch.
+- Keep each current-model inference at batch one. Add `extract_many` only if a
+  future checksum-pinned model revision explicitly supports a dynamic or larger
+  batch dimension; until then, reduce repeated track decoding and file opens
+  around the fixed-shape calls instead of fabricating batch rows.
 - Offload a deterministic `register_speaker_embeddings_batch` operation and
   update profiles/centroids in one transaction after loading them once. Preserve
   scalar ordering semantics because each accepted sample changes its centroid.
@@ -996,8 +1000,8 @@ route remains below its documented 2-GB boundary and has no audio-duration cap.
 - Compare 1-, 4-, and 8-speaker fixtures with three samples each. Count ONNX
   runs, file opens, DB statements, time, memory, and match decisions.
 - Require embeddings within a documented floating-point tolerance, identical
-  profile/match outcomes, at most `ceil(samples / 3)` ONNX runs, no synchronous
-  store work on the event loop, and no additional full-PCM temporary.
+  profile/match outcomes, model-input-shape coverage, no synchronous store work
+  on the event loop, and no additional full-PCM temporary.
 
 ### `PERF-MTG-08` - Stream large exports
 

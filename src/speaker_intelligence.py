@@ -225,26 +225,32 @@ class WeSpeakerModel:
 
         if not windows or len(windows) > 3:
             raise ValueError("WeSpeaker accepts between one and three voice windows.")
-        waveform = np.zeros((3, 160_000), dtype=np.float32)
-        mask = np.zeros((3, 589), dtype=np.float32)
-        for index, window in enumerate(windows):
+        # The pinned WeSpeaker export has a fixed batch dimension of one
+        # (waveform ``[1, 160000]``, mask ``[1, 589]``).  Run each enrollment
+        # window independently and combine the normalized embeddings below.
+        # A synthetic three-row batch works with permissive test doubles but is
+        # rejected by ONNX Runtime for the production model with InvalidArgument.
+        normalized: list[Any] = []
+        runtime = self._runtime()
+        for window in windows:
             samples = np.asarray(window, dtype=np.float32).reshape(-1)
             copy_count = min(int(samples.size), 160_000)
             if copy_count <= 0:
                 raise ValueError("WeSpeaker received an empty voice window.")
-            waveform[index, :copy_count] = samples[:copy_count]
+            waveform = np.zeros((1, 160_000), dtype=np.float32)
+            mask = np.zeros((1, 589), dtype=np.float32)
+            waveform[0, :copy_count] = samples[:copy_count]
             active_mask = max(1, min(589, round(copy_count / 160_000 * 589)))
-            mask[index, :active_mask] = 1.0
-        raw_output = self._runtime().run(
-            ["embedding"], {"waveform": waveform, "mask": mask}
-        )[0]
-        output = np.asarray(raw_output, dtype=np.float32)
-        if output.ndim == 1:
-            output = output.reshape(1, -1)
-        if output.ndim != 2 or output.shape[0] < len(windows) or output.shape[1] != 256:
-            raise ValueError("WeSpeaker returned an invalid embedding.")
-        normalized: list[Any] = []
-        for vector in output[: len(windows)]:
+            mask[0, :active_mask] = 1.0
+            raw_output = runtime.run(
+                ["embedding"], {"waveform": waveform, "mask": mask}
+            )[0]
+            output = np.asarray(raw_output, dtype=np.float32)
+            if output.ndim == 1:
+                output = output.reshape(1, -1)
+            if output.shape != (1, 256):
+                raise ValueError("WeSpeaker returned an invalid embedding.")
+            vector = output[0]
             norm = float(np.linalg.norm(vector))
             if not norm or not np.isfinite(norm) or not np.all(np.isfinite(vector)):
                 raise ValueError("WeSpeaker returned an invalid embedding.")

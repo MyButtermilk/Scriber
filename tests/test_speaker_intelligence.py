@@ -83,9 +83,9 @@ async def test_embedding_input_is_fixed_local_waveform_and_never_contains_text(m
     class Runtime:
         def run(self, outputs, inputs):
             assert outputs == ["embedding"]
-            assert inputs["waveform"].shape == (3, 160_000)
-            assert inputs["mask"].shape == (3, 589)
-            result = np.zeros((3, 256), dtype=np.float32)
+            assert inputs["waveform"].shape == (1, 160_000)
+            assert inputs["mask"].shape == (1, 589)
+            result = np.zeros((1, 256), dtype=np.float32)
             result[0, 0] = 1.0
             return [result]
 
@@ -111,27 +111,39 @@ async def test_in_memory_enrollment_uses_three_windows_and_returns_normalized_ce
     monkeypatch.setattr(speaker_intelligence, "MODEL_SIZE", 5)
 
     class Runtime:
+        def __init__(self):
+            self.waveform_starts = []
+
         def run(self, outputs, inputs):
             assert outputs == ["embedding"]
             waveform = inputs["waveform"]
             mask = inputs["mask"]
-            assert waveform.shape == (3, 160_000)
-            assert mask.shape == (3, 589)
-            assert np.all(mask[:, :236] == 1.0)
-            assert np.all(mask[:, 236:] == 0.0)
-            # Eight seconds yields start, middle, and end four-second windows.
-            assert waveform[0, 0] < waveform[1, 0] < waveform[2, 0]
-            result = np.zeros((3, 256), dtype=np.float32)
-            result[0, 0] = 1.0
-            result[1, 1] = 1.0
-            result[2, 0] = 1.0
+            # The production ONNX export has fixed batch size one.
+            assert waveform.shape == (1, 160_000)
+            assert mask.shape == (1, 589)
+            assert np.all(mask[0, :236] == 1.0)
+            assert np.all(mask[0, 236:] == 0.0)
+            self.waveform_starts.append(float(waveform[0, 0]))
+            result = np.zeros((1, 256), dtype=np.float32)
+            if len(self.waveform_starts) == 2:
+                result[0, 1] = 1.0
+            else:
+                result[0, 0] = 1.0
             return [result]
 
-    model._session = Runtime()
+    runtime = Runtime()
+    model._session = runtime
     samples = np.linspace(-12_000, 12_000, 128_000, dtype=np.int16)
 
     embedding = await model.extract_pcm16(samples.astype("<i2").tobytes())
 
+    # Eight seconds yields start, middle, and end four-second windows.
+    assert len(runtime.waveform_starts) == 3
+    assert (
+        runtime.waveform_starts[0]
+        < runtime.waveform_starts[1]
+        < runtime.waveform_starts[2]
+    )
     assert len(embedding) == 256
     assert np.linalg.norm(np.asarray(embedding)) == pytest.approx(1.0)
     assert embedding[0] == pytest.approx(2 / np.sqrt(5))
@@ -149,27 +161,31 @@ async def test_in_memory_enrollment_excludes_silent_embedding_window(
     monkeypatch.setattr(speaker_intelligence, "MODEL_SIZE", 5)
 
     class Runtime:
+        def __init__(self):
+            self.calls = 0
+
         def run(self, _outputs, inputs):
             waveform = inputs["waveform"]
             mask = inputs["mask"]
+            assert waveform.shape == (1, 160_000)
+            assert mask.shape == (1, 589)
             assert np.any(waveform[0])
-            assert np.any(waveform[1])
-            assert not np.any(waveform[2])
-            assert np.any(mask[0]) and np.any(mask[1]) and not np.any(mask[2])
-            result = np.zeros((3, 256), dtype=np.float32)
+            assert np.any(mask[0])
+            self.calls += 1
+            result = np.zeros((1, 256), dtype=np.float32)
             result[0, 0] = 1.0
-            result[1, 0] = 1.0
-            # This arbitrary silent-window output must not enter the centroid.
-            result[2, 1] = 1.0
             return [result]
 
-    model._session = Runtime()
+    runtime = Runtime()
+    model._session = runtime
     time_axis = np.arange(64_000, dtype=np.float32) / 16_000
     voiced = (5_000 * np.sin(2 * np.pi * 190 * time_axis)).astype(np.int16)
     samples = np.concatenate([voiced, np.zeros(64_000, dtype=np.int16)])
 
     embedding = await model.extract_pcm16(samples.astype("<i2").tobytes())
 
+    # The final silent window is rejected before inference.
+    assert runtime.calls == 2
     assert embedding[0] == pytest.approx(1.0)
     assert embedding[1] == pytest.approx(0.0)
 

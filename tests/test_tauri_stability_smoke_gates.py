@@ -456,7 +456,10 @@ def test_release_workflow_builds_profile_b_media_tools_for_standard_build() -> N
 def test_release_workflow_uses_incremental_dependency_caches() -> None:
     workflow = read_script(".github/workflows/release-windows.yml")
 
-    assert "branches:\n      - main" in workflow
+    assert "branches:\n      - main" not in workflow
+    assert 'tags:\n      - "v*"' in workflow
+    assert "github.event_name == 'workflow_dispatch'" in workflow
+    assert "github.event.inputs.refresh_release_cache_artifacts == 'true'" in workflow
     assert 'CARGO_INCREMENTAL: "1"' in workflow
     assert "CARGO_LOG: ${{ vars.SCRIBER_CARGO_LOG }}" in workflow
     assert "cache: pip" in workflow

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from PIL import Image
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -192,6 +194,39 @@ def test_frontend_uses_current_svg_logo_asset() -> None:
     assert "rounded-[10px]" not in brand_mark_source
     assert "bg-background/55" not in brand_mark_source
     assert layout_source.count("<BrandMark") == 3
+
+
+def test_windows_taskbar_identity_uses_the_contrast_safe_tray_artwork() -> None:
+    tauri_root = REPO_ROOT / "Frontend" / "src-tauri"
+    config = json.loads((tauri_root / "tauri.conf.json").read_text(encoding="utf-8"))
+    build_source = (tauri_root / "build.rs").read_text(encoding="utf-8")
+    lib_source = (tauri_root / "src" / "lib.rs").read_text(encoding="utf-8")
+    bundle_icon = tauri_root / "icons" / "icon.ico"
+
+    assert config["bundle"]["icon"] == ["icons/icon.ico"]
+    assert bundle_icon.read_bytes().startswith(b"\x00\x00\x01\x00")
+    with Image.open(bundle_icon) as icon:
+        assert (32, 32) in icon.ico.sizes()
+        taskbar_frame = icon.ico.getimage((32, 32)).convert("RGBA")
+    with Image.open(tauri_root / "icons" / "tray-normal.png") as tray_icon:
+        tray_frame = tray_icon.convert("RGBA")
+
+    assert taskbar_frame.size == tray_frame.size == (32, 32)
+    mean_channel_delta = sum(
+        abs(taskbar_channel - tray_channel)
+        for taskbar_pixel, tray_pixel in zip(taskbar_frame.getdata(), tray_frame.getdata())
+        for taskbar_channel, tray_channel in zip(taskbar_pixel, tray_pixel)
+    ) / (32 * 32 * 4)
+    assert mean_channel_delta < 1.0
+    assert sum(
+        alpha >= 220 and red >= 235 and green >= 235 and blue >= 235
+        for red, green, blue, alpha in taskbar_frame.getdata()
+    ) >= 450
+    assert taskbar_frame.getpixel((0, 0))[3] == 0
+    assert 'cargo:rerun-if-changed=icons/icon.ico' in build_source
+    assert "tray_icon_image(TrayIconKind::Normal)" in lib_source
+    assert 'apply_desktop_window_icon_to_window(window, "initial reveal")' in lib_source
+    assert 'apply_desktop_window_icon_to_window(&window, "main window restore")' in lib_source
 
 
 def test_settings_microphones_use_shared_api_types() -> None:

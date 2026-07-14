@@ -308,7 +308,9 @@ bytes.
    speaker through the shared Rust/WASAPI microphone path. The short mono sample
    remains in a bounded memory buffer, is quality-checked, becomes one normalized
    sample centroid from at least two speech-active windows locally, and is then
-   cleared without writing or uploading audio. The native start contract must
+   cleared without writing or uploading audio. The pinned model has fixed batch
+   size one, so each accepted window is inferred separately before its normalized
+   embedding enters that centroid. The native start contract must
    confirm mono 16 kHz `pcm_i16_le` before the private frame pipe is consumed.
    The profile stores only a normalized aggregate enrollment
    centroid plus count/effective-weight/resultant-norm/time metadata, never its
@@ -762,6 +764,10 @@ that release updater configuration is missing.
 - Own Windows autostart through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - Own tray/menu shell actions: open/focus, restart backend, quit, and tray
   status/icon updates for recording and available desktop updates.
+- Keep the Windows PE/taskbar identity and the normal tray identity on the same
+  contrast-safe white-disc feather. Tauri reapplies that icon before the main
+  window is revealed or restored, while the WebView brand mark remains
+  theme-aware and unboxed on light surfaces.
 - Render the recording overlay as a non-taskbar, non-focusable window; on
   Windows it is shown without activation so hotkey recordings do not flash the
   main taskbar icon while the user is working in another app.

@@ -9,8 +9,6 @@ on:
         type: boolean
         default: false
   push:
-    branches:
-      - main
     tags:
       - "v*"
 
@@ -33,10 +31,10 @@ jobs:
       SCRIBER_RUST_BUILD_ARTIFACT_TAG: release-cache-rust-build-v2
       SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG: release-cache-rust-audio-sidecar-v1
       SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG: release-cache-rust-diarization-sidecar-v1
-      # Main warms the fast Actions caches used by the following tag build.
-      # Multi-hundred-MB/GB durable release snapshots are opt-in maintenance
-      # artifacts and must not delay every main build.
-      SCRIBER_SAVE_ACTIONS_CACHES: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'true' || 'false' }}
+      # A tag is the only automatic full installer build. Heavy cache saves and
+      # durable snapshots are explicit maintenance so a normal release needs
+      # one workflow run instead of a main warm-up followed by the tag build.
+      SCRIBER_SAVE_ACTIONS_CACHES: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}

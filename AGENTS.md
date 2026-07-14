@@ -169,6 +169,12 @@ Packaging and scripts:
   allow the bounded unhealthy window (`SCRIBER_BACKEND_UNHEALTHY_TIMEOUT_MS`,
   30 seconds by default), then use the authenticated graceful shutdown path
   before the existing hard-termination fallback and restart it.
+- Keep Windows shell identity contrast-safe. The installed PE bundle icon
+  (`Frontend/src-tauri/icons/icon.ico`), the normal tray artwork, and the
+  runtime main-window icon use the same white-disc feather at taskbar sizes;
+  `build.rs` must watch the ICO so incremental release builds cannot retain an
+  older executable resource. This does not change the in-WebView brand mark:
+  it stays unboxed on light surfaces and gains its white disc only in dark mode.
 - Closing the main window routes Scriber to the tray: intercept only the main
   window's close request, prevent destruction, and hide it. Tray and
   single-instance show actions must reveal that same WebView again; do not leave
@@ -529,7 +535,10 @@ Packaging and scripts:
   in-memory buffer only, reject unreadable, short, quiet, or clipped samples,
   require clear speech activity across at least two enrollment windows, and
   clear the buffer after local WeSpeaker inference on every success, failure,
-  and cancellation path. Validate the native start response as mono 16 kHz
+  and cancellation path. The pinned ONNX export has fixed batch size one:
+  infer each accepted window as waveform `[1, 160000]` plus mask `[1, 589]`,
+  normalize each result, and persist only their normalized centroid. Validate
+  the native start response as mono 16 kHz
   `pcm_i16_le` before reading its frame pipe. Never use WebView `MediaRecorder`, a Python
   capture fallback, a hidden Meeting, or a temporary enrollment audio file.
   Persist only one normalized aggregate enrollment centroid plus count,
@@ -888,11 +897,12 @@ Already implemented and should not be regressed:
   sibling tag builds can reuse heavy outputs even when ref-scoped Actions caches
   miss. The main Rust/Tauri release artifact supports a latest-prefix fallback
   only when Actions reports no matched key; a partial Actions restore must not
-  trigger the 1.6-GB fallback. `main` pushes warm exact Actions caches but do
-  not publish durable release snapshots. Those snapshots are refreshed only by
-  the manual `release-windows.yml`
+  trigger the 1.6-GB fallback. Ordinary `main` pushes do not run the full
+  installer workflow. Exact Actions caches and durable snapshots are refreshed
+  only by the manual `release-windows.yml`
   `refresh_release_cache_artifacts=true` maintenance path. Heavy Actions caches
-  are restore-only on tag releases.
+  are restore-only on tag releases, so a routine release has one complete
+  tag-triggered build rather than a duplicate main warm-up plus tag build.
 - The Rust Actions cache is keyed by normalized Cargo dependency metadata plus
   resolved toolchain/target/profile, not by ordinary app source. The exact
   Tauri app binary is a separate small cache keyed by full Rust/frontend

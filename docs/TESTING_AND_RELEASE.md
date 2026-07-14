@@ -626,8 +626,9 @@ the workflows do not fall back to deprecated Node action runtimes.
 It:
 
 - sets up Python, Node, Rust, and MSYS2/UCRT64,
-- runs on `main` pushes as a cache-warming build and on `v*` tags as the signed
-  updater release path,
+- runs automatically only on `v*` tags as the signed updater release path;
+  `workflow_dispatch` remains available for explicit diagnostics and cache
+  maintenance. Ordinary `main` pushes do not build a second installer,
 - computes normalized release cache key files before dependency setup so
   version-only changes in `package-lock.json` and `src/version.py` do not
   invalidate dependency caches that do not actually depend on the app version.
@@ -637,12 +638,13 @@ It:
   key file in the GitHub Step Summary. Compare these fingerprints between runs
   before assuming a cache miss means unnecessary dependency rebuilding,
 - restores heavyweight caches with `actions/cache/restore` and saves them only
-  on `main` or an explicit cache-refresh dispatch. Signed `v*` tag releases are
+  on an explicit cache-refresh dispatch. Signed `v*` tag releases are
   restore-only for those large caches, so they do not spend post-job time
   uploading tag-scoped cache payloads that sibling tags cannot reliably reuse,
-- separates fast Actions-cache saves from durable GitHub release snapshots:
-  `main` warms Actions caches, while the large release-cache assets are
-  published only by a manual `refresh_release_cache_artifacts=true` run,
+- keeps both Actions-cache saves and durable GitHub release snapshots behind
+  the manual `refresh_release_cache_artifacts=true` maintenance path. A normal
+  release therefore compiles, packages, signs, verifies, and publishes in one
+  tag-triggered workflow run,
 - restores release caches for Python `.venv`, Python wheels, frontend
   `node_modules`, Rust/Tauri, backend sidecars, and Profile B media tools. The
   Node setup step also restores the npm package store from the normalized

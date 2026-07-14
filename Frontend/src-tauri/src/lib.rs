@@ -929,6 +929,7 @@ fn reveal_initial_main_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<(
     if INITIAL_MAIN_WINDOW_REVEALED.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
+    apply_desktop_window_icon_to_window(window, "initial reveal");
     window
         .show()
         .map_err(|err| format!("Could not reveal themed main window: {err}"))?;
@@ -946,6 +947,7 @@ fn schedule_initial_main_window_reveal_fallback(app: AppHandle) {
             write_shell_log("initial main window reveal fallback could not find main window");
             return;
         };
+        apply_desktop_window_icon_to_window(&window, "initial reveal fallback");
         match window.show() {
             Ok(()) => write_shell_log("initial main window revealed by fallback"),
             Err(err) => write_shell_log(&format!(
@@ -1533,6 +1535,7 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
         return;
     };
 
+    apply_desktop_window_icon_to_window(&window, "main window restore");
     if let Err(err) = ensure_main_window_visible(&window) {
         write_shell_log(&format!("main window visibility check failed: {err}"));
     }
@@ -2024,8 +2027,14 @@ fn apply_desktop_window_icon<R: Runtime>(app: &AppHandle<R>) {
         write_shell_log("desktop window icon skipped: main window not found");
         return;
     };
+    apply_desktop_window_icon_to_window(&window, "desktop setup");
+}
+
+fn apply_desktop_window_icon_to_window<R: Runtime>(window: &WebviewWindow<R>, reason: &str) {
     if let Err(err) = window.set_icon(desktop_window_icon_image()) {
-        write_shell_log(&format!("desktop window icon update failed: {err}"));
+        write_shell_log(&format!(
+            "desktop window icon update failed ({reason}): {err}"
+        ));
     }
 }
 
