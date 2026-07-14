@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { motion } from "motion/react";
 import {
+  CalendarClock,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -59,6 +60,7 @@ interface TranscriptListResponse {
 
 type TrayActionId =
   | "toggle_live"
+  | "open_meetings"
   | "open_youtube"
   | "open_file"
   | "open_recent"
@@ -273,7 +275,9 @@ export default function TrayPanel() {
   const [backendReady, setBackendReady] = useState(!isTauriRuntime());
   const [view, setView] = useState<TrayView>("main");
   const [status, setStatus] = useState<TrayStatus>(DEFAULT_TRAY_STATUS);
+  const [appVersion, setAppVersion] = useState("");
   const [recordingShortcut, setRecordingShortcut] = useState("");
+  const [meetingShortcut, setMeetingShortcut] = useState("");
   const [installing, setInstalling] = useState(false);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updateCheckMessage, setUpdateCheckMessage] = useState("");
@@ -284,6 +288,28 @@ export default function TrayPanel() {
   const [recentLoading, setRecentLoading] = useState(false);
   const [recentError, setRecentError] = useState("");
   const [copiedTranscriptId, setCopiedTranscriptId] = useState("");
+  const shortcutLoadRequestRef = useRef(0);
+
+  const applyShortcuts = useCallback((hotkey?: string, meetingHotkey?: string) => {
+    setRecordingShortcut(formatShortcut(hotkey));
+    setMeetingShortcut(formatShortcut(meetingHotkey));
+  }, []);
+
+  const loadRegisteredShortcuts = useCallback(async (refreshRegistration: boolean) => {
+    if (!isTauriRuntime() || !backendReady) return;
+    const requestId = ++shortcutLoadRequestRef.current;
+    try {
+      let value = refreshRegistration ? await refreshGlobalHotkey() : await getGlobalHotkeyStatus();
+      if (!value?.hotkey && !refreshRegistration) {
+        value = await refreshGlobalHotkey();
+      }
+      if (requestId === shortcutLoadRequestRef.current) {
+        applyShortcuts(value?.hotkey, value?.meetingHotkey);
+      }
+    } catch (error) {
+      console.debug("Tray hotkey lookup failed.", error);
+    }
+  }, [applyShortcuts, backendReady]);
 
   useEffect(() => {
     document.documentElement.dataset.scriberTrayWindow = "true";
@@ -291,6 +317,20 @@ export default function TrayPanel() {
     return () => {
       delete document.documentElement.dataset.scriberTrayWindow;
       delete document.body.dataset.scriberTrayWindow;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    void import("@tauri-apps/api/app")
+      .then(({ getVersion }) => getVersion())
+      .then((version) => {
+        if (!cancelled) setAppVersion(String(version || "").trim());
+      })
+      .catch((error) => console.debug("Tray app version lookup failed.", error));
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -319,6 +359,7 @@ export default function TrayPanel() {
       .then(({ listen }) =>
         listen<TrayStatus>("scriber-tray-status", (event) => {
           setStatus({ ...DEFAULT_TRAY_STATUS, ...event.payload });
+          void loadRegisteredShortcuts(false);
         }),
       )
       .then((cleanup) => {
@@ -333,29 +374,11 @@ export default function TrayPanel() {
       disposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [loadRegisteredShortcuts]);
 
   useEffect(() => {
-    if (!isTauriRuntime() || !backendReady) return;
-    let cancelled = false;
-    const applyShortcut = (hotkey: string | undefined) => {
-      if (!cancelled) {
-        setRecordingShortcut(formatShortcut(hotkey));
-      }
-    };
-    void refreshGlobalHotkey()
-      .then((value) => {
-        if (value?.hotkey) {
-          applyShortcut(value.hotkey);
-          return;
-        }
-        return getGlobalHotkeyStatus().then((fallback) => applyShortcut(fallback?.hotkey));
-      })
-      .catch((error) => console.debug("Tray hotkey lookup failed.", error));
-    return () => {
-      cancelled = true;
-    };
-  }, [backendReady]);
+    void loadRegisteredShortcuts(true);
+  }, [loadRegisteredShortcuts]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -514,7 +537,14 @@ export default function TrayPanel() {
             <img src="/favicon.svg" alt="" className="h-8 w-8 object-contain" draggable={false} />
           </div>
           <div className="min-w-0 flex-1">
-            <h1 className="truncate text-[21px] font-semibold leading-6 tracking-normal text-slate-950">Scriber</h1>
+            <div className="flex min-w-0 items-baseline gap-2">
+              <h1 className="truncate text-[21px] font-semibold leading-6 tracking-normal text-slate-950">Scriber</h1>
+              {appVersion ? (
+                <span className="shrink-0 text-[10px] font-semibold tracking-[0.04em] text-slate-400">
+                  v{appVersion.replace(/^v/i, "")}
+                </span>
+              ) : null}
+            </div>
             <div className="mt-0.5 flex items-center gap-2 text-[11px] font-medium text-slate-500">
               <StatusIndicator status={status} />
               <span className="truncate">{statusLabel(status)}</span>
@@ -557,7 +587,7 @@ export default function TrayPanel() {
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-hidden py-2.5">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-2.5 pr-1">
           {view === "main" ? (
             <div className="flex flex-col gap-1.5">
               <TrayRow
@@ -568,6 +598,13 @@ export default function TrayPanel() {
                 variant={status.recordingActive ? "danger" : "primary"}
                 disabled={!backendReady}
                 onClick={() => void runAction("toggle_live")}
+              />
+              <TrayRow
+                icon={CalendarClock}
+                label="Meetings"
+                detail="Open meeting workspace"
+                shortcut={meetingShortcut}
+                onClick={() => void runAction("open_meetings")}
               />
               <TrayRow
                 icon={Video}

@@ -735,8 +735,11 @@ local storage, and suppress update prompts while recording or transcription is
 active. Users can install, defer for a day, skip the current version, or open
 release notes from Settings. The custom tray panel mirrors actionable update
 state with a blue download indicator and exposes a direct install-and-restart
-action when an update is available. Unsigned/dev builds keep the updater plugin
-wired but are expected to report that release updater configuration is missing.
+action when an update is available. It also shows the installed app version,
+links directly to the Meeting workspace, and displays the effective registered
+Meeting shortcut, including a Windows registration fallback when necessary.
+Unsigned/dev builds keep the updater plugin wired but are expected to report
+that release updater configuration is missing.
 
 ## Tauri Shell
 

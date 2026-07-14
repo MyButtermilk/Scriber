@@ -1212,6 +1212,30 @@ def test_tray_panel_exposes_direct_update_install_action() -> None:
     assert len((tray_icon_dir / "tray-update.rgba").read_bytes()) == 32 * 32 * 4
 
 
+def test_tray_panel_exposes_meetings_shortcut_and_installed_version() -> None:
+    tray_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "TrayPanel.tsx"
+    ).read_text(encoding="utf-8")
+    shell_source = (
+        REPO_ROOT / "Frontend" / "src-tauri" / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+
+    assert 'import("@tauri-apps/api/app")' in tray_source
+    assert ".then(({ getVersion }) => getVersion())" in tray_source
+    assert 'label="Meetings"' in tray_source
+    assert 'detail="Open meeting workspace"' in tray_source
+    assert "shortcut={meetingShortcut}" in tray_source
+    assert 'runAction("open_meetings")' in tray_source
+    assert "value?.meetingHotkey" in tray_source
+    assert "loadRegisteredShortcuts(false)" in tray_source
+    assert "const requestId = ++shortcutLoadRequestRef.current;" in tray_source
+    assert "requestId === shortcutLoadRequestRef.current" in tray_source
+    assert 'className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-2.5 pr-1"' in tray_source
+    assert '"open_meetings" => {' in shell_source
+    assert 'show_main_window_path(app, "/meetings")?;' in shell_source
+    assert "const TRAY_PANEL_HEIGHT: f64 = 668.0;" in shell_source
+
+
 def test_transcript_detail_uses_typed_rest_queries() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(
         encoding="utf-8"
@@ -1315,6 +1339,8 @@ def test_meeting_workspace_uses_focus_canvas_and_gpu_only_live_progress() -> Non
     assert "neu-nav-active" in source
     assert "Soniox Realtime" not in source  # Provider/model labels come from the backend contract.
     assert "selectedProfile.stages" in source
+    assert "const selectedProfileCostPerHour = selectedProfile?.costEstimate?.totalPerMeetingHour;" in source
+    assert "const meetingImportFinalCostPerAudioHour = meetingImportProfile?.costEstimate?.singleTrackFinalPerAudioHour;" in source
     assert "Models used" in source
     assert "playLoadedAudio" in source
     assert "Speaker sound played" in source

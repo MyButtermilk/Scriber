@@ -120,7 +120,7 @@ const TRAY_PANEL_LABEL: &str = "tray-panel";
 const TRAY_STATUS_EVENT: &str = "scriber-tray-status";
 const TRAY_NAVIGATE_EVENT: &str = "scriber-navigate";
 const TRAY_PANEL_WIDTH: f64 = 386.0;
-const TRAY_PANEL_HEIGHT: f64 = 620.0;
+const TRAY_PANEL_HEIGHT: f64 = 668.0;
 const TRAY_PANEL_MARGIN: f64 = 14.0;
 const MENU_ITEM_SHOW_WINDOW: &str = "scriber-show-window";
 const MENU_ITEM_START_LIVE: &str = "scriber-start-live";
@@ -2203,6 +2203,10 @@ fn show_main_window_path<R: Runtime>(app: &AppHandle<R>, path: &str) -> Result<(
 fn handle_tray_action<R: Runtime>(app: &AppHandle<R>, action: &str) -> Result<(), String> {
     match action.trim() {
         "toggle_live" | "start_live" => toggle_live_recording_from_shell(app),
+        "open_meetings" => {
+            show_main_window_path(app, "/meetings")?;
+            hide_tray_panel_for_app(app)
+        }
         "open_youtube" => {
             show_main_window_path(app, "/youtube")?;
             hide_tray_panel_for_app(app)

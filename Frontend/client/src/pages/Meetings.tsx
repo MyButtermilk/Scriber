@@ -1474,6 +1474,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const activeMeeting = meetingsQuery.data?.pages.find((page) => page.activeMeeting)?.activeMeeting ?? null;
   const selectedProfile = profilesQuery.data?.profiles.find((item) => item.id === profilesQuery.data?.defaultProfileId)
     ?? profilesQuery.data?.profiles[0];
+  const selectedProfileCostPerHour = selectedProfile?.costEstimate?.totalPerMeetingHour;
   const longSession = capabilitiesQuery.data?.longSession;
   const finalProviderCapability = selectedProfile
     ? profilesQuery.data?.providerCapabilities[selectedProfile.finalProvider]
@@ -1489,6 +1490,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       ? "Ready for 5 hours"
       : "Not for 5-hour meetings";
   const meetingImportProfile = selectedProfile;
+  const meetingImportFinalCostPerAudioHour = meetingImportProfile?.costEstimate?.singleTrackFinalPerAudioHour;
   const meetingImportFinalProviderCapability = meetingImportProfile
     ? profilesQuery.data?.providerCapabilities[meetingImportProfile.finalProvider]
     : undefined;
@@ -1911,8 +1913,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                             : selectedProfile.livePreviewAvailable === false
                               ? `Live text needs a Soniox API key · ${selectedProfile.stages.find((stage) => stage.id === "final")?.provider ?? selectedProfile.finalProvider} still runs after you stop`
                               : `Soniox live text · ${selectedProfile.stages.find((stage) => stage.id === "final")?.provider ?? selectedProfile.finalProvider} final pass`}
-                          {selectedProfile.costEstimate.totalPerMeetingHour != null
-                            ? ` · about $${selectedProfile.costEstimate.totalPerMeetingHour.toFixed(2)} per meeting hour`
+                          {selectedProfileCostPerHour != null
+                            ? ` · about $${selectedProfileCostPerHour.toFixed(2)} per meeting hour`
                             : " · provider price varies"}
                         </p>}
                       </div>
@@ -2439,7 +2441,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">Maximum duration</span><span className="font-medium">{meetingImportFinalProviderCapability?.maxDurationSeconds != null ? formatImportDuration(meetingImportFinalProviderCapability.maxDurationSeconds) : "No published duration limit"}</span></div>
                 <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">Speaker names</span><span className="text-right font-medium">{profilesQuery.data?.providerCapabilities[meetingImportProfile.finalProvider]?.batchDiarization ? "Included" : "Added on this device · up to 60 min"}</span></div>
                 <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">Language</span><span className="font-medium">{meetingImportProfile.language || "Auto"}</span></div>
-                <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">Estimated STT cost</span><span className="font-mono font-medium">{meetingImportProfile.costEstimate.singleTrackFinalPerAudioHour != null ? `~$${meetingImportProfile.costEstimate.singleTrackFinalPerAudioHour.toFixed(2)} / audio hour` : "Provider rate varies"}</span></div>
+                <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">Estimated STT cost</span><span className="font-mono font-medium">{meetingImportFinalCostPerAudioHour != null ? `~$${meetingImportFinalCostPerAudioHour.toFixed(2)} / audio hour` : "Provider rate varies"}</span></div>
               </div>}
               {meetingImportExceedsProviderDuration && <div className="mt-2 rounded-lg border border-amber-300/60 bg-amber-500/10 px-3 py-2.5 text-xs leading-5 text-amber-900 dark:text-amber-100" role="alert">
                 This transcription option cannot process a recording this long. Choose another option in Meeting settings.
