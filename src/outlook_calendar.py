@@ -29,6 +29,7 @@ GRAPH_DELTA = "https://graph.microsoft.com/v1.0/me/calendarView/delta"
 GRAPH_ME = "https://graph.microsoft.com/v1.0/me"
 SCOPES = "User.Read Calendars.Read offline_access"
 GRAPH_SYNC_TIMEOUT_SECONDS = 60.0
+REAUTHORIZATION_REQUIRED_ERROR = "OutlookReauthorizationRequired"
 WINDOWS_TIMEZONE_TO_IANA = {
     "W. Europe Standard Time": "Europe/Berlin",
     "GMT Standard Time": "Europe/London",
@@ -43,6 +44,15 @@ class _GraphUnauthorized(RuntimeError):
 
 class _GraphDeltaExpired(RuntimeError):
     pass
+
+
+class OutlookReauthorizationRequired(ValueError):
+    """The cached Outlook credential exists but can no longer authorize Graph."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Outlook access expired or was revoked. Reconnect Outlook in Settings."
+        )
 
 
 def _normalize_public_client_id(value: Any) -> str:
@@ -255,13 +265,36 @@ class OutlookCalendarService:
     def begin_connect(self, *, open_browser: bool = True) -> dict[str, Any]:
         if not self.configured:
             raise ValueError("SCRIBER_OUTLOOK_CLIENT_ID is not configured for this build.")
-        verifier, challenge = create_pkce_pair()
-        state = secrets.token_urlsafe(32)
-        redirect_uri = self.redirect_uri()
         now = time.monotonic()
         with self._pending_lock:
             self._prune_pending_locked(now)
-            self._pending[state] = (verifier, redirect_uri, now + 600.0)
+            reusable = next(
+                (
+                    (pending_state, pending)
+                    for pending_state, pending in self._pending.items()
+                    if pending_state not in self._claimed_pending
+                ),
+                None,
+            )
+            if reusable is not None:
+                state, (verifier, redirect_uri, expires_at) = reusable
+                reused = True
+            elif self._claimed_pending:
+                raise ValueError(
+                    "Outlook sign-in is being completed. Return to Scriber in a moment."
+                )
+            else:
+                verifier, _challenge = create_pkce_pair()
+                state = secrets.token_urlsafe(32)
+                redirect_uri = self.redirect_uri()
+                expires_at = now + 600.0
+                self._pending[state] = (verifier, redirect_uri, expires_at)
+                reused = False
+        # Reconstructing the S256 challenge makes a repeated Connect click
+        # reopen the one active browser flow instead of creating another OAuth
+        # state that could keep Settings stuck in "authorization pending" after
+        # the user completed the first tab.
+        challenge = _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
         url = AUTHORITY + "?" + urlencode({
             "client_id": self.client_id,
             "response_type": "code",
@@ -274,7 +307,12 @@ class OutlookCalendarService:
         })
         if open_browser:
             webbrowser.open(url, new=2)
-        return {"authorizationUrl": url, "expiresIn": 600, "redirectUri": redirect_uri}
+        return {
+            "authorizationUrl": url,
+            "expiresIn": max(1, int(expires_at - now)),
+            "redirectUri": redirect_uri,
+            "reused": reused,
+        }
 
     async def complete_connect(self, state: str, code: str) -> None:
         pending = self._pending_state(state)
@@ -349,7 +387,17 @@ class OutlookCalendarService:
 
     def cancel_connect(self, state: str) -> None:
         if state and self._remove_pending_state(state):
-            self.record_sync_error("AuthorizationCanceled")
+            with db._get_connection() as conn:
+                # Canceling a reconnect does not make Microsoft's rejected
+                # refresh token valid again. The conditional write is atomic so
+                # a concurrent sync cannot set reauthorization-required between
+                # a separate read and this cancellation update.
+                conn.execute(
+                    """UPDATE outlook_calendar_state SET last_error='AuthorizationCanceled'
+                       WHERE id=1 AND COALESCE(last_error,'')<>?""",
+                    (REAUTHORIZATION_REQUIRED_ERROR,),
+                )
+                conn.commit()
 
     def _remember_access_token(self, payload: Any) -> str:
         if not isinstance(payload, dict) or not str(payload.get("accessToken", "")):
@@ -357,6 +405,30 @@ class OutlookCalendarService:
         self._access_token = str(payload["accessToken"])
         self._access_token_expires_at = time.monotonic() + max(30, int(payload.get("expiresIn", 0)) - 60)
         return self._access_token
+
+    @staticmethod
+    def _token_failure_requires_reauthorization(response: Any) -> bool:
+        if not isinstance(response, dict):
+            return False
+        reason = str(response.get("fallbackReason") or "").casefold()
+        # Microsoft documents invalid_grant as the refresh-token rejection for
+        # revoked/expired credentials. interaction_required is also terminal
+        # for the non-interactive desktop refresh flow. A corrupt credential
+        # can only be repaired by replacing it through the PKCE flow.
+        return any(
+            marker in reason
+            for marker in (
+                "(invalid_grant)",
+                "(interaction_required)",
+                "stored outlook credential is invalid",
+            )
+        )
+
+    def _reauthorization_required(self) -> OutlookReauthorizationRequired:
+        self._access_token = ""
+        self._access_token_expires_at = 0.0
+        self.record_sync_error(REAUTHORIZATION_REQUIRED_ERROR)
+        return OutlookReauthorizationRequired()
 
     async def acquire_access_token(self) -> str:
         if self._access_token and time.monotonic() < self._access_token_expires_at:
@@ -366,6 +438,8 @@ class OutlookCalendarService:
             timeout_seconds=25.0,
         )
         if not response.get("success"):
+            if self._token_failure_requires_reauthorization(response):
+                raise self._reauthorization_required()
             raise ValueError(str(response.get("fallbackReason") or "Outlook token refresh failed."))
         return self._remember_access_token(response.get("payload", {}))
 
@@ -583,7 +657,7 @@ class OutlookCalendarService:
                         )
                     except _GraphUnauthorized:
                         if retried_unauthorized:
-                            raise ValueError("Microsoft Graph authorization expired.")
+                            raise self._reauthorization_required()
                         retried_unauthorized = True
                         self._access_token = ""
                         self._access_token_expires_at = 0.0
@@ -636,7 +710,7 @@ class OutlookCalendarService:
         except Exception:
             shell = {}
             credential_status_available = False
-        connected = bool(
+        credential_stored = bool(
             shell.get("success")
             and isinstance(shell.get("payload"), dict)
             and shell["payload"].get("credentialStored")
@@ -661,11 +735,18 @@ class OutlookCalendarService:
                            WHERE is_cancelled=0 AND end_at>=? ORDER BY start_at LIMIT 1""",
                         (datetime.now(timezone.utc).isoformat(),),
                     ).fetchone()
+        reauthorization_required = (
+            str(state["last_error"] or "") == REAUTHORIZATION_REQUIRED_ERROR
+        )
         return {
             "configured": self.configured,
-            "connected": connected,
+            # Credential Manager only proves that a refresh token exists. A
+            # rejected token must not keep presenting a misleading Connected
+            # state while the last good local calendar snapshot remains usable.
+            "connected": credential_stored and not reauthorization_required,
             "credentialStatusAvailable": credential_status_available,
             "authorizationPending": authorization_pending,
+            "reauthRequired": reauthorization_required,
             "scopes": SCOPES.split(),
             "lastSyncAt": "" if authorization_pending else state["last_sync_at"],
             "lastError": state["last_error"],
@@ -679,6 +760,7 @@ class OutlookCalendarService:
 
     def current_event(self) -> dict[str, Any] | None:
         now = datetime.now(timezone.utc)
+        now_value = now.isoformat()
         lower = (now - timedelta(minutes=15)).isoformat()
         upper = (now + timedelta(minutes=10)).isoformat()
         with self._pending_lock:
@@ -693,8 +775,29 @@ class OutlookCalendarService:
                     """SELECT *
                        FROM outlook_calendar_events
                        WHERE is_cancelled=0 AND start_at<=? AND end_at>=?
-                       ORDER BY start_at LIMIT 1""",
-                    (upper, lower),
+                       ORDER BY
+                         is_all_day ASC,
+                         CASE
+                           WHEN start_at<=? AND end_at>=? THEN 0
+                           WHEN start_at>? THEN 1
+                           ELSE 2
+                         END ASC,
+                         CASE WHEN start_at<=? AND end_at>=? THEN start_at END DESC,
+                         CASE WHEN start_at>? THEN start_at END ASC,
+                         CASE WHEN end_at<? THEN end_at END DESC,
+                         id ASC
+                       LIMIT 1""",
+                    (
+                        upper,
+                        lower,
+                        now_value,
+                        now_value,
+                        now_value,
+                        now_value,
+                        now_value,
+                        now_value,
+                        now_value,
+                    ),
                 ).fetchone()
         if row is None:
             return None

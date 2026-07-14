@@ -9,6 +9,7 @@ import {
 import { loadSettingsBootstrap } from "@/lib/settings-bootstrap";
 import type { TranscriptHistoryItem } from "@/lib/api-types";
 import type { MeetingsResponse } from "@/lib/api-types";
+import { ACTIVE_MEETING_QUERY_PATH } from "@/lib/meeting-cache";
 import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 
@@ -40,7 +41,7 @@ async function warmPrimaryTabData(queryClient: QueryClient, isCancelled: () => b
     await queryClient.prefetchQuery({
       queryKey: ["/api/meetings"],
       queryFn: async ({ signal }) => {
-        const response = await fetchWithTimeout(apiUrl("/api/meetings?limit=100"), {
+        const response = await fetchWithTimeout(apiUrl(ACTIVE_MEETING_QUERY_PATH), {
           credentials: "include",
           signal,
         }, 10_000);

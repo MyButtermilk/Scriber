@@ -97,7 +97,10 @@ summary, decisions, action items, cited chat answers, and reusable exports.
 - Optional local speaker library with explicit biometric opt-in and deletion
 - Optional Outlook Calendar connection with a refreshable list of today's
   events, organizer and attendee details, and an explicit event/no-event choice;
-  the selected details are frozen with the Meeting and no bot joins the call
+  the selected details are frozen with the Meeting and no bot joins the call.
+  Scriber shows when the calendar was last refreshed, warns if a selected event
+  was moved or removed, and offers a clear reconnect path when Microsoft access
+  expires.
 - Voice Library and local-account matches are suggested first after the Meeting;
   optional AI suggestions for unresolved speakers always require confirmation
 - Email drafts reuse the selected event's suitable participant addresses and

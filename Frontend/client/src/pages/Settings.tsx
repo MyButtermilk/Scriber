@@ -65,6 +65,7 @@ import type {
   OnnxModelInfo,
   OnnxModelsResponse,
   OutlookCalendarStatus,
+  OutlookCalendarSyncResponse,
   SpeakerModelStatus,
   SpeakerEnrollmentResponse,
   SpeakerProfilesResponse,
@@ -1336,19 +1337,31 @@ export default function Settings() {
       const response = action === "disconnect"
         ? await apiRequest("DELETE", "/api/calendar/outlook")
         : await apiRequest("POST", `/api/calendar/outlook/${action}`, action === "connect" ? { openBrowser: true } : undefined);
-      return response.json();
+      return response.json() as Promise<OutlookCalendarSyncResponse | Record<string, unknown>>;
     },
-    onSuccess: (_result, action) => {
-      void queryClient.invalidateQueries({ queryKey: ["/api/calendar/outlook/status"] });
+    onSuccess: (result, action) => {
       if (action === "sync") {
-        void queryClient.invalidateQueries({ queryKey: ["/api/calendar/outlook/events"] });
+        queryClient.setQueryData(
+          ["/api/calendar/outlook/status"],
+          result as OutlookCalendarSyncResponse,
+        );
       } else {
+        void queryClient.invalidateQueries({ queryKey: ["/api/calendar/outlook/status"] });
         queryClient.removeQueries({ queryKey: ["/api/calendar/outlook/events"] });
       }
       if (action === "disconnect") setOutlookDisconnectOpen(false);
       toast({ title: action === "connect" ? "Continue in your browser" : action === "sync" ? "Outlook calendar synchronized" : "Outlook disconnected" });
     },
-    onError: (error) => toast({ title: "Outlook action failed", description: error.message, variant: "destructive" }),
+    onError: (error) => {
+      // A failed refresh can be the first proof that Microsoft revoked the
+      // stored credential. Refresh the lightweight status contract so the UI
+      // immediately offers Reconnect instead of continuing to show Connected.
+      void queryClient.invalidateQueries({
+        queryKey: ["/api/calendar/outlook/status"],
+        exact: true,
+      });
+      toast({ title: "Outlook action failed", description: error.message, variant: "destructive" });
+    },
   });
   const outlookCredentialStatusUnavailable = outlookQuery.data?.credentialStatusAvailable === false;
 
@@ -4155,34 +4168,34 @@ export default function Settings() {
                         ? "Checking Outlook"
                         : outlookQuery.isError || outlookCredentialStatusUnavailable
                           ? "Outlook status could not be checked"
-                        : outlookQuery.data?.connected
-                          ? "Outlook is connected"
-                          : outlookQuery.data?.authorizationPending
-                            ? "Finish signing in with Microsoft"
+                        : outlookQuery.data?.authorizationPending
+                          ? "Finish signing in with Microsoft"
+                          : outlookQuery.data?.connected
+                            ? "Outlook is connected"
                             : outlookQuery.data?.configured
                               ? outlookQuery.data.lastError ? "Outlook needs to reconnect" : "Outlook is ready to connect"
                               : "Outlook is not available in this release"}
                     </p>
                     <Badge variant="outline" className={cn(
                       "text-[10px]",
-                      outlookQuery.data?.connected && !outlookCredentialStatusUnavailable && "border-emerald-500/40 text-emerald-700 dark:text-emerald-300",
-                      !outlookQuery.isLoading && !outlookQuery.data?.connected && "border-amber-500/40 text-amber-700 dark:text-amber-300",
+                      outlookQuery.data?.connected && !outlookQuery.data.authorizationPending && !outlookCredentialStatusUnavailable && "border-emerald-500/40 text-emerald-700 dark:text-emerald-300",
+                      !outlookQuery.isLoading && (!outlookQuery.data?.connected || outlookQuery.data.authorizationPending) && "border-amber-500/40 text-amber-700 dark:text-amber-300",
                     )}>
-                      {outlookQuery.isLoading ? "Checking" : outlookQuery.isError || outlookCredentialStatusUnavailable ? "Unavailable" : outlookQuery.data?.connected ? "Connected" : outlookQuery.data?.authorizationPending ? "Waiting" : "Not connected"}
+                      {outlookQuery.isLoading ? "Checking" : outlookQuery.isError || outlookCredentialStatusUnavailable ? "Unavailable" : outlookQuery.data?.authorizationPending ? "Waiting" : outlookQuery.data?.connected ? "Connected" : "Not connected"}
                     </Badge>
                   </div>
                   <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">
                     {outlookQuery.isError || outlookCredentialStatusUnavailable
                         ? "Scriber could not check the protected Outlook sign-in right now. Previously synchronized calendar entries stay on this device; choose Check again before reconnecting."
-                      : outlookQuery.data?.connected
-                      ? "Upcoming meeting titles and participants now appear automatically. Scriber cannot edit your calendar or see your Microsoft password."
                       : outlookQuery.data?.authorizationPending
                         ? "Complete the Microsoft sign-in in your browser. This page updates automatically when you return."
+                      : outlookQuery.data?.connected
+                        ? "Upcoming meeting titles and participants now appear automatically. Scriber cannot edit your calendar or see your Microsoft password."
                         : outlookQuery.data?.configured
                           ? "Click Connect Outlook below. Microsoft opens in your browser and asks for read-only calendar access."
                           : "This release was published without Microsoft sign-in. Reinstalling the same version will not fix it. Check for a newer release that lists Outlook calendar support."}
                   </p>
-                  {outlookQuery.data?.connected && outlookQuery.data.account && (
+                  {outlookQuery.data?.connected && !outlookQuery.data.authorizationPending && outlookQuery.data.account && (
                     <p className="mt-1.5 truncate text-[10.5px] text-slate-500">
                       Connected as {outlookQuery.data.account.name || outlookQuery.data.account.address} · {outlookQuery.data.account.address}
                     </p>
@@ -4190,7 +4203,7 @@ export default function Settings() {
                   {outlookQuery.data?.lastSyncAt && <p className="mt-1.5 font-mono text-[10.5px] text-slate-500">Last sync · {formatUpdateTimestamp(outlookQuery.data.lastSyncAt)}</p>}
                   {outlookQuery.data?.lastError && <p className="mt-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">{outlookSyncErrorMessage(outlookQuery.data.lastError)}</p>}
                 </div>
-                {!outlookQuery.isLoading && !outlookQuery.data?.connected && (
+                {!outlookQuery.isLoading && (!outlookQuery.data?.connected || outlookQuery.data.authorizationPending) && (
                   <ol className="grid gap-2 rounded-lg border border-slate-200/80 p-3 text-[11px] leading-4 text-slate-600 dark:border-[var(--workspace-border)] dark:text-slate-300">
                     {(outlookQuery.isError || outlookCredentialStatusUnavailable
                       ? [
@@ -4242,6 +4255,11 @@ export default function Settings() {
                       <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", outlookQuery.isFetching && "animate-spin motion-reduce:animate-none")} />
                       Check again
                     </Button>
+                  ) : outlookQuery.data?.authorizationPending ? (
+                    <Button size="sm" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("connect")}>
+                      {outlookMutation.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <ExternalLink className="mr-1.5 h-3.5 w-3.5" />}
+                      Reopen Microsoft sign-in
+                    </Button>
                   ) : outlookQuery.data?.connected ? (
                     <>
                       <Button size="sm" variant="outline" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("sync")}>
@@ -4253,7 +4271,7 @@ export default function Settings() {
                   ) : outlookQuery.data?.configured ? (
                     <Button size="sm" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("connect")}>
                       {outlookMutation.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <ExternalLink className="mr-1.5 h-3.5 w-3.5" />}
-                      {outlookQuery.data.authorizationPending ? "Continue Microsoft sign-in" : outlookQuery.data.lastError ? "Reconnect Outlook" : "Connect Outlook"}
+                      {outlookQuery.data.lastError ? "Reconnect Outlook" : "Connect Outlook"}
                     </Button>
                   ) : null}
                 </div>

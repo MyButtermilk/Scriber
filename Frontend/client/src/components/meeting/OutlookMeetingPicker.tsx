@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   CalendarClock,
   Check,
   Clock3,
@@ -16,6 +17,7 @@ import type {
   OutlookCalendarEventsResponse,
   OutlookCalendarStatus,
 } from "@/lib/api-types";
+import { formatOutlookSyncMoment } from "@/lib/outlook-calendar-display";
 import { cn } from "@/lib/utils";
 
 function formatEventTime(startAt: string, endAt: string): string {
@@ -107,6 +109,7 @@ export function OutlookMeetingPicker({
   eventsError,
   refreshing,
   selectedEventId,
+  selectionNeedsReview,
   onSelect,
   onRefresh,
   onOpenSettings,
@@ -119,11 +122,16 @@ export function OutlookMeetingPicker({
   eventsError: boolean;
   refreshing: boolean;
   selectedEventId: string;
+  selectionNeedsReview: boolean;
   onSelect: (event: OutlookCalendarEvent | null) => void;
   onRefresh: () => void;
   onOpenSettings: () => void;
 }) {
   const selectedEvent = events?.items.find((event) => event.id === selectedEventId) ?? null;
+  const lastSyncMoment = formatOutlookSyncMoment(events?.lastSyncAt || status?.lastSyncAt || "");
+  const showSavedCalendarWarning = Boolean(
+    status?.connected && events && (status.lastError || eventsError),
+  );
 
   return (
     <section
@@ -142,6 +150,12 @@ export function OutlookMeetingPicker({
                 ? `Pick the calendar event for ${events.account.name ? `${events.account.name} (${events.account.address})` : events.account.address}.`
                 : "Pick the calendar event that belongs to this recording."}
             </p>
+            {status?.connected && lastSyncMoment && (
+              <p className="mt-1 inline-flex items-center gap-1.5 text-[11px] leading-4 text-muted-foreground">
+                <Clock3 className="h-3 w-3" aria-hidden="true" />
+                Calendar updated {lastSyncMoment}.
+              </p>
+            )}
           </div>
         </div>
         {status?.connected && (
@@ -151,6 +165,39 @@ export function OutlookMeetingPicker({
           </Button>
         )}
       </div>
+
+      {showSavedCalendarWarning && (
+        <div className="mx-3 mt-3 flex items-start gap-2.5 rounded-xl border border-amber-300/60 bg-amber-500/10 px-3 py-2.5 text-amber-950 dark:text-amber-100" role="alert">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <div className="min-w-0">
+            <p className="text-xs font-semibold">Outlook may be out of date.</p>
+            <p className="mt-0.5 text-[11px] leading-4">
+              {lastSyncMoment
+                ? `Scriber is showing saved meetings from ${lastSyncMoment}. Changes made in Outlook since then may be missing.`
+                : "Scriber is showing the last saved calendar. Recent Outlook changes may be missing."}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {selectionNeedsReview && (
+        <div className="mx-3 mt-3 flex items-start gap-2.5 rounded-xl border border-amber-300/60 bg-amber-500/10 px-3 py-2.5 text-amber-950 dark:text-amber-100" role="alert">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <div className="min-w-0">
+            <p className="text-xs font-semibold">Choose the Outlook meeting again.</p>
+            <p className="mt-0.5 text-[11px] leading-4">
+              The event you selected is no longer in today&apos;s calendar. It may have moved or been cancelled. Your title was kept, but participants are no longer attached.
+            </p>
+            <button
+              type="button"
+              className="mt-1.5 text-[11px] font-semibold underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-700"
+              onClick={() => onSelect(null)}
+            >
+              Continue without Outlook
+            </button>
+          </div>
+        </div>
+      )}
 
       {statusLoading ? (
         <div className="grid gap-2 p-4" role="status" aria-label="Checking Outlook calendar">
@@ -175,6 +222,12 @@ export function OutlookMeetingPicker({
           <p className="mt-1 text-xs leading-5 text-muted-foreground">Today&apos;s events stay hidden until Microsoft confirms which account is connected.</p>
           <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onOpenSettings}>View connection status</Button>
         </div>
+      ) : status.reauthRequired ? (
+        <div className="p-4" role="alert">
+          <p className="text-sm font-medium">Reconnect Outlook to continue.</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">Microsoft needs you to sign in again. Your saved meetings remain unchanged.</p>
+          <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onOpenSettings}>Reconnect in Settings</Button>
+        </div>
       ) : !status.connected ? (
         <div className="p-4">
           <p className="text-sm font-medium">Connect Outlook to use meeting details.</p>
@@ -185,7 +238,7 @@ export function OutlookMeetingPicker({
         <div className="grid gap-2 p-4" role="status" aria-label="Loading today's Outlook meetings">
           {[0, 1].map((item) => <div key={item} className="h-[70px] animate-pulse rounded-xl bg-muted/70 motion-reduce:animate-none" />)}
         </div>
-      ) : eventsError ? (
+      ) : eventsError && !events ? (
         <div className="p-4" role="alert">
           <p className="text-sm font-medium text-destructive">Today&apos;s meetings could not be loaded.</p>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">Your existing meeting setup is unchanged. Refresh the calendar to try again.</p>

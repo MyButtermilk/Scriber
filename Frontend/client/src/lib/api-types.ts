@@ -436,11 +436,16 @@ export interface OutlookCalendarStatus {
   connected: boolean;
   credentialStatusAvailable: boolean;
   authorizationPending: boolean;
+  reauthRequired: boolean;
   scopes: string[];
   lastSyncAt: string;
   lastError: string;
   account: OutlookCalendarContact | null;
   nextEvent: OutlookCalendarEvent | null;
+}
+
+export interface OutlookCalendarSyncResponse extends OutlookCalendarStatus {
+  changed: number;
 }
 
 export interface OutlookCalendarEventsResponse {
@@ -487,6 +492,20 @@ export interface MeetingSpeakerAssignmentsResponse {
   llmModel?: string;
   llmRequested?: boolean;
   privacy?: string;
+}
+
+export interface MeetingSpeakerAssignmentUpdate {
+  speakerId: string;
+  displayName: string;
+  confirmedAttendee: OutlookCalendarContact | null;
+  source: "" | "manual" | MeetingSpeakerSuggestionSource | string;
+  confirmedAt: string;
+}
+
+export interface MeetingSpeakerAssignmentConfirmationResponse {
+  apiVersion: typeof REST_API_VERSION;
+  assignment: MeetingSpeakerAssignmentUpdate;
+  requiresConfirmation: false;
 }
 
 export interface SpeakerProfileSummary {

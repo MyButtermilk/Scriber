@@ -111,6 +111,7 @@ import type {
   OutlookCalendarEvent,
   OutlookCalendarEventsResponse,
   OutlookCalendarStatus,
+  OutlookCalendarSyncResponse,
   SpeakerModelStatus,
 } from "@/lib/api-types";
 
@@ -771,6 +772,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const { toast } = useToast();
   const [title, setTitle] = useState("");
   const [selectedCalendarEventId, setSelectedCalendarEventId] = useState("");
+  const [calendarSelectionNeedsReview, setCalendarSelectionNeedsReview] = useState(false);
   const calendarSelectionInitializedRef = useRef(false);
   const selectedCalendarSubjectRef = useRef("");
   const [note, setNote] = useState("");
@@ -910,14 +912,26 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const outlookSyncMutation = useMutation({
     mutationFn: async () => {
       const response = await apiRequest("POST", "/api/calendar/outlook/sync");
-      return response.json() as Promise<{ changed: number }>;
+      return response.json() as Promise<OutlookCalendarSyncResponse>;
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["/api/calendar/outlook/status"] });
-      void queryClient.invalidateQueries({ queryKey: ["/api/calendar/outlook/events"] });
+    onSuccess: (status) => {
+      // The sync response already contains the credential-backed status. Reuse
+      // it instead of issuing another named-pipe status request. `lastSyncAt`
+      // is part of the events query key, so this causes exactly one fresh daily
+      // events request rather than refetching both the old and new keys.
+      queryClient.setQueryData(["/api/calendar/outlook/status"], status);
       toast({ title: "Outlook calendar refreshed" });
     },
-    onError: (error) => toast({ variant: "destructive", title: "Outlook calendar could not refresh", description: error.message }),
+    onError: (error) => {
+      // A rejected refresh token changes the status to `reauthRequired` in the
+      // backend. Refresh this small status query immediately so the Meeting UI
+      // offers reconnection instead of continuing to look connected.
+      void queryClient.invalidateQueries({
+        queryKey: ["/api/calendar/outlook/status"],
+        exact: true,
+      });
+      toast({ variant: "destructive", title: "Outlook calendar could not refresh", description: error.message });
+    },
   });
   const speakerModelQuery = useQuery<SpeakerModelStatus>({
     queryKey: ["/api/meetings/speaker-model"],
@@ -930,6 +944,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       && outlookQuery.data.credentialStatusAvailable !== false
       && (!outlookQuery.data.connected || outlookQuery.data.authorizationPending)
     ) {
+      if (outlookQuery.data.reauthRequired) {
+        // A revoked credential makes the old calendar link unsafe for a new
+        // Meeting. Keep the explicit review state even after clearing the id so
+        // the user must reconnect, reselect, or consciously continue unlinked.
+        if (selectedCalendarEventId) setCalendarSelectionNeedsReview(true);
+      } else {
+        setCalendarSelectionNeedsReview(false);
+      }
       setSelectedCalendarEventId("");
       calendarSelectionInitializedRef.current = false;
       selectedCalendarSubjectRef.current = "";
@@ -943,6 +965,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         ?? (events.length === 1 ? events[0] : null);
       if (suggested) {
         setSelectedCalendarEventId(suggested.id);
+        setCalendarSelectionNeedsReview(false);
         setTitle((current) => current.trim() ? current : suggested.subject);
         selectedCalendarSubjectRef.current = suggested.subject;
       }
@@ -951,6 +974,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     const selected = events.find((event) => event.id === selectedCalendarEventId);
     if (selectedCalendarEventId && !selected) {
       setSelectedCalendarEventId("");
+      setCalendarSelectionNeedsReview(true);
       selectedCalendarSubjectRef.current = "";
       return;
     }
@@ -1171,6 +1195,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     onSuccess: (meeting) => {
       setTitle("");
       setSelectedCalendarEventId("");
+      setCalendarSelectionNeedsReview(false);
       calendarSelectionInitializedRef.current = false;
       selectedCalendarSubjectRef.current = "";
       invalidateMeetings(meeting.id);
@@ -1655,7 +1680,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     : undefined;
   const startBlocked = Boolean(
     !capabilitiesQuery.data?.nativeMeetingCapture || capabilitiesQuery.data?.liveMicBusy || activeMeeting
-      || !selectedProfile?.available,
+      || !selectedProfile?.available || calendarSelectionNeedsReview,
   );
   const meetingImportBusy = meetingImportMutation.isPending || Boolean(meetingImportId);
   const liveSegments = detail?.segments ?? [];
@@ -2018,6 +2043,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                           setTitle(calendarEvent?.subject || detectionQuery.data?.detection?.label || "Meeting");
                           if (calendarEvent?.id) {
                             setSelectedCalendarEventId(calendarEvent.id);
+                            setCalendarSelectionNeedsReview(false);
                             selectedCalendarSubjectRef.current = calendarEvent.subject;
                           }
                         }}>Use suggestion</Button>
@@ -2035,8 +2061,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   eventsError={outlookEventsQuery.isError || Boolean(outlookQuery.data?.connected && !outlookQuery.data.lastSyncAt && outlookQuery.data.lastError)}
                   refreshing={outlookSyncMutation.isPending || outlookQuery.isFetching || outlookEventsQuery.isFetching}
                   selectedEventId={selectedCalendarEventId}
+                  selectionNeedsReview={calendarSelectionNeedsReview}
                   onSelect={(event: OutlookCalendarEvent | null) => {
                     setSelectedCalendarEventId(event?.id ?? "");
+                    setCalendarSelectionNeedsReview(false);
                     selectedCalendarSubjectRef.current = event?.subject ?? "";
                     if (event) setTitle(event.subject || "Meeting");
                   }}
@@ -2164,6 +2192,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     Start meeting
                   </Button>
                   {activeMeeting && <p className="text-sm text-muted-foreground">Finish “{activeMeeting.title}” first.</p>}
+                  {calendarSelectionNeedsReview && <p className="text-sm text-muted-foreground">Choose the Outlook meeting again or continue without Outlook above.</p>}
                 </div>
                 </aside>
               </div>
@@ -2360,7 +2389,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 <SpeakerAttendeeAssignments
                   meetingId={detail.id}
                   calendarEvent={detail.captureMetadata.calendarEvent}
-                  onAssignmentsChanged={() => invalidateMeetings(detail.id)}
+                  onAssignmentsChanged={() => {
+                    void queryClient.invalidateQueries({
+                      queryKey: ["/api/meetings", detail.id],
+                      exact: true,
+                    });
+                  }}
                 />
               )}
 

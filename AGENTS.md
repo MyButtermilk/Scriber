@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-07-14
+Last verified: 2026-07-15
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -318,6 +318,10 @@ Packaging and scripts:
 
 ### Outlook Calendar and Participant Identity
 
+- Keep exactly one reusable, unclaimed PKCE authorization flow per runtime.
+  Repeated Connect actions may reopen that flow but must not create competing
+  states that leave Settings stuck in authorization-pending after one browser
+  callback succeeds.
 - Outlook daily-event reads accept the browser-computed local-day start and next
   local-day start as UTC instants. This keeps DST boundaries correct using the
   WebView's system timezone; do not add a packaged Python `tzdata` dependency or
@@ -331,6 +335,14 @@ Packaging and scripts:
   `userPrincipalName` as normalized aliases so the connected user is recognized
   even when an invitation uses the other address. Never expose access or refresh
   tokens in REST payloads, logs, or support bundles.
+- A rejected refresh credential is a reauthorization state, not a connected
+  state. Preserve previously synchronized events for offline context, expose a
+  structured `reauthRequired` status, and require the user to reconnect before
+  new Graph reads. Do not erase cached Meeting context merely because Microsoft
+  rejected a token.
+- Nearby-event suggestions prioritize an active non-all-day event, then the
+  next upcoming event, then the most recently ended event; all-day entries are
+  last-resort context. Do not return the earliest-starting row unconditionally.
 - Outlook Disconnect succeeds only after the Credential Manager refresh token
   has been removed; it then clears the local Outlook account, delta state, and
   cached events. Existing Meetings keep their immutable event snapshots.
@@ -347,6 +359,10 @@ Packaging and scripts:
   sent to the model—including calendar names, speaker labels, and transcript
   text—as untrusted input, and require explicit human confirmation before
   persisting any proposed speaker-to-participant link.
+- LLM speaker suggestions are ephemeral and may be paid provider results.
+  Confirming one speaker must patch only that assignment in the client cache;
+  it must not discard the remaining unconfirmed suggestions and force another
+  provider request.
 - Email/export recipients come exclusively from the Meeting's frozen calendar
   event, never from Voice matches, LLM output, or confirmed speaker mappings.
   Validate and deduplicate addresses and exclude the connected user (including
@@ -892,6 +908,10 @@ Already implemented and should not be regressed:
   `['/api/meetings', 'history']` key, and project Meeting WebSocket state into
   both. Sharing one key crashes the Meetings tab when idle preload wins the
   mount race.
+- The global active-Meeting pill and idle preloader call
+  `/api/meetings?limit=1`. `activeMeeting` is returned independently of the
+  history page, so increasing that limit only transfers unused Meeting rows at
+  every startup and tab preload.
 - Sidecar hash cache that avoids PyInstaller when inputs are unchanged.
   The sidecar cache key normalizes `src/version.py`, uses media-tool content
   hashes instead of timestamps, and must be computed before requiring

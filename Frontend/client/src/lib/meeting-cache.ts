@@ -26,6 +26,10 @@ const ACTIVE_MEETING_STATES = new Set<MeetingState>([
  */
 export const MEETING_LIST_QUERY_KEY = ["/api/meetings"] as const;
 export const MEETING_HISTORY_QUERY_KEY = ["/api/meetings", "history"] as const;
+// The global pill only consumes `activeMeeting`, which the backend returns
+// independently of the paginated `items` list. Keep the bootstrap payload
+// bounded; the Meetings page owns the separate 100-row history query.
+export const ACTIVE_MEETING_QUERY_PATH = "/api/meetings?limit=1";
 
 export function isActiveMeetingState(state: MeetingState): boolean {
   return ACTIVE_MEETING_STATES.has(state);

@@ -5,11 +5,16 @@ import { QueryClient, type InfiniteData } from "@tanstack/react-query";
 
 import { REST_API_VERSION, type MeetingActionItem, type MeetingState, type MeetingSummary, type MeetingsResponse } from "./api-types";
 import {
+  ACTIVE_MEETING_QUERY_PATH,
   applyMeetingActionItem,
   applyMeetingSummaryEvent,
   MEETING_HISTORY_QUERY_KEY,
   MEETING_LIST_QUERY_KEY,
 } from "./meeting-cache";
+
+test("global active Meeting bootstrap never downloads the full Meeting library", () => {
+  assert.equal(ACTIVE_MEETING_QUERY_PATH, "/api/meetings?limit=1");
+});
 
 function meeting(id: string, state: MeetingState = "ready"): MeetingSummary {
   return {

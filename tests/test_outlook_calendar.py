@@ -9,7 +9,10 @@ import pytest
 from src import database
 from src.outlook_calendar import (
     OutlookCalendarService,
+    OutlookReauthorizationRequired,
+    REAUTHORIZATION_REQUIRED_ERROR,
     SCOPES,
+    _GraphUnauthorized,
     _delta_window_needs_reseed,
     _graph_datetime_utc,
     _normalize_public_client_id,
@@ -107,9 +110,115 @@ async def test_status_reads_credential_state_without_exposing_tokens(service):
     status = await calendar.status()
     assert status["configured"] is True
     assert status["connected"] is True
+    assert status["reauthRequired"] is False
     assert status["scopes"] == ["User.Read", "Calendars.Read", "offline_access"]
     assert "accessToken" not in status
     assert "refreshToken" not in status
+
+
+@pytest.mark.asyncio
+async def test_invalid_grant_requires_reauthorization_without_deleting_cached_events(
+    monkeypatch, tmp_path
+):
+    from datetime import datetime, timedelta, timezone
+
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "outlook-reauth.db")
+    database.init_database()
+
+    def shell_call(command, _payload, **_kwargs):
+        if command == "outlookCredentialStatus":
+            # Credential Manager can still contain a token after Microsoft has
+            # revoked it, which is the misleading state this contract fixes.
+            return {"success": True, "payload": {"credentialStored": True}}
+        if command == "outlookTokenAcquire":
+            return {
+                "success": False,
+                "errorCode": "outlookTokenAcquireFailed",
+                "fallbackReason": (
+                    "Outlook token endpoint rejected the request (invalid_grant)"
+                ),
+            }
+        raise AssertionError(command)
+
+    calendar = OutlookCalendarService(
+        shell_call, "11111111-1111-1111-1111-111111111111"
+    )
+    now = datetime.now(timezone.utc)
+    with database._get_connection() as conn:
+        conn.execute(
+            "UPDATE outlook_calendar_state SET last_sync_at=?,account_json=? WHERE id=1",
+            (
+                now.isoformat(),
+                '{"name":"Alex","address":"alex@example.com"}',
+            ),
+        )
+        conn.execute(
+            """INSERT INTO outlook_calendar_events
+               (id,subject,start_at,end_at,updated_at) VALUES (?,?,?,?,?)""",
+            (
+                "cached-event",
+                "Cached planning",
+                (now + timedelta(minutes=5)).isoformat(),
+                (now + timedelta(hours=1)).isoformat(),
+                now.isoformat(),
+            ),
+        )
+        conn.commit()
+
+    with pytest.raises(OutlookReauthorizationRequired, match="Reconnect Outlook"):
+        await calendar.acquire_access_token()
+
+    status = await calendar.status()
+    assert status["connected"] is False
+    assert status["reauthRequired"] is True
+    assert status["lastError"] == REAUTHORIZATION_REQUIRED_ERROR
+    assert "invalid_grant" not in status["lastError"]
+    assert status["account"]["address"] == "alex@example.com"
+    assert status["nextEvent"]["id"] == "cached-event"
+    assert database._get_connection().execute(
+        "SELECT COUNT(*) FROM outlook_calendar_events"
+    ).fetchone()[0] == 1
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_two_graph_unauthorized_responses_require_reauthorization(
+    service, monkeypatch
+):
+    calendar, _calls = service
+    attempts = 0
+
+    async def always_unauthorized(_session, _token, *, force_reseed=False):
+        nonlocal attempts
+        attempts += 1
+        raise _GraphUnauthorized()
+
+    monkeypatch.setattr(calendar, "_sync_with_token", always_unauthorized)
+
+    with pytest.raises(OutlookReauthorizationRequired):
+        await calendar.sync(object())
+
+    assert attempts == 2
+    status = await calendar.status()
+    assert status["connected"] is False
+    assert status["reauthRequired"] is True
+    assert status["lastError"] == REAUTHORIZATION_REQUIRED_ERROR
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reconnect_does_not_restore_a_false_connected_state(service):
+    calendar, _calls = service
+    calendar.record_sync_error(REAUTHORIZATION_REQUIRED_ERROR)
+    authorization = calendar.begin_connect(open_browser=False)
+    state = parse_qs(urlparse(authorization["authorizationUrl"]).query)["state"][0]
+
+    calendar.cancel_connect(state)
+
+    status = await calendar.status()
+    assert status["connected"] is False
+    assert status["reauthRequired"] is True
+    assert status["lastError"] == REAUTHORIZATION_REQUIRED_ERROR
 
 
 def test_graph_datetime_is_stored_as_offset_aware_utc():
@@ -321,18 +430,19 @@ async def test_cancel_during_shell_exchange_deletes_the_stale_new_credential(
 
 
 @pytest.mark.asyncio
-async def test_repeated_connect_does_not_invalidate_first_state_and_cancel_is_terminal(service):
+async def test_repeated_connect_reopens_one_authorization_state(service):
     calendar, _calls = service
     first = calendar.begin_connect(open_browser=False)
     second = calendar.begin_connect(open_browser=False)
     first_state = parse_qs(urlparse(first["authorizationUrl"]).query)["state"][0]
     second_state = parse_qs(urlparse(second["authorizationUrl"]).query)["state"][0]
-    assert first_state != second_state
+    assert first_state == second_state
+    assert first["reused"] is False
+    assert second["reused"] is True
+    assert second["authorizationUrl"] == first["authorizationUrl"]
     assert (await calendar.status())["authorizationPending"] is True
 
-    calendar.cancel_connect(first_state)
-    assert (await calendar.status())["authorizationPending"] is True
-    await calendar.complete_connect(second_state, "authorization-code")
+    await calendar.complete_connect(first_state, "authorization-code")
     assert (await calendar.status())["authorizationPending"] is False
 
 
@@ -447,11 +557,12 @@ async def test_new_authorization_clears_old_account_calendar_before_first_sync(s
         )
         conn.execute(
             """UPDATE outlook_calendar_state SET delta_link=?,window_start=?,
-               window_end=?,account_json=? WHERE id=1""",
+               window_end=?,last_error=?,account_json=? WHERE id=1""",
             (
                 "https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=old",
                 "2026-07-01T00:00:00+00:00",
                 "2026-08-01T00:00:00+00:00",
+                REAUTHORIZATION_REQUIRED_ERROR,
                 '{"name":"Old User","address":"old@example.com"}',
             ),
         )
@@ -465,7 +576,11 @@ async def test_new_authorization_clears_old_account_calendar_before_first_sync(s
     assert conn.execute("SELECT COUNT(*) FROM outlook_calendar_events").fetchone()[0] == 0
     reset = conn.execute("SELECT * FROM outlook_calendar_state WHERE id=1").fetchone()
     assert reset["delta_link"] == ""
+    assert reset["last_error"] == ""
     assert reset["account_json"] == "{}"
+    status = await calendar.status()
+    assert status["connected"] is True
+    assert status["reauthRequired"] is False
 
 
 def test_day_events_preserve_attendee_context_and_signed_in_identity(service):
@@ -560,3 +675,61 @@ def test_browser_supplied_day_boundaries_preserve_dst_without_tzdata(service):
     assert day.isoformat() == "2026-03-29"
     assert zone == "Europe/Berlin"
     assert (end - start).total_seconds() == 23 * 60 * 60
+
+
+def test_current_event_prefers_active_then_upcoming_then_recent_over_all_day(service):
+    from datetime import datetime, timedelta, timezone
+
+    calendar, _calls = service
+    now = datetime.now(timezone.utc)
+    rows = [
+        (
+            "all-day",
+            now - timedelta(hours=8),
+            now + timedelta(hours=8),
+            1,
+        ),
+        (
+            "recently-ended",
+            now - timedelta(minutes=45),
+            now - timedelta(minutes=5),
+            0,
+        ),
+        (
+            "upcoming",
+            now + timedelta(minutes=5),
+            now + timedelta(minutes=35),
+            0,
+        ),
+        (
+            "active",
+            now - timedelta(minutes=5),
+            now + timedelta(minutes=25),
+            0,
+        ),
+    ]
+    with database._get_connection() as conn:
+        conn.executemany(
+            """INSERT INTO outlook_calendar_events
+               (id,subject,start_at,end_at,is_all_day,updated_at)
+               VALUES (?,?,?,?,?,?)""",
+            [
+                (event_id, event_id, start.isoformat(), end.isoformat(), all_day, now.isoformat())
+                for event_id, start, end, all_day in rows
+            ],
+        )
+        conn.commit()
+
+    assert calendar.current_event()["id"] == "active"
+    with database._get_connection() as conn:
+        conn.execute("DELETE FROM outlook_calendar_events WHERE id='active'")
+        conn.commit()
+    assert calendar.current_event()["id"] == "upcoming"
+    with database._get_connection() as conn:
+        conn.execute("DELETE FROM outlook_calendar_events WHERE id='upcoming'")
+        conn.commit()
+    assert calendar.current_event()["id"] == "recently-ended"
+    with database._get_connection() as conn:
+        conn.execute("DELETE FROM outlook_calendar_events WHERE id='recently-ended'")
+        conn.commit()
+    assert calendar.current_event()["id"] == "all-day"

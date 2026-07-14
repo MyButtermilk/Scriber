@@ -58,6 +58,40 @@ def test_background_outlook_sync_uses_the_shared_bounded_http_timeout():
     assert web_api._OUTBOUND_HTTP_TIMEOUT.total == 15
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected_status", "expected_error"),
+    [
+        (ValueError("Reconnect Outlook."), 409, "ValueError"),
+        (TimeoutError(), 504, "TimeoutError"),
+        (RuntimeError("transport failed"), 502, "RuntimeError"),
+    ],
+)
+async def test_manual_outlook_sync_persists_a_safe_error_for_cached_calendar_warning(
+    failure, expected_status, expected_error
+):
+    class Calendar:
+        def __init__(self):
+            self.errors = []
+
+        async def sync(self, _session):
+            raise failure
+
+        def record_sync_error(self, error_type):
+            self.errors.append(error_type)
+
+    calendar = Calendar()
+    app = web_api.create_app(SimpleNamespace(_outlook_calendar=calendar))
+    app[web_api.APP_HTTP_SESSION] = object()
+    handler = _route_handler(app, "POST", "/api/calendar/outlook/sync")
+
+    response = await handler(_DirectRequest(app))
+
+    assert response.status == expected_status
+    assert calendar.errors == [expected_error]
+    assert "transport failed" not in response.text
+
+
 class FakeRecorder:
     def __init__(self, *_args, **_kwargs):
         self.sources = []
@@ -342,6 +376,35 @@ def _route_handler(app, method, canonical):
         if route.method == method and route.resource.canonical == canonical:
             return route.handler
     raise AssertionError(f"Route not found: {method} {canonical}")
+
+
+@pytest.mark.asyncio
+async def test_meeting_list_limit_one_still_returns_the_independent_active_meeting():
+    captured = {}
+    active = {"id": "active-meeting", "state": "recording"}
+
+    class Store:
+        @staticmethod
+        def list(*, limit, offset):
+            captured.update(limit=limit, offset=offset)
+            return {"items": [], "total": 42, "limit": limit, "offset": offset}
+
+        @staticmethod
+        def active():
+            return active
+
+    app = web_api.create_app(SimpleNamespace(_meeting_store=Store()))
+    handler = _route_handler(app, "GET", "/api/meetings")
+    request = _DirectRequest(app)
+    request.query = {"limit": "1", "offset": "0"}
+
+    response = await handler(request)
+    payload = json.loads(response.body)
+
+    assert response.status == 200
+    assert captured == {"limit": 1, "offset": 0}
+    assert payload["items"] == []
+    assert payload["activeMeeting"] == active
 
 
 @pytest.mark.asyncio

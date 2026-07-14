@@ -19,11 +19,13 @@ import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { apiRequest } from "@/lib/queryClient";
 import type {
   MeetingSpeakerAssignment,
+  MeetingSpeakerAssignmentConfirmationResponse,
   MeetingSpeakerAssignmentsResponse,
   MeetingSpeakerSuggestion,
   OutlookCalendarContact,
   OutlookCalendarEvent,
 } from "@/lib/api-types";
+import { applySpeakerAssignmentConfirmation } from "@/lib/meeting-speaker-assignments";
 
 const SUGGESTION_PRIORITY: Record<MeetingSpeakerSuggestion["source"], number> = {
   voice_profile: 0,
@@ -160,12 +162,14 @@ export function SpeakerAttendeeAssignments({
         confirmed: true,
         suggestionSource,
       });
-      return response.json();
+      return response.json() as Promise<MeetingSpeakerAssignmentConfirmationResponse>;
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["/api/meetings", meetingId, "speaker-assignments"] });
-      void queryClient.invalidateQueries({ queryKey: ["/api/meetings", meetingId] });
-      void queryClient.invalidateQueries({ queryKey: ["/api/meetings", meetingId, "email-preview"] });
+    onSuccess: (response) => {
+      queryClient.setQueryData<MeetingSpeakerAssignmentsResponse>(
+        ["/api/meetings", meetingId, "speaker-assignments"],
+        (current) => applySpeakerAssignmentConfirmation(current, response),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings", meetingId, "email-preview"], exact: true });
       onAssignmentsChanged();
     },
   });

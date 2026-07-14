@@ -12280,7 +12280,22 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 {"apiVersion": REST_API_VERSION, "changed": changed, **status}
             )
         except ValueError as exc:
+            ctl._outlook_calendar.record_sync_error(type(exc).__name__)
             return web.json_response({"message": str(exc)}, status=409)
+        except TimeoutError:
+            ctl._outlook_calendar.record_sync_error("TimeoutError")
+            return web.json_response(
+                {"message": "Outlook did not respond in time. Your saved calendar remains available."},
+                status=504,
+            )
+        except Exception as exc:
+            error_type = type(exc).__name__
+            ctl._outlook_calendar.record_sync_error(error_type)
+            logger.warning("Manual Outlook calendar sync failed: {}", error_type)
+            return web.json_response(
+                {"message": "Outlook calendar could not be refreshed. Your saved calendar remains available."},
+                status=502,
+            )
 
     async def outlook_events(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]

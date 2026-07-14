@@ -1,6 +1,6 @@
 # Performance And Packaging
 
-Last verified: 2026-07-12
+Last verified: 2026-07-15
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
@@ -106,6 +106,15 @@ Data and frontend:
 
 - Transcript list endpoints use pagination and avoid full content loading for
   metadata views.
+- The app-wide active-Meeting pill and idle tab preloader request the independent
+  `activeMeeting` field with a one-row history limit. A synthetic 100-Meeting
+  fixture measured about `340,546 B` for the previous `limit=100` response and
+  `3,449 B` for `limit=1`, a roughly 99% transfer reduction on that bootstrap
+  path without changing active-Meeting behavior.
+- Successful Outlook sync responses are written directly into the shared
+  status cache. Because the new `lastSyncAt` forms the daily-event query key,
+  this avoids a redundant credential-backed status request and an old-key
+  event refetch while still loading the refreshed event list once.
 - Frontend history pages use infinite loading and scroll-container virtualization.
 - Local REST queries and desktop invokes use cancellation, single-flight guards,
   and operation-appropriate deadlines so wedged workers do not leave permanent

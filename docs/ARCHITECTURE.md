@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-07-12
+Last verified: 2026-07-15
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -341,7 +341,12 @@ bytes.
    `http://localhost:<port>/api/calendar/outlook/callback` loopback shape, whose
    dynamic port follows the supervised backend. The refresh token stays in
    Windows Credential Manager while the backend keeps access tokens in memory
-   only. A verified Disconnect removes that credential and then clears the
+   only. One unclaimed PKCE state is reused while authorization is pending, so
+   repeated Connect actions reopen the same browser flow instead of creating
+   competing callbacks. A rejected or corrupt refresh credential produces the
+   structured `reauthRequired` state: the app stops claiming it is connected,
+   clears in-memory access tokens, preserves the last local calendar snapshot,
+   and asks the user to reconnect. A verified Disconnect removes that credential and then clears the
    local account, delta cursor, and cached events; immutable event snapshots in
    existing Meetings remain available.
    Sync reads `/me` and retains both `mail` and `userPrincipalName` as account
@@ -352,7 +357,12 @@ bytes.
    makes 23- and 25-hour DST days correct without bundling Python `tzdata`.
    The Meeting preflight can refresh and list every cached event for that local
    day, select one event with its title, time, location/join link, organizer,
-   participant names and addresses, or deliberately select no event. Start
+   participant names and addresses, or deliberately select no event. It shows
+   refresh freshness and the last sync failure; if a selected event disappears
+   after refresh, its link is cleared with an explicit warning while a manually
+   edited title is preserved. Nearby automatic suggestions prefer an active
+   non-all-day event, then an upcoming event, then a recently ended event, with
+   all-day context last. Start
    carries either an explicit `calendarEventId` or explicit `null`; an id is
    resolved only in the authenticated local cache and frozen as an immutable
    Meeting snapshot. Later calendar edits, syncs, account disconnects, and LLM
@@ -361,6 +371,9 @@ bytes.
    independently of speaker suggestions and confirmed mappings. Address
    validation and deduplication exclude the connected user's `mail`/UPN
    aliases, declined invitees, and room/resource attendees.
+   Paid LLM speaker suggestions remain client-ephemeral until confirmation.
+   Confirming one assignment patches that speaker only so unresolved suggestions
+   remain available without a duplicate provider request.
 
 ### Durable Meeting import protocol
 

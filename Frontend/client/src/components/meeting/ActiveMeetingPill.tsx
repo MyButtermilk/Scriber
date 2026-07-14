@@ -7,7 +7,7 @@ import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/Web
 import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { apiRequest } from "@/lib/queryClient";
-import { applyMeetingSummaryEvent } from "@/lib/meeting-cache";
+import { ACTIVE_MEETING_QUERY_PATH, applyMeetingSummaryEvent } from "@/lib/meeting-cache";
 import type { MeetingState, MeetingsResponse } from "@/lib/api-types";
 
 const VISIBLE_STATES = new Set<MeetingState>([
@@ -35,7 +35,7 @@ export function ActiveMeetingPill() {
     queryKey: ["/api/meetings"],
     queryFn: async ({ signal }) => {
       const response = await fetchWithTimeout(
-        apiUrl("/api/meetings?limit=100"),
+        apiUrl(ACTIVE_MEETING_QUERY_PATH),
         { credentials: "include", signal },
         15_000,
       );

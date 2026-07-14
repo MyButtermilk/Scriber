@@ -1,6 +1,6 @@
 # Roadmap And Known Issues
 
-Last verified: 2026-07-13
+Last verified: 2026-07-15
 
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
@@ -504,6 +504,58 @@ paths; installed-app and physical-device evidence remains part of release QA.
 - **Required regression gate:** drop the terminal WS event, return completed,
   failed, canceled, and committed records from REST, and assert modal recovery
   plus correct Meeting navigation.
+
+### `BUG-MTG-020` - Resolved P1 - Repeated Outlook Connect creates competing PKCE flows
+
+- **Reproduction:** click Connect or Continue more than once before returning
+  from Microsoft. Each click creates a new state; completing one browser tab can
+  leave another state pending until its ten-minute timeout.
+- **Fix:** reuse the one unclaimed PKCE state and reconstruct its S256 challenge
+  when reopening Microsoft. A state already being exchanged cannot be replaced.
+- **Regression gate:** two Connect calls return the same state/URL and one
+  successful callback clears authorization-pending.
+
+### `BUG-MTG-021` - Resolved P1 - A revoked Outlook token still appears connected
+
+- **Reproduction:** revoke Microsoft consent while the refresh token remains in
+  Credential Manager, then synchronize. Settings continues to report Connected.
+- **Fix:** classify refresh `invalid_grant`/`interaction_required`, corrupt stored
+  credentials, and a repeated Graph 401 as `reauthRequired`; clear only the
+  in-memory access token, preserve cached events, and offer Reconnect.
+- **Regression gate:** status reports `connected=false` and
+  `reauthRequired=true` without deleting the last account/event snapshot; a new
+  successful PKCE flow clears the state.
+
+### `BUG-MTG-022` - Resolved P1 - Calendar context can choose the wrong nearby event
+
+- **Reproduction:** an all-day entry or recently ended event overlaps an active
+  call. Earliest-start sorting selects it instead of the active Meeting.
+- **Fix:** rank active non-all-day events first, then upcoming, recently ended,
+  and finally all-day context, with deterministic tie-breakers.
+- **Regression gate:** one fixture removes each category in turn and proves the
+  expected fallback order.
+
+### `BUG-MTG-023` - Resolved P1 cost/UX - Confirming one speaker discards other AI suggestions
+
+- **Reproduction:** request paid AI suggestions for several unresolved speakers,
+  then confirm the first one. Refetching the local-only assignment endpoint
+  drops every remaining AI suggestion.
+- **Fix:** patch only the confirmed assignment in the React Query cache and keep
+  the other ephemeral suggestions unchanged.
+- **Regression gate:** confirmation is immutable, updates exactly one speaker,
+  and preserves the second LLM proposal without another provider request.
+
+### `BUG-MTG-024` - Resolved P2 - Outlook refresh can silently unlink a Meeting
+
+- **Reproduction:** select an event, move or cancel it in Outlook, then refresh.
+  The id disappears silently while the copied title still looks linked; cached
+  results also provide no durable freshness/error cue.
+- **Fix:** show last refresh and cached-sync failure, clear the missing link with
+  an explicit warning, preserve intentional title edits, and require a new
+  event choice before calendar participants are attached.
+- **Regression gate:** event removal yields a visible warning and null event id;
+  selecting another event clears the warning, and stale cached data remains
+  clearly labelled.
 
 ## Current Highest Priorities
 
