@@ -2015,7 +2015,7 @@ fn tray_icon_image(kind: TrayIconKind) -> Image<'static> {
 }
 
 fn desktop_window_icon_image() -> Image<'static> {
-    Image::new(include_bytes!("../icons/window-icon.rgba"), 64, 64)
+    tray_icon_image(TrayIconKind::Normal)
 }
 
 fn apply_desktop_window_icon<R: Runtime>(app: &AppHandle<R>) {
@@ -4027,17 +4027,18 @@ mod tests {
     use super::{
         acquire_single_instance_guard, autostart_command_for_exe, autostart_commands_match,
         backend_executable_names, backend_start_timeout, build_backend_http_request,
-        desktop_autostart_default_enabled, env_duration_ms, env_flag_enabled,
-        find_backend_executable, find_backend_executable_in_dirs, health_response_ready,
-        is_safe_transcript_id, is_shell_menu_item, managed_backend_start_timed_out,
-        normalize_global_shortcut, normalize_hotkey_mode, parse_loopback_backend_url,
-        parse_shell_menu_smoke_actions, read_backend_response_limited, recent_transcript_label,
-        recent_transcripts_from_value, request_backend_shutdown, resolve_session_token,
-        sanitize_menu_label, shell_ipc, shell_ipc_env_pairs, shortcut_id_for_hotkey,
-        should_hide_window_instead_of_closing, should_refresh_hotkey_after_backend_ready,
-        should_show_window_for_tray_click, split_http_response, wait_for_child_exit, BackendAccess,
+        desktop_autostart_default_enabled, desktop_window_icon_image, env_duration_ms,
+        env_flag_enabled, find_backend_executable, find_backend_executable_in_dirs,
+        health_response_ready, is_safe_transcript_id, is_shell_menu_item,
+        managed_backend_start_timed_out, normalize_global_shortcut, normalize_hotkey_mode,
+        parse_loopback_backend_url, parse_shell_menu_smoke_actions, read_backend_response_limited,
+        recent_transcript_label, recent_transcripts_from_value, request_backend_shutdown,
+        resolve_session_token, sanitize_menu_label, shell_ipc, shell_ipc_env_pairs,
+        shortcut_id_for_hotkey, should_hide_window_instead_of_closing,
+        should_refresh_hotkey_after_backend_ready, should_show_window_for_tray_click,
+        split_http_response, tray_icon_image, wait_for_child_exit, BackendAccess,
         DesktopHotkeyState, NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry,
-        ShellMenuSmokeAction, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
+        ShellMenuSmokeAction, TrayIconKind, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
         BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE,
         MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
         MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
@@ -4997,6 +4998,16 @@ mod tests {
             MouseButton::Right,
             Some(MouseButtonState::Up)
         ));
+    }
+
+    #[test]
+    fn desktop_taskbar_icon_reuses_the_contrast_safe_tray_icon() {
+        let desktop_icon = desktop_window_icon_image();
+        let tray_icon = tray_icon_image(TrayIconKind::Normal);
+
+        assert_eq!(desktop_icon.width(), 32);
+        assert_eq!(desktop_icon.height(), 32);
+        assert_eq!(desktop_icon.rgba(), tray_icon.rgba());
     }
 
     #[test]

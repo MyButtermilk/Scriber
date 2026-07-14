@@ -185,10 +185,12 @@ def test_frontend_uses_current_svg_logo_asset() -> None:
     assert 'viewBox="5 99.4 118 76"' in dark_favicon_svg
     assert "#F2F0EB" in dark_favicon_svg
     assert "#CFAF6A" in dark_favicon_svg
-    assert 'src="/favicon.svg"' in brand_mark_source
-    assert 'src="/favicon-dark.svg"' in brand_mark_source
-    assert "dark:hidden" in brand_mark_source
-    assert "dark:block" in brand_mark_source
+    assert brand_mark_source.count('src="/favicon.svg"') == 1
+    assert 'src="/favicon-dark.svg"' not in brand_mark_source
+    assert "dark:rounded-full" in brand_mark_source
+    assert "dark:bg-white" in brand_mark_source
+    assert "rounded-[10px]" not in brand_mark_source
+    assert "bg-background/55" not in brand_mark_source
     assert layout_source.count("<BrandMark") == 3
 
 
