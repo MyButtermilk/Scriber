@@ -121,12 +121,17 @@ Packaging and scripts:
 - `scripts/build_tauri_backend_sidecar.ps1`: sidecar build, runtime import
   checks, media-tool bundling, optional cache reuse.
 - `scripts/build_windows.ps1`: Windows installer orchestration. Official GitHub
-  releases use `-ParallelizeIndependentBuilds`: frontend typecheck and sidecar
-  preparation overlap; sidecar preparation likewise overlaps PyInstaller with
-  the isolated-target Rust audio build. The Tauri `--no-bundle` compile starts
-  only after the sidecar has staged `target/release/backend`, because Tauri's
-  build script validates that resource path. NSIS, updater signing, and
-  verification start only after every producer succeeds.
+  releases use `-ParallelizeIndependentBuilds`: frontend typecheck, Python
+  sidecar preparation, and the Tauri `--no-bundle` app compile overlap. That
+  compile uses a generated overlay whose `bundle.resources` is JSON `[]`, so
+  Tauri does not validate the not-yet-staged backend during compile; the final
+  `tauri bundle` always waits for every producer and uses the original complete
+  config, revalidating and packaging all resources. Rust audio uses the shared,
+  restored Tauri Cargo target after backend preparation by default; Cargo's
+  target lock bounds a rare overlap with the app compile and avoids a cold
+  duplicate dependency build. `-RustAudioIsolatedTarget` remains an explicit
+  diagnostic/local opt-in. NSIS, updater signing, and verification start only
+  after every producer succeeds.
 - `native/scriber-diarization-sidecar/`: isolated, statically linked
   Sherpa-ONNX worker; release preparation stages its attested EXE under backend
   `tools/diarization`. Its worker cache and pinned Sherpa archive cache remain
@@ -878,12 +883,19 @@ Already implemented and should not be regressed:
   release key still includes real Tauri shell inputs such as `tauri.conf.json`,
   capabilities, and icons.
 - Frontend dependency reuse in GitHub release builds is two-layered: restore
-  `Frontend\node_modules` first, and keep the npm package store warm through
-  `actions/setup-node` keyed by the normalized
-  `build\cache-keys\frontend-dependencies.txt` input.
+  `Frontend\node_modules` first, then restore the explicitly keyed npm package
+  store only when that stronger cache misses. `actions/setup-node` must not
+  eagerly restore the same package store on a hot `node_modules` path.
 - Python dependency reuse in GitHub release builds is layered: prebuilt backend
-  sidecar first, `.venv`/wheelhouse next, and setup-python's pip cache only as
-  a final download/build-store fallback keyed by the release requirements.
+  sidecar first, `.venv`/wheelhouse next, and an explicitly keyed pip package
+  store only as a final fallback when every stronger product misses.
+- GitHub Actions cache restore steps remain sequential within the release job.
+  Only the disjoint Rust-audio, Rust-diarization, and FFmpeg internal-artifact
+  fallbacks may overlap through
+  `scripts\ci\restore_component_cache_artifacts_parallel.ps1`. Each child must
+  use a private `GITHUB_OUTPUT` and a fixed destination. Keep Rust/main-target,
+  backend, Python `.venv`, and Python wheelhouse restore/import paths serialized
+  because they overlap destinations or form producer dependencies.
 - `src/version.py` remains the leading app release version, but
   `Frontend\src-tauri\Cargo.toml` intentionally keeps a stable internal package
   version. `scripts\build_windows.ps1` writes a generated minimal Tauri release
@@ -892,7 +904,10 @@ Already implemented and should not be regressed:
   `SCRIBER_VERSION`; do not restore per-release Cargo version churn.
 - GitHub release builds set `CARGO_INCREMENTAL=1` and cache
   `Frontend\src-tauri\target\release\incremental` in the v2 Rust release cache.
-- GitHub release builds intentionally keep `dtolnay/rust-toolchain@stable`.
+- GitHub release and hybrid-check builds intentionally keep the installer
+  toolchain pinned through `dtolnay/rust-toolchain@1.97.0`. This is the exact
+  toolchain used by the current hot Cargo cache; update the pin and rebuild the
+  cache deliberately as one operation, never by following `stable` implicitly.
   A 2026-07-09 experiment that used the Windows runner's preinstalled Rust
   saved the setup-action time but invalidated Cargo fingerprints: run
   `29003544425` spent `413.9s` in `build_windows.ps1`, `397.6s` in the Tauri
@@ -942,11 +957,17 @@ Already implemented and should not be regressed:
   snapshots are refreshed only by the manual `release-windows.yml`
   `refresh_release_cache_artifacts=true` maintenance path. Tag releases do,
   however, self-heal a missing bounded exact backend, FFmpeg, audio, or
-  diarization finished-product artifact after a successful rebuild. Publish
-  and verify the app release first, then upload those four independent cache
-  products in parallel with one private `GITHUB_OUTPUT` file per child. Cache
-  publication is best-effort and must not delay or invalidate an already
-  verified updater release. Heavy
+  diarization finished-product artifact after a successful rebuild. Manual
+  cache publication is allowed only from `main` with
+  `refresh_release_cache_artifacts=true`; feature-branch diagnostics are
+  read-only with respect to shared caches. That maintenance path retains
+  exactly one Actions-cache generation per allowlisted family, removes
+  superseded internal cache-release tags, and current cache publishers keep
+  only their replacement asset. Publish and verify
+  the app release first, then upload those four independent cache products in
+  parallel with one private `GITHUB_OUTPUT` file per child. Cache publication
+  is best-effort and must not delay or invalidate an already verified updater
+  release. Heavy
   Actions caches remain restore-only on tags, so a routine release has one
   complete tag-triggered build rather than a duplicate main warm-up plus tag
   build.

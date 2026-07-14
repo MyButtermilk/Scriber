@@ -38,7 +38,7 @@ Write-GitHubOutput -Name "exact" -Value "false"
 
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
     Write-Warning "GitHub CLI is not available; skipping release cache artifact restore."
-    exit 0
+    return
 }
 
 function Restore-Asset {
@@ -93,7 +93,7 @@ try {
     New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
 
     if (Restore-Asset -Name $AssetName -Exact $true) {
-        exit 0
+        return
     }
 
     if ($FallbackAssetNamePrefix) {
@@ -116,7 +116,7 @@ try {
                 Sort-Object -Property @{ Expression = { [DateTime]$_.updatedAt }; Descending = $true } |
                 Select-Object -First 1
             if ($fallback -and (Restore-Asset -Name $fallback.name -Exact $false)) {
-                exit 0
+                return
             }
         }
     }

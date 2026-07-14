@@ -140,6 +140,10 @@ foreach ($component in $components) {
             Published = $false
             Status = "not-requested"
             ElapsedSeconds = 0.0
+            SourceBytes = 0
+            ArchiveBytes = 0
+            CompressionMs = 0
+            UploadMs = 0
             OutputFile = [System.IO.Path]::GetFileName($childOutputPath)
             LogFile = [System.IO.Path]::GetFileName($logPath)
         })
@@ -239,6 +243,10 @@ foreach ($component in $components) {
             Published = $false
             Status = "start-failed"
             ElapsedSeconds = 0.0
+            SourceBytes = 0
+            ArchiveBytes = 0
+            CompressionMs = 0
+            UploadMs = 0
             OutputFile = [System.IO.Path]::GetFileName($childOutputPath)
             LogFile = [System.IO.Path]::GetFileName($logPath)
         })
@@ -272,6 +280,10 @@ foreach ($item in $started) {
         0.0
     }
     $published = (Get-ChildOutputValue -Path $item.ChildOutputPath -Name "published") -eq "true"
+    $sourceBytes = [int64]([string](Get-ChildOutputValue -Path $item.ChildOutputPath -Name "source-bytes") -as [int64])
+    $archiveBytes = [int64]([string](Get-ChildOutputValue -Path $item.ChildOutputPath -Name "archive-bytes") -as [int64])
+    $compressionMs = [int64]([string](Get-ChildOutputValue -Path $item.ChildOutputPath -Name "compression-ms") -as [int64])
+    $uploadMs = [int64]([string](Get-ChildOutputValue -Path $item.ChildOutputPath -Name "upload-ms") -as [int64])
     $succeeded = $jobState -eq "Completed" -and $exitCode -eq 0 -and $published
     $status = if ($succeeded) { "published" } elseif ($jobState -ne "Completed") { "job-$($jobState.ToLowerInvariant())" } elseif ($exitCode -ne 0) { "publisher-exit-$exitCode" } else { "publisher-declined" }
 
@@ -291,6 +303,10 @@ foreach ($item in $started) {
         Published = $published
         Status = $status
         ElapsedSeconds = $elapsedSeconds
+        SourceBytes = $sourceBytes
+        ArchiveBytes = $archiveBytes
+        CompressionMs = $compressionMs
+        UploadMs = $uploadMs
         OutputFile = [System.IO.Path]::GetFileName($item.ChildOutputPath)
         LogFile = [System.IO.Path]::GetFileName($item.LogPath)
     })
@@ -321,11 +337,11 @@ if ($env:GITHUB_STEP_SUMMARY) {
         "",
         "The updater release was collected, published, and verified before these best-effort cache uploads started.",
         "",
-        "| Component | Requested | Result | Time | Child output |",
-        "| --- | --- | --- | ---: | --- |"
+        "| Component | Requested | Result | Total | Compress | Upload | Archive | Child output |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |"
     )
     foreach ($row in $rows) {
-        $summary += ("| {0} | {1} | {2} | {3:N1} s | ``{4}`` |" -f $row.Name, $row.Requested, $row.Status, $row.ElapsedSeconds, $row.OutputFile)
+        $summary += ("| {0} | {1} | {2} | {3:N1} s | {4:N1} s | {5:N1} s | {6:N1} MiB | ``{7}`` |" -f $row.Name, $row.Requested, $row.Status, $row.ElapsedSeconds, ($row.CompressionMs / 1000.0), ($row.UploadMs / 1000.0), ($row.ArchiveBytes / 1MB), $row.OutputFile)
     }
     $summary += ""
     $summary += "Cache upload failures are warnings only; they do not invalidate an updater release that already passed publication verification."

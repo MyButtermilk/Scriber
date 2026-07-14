@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATE_SCRIPT = REPO_ROOT / "scripts" / "validate_tauri_updater_metadata.py"
 PREPARE_SCRIPT = REPO_ROOT / "scripts" / "prepare_tauri_updater_config.py"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
+TAG_RELEASE_PREFLIGHT_SCRIPT = REPO_ROOT / "scripts" / "ci" / "validate_tag_release_preflight.ps1"
 
 
 def run_script(script: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -415,6 +416,7 @@ def test_prepare_tauri_updater_config_requires_signing_key(tmp_path: Path) -> No
 
 def test_release_workflow_verifies_published_updater_metadata_after_release() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    preflight = TAG_RELEASE_PREFLIGHT_SCRIPT.read_text(encoding="utf-8")
 
     publish_index = workflow.index("Publish GitHub release")
     verify_index = workflow.index("Verify published updater metadata")
@@ -431,7 +433,8 @@ def test_release_workflow_verifies_published_updater_metadata_after_release() ->
     assert "latest/download/latest.json" in workflow
     assert "hashFiles('release-artifacts/updater-publication.json')" in workflow
     assert "SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE" in workflow
-    assert "Signed tag releases require SCRIBER_TAURI_UPDATER_PUBLIC_KEY" in workflow
+    assert "Validate tag release signing preflight" in workflow
+    assert "Signed v* releases require SCRIBER_TAURI_UPDATER_PUBLIC_KEY" in preflight
 
 
 def test_release_workflow_requires_signature_file_for_signed_updater_artifacts() -> None:

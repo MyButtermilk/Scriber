@@ -145,11 +145,13 @@ Packaging/build:
   `build\rust-audio-sidecar-cache`. Its cache key is limited to
   `Cargo.toml`, `Cargo.lock`, `build.rs`, `audio_sidecar.rs`,
   `audio_frame_pipe.rs`, and `redaction.rs`, with a module guard in the build
-  script. Sequential/local builds may share Tauri's normal Cargo target. The
-  release workflow uses `-ParallelizeIndependentBuilds`, which gives the audio
-  build its isolated target while it overlaps PyInstaller. The desktop compile
-  starts only after that sidecar phase, so it never races the isolated audio
-  target or the backend resource staging path.
+  script. Official release builds use Tauri's restored shared Cargo target for
+  an audio-cache miss. The app compile and PyInstaller begin together; audio
+  preparation follows the Python sidecar phase and reuses the shared target's
+  dependency objects. Cargo's target lock serializes any small remaining
+  overlap safely. `-RustAudioIsolatedTarget` remains available for diagnostics,
+  but it is not the release default because a cold isolated target took
+  `437.3s` in `v0.5.13` despite a warm main Cargo cache.
 - The static Rust diarization worker has a separate focused input cache under
   `build\rust-diarization-sidecar-cache`; it hashes only its standalone crate,
   lockfile, static-CRT config, manifest writer, target contract, and pinned
@@ -182,10 +184,11 @@ Packaging/build:
   each normalized cache-key file. Use those fingerprints to distinguish a true
   input change from a cold or ref-scoped cache miss.
 - Frontend dependency reuse is two-layered in CI: an explicit
-  `Frontend\node_modules` cache is the fast path, and `actions/setup-node`
-  restores npm's package store from the normalized
-  `build\cache-keys\frontend-dependencies.txt` input as a fallback when
-  `node_modules` has to be rebuilt. `npm ci` still consumes the real
+  `Frontend\node_modules` cache is the fast path, and the workflow restores an
+  explicitly keyed npm package store from normalized
+  `build\cache-keys\frontend-dependencies.txt` only when `node_modules` has to
+  be rebuilt. This avoids setup-node's redundant store restore on a hot exact
+  cache. `npm ci` still consumes the real
   `Frontend\package-lock.json`; only the package-store cache key is normalized.
   On an exact `node_modules` cache hit, the workflow checks
   `node_modules\.package-lock.json` instead of running `npm ls`; the actual
@@ -238,8 +241,16 @@ Packaging/build:
   Profile B FFmpeg, the frozen backend, and the focused Rust audio/diarization
   sidecars after a successful build. Those bounded snapshots are usable by
   sibling tags and prevent one cache miss from rebuilding the same unchanged
-  product on every later release. Full cache refresh remains explicit through
-  `refresh_release_cache_artifacts=true`.
+  product on every later release. Manual cache publication is restricted to
+  `main` with `refresh_release_cache_artifacts=true`; feature-branch diagnostics
+  cannot replace shared cache releases. The same maintenance run prunes every
+  allowlisted Actions-cache family to exactly one current generation and
+  removes superseded internal cache-release tags. Current cache publishers also
+  delete sibling assets after a successful replacement upload, so each durable
+  cache release contains at most one current asset.
+- `requirements-build.txt` pins the complete PyInstaller build-tool set so a
+  resolver update cannot silently change the frozen backend under an unchanged
+  cache contract.
 - Before saving or publishing `build\tauri-sidecar-cache`, the workflow runs
   `scripts\ci\select_backend_sidecar_cache_entry.ps1`. It validates the
   current metadata/manifest and removes every older internal hash directory.
@@ -277,19 +288,28 @@ Packaging/build:
   restored virtualenv is already current and passes `pip check`. The internal
   `release-cache-python-venv-v1` artifact gives tag builds a durable exact
   virtualenv restore path when the ref-scoped Actions cache is cold.
-- The setup-python pip cache is a final download/build-store fallback keyed by
-  `requirements-base.txt` and `requirements-build.txt`; it should not be
-  confused with a `.venv` or wheelhouse hit, but it reduces repeated downloads
-  when those stronger layers miss.
+- The explicitly keyed pip package store is a final download/build fallback
+  from `requirements-base.txt` and `requirements-build.txt`. It is restored only
+  when the backend sidecar, `.venv`, and wheelhouse layers all miss; setup-python
+  does not eagerly restore it on the hot path.
+- GitHub Actions restore steps within the Windows job are sequential. Once the
+  corresponding Actions-cache results are known, the internal release-artifact
+  fallbacks for Rust audio, Rust diarization, and Profile B FFmpeg may download
+  concurrently because their destinations are disjoint. Rust/main-target,
+  backend, `.venv`, and wheelhouse paths remain serialized due to overlapping
+  destinations or producer dependencies.
 - The standard GitHub release passes `-ParallelizeIndependentBuilds`. On one
-  runner it starts frontend type checking and sidecar preparation together.
-  Within sidecar preparation, PyInstaller and the isolated-target Rust audio
-  build also overlap. The Tauri `--no-bundle` app compile deliberately starts
-  after sidecar preparation has staged `target/release/backend`: Tauri's build
-  script validates configured resource paths even for `--no-bundle`, so the
-  app compile is not independent of that producer. Only then does `tauri
-  bundle` run NSIS, updater signing, and verification. Exact backend and Rust
-  caches remain the main fast path; cold builds keep safe producer ordering.
+  runner it starts frontend type checking, sidecar preparation, and the Tauri
+  `--no-bundle` app compile together. The compile helper writes a generated
+  config overlay identical to the release config except that
+  `bundle.resources` is JSON `[]`; Tauri can therefore compile before
+  `target/release/backend` exists without changing compiled runtime behavior.
+  After all producers join, `tauri bundle` uses the original full generated
+  config, validates the staged backend/resources, and performs NSIS/updater
+  signing. An empty object is not sufficient because Tauri's JSON merge would
+  preserve the base resource map. Rust audio then reuses the shared warmed
+  Cargo target by default instead of building a second isolated dependency
+  graph. Exact backend and Rust caches remain the main fast path.
 - Splitting that work across separate GitHub jobs is useful only for cold or
   cache-refresh builds where independent heavy outputs have to be produced
   again. A simple job split that only restores the same caches in several jobs is not
@@ -334,13 +354,15 @@ Packaging/build:
   optional `SCRIBER_CARGO_LOG` GitHub variable. Use
   `cargo::core::compiler::fingerprint=info` only for investigation runs where
   the main Tauri crate recompiles unexpectedly, because the log is noisy.
-- The release workflow intentionally keeps `dtolnay/rust-toolchain@stable`.
+- The release workflow intentionally pins
+  `dtolnay/rust-toolchain@1.97.0`, matching the current hot Cargo cache.
   Replacing it with the GitHub Windows runner's preinstalled Rust looked like a
   potential `21s` setup win, but run `29003544425` invalidated Cargo
   fingerprints despite exact cache restore and spent `397.6s` in the Tauri
   bundle phase with `285` Cargo compile lines. Only revisit this if the Rust
   release cache is deliberately rebuilt for the preinstalled toolchain and a
-  second hot run proves a net win.
+  second hot run proves a net win. Advance the explicit pin only together with
+  a deliberate cache rebuild and a measured hot follow-up.
 
 ## FFmpeg Profile B
 
@@ -475,9 +497,10 @@ Release workflow:
   `release-cache-python-wheelhouse-v2`, `release-cache-backend-sidecar-v2`,
   `release-cache-rust-build-v2`, `release-cache-rust-audio-sidecar-v1`, and
   `ffmpeg-profile-b-n7.0-v4`. Those releases are implementation caches, not
-  user-facing app updates, and are published with `--latest=false`. Only an
-  explicit manual cache-refresh dispatch publishes them; ordinary `main` and
-  signed `v*` runs do not.
+  user-facing app updates, and are published with `--latest=false`. Explicit
+  `main` cache maintenance refreshes them all; a signed `v*` run may publish
+  only a bounded finished product that was missing and rebuilt. Ordinary
+  `main` pushes never publish them.
 - The release workflow prints a cache-layer summary that separates exact
   Actions cache hits, ambiguous Actions `restore-key-or-miss` outputs, and
   internal release-artifact fallbacks. A yellow `Cache not found` line in an

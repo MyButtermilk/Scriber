@@ -42,8 +42,12 @@ param(
     [string]$RustDiarizationTargetRoot = "",
     [switch]$RustAudioIsolatedTarget,
     [switch]$ParallelizeIndependentBuilds,
+    [switch]$ParallelizeRustDiarizationBuild,
     [switch]$RustAudioOnly,
     [string]$RustAudioResultPath = "",
+    [switch]$RustDiarizationPrestageOnly,
+    [string]$RustDiarizationResultPath = "",
+    [string]$RustDiarizationPrestageBackendDir = "",
     [switch]$LocalPyInstallerNoClean,
     [switch]$CopyToTauriRelease
 )
@@ -89,6 +93,57 @@ function Invoke-TimedStep {
             durationMs = [int64]$stepWatch.ElapsedMilliseconds
             ok = $ok
         }) | Out-Null
+    }
+}
+
+function Stop-ChildProcessTree {
+    param(
+        [System.Diagnostics.Process]$Process,
+        [string]$Label
+    )
+
+    if ($null -eq $Process) {
+        return
+    }
+
+    try {
+        if ($Process.HasExited) {
+            return
+        }
+    } catch {
+        return
+    }
+
+    Write-Warning "Stopping unfinished $Label process tree."
+    $terminated = $false
+    $taskkillPath = if ($env:SystemRoot) { Join-Path $env:SystemRoot "System32\taskkill.exe" } else { "" }
+    if ($taskkillPath -and (Test-Path -LiteralPath $taskkillPath -PathType Leaf)) {
+        try {
+            $taskkillProcess = Start-Process `
+                -FilePath $taskkillPath `
+                -ArgumentList @("/PID", [string]$Process.Id, "/T", "/F") `
+                -WindowStyle Hidden `
+                -Wait `
+                -PassThru
+            $terminated = ($taskkillProcess.ExitCode -eq 0)
+            $taskkillProcess.Dispose()
+        } catch {
+            $terminated = $false
+        }
+    }
+
+    if (-not $terminated) {
+        try {
+            $Process.Kill()
+        } catch {
+            # The child may have exited between the status check and Kill().
+        }
+    }
+
+    try {
+        [void]$Process.WaitForExit(10000)
+    } catch {
+        # Cleanup is best-effort and must not hide the original build failure.
     }
 }
 
@@ -1686,6 +1741,65 @@ if ($RustAudioOnly) {
     return
 }
 
+if ($RustDiarizationPrestageOnly) {
+    if (-not $RustDiarizationResultPath) {
+        throw "-RustDiarizationPrestageOnly requires -RustDiarizationResultPath."
+    }
+    if (-not $RustDiarizationPrestageBackendDir) {
+        throw "-RustDiarizationPrestageOnly requires -RustDiarizationPrestageBackendDir."
+    }
+
+    $RustDiarizationResultPath = Convert-ToFullPath -Path $RustDiarizationResultPath
+    $RustDiarizationPrestageBackendDir = Convert-ToFullPath -Path $RustDiarizationPrestageBackendDir
+    Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationResultPath -Label "RustDiarizationResultPath"
+    Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationPrestageBackendDir -Label "RustDiarizationPrestageBackendDir"
+    $prestagePrefix = $RustDiarizationPrestageBackendDir.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+    if ($RustDiarizationResultPath.StartsWith($prestagePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "RustDiarizationResultPath must stay outside RustDiarizationPrestageBackendDir."
+    }
+
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $RustDiarizationResultPath) | Out-Null
+    if (Test-Path -LiteralPath $RustDiarizationPrestageBackendDir -PathType Container) {
+        Remove-Item -LiteralPath $RustDiarizationPrestageBackendDir -Recurse -Force
+    }
+
+    $rustDiarizationWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $rustDiarizationResult = $null
+    $rustDiarizationOk = $false
+    $rustDiarizationFailure = $null
+    try {
+        $rustDiarizationResult = Copy-RustDiarizationSidecarToBackend `
+            -Root $RepoRoot `
+            -Python $PythonPath `
+            -BackendDir $RustDiarizationPrestageBackendDir `
+            -WorkerCacheRoot $RustDiarizationSidecarCacheRoot `
+            -ArchiveCacheRoot $SherpaOnnxArchiveCacheRoot `
+            -CargoTargetRoot $RustDiarizationTargetRoot
+        $rustDiarizationOk = $true
+    } catch {
+        $rustDiarizationFailure = $_
+    } finally {
+        $rustDiarizationWatch.Stop()
+        if (Test-Path -LiteralPath $RustDiarizationPrestageBackendDir -PathType Container) {
+            Remove-Item -LiteralPath $RustDiarizationPrestageBackendDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $rustDiarizationPayload = [ordered]@{
+        ok = $rustDiarizationOk
+        durationMs = [int64]$rustDiarizationWatch.ElapsedMilliseconds
+        result = $rustDiarizationResult
+    }
+    $rustDiarizationTempPath = "$RustDiarizationResultPath.$PID.tmp"
+    $rustDiarizationPayload | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $rustDiarizationTempPath -Encoding utf8
+    Move-Item -LiteralPath $rustDiarizationTempPath -Destination $RustDiarizationResultPath -Force
+    if ($null -ne $rustDiarizationFailure) {
+        throw $rustDiarizationFailure
+    }
+    $rustDiarizationPayload | ConvertTo-Json -Depth 10 -Compress
+    return
+}
+
 if (-not (Test-Path $SpecPath)) {
     throw "Missing PyInstaller spec: $SpecPath"
 }
@@ -1935,6 +2049,19 @@ $rustAudioParallelStderrPath = ""
 $rustAudioParallelStopwatch = $null
 $rustAudioParallelStdoutTask = $null
 $rustAudioParallelStderrTask = $null
+$rustDiarizationParallelProcess = $null
+$rustDiarizationParallelRoot = ""
+$rustDiarizationParallelResultPath = ""
+$rustDiarizationParallelBackendDir = ""
+$rustDiarizationParallelStdoutPath = ""
+$rustDiarizationParallelStderrPath = ""
+$rustDiarizationParallelStopwatch = $null
+$rustDiarizationParallelStdoutTask = $null
+$rustDiarizationParallelStderrTask = $null
+$rustDiarizationParallelTimeoutMs = 30 * 60 * 1000
+$rustDiarizationPreparedInParallel = $false
+
+try {
 if ($ParallelizeIndependentBuilds -and $BundleRustAudioSidecar) {
     $rustAudioParallelResultPath = Join-Path $WorkRoot "rust-audio-parallel-$PID.json"
     $rustAudioParallelStdoutPath = Join-Path $WorkRoot "rust-audio-parallel-$PID.stdout.log"
@@ -1975,8 +2102,63 @@ if ($ParallelizeIndependentBuilds -and $BundleRustAudioSidecar) {
         $rustAudioParallelStderrTask = $rustAudioParallelProcess.StandardError.ReadToEndAsync()
     } catch {
         $rustAudioParallelStopwatch.Stop()
+        Stop-ChildProcessTree -Process $rustAudioParallelProcess -Label "Rust audio sidecar"
         $rustAudioParallelProcess.Dispose()
         $rustAudioParallelProcess = $null
+        throw
+    }
+}
+
+if (($ParallelizeIndependentBuilds -or $ParallelizeRustDiarizationBuild) -and $BundleRustDiarizationSidecar) {
+    $rustDiarizationParallelRoot = Join-Path $RepoRoot "build\rust-diarization-parallel\parent-$PID"
+    $rustDiarizationParallelResultPath = Join-Path $rustDiarizationParallelRoot "result.json"
+    $rustDiarizationParallelBackendDir = Join-Path $rustDiarizationParallelRoot "backend"
+    $rustDiarizationParallelStdoutPath = Join-Path $rustDiarizationParallelRoot "stdout.log"
+    $rustDiarizationParallelStderrPath = Join-Path $rustDiarizationParallelRoot "stderr.log"
+    Assert-UnderRoot -Root $RepoRoot -Path $rustDiarizationParallelRoot -Label "Rust diarization parallel root"
+    if (Test-Path -LiteralPath $rustDiarizationParallelRoot -PathType Container) {
+        Remove-Item -LiteralPath $rustDiarizationParallelRoot -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $rustDiarizationParallelRoot | Out-Null
+
+    # This is a fixed, checked-in -File invocation. Do not weaken the local
+    # execution policy for the new worker; GitHub checkout files run as local.
+    $rustDiarizationParallelArgs = @(
+        "-NoProfile",
+        "-File", "scripts\build_tauri_backend_sidecar.ps1",
+        "-RepoRoot", ('"{0}"' -f $RepoRoot),
+        "-PythonPath", ('"{0}"' -f $PythonPath),
+        "-RustDiarizationPrestageOnly",
+        "-RustDiarizationResultPath", ('"{0}"' -f $rustDiarizationParallelResultPath),
+        "-RustDiarizationPrestageBackendDir", ('"{0}"' -f $rustDiarizationParallelBackendDir),
+        "-RustDiarizationSidecarCacheRoot", ('"{0}"' -f $RustDiarizationSidecarCacheRoot),
+        "-SherpaOnnxArchiveCacheRoot", ('"{0}"' -f $SherpaOnnxArchiveCacheRoot),
+        "-RustDiarizationTargetRoot", ('"{0}"' -f $RustDiarizationTargetRoot)
+    )
+    Write-Host "Starting Rust diarization sidecar prestage in parallel with the Python backend."
+    $rustDiarizationParallelStartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $rustDiarizationParallelStartInfo.FileName = (Get-Command powershell.exe -ErrorAction Stop).Source
+    $rustDiarizationParallelStartInfo.Arguments = ($rustDiarizationParallelArgs -join " ")
+    $rustDiarizationParallelStartInfo.WorkingDirectory = $RepoRoot
+    $rustDiarizationParallelStartInfo.UseShellExecute = $false
+    $rustDiarizationParallelStartInfo.CreateNoWindow = $true
+    $rustDiarizationParallelStartInfo.RedirectStandardOutput = $true
+    $rustDiarizationParallelStartInfo.RedirectStandardError = $true
+    $rustDiarizationParallelProcess = [System.Diagnostics.Process]::new()
+    $rustDiarizationParallelProcess.StartInfo = $rustDiarizationParallelStartInfo
+    $rustDiarizationParallelStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        if (-not $rustDiarizationParallelProcess.Start()) {
+            throw "Parallel Rust diarization sidecar process did not start."
+        }
+        # Drain Cargo and smoke output from both pipes from process start.
+        $rustDiarizationParallelStdoutTask = $rustDiarizationParallelProcess.StandardOutput.ReadToEndAsync()
+        $rustDiarizationParallelStderrTask = $rustDiarizationParallelProcess.StandardError.ReadToEndAsync()
+    } catch {
+        $rustDiarizationParallelStopwatch.Stop()
+        Stop-ChildProcessTree -Process $rustDiarizationParallelProcess -Label "Rust diarization prestage"
+        $rustDiarizationParallelProcess.Dispose()
+        $rustDiarizationParallelProcess = $null
         throw
     }
 }
@@ -2134,13 +2316,92 @@ if ($BundleRustAudioSidecar) {
                 parallel = $true
                 overlappedWallDurationMs = $rustAudioParallelJoinDurationMs
             }) | Out-Null
-            $rustAudioParallelProcess.Dispose()
         }
     } else {
         Invoke-TimedStep -Label "rust-audio-sidecar-build" -Command {
             $script:RustAudioSidecarCopied = Copy-RustAudioSidecarToTauriRelease -Root $RepoRoot -UseIsolatedTarget ([bool]$RustAudioIsolatedTarget)
         }
         $rustAudioSidecarCopied = $script:RustAudioSidecarCopied
+    }
+}
+
+if ($rustDiarizationParallelProcess) {
+    $rustDiarizationParallelOk = $false
+    $rustDiarizationChildDurationMs = $null
+    $rustDiarizationPrestageCacheHit = $null
+    try {
+        $rustDiarizationRemainingMs = [int][Math]::Max(
+            0,
+            $rustDiarizationParallelTimeoutMs - [int64]$rustDiarizationParallelStopwatch.ElapsedMilliseconds
+        )
+        if (
+            -not $rustDiarizationParallelProcess.HasExited -and
+            ($rustDiarizationRemainingMs -eq 0 -or -not $rustDiarizationParallelProcess.WaitForExit($rustDiarizationRemainingMs))
+        ) {
+            Stop-ChildProcessTree -Process $rustDiarizationParallelProcess -Label "Rust diarization prestage"
+            throw "Parallel Rust diarization sidecar prestage exceeded the 30-minute limit."
+        }
+        $rustDiarizationParallelProcess.Refresh()
+        $rustDiarizationParallelStdout = $rustDiarizationParallelStdoutTask.GetAwaiter().GetResult()
+        $rustDiarizationParallelStderr = $rustDiarizationParallelStderrTask.GetAwaiter().GetResult()
+        $utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
+        [System.IO.File]::WriteAllText($rustDiarizationParallelStdoutPath, $rustDiarizationParallelStdout, $utf8WithoutBom)
+        [System.IO.File]::WriteAllText($rustDiarizationParallelStderrPath, $rustDiarizationParallelStderr, $utf8WithoutBom)
+        Get-Content -LiteralPath $rustDiarizationParallelStdoutPath | Out-Host
+        Get-Content -LiteralPath $rustDiarizationParallelStderrPath | Out-Host
+        if ($rustDiarizationParallelProcess.ExitCode -ne 0) {
+            throw "Parallel Rust diarization sidecar prestage failed with exit code $($rustDiarizationParallelProcess.ExitCode)."
+        }
+        if (-not (Test-Path -LiteralPath $rustDiarizationParallelResultPath -PathType Leaf)) {
+            throw "Parallel Rust diarization sidecar prestage did not write its result: $rustDiarizationParallelResultPath"
+        }
+        $rustDiarizationParallelPayload = Get-Content -LiteralPath $rustDiarizationParallelResultPath -Raw | ConvertFrom-Json
+        if (-not $rustDiarizationParallelPayload.ok -or -not $rustDiarizationParallelPayload.result) {
+            throw "Parallel Rust diarization sidecar prestage result was invalid."
+        }
+        $rustDiarizationChildDurationValue = Get-ObjectPropertyValue -Object $rustDiarizationParallelPayload -Name "durationMs"
+        if ($null -eq $rustDiarizationChildDurationValue) {
+            throw "Parallel Rust diarization sidecar prestage did not report its duration."
+        }
+        $rustDiarizationChildDurationMs = [int64]$rustDiarizationChildDurationValue
+        if ($rustDiarizationChildDurationMs -lt 0 -or $rustDiarizationChildDurationMs -gt $rustDiarizationParallelTimeoutMs) {
+            throw "Parallel Rust diarization sidecar prestage reported an invalid duration."
+        }
+        $rustDiarizationPrestageCacheHit = [bool](Get-ObjectPropertyValue -Object $rustDiarizationParallelPayload.result -Name "cacheHit")
+        $rustDiarizationPreparedInParallel = $true
+        $rustDiarizationParallelOk = $true
+    } finally {
+        $rustDiarizationParallelStopwatch.Stop()
+        $rustDiarizationParallelJoinDurationMs = [int64]$rustDiarizationParallelStopwatch.ElapsedMilliseconds
+        $rustDiarizationParallelDurationMs = if ($null -ne $rustDiarizationChildDurationMs) {
+            [int64]$rustDiarizationChildDurationMs
+        } else {
+            $rustDiarizationParallelJoinDurationMs
+        }
+        $script:BuildTimingPhases.Add([ordered]@{
+            label = "rust-diarization-sidecar-prestage"
+            durationMs = $rustDiarizationParallelDurationMs
+            ok = $rustDiarizationParallelOk
+            parallel = $true
+            cacheHitBeforePrestage = $rustDiarizationPrestageCacheHit
+            overlappedWallDurationMs = $rustDiarizationParallelJoinDurationMs
+        }) | Out-Null
+    }
+}
+} finally {
+    if ($rustAudioParallelProcess) {
+        Stop-ChildProcessTree -Process $rustAudioParallelProcess -Label "Rust audio sidecar"
+        $rustAudioParallelProcess.Dispose()
+        $rustAudioParallelProcess = $null
+    }
+    if ($rustDiarizationParallelProcess) {
+        Stop-ChildProcessTree -Process $rustDiarizationParallelProcess -Label "Rust diarization prestage"
+        $rustDiarizationParallelProcess.Dispose()
+        $rustDiarizationParallelProcess = $null
+    }
+    if ($rustDiarizationParallelRoot -and (Test-Path -LiteralPath $rustDiarizationParallelRoot -PathType Container)) {
+        Assert-UnderRoot -Root $RepoRoot -Path $rustDiarizationParallelRoot -Label "Rust diarization parallel cleanup root"
+        Remove-Item -LiteralPath $rustDiarizationParallelRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -2154,6 +2415,9 @@ if ($BundleRustDiarizationSidecar) {
             -WorkerCacheRoot $RustDiarizationSidecarCacheRoot `
             -ArchiveCacheRoot $SherpaOnnxArchiveCacheRoot `
             -CargoTargetRoot $RustDiarizationTargetRoot
+        if ($rustDiarizationPreparedInParallel -and -not $script:RustDiarizationSidecarCopied.cacheHit) {
+            throw "Final Rust diarization staging did not reuse the cache prepared by the parallel worker."
+        }
     }
     $rustDiarizationSidecarCopied = $script:RustDiarizationSidecarCopied
 }

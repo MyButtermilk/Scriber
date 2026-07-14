@@ -350,11 +350,19 @@ function New-SidecarBuildScriptArguments {
     if ($LocalPyInstallerNoClean) {
         $sidecarArgs += "-LocalPyInstallerNoClean"
     }
-    if ($RustAudioIsolatedTarget -or $ParallelizeIndependentBuilds) {
-        $sidecarArgs += "-RustAudioIsolatedTarget"
-    }
     if ($ParallelizeIndependentBuilds) {
-        $sidecarArgs += "-ParallelizeIndependentBuilds"
+        # Prestage only the independent diarization cache beside PyInstaller.
+        # Do not forward the broader sidecar parallel switch: it would also
+        # move Rust audio back to a cold isolated Cargo target.
+        $sidecarArgs += "-ParallelizeRustDiarizationBuild"
+    }
+    # The outer release DAG already overlaps PyInstaller with the Tauri app
+    # compile. Keep Rust audio on the shared, restored Tauri target by default:
+    # once the app compile has populated that target, an audio cache miss can
+    # reuse its dependencies instead of recompiling them in a cold 2+ GiB
+    # isolated target. Cargo's target lock safely bounds the rare overlap.
+    if ($RustAudioIsolatedTarget) {
+        $sidecarArgs += "-RustAudioIsolatedTarget"
     }
     return $sidecarArgs
 }
@@ -732,6 +740,7 @@ try {
     }
 
     $tauriAppBuiltBeforeBundle = $false
+    $tauriAppBuiltInParallel = $false
     if ($FastLocalStagedApp) {
         Invoke-Checked -Label "Tauri staged sidecar preparation" -Command {
             Push-Location $RepoRoot
@@ -780,9 +789,6 @@ try {
                     -Arguments $sidecarArgs `
                     -WorkingDirectory $RepoRoot
 
-                Complete-TrackedReleaseProcesses -Tasks $parallelTasks
-                $parallelTasks = @()
-
                 if (-not $UsePrebuiltTauriApp) {
                     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $tauriBundleLogPath) | Out-Null
                     if (Test-Path -LiteralPath $tauriBundleLogPath -PathType Leaf) {
@@ -796,11 +802,17 @@ try {
                         "-ConfigPath", $tauriBuildConfigPath,
                         "-TauriLogPath", $tauriBundleLogPath
                     )
-                    Invoke-Checked -Label "Tauri app binary build" -Command {
-                        & $powershellExe @tauriAppBuildArgs
-                    }
+                    $parallelTasks += Start-TrackedReleaseProcess `
+                        -Label "Tauri app binary build" `
+                        -FilePath $powershellExe `
+                        -Arguments $tauriAppBuildArgs `
+                        -WorkingDirectory $RepoRoot
                     $tauriAppBuiltBeforeBundle = $true
+                    $tauriAppBuiltInParallel = $true
                 }
+
+                Complete-TrackedReleaseProcesses -Tasks $parallelTasks
+                $parallelTasks = @()
             } catch {
                 Stop-TrackedReleaseProcesses -Tasks $parallelTasks
                 throw
@@ -1314,7 +1326,7 @@ try {
         prebuiltTauriApp = [bool]$UsePrebuiltTauriApp
         parallelizeIndependentBuilds = [bool]$ParallelizeIndependentBuilds
         tauriAppBuiltBeforeBundle = [bool]$tauriAppBuiltBeforeBundle
-        tauriAppBuiltInParallel = $false
+        tauriAppBuiltInParallel = [bool]$tauriAppBuiltInParallel
         updaterRuntimeConfigured = [bool]($EnableTauriUpdater -or $ConfigureTauriUpdaterRuntime)
         installerBuilt = [bool]($artifacts.Count -gt 0)
         installerSmokeValidated = [bool]$installedPackageSmoke["ran"]
@@ -1362,7 +1374,7 @@ try {
         prebuiltTauriApp = [bool]$UsePrebuiltTauriApp
         parallelizeIndependentBuilds = [bool]$ParallelizeIndependentBuilds
         tauriAppBuiltBeforeBundle = [bool]$tauriAppBuiltBeforeBundle
-        tauriAppBuiltInParallel = $false
+        tauriAppBuiltInParallel = [bool]$tauriAppBuiltInParallel
         updaterRuntimeConfigured = [bool]($EnableTauriUpdater -or $ConfigureTauriUpdaterRuntime)
         installerBuilt = $false
         installerSmokeValidated = $false

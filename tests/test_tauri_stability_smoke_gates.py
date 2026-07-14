@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -321,6 +322,58 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "lastWriteTimeUtc" not in sidecar
 
 
+def test_diarization_cold_build_is_prestaged_in_parallel_without_sharing_backend_outputs() -> None:
+    sidecar = read_script("scripts/build_tauri_backend_sidecar.ps1")
+    installer = read_script("scripts/build_windows.ps1")
+
+    assert "[switch]$ParallelizeRustDiarizationBuild" in sidecar
+    assert "[switch]$RustDiarizationPrestageOnly" in sidecar
+    assert "[string]$RustDiarizationPrestageBackendDir" in sidecar
+    assert (
+        "if (($ParallelizeIndependentBuilds -or $ParallelizeRustDiarizationBuild) -and "
+        "$BundleRustDiarizationSidecar)" in sidecar
+    )
+    assert 'Join-Path $RepoRoot "build\\rust-diarization-parallel\\parent-$PID"' in sidecar
+    assert 'Join-Path $rustDiarizationParallelRoot "backend"' in sidecar
+    assert "RustDiarizationResultPath must stay outside RustDiarizationPrestageBackendDir" in sidecar
+    assert "Starting Rust diarization sidecar prestage in parallel with the Python backend." in sidecar
+    assert "ReadToEndAsync()" in sidecar
+    assert "WaitForExit($rustDiarizationRemainingMs)" in sidecar
+    assert "rust-diarization-sidecar-prestage" in sidecar
+    assert "Stop-ChildProcessTree -Process $rustDiarizationParallelProcess" in sidecar
+    assert 'Join-Path $env:SystemRoot "System32\\taskkill.exe"' in sidecar
+    assert "Final Rust diarization staging did not reuse the cache prepared by the parallel worker." in sidecar
+    assert sidecar.count("Copy-RustDiarizationSidecarToBackend") >= 3
+    assert sidecar.index(
+        "Starting Rust diarization sidecar prestage in parallel with the Python backend."
+    ) < sidecar.index('Invoke-TimedStep -Label "pyinstaller-build"')
+
+    backend_staging_index = sidecar.index(
+        'Invoke-TimedStep -Label "copy-to-tauri-release"'
+    )
+    shared_audio_index = sidecar.index(
+        "$script:RustAudioSidecarCopied = Copy-RustAudioSidecarToTauriRelease "
+        "-Root $RepoRoot -UseIsolatedTarget ([bool]$RustAudioIsolatedTarget)"
+    )
+    diarization_join_index = sidecar.index(
+        "if ($rustDiarizationParallelProcess) {\n"
+        "    $rustDiarizationParallelOk = $false"
+    )
+    final_diarization_staging_index = sidecar.index(
+        "if ($BundleRustDiarizationSidecar) {\n"
+        '    Invoke-TimedStep -Label "rust-diarization-sidecar-build"'
+    )
+    assert (
+        backend_staging_index
+        < shared_audio_index
+        < diarization_join_index
+        < final_diarization_staging_index
+    )
+
+    assert '$sidecarArgs += "-ParallelizeRustDiarizationBuild"' in installer
+    assert '$sidecarArgs += "-ParallelizeIndependentBuilds"' not in installer
+
+
 def test_sidecar_cache_key_excludes_frontend_dist() -> None:
     sidecar = read_script("scripts/build_tauri_backend_sidecar.ps1")
     spec = read_script("packaging/scriber-backend.spec")
@@ -399,16 +452,19 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "function Complete-TrackedReleaseProcesses" in build
     assert "$null = $process.Handle" in build
     assert 'Join-Path $RepoRoot "scripts\\ci\\prepare_tauri_app.ps1"' in build
-    assert 'Invoke-Checked -Label "Tauri app binary build"' in build
-    assert "& $powershellExe @tauriAppBuildArgs" in build
-    assert build.index("Complete-TrackedReleaseProcesses -Tasks $parallelTasks") < build.index(
-        'Invoke-Checked -Label "Tauri app binary build"'
+    assert '-Label "Tauri app binary build"' in build
+    assert "-Arguments $tauriAppBuildArgs" in build
+    assert build.index('-Label "Tauri app binary build"') < build.index(
+        "Complete-TrackedReleaseProcesses -Tasks $parallelTasks"
     )
     assert "$bundleExistingTauriApp = $UsePrebuiltTauriApp -or $tauriAppBuiltBeforeBundle" in build
     assert 'lastProgressStatus = ""' in build
     assert ".TotalSeconds -ge 60" in build
     assert "if (-not $task.Process -or $task.Disposed)" in build
-    assert "$RustAudioIsolatedTarget -or $ParallelizeIndependentBuilds" in build
+    assert "if ($RustAudioIsolatedTarget)" in build
+    assert "$RustAudioIsolatedTarget -or $ParallelizeIndependentBuilds" not in build
+    assert '$sidecarArgs += "-ParallelizeIndependentBuilds"' not in build
+    assert "Cargo's target lock safely bounds the rare overlap" in build
     assert "[switch]$ConfigureTauriUpdaterRuntime" in build
     assert "function Add-TauriBeforeBundleCommandSwitch" not in build
     assert "function Add-TauriBeforeBundleCommandValueSwitch" not in build
@@ -486,10 +542,14 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "github.event.inputs.refresh_release_cache_artifacts == 'true'" in workflow
     assert 'CARGO_INCREMENTAL: "1"' in workflow
     assert "CARGO_LOG: ${{ vars.SCRIBER_CARGO_LOG }}" in workflow
-    assert "cache: pip" in workflow
-    assert "cache-dependency-path: |\n            requirements-base.txt\n            requirements-build.txt" in workflow
-    assert "cache: npm" in workflow
-    assert "cache-dependency-path: build/cache-keys/frontend-dependencies.txt" in workflow
+    assert "cache: pip" not in workflow
+    assert "cache: npm" not in workflow
+    assert "Resolve package-store paths" in workflow
+    assert "Restore npm package store" in workflow
+    assert "Restore pip package store" in workflow
+    assert "steps.frontend-node-modules-cache.outputs.cache-hit != 'true'" in workflow
+    assert "scriber-npm-package-store-v1-" in workflow
+    assert "scriber-python-pip-store-v1-" in workflow
     assert "Using NSIS compression 'none' for non-tag cache/warmup build" in workflow
     assert "Using Tauri default NSIS compression for tag release" in workflow
     assert '$effectiveNsisCompression = "none"' in workflow
@@ -511,6 +571,12 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert workflow.index("Validate Outlook release configuration") < workflow.index(
         "Compute release cache keys"
     )
+    assert "Validate tag release signing preflight" in workflow
+    assert "if: startsWith(github.ref, 'refs/tags/v')" in workflow
+    assert "scripts\\ci\\validate_tag_release_preflight.ps1" in workflow
+    assert workflow.index("Validate Outlook release configuration") < workflow.index(
+        "Validate tag release signing preflight"
+    ) < workflow.index("Compute release cache keys")
     assert '[Guid]::TryParseExact($clientId, "D", [ref]$parsed)' in workflow
     assert "Official tag releases require a valid SCRIBER_OUTLOOK_CLIENT_ID" in workflow
     assert '"runtime`toutlook-client-id-present`t$($outlookClientIdPresent.ToString().ToLowerInvariant())"' in workflow
@@ -537,11 +603,11 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "key: scriber-backend-sidecar-v2-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}" in workflow
     assert "scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip" in workflow
     assert "Resolve cached FFmpeg Profile B media tools" in workflow
-    assert "Restore FFmpeg Profile B release artifact" in workflow
+    assert "Restore independent release-cache fallbacks in parallel" in workflow
     assert "Publish bounded finished component caches in parallel" in workflow
     assert "Restore Rust audio sidecar cache" in workflow
     assert "Frontend/src-tauri/target/release/incremental" in workflow
-    assert "scriber-rust-release-v2-${{ runner.os }}" in workflow
+    assert "scriber-rust-release-v2-${{ runner.os }}" not in workflow
     assert "scriber-rust-audio-sidecar-" in workflow
     assert "scriber-rust-diarization-sidecar-" in workflow
     assert "scriber-sherpa-onnx-archive-" in workflow
@@ -583,7 +649,7 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "scripts\\summarize_release_artifacts.py release-artifacts --output release-artifacts\\release-artifact-summary.json" in workflow
     assert "Release artifact timing brief" in workflow
     assert "release-artifacts\\release-artifact-summary.json" in workflow
-    assert "restore_profile_b_release_artifact.ps1" in workflow
+    assert "restore_component_cache_artifacts_parallel.ps1" in workflow
     assert "publish_finished_component_caches_parallel.ps1" in workflow
     assert "ffmpeg-profile-b-n7.0-v4" in workflow
     assert 'Name = "FFmpeg Profile B"' in workflow
@@ -604,14 +670,55 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS" in workflow
     assert "SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS" in workflow
     assert 'startsWith(github.ref, \'refs/tags/\')' in workflow
+    assert "github.ref == 'refs/heads/main'" in workflow
+    assert "github.event.inputs.refresh_release_cache_artifacts == 'true'" in workflow
+    assert "actions: write" in workflow
     assert '"-ParallelizeIndependentBuilds"' in workflow
-    assert "SCRIBER_PUBLISH_RUST_AUDIO_FINISHED_CACHE: ${{ steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-audio-sidecar-artifact.outputs.restored != 'true'" in workflow
-    assert "SCRIBER_PUBLISH_BACKEND_FINISHED_CACHE: ${{ steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.backend-sidecar-cache-selection.outputs.selected == 'true'" in workflow
+    assert "SCRIBER_PUBLISH_RUST_AUDIO_FINISHED_CACHE" in workflow
+    assert "SCRIBER_PUBLISH_BACKEND_FINISHED_CACHE" in workflow
+    assert "env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true'" in workflow
+    assert "steps.backend-sidecar-cache-selection.outputs.selected == 'true'" in workflow
     assert "if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true'" in workflow
     assert "Select current backend sidecar cache entry" in workflow
     assert "scripts\\ci\\select_backend_sidecar_cache_entry.ps1" in workflow
     assert "Restore exact Tauri app binary" in workflow
     assert "scripts\\ci\\sync_tauri_app_binary_cache.ps1" in workflow
+
+
+def test_release_workflow_parallelizes_only_disjoint_finished_cache_fallbacks() -> None:
+    workflow = read_script(".github/workflows/release-windows.yml")
+    helper = read_script("scripts/ci/restore_component_cache_artifacts_parallel.ps1")
+    generic_restorer = read_script("scripts/ci/restore_release_cache_artifact.ps1")
+    ffmpeg_restorer = read_script("scripts/ffmpeg/restore_profile_b_release_artifact.ps1")
+
+    restore_index = workflow.index("Restore independent release-cache fallbacks in parallel")
+    assert workflow.index("Restore Rust audio sidecar cache") < restore_index
+    assert workflow.index("Restore Rust diarization sidecar cache") < restore_index
+    assert workflow.index("Restore FFmpeg Profile B cache") < restore_index
+    assert restore_index < workflow.index("Report release cache hits")
+    assert workflow.count("Restore independent release-cache fallbacks in parallel") == 1
+    assert "Restore Rust audio sidecar release artifact" not in workflow
+    assert "Restore Rust diarization sidecar release artifact" not in workflow
+    assert "Restore FFmpeg Profile B release artifact" not in workflow
+
+    assert "Start-Job" in helper
+    assert "Wait-Job -Job $restoreJobs" in helper
+    assert "Stop-Job -Job" not in helper
+    assert "& $ScriptPath" in helper
+    assert "powershell.exe -NoProfile -File" not in helper
+    assert '$env:GITHUB_OUTPUT = $ChildOutputPath' in helper
+    assert '"{0}.github-output.txt" -f $component.Slug' in helper
+    assert 'DestinationPath = "build\\rust-audio-sidecar-cache"' in helper
+    assert 'DestinationPath = "build\\rust-diarization-sidecar-cache"' in helper
+    assert 'DestinationPath = "build\\ffmpeg-profile-b-msys2"' in helper
+    assert "RestorePython" not in helper
+    assert "python-wheelhouse" not in helper
+    assert "python-venv" not in helper
+    assert 'mode = "parallel-release-cache-fallback-restore"' in helper
+    assert "return" in generic_restorer
+    assert "return" in ffmpeg_restorer
+    assert "exit 0" not in generic_restorer
+    assert "exit 0" not in ffmpeg_restorer
 
 
 def test_finished_component_cache_publication_is_parallel_and_post_release() -> None:
@@ -630,6 +737,9 @@ def test_finished_component_cache_publication_is_parallel_and_post_release() -> 
     assert "SCRIBER_PUBLISH_RUST_AUDIO_FINISHED_CACHE" in workflow[caches_index:]
     assert "SCRIBER_PUBLISH_RUST_DIARIZATION_FINISHED_CACHE" in workflow[caches_index:]
     assert "SCRIBER_PUBLISH_BACKEND_FINISHED_CACHE" in workflow[caches_index:]
+    cache_publish_block = workflow[caches_index:]
+    assert cache_publish_block.count("env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true'") >= 5
+    assert "steps.backend-sidecar-cache-selection.outputs.selected == 'true'" in cache_publish_block
     assert "Publish FFmpeg Profile B release artifact" not in workflow
     assert "Publish Rust audio sidecar release artifact" not in workflow
     assert "Publish Rust diarization sidecar release artifact" not in workflow
@@ -650,6 +760,20 @@ def test_finished_component_cache_publication_is_parallel_and_post_release() -> 
     assert "powershell.exe -NoProfile -File" in helper
     assert ("Invoke-" + "Expression") not in helper
     assert ("-Encoded" + "Command") not in helper
+
+
+def test_release_cache_publisher_rechecks_idempotent_release_creation() -> None:
+    publisher = read_script("scripts/ci/publish_release_cache_artifact.ps1")
+    ffmpeg_publisher = read_script("scripts/ffmpeg/publish_profile_b_release_artifact.ps1")
+
+    assert "$releaseCreateExitCode -ne 0" in publisher
+    assert "$releaseRecheckExitCode" in publisher
+    assert 'release", "view", $Tag, "--repo", $Repo' in publisher
+    assert "continuing with the cache upload" in publisher
+    assert "Refusing cache publication for non-cache release tag" in publisher
+    assert "Refusing FFmpeg cache publication for non-cache release tag" in ffmpeg_publisher
+    assert "^release-cache-" in publisher
+    assert "^ffmpeg-profile-b-" in ffmpeg_publisher
 
 
 def test_release_automation_avoids_dynamic_powershell_payloads() -> None:
@@ -685,7 +809,75 @@ def test_parallel_tauri_prepare_helper_keeps_compile_and_bundle_contracts_separa
     assert 'npm run tauri:build -- --no-bundle --config "{0}" --ci 2>&1' in helper
     assert "npm run tauri:bundle" not in helper
     assert "Assert-UnderRoot" in helper
+    assert "function New-CompileOnlyTauriConfig" in helper
+    assert "$source.bundle.resources = @()" in helper
+    assert '"tauri.compile-only.conf.json"' in helper
+    assert "$compileConfigPath.Replace" in helper
     assert '$writer.WriteLine(("{0}`t{1}"' in helper
+
+
+def test_parallel_tauri_compile_config_strips_only_bundle_resources(tmp_path: Path) -> None:
+    frontend = tmp_path / "Frontend"
+    frontend.mkdir()
+    config_path = tmp_path / "build" / "tauri.generated.conf.json"
+    config_path.parent.mkdir()
+    source = {
+        "identifier": "com.example.scriber",
+        "bundle": {
+            "active": True,
+            "resources": {
+                "target/release/backend/": "backend/",
+                "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+            },
+        },
+        "plugins": {
+            "updater": {
+                "endpoints": ["https://example.invalid/latest.json"],
+                "pubkey": "public-test-key",
+            }
+        },
+    }
+    config_path.write_text(json.dumps(source), encoding="utf-8")
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    (fake_bin / "npm.cmd").write_text("@echo off\r\nexit /b 0\r\n", encoding="utf-8")
+    log_path = tmp_path / "build" / "tauri.log"
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    assert powershell, "PowerShell is required for the Tauri compile-config regression test"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "scripts" / "ci" / "prepare_tauri_app.ps1"),
+            "-Mode",
+            "BuildBinary",
+            "-RepoRoot",
+            str(tmp_path),
+            "-ConfigPath",
+            str(config_path),
+            "-TauriLogPath",
+            str(log_path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+
+    compile_config = json.loads(
+        (config_path.parent / "tauri.compile-only.conf.json").read_text(encoding="utf-8")
+    )
+    assert compile_config["bundle"]["resources"] == []
+    assert compile_config["bundle"]["active"] is True
+    assert compile_config["plugins"] == source["plugins"]
+    assert json.loads(config_path.read_text(encoding="utf-8")) == source
 
 
 def test_release_cache_key_script_normalizes_version_only_churn() -> None:
@@ -726,12 +918,52 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert 'flag`tskipBundledFfprobe`tfalse' in script
     assert 'flag`tvalidateSlimMediaTools`ttrue' in script
     assert 'flag`tpyInstallerClean`ttrue' in script
+    assert script.count('constant`ttoolchain`trust-1.97.0') == 3
     assert '$_.FullName -notmatch "\\\\__pycache__\\\\"' in script
     assert '$_.Extension -notin @(".pyc", ".pyo")' in script
     backend_block = script.split("$backendEntries = New-EntryList", 1)[1]
     assert '"scripts/build_tauri_backend_sidecar.ps1"' not in backend_block
     assert "Frontend/src-tauri/Cargo.toml" not in backend_block
     assert "Frontend/src-tauri/src/audio_sidecar.rs" not in backend_block
+
+
+def test_release_cache_gc_keeps_exactly_one_current_generation() -> None:
+    workflow = read_script(".github/workflows/release-windows.yml")
+    gc = read_script("scripts/ci/prune_obsolete_release_caches.ps1")
+
+    assert "[int]$RetainPerRollingFamily = 1" in gc
+    assert "[int]$ListLimit = 10000" in gc
+    assert "gh cache delete" in gc
+    assert "gh release delete" in gc
+    assert "gh release delete-asset" in gc
+    assert "--all" not in gc
+    assert "refs/heads/main" in gc
+    assert "release-cache-backend-sidecar-v2" in gc
+    assert "release-cache-rust-build-v2" in gc
+    assert "ffmpeg-profile-b-n7.0-v4" in gc
+    rolling_gc = gc.split("foreach ($family in $rollingFamilies)", 1)[1].split(
+        "# Ref-scoped caches", 1
+    )[0]
+    assert rolling_gc.index("[DateTimeOffset]$_.createdAt") < rolling_gc.index(
+        "[DateTimeOffset]$_.lastAccessedAt"
+    )
+    assert "Prune obsolete release caches" in workflow
+    assert "actions: write" in workflow
+    assert "env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && github.ref == 'refs/heads/main'" in workflow
+
+
+def test_python_release_environment_is_exact_and_reproducible() -> None:
+    workflow = read_script(".github/workflows/release-windows.yml")
+    requirements = read_script("requirements-build.txt")
+
+    venv_block = workflow.split("- name: Restore Python dependency cache", 1)[1].split(
+        "- name: Restore Python venv release artifact", 1
+    )[0]
+    assert "restore-keys:" not in venv_block
+    assert "pyinstaller==6.20.0" in requirements
+    assert "pyinstaller-hooks-contrib==2026.5" in requirements
+    assert "setuptools==80.10.1" in requirements
+    assert ">=" not in requirements
 
 
 def test_tauri_build_embeds_validated_outlook_configuration_for_backend() -> None:

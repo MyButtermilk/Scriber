@@ -196,6 +196,7 @@ $rustDependencyEntries.Add("constant`tprofile`trelease-incremental")
 Write-KeyFile -Name "rust-dependencies.txt" -Entries $rustDependencyEntries
 
 $rustEntries = New-EntryList
+$rustEntries.Add("constant`ttoolchain`trust-1.97.0")
 Add-ContentEntry -Entries $rustEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
 Add-ContentEntry -Entries $rustEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
 Add-RawFileEntry -Entries $rustEntries -Path "Frontend/src-tauri/build.rs"
@@ -236,6 +237,7 @@ $tauriAppEntries.Add("constant`tprofile`trelease")
 Write-KeyFile -Name "tauri-app-binary.txt" -Entries $tauriAppEntries
 
 $rustAudioEntries = New-EntryList
+$rustAudioEntries.Add("constant`ttoolchain`trust-1.97.0")
 Add-ContentEntry -Entries $rustAudioEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
 Add-ContentEntry -Entries $rustAudioEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
 foreach ($path in @(
@@ -250,6 +252,7 @@ foreach ($path in @(
 Write-KeyFile -Name "rust-audio-sidecar.txt" -Entries $rustAudioEntries
 
 $rustDiarizationEntries = New-EntryList
+$rustDiarizationEntries.Add("constant`ttoolchain`trust-1.97.0")
 foreach ($path in @(
     "native/scriber-diarization-sidecar/.cargo/config.toml",
     "native/scriber-diarization-sidecar/Cargo.toml",

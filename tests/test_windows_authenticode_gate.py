@@ -11,8 +11,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 AUTHENTICODE_SCRIPT = REPO_ROOT / "scripts" / "validate_windows_authenticode.ps1"
 BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_windows.ps1"
 RELEASE_CACHE_KEY_SCRIPT = REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1"
+RESTORE_RELEASE_CACHE_SCRIPT = REPO_ROOT / "scripts" / "ci" / "restore_release_cache_artifact.ps1"
+RESTORE_COMPONENT_CACHES_SCRIPT = REPO_ROOT / "scripts" / "ci" / "restore_component_cache_artifacts_parallel.ps1"
 RESTORE_FFMPEG_PROFILE_SCRIPT = REPO_ROOT / "scripts" / "ffmpeg" / "restore_profile_b_release_artifact.ps1"
 PUBLISH_FFMPEG_PROFILE_SCRIPT = REPO_ROOT / "scripts" / "ffmpeg" / "publish_profile_b_release_artifact.ps1"
+PUBLISH_RELEASE_CACHE_SCRIPT = REPO_ROOT / "scripts" / "ci" / "publish_release_cache_artifact.ps1"
+PRUNE_RELEASE_CACHES_SCRIPT = REPO_ROOT / "scripts" / "ci" / "prune_obsolete_release_caches.ps1"
+TAG_RELEASE_PREFLIGHT_SCRIPT = REPO_ROOT / "scripts" / "ci" / "validate_tag_release_preflight.ps1"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
 
 
@@ -43,8 +48,13 @@ def run_powershell(*args: str, env: dict[str, str] | None = None) -> subprocess.
         AUTHENTICODE_SCRIPT,
         BUILD_SCRIPT,
         RELEASE_CACHE_KEY_SCRIPT,
+        RESTORE_RELEASE_CACHE_SCRIPT,
+        RESTORE_COMPONENT_CACHES_SCRIPT,
         RESTORE_FFMPEG_PROFILE_SCRIPT,
         PUBLISH_FFMPEG_PROFILE_SCRIPT,
+        PUBLISH_RELEASE_CACHE_SCRIPT,
+        PRUNE_RELEASE_CACHES_SCRIPT,
+        TAG_RELEASE_PREFLIGHT_SCRIPT,
     ],
 )
 def test_release_powershell_scripts_parse(script: Path) -> None:
@@ -67,6 +77,41 @@ def test_release_powershell_scripts_parse(script: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "OK" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("script", "extra_args", "expected"),
+    [
+        (
+            PUBLISH_RELEASE_CACHE_SCRIPT,
+            ["-SourcePath", "missing-cache-source", "-Title", "Invalid"],
+            "Refusing cache publication for non-cache release tag",
+        ),
+        (
+            PUBLISH_FFMPEG_PROFILE_SCRIPT,
+            ["-BuildRoot", "missing-ffmpeg-cache"],
+            "Refusing FFmpeg cache publication for non-cache release tag",
+        ),
+    ],
+)
+def test_cache_publishers_refuse_public_app_release_tags(
+    script: Path, extra_args: list[str], expected: str
+) -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-File",
+        str(script),
+        "-Repo",
+        "MyButtermilk/Scriber",
+        "-Tag",
+        "v0.5.13",
+        "-AssetName",
+        "must-never-upload.zip",
+        *extra_args,
+    )
+
+    assert result.returncode != 0
+    assert expected in (result.stdout + result.stderr)
 
 
 def test_authenticode_gate_rejects_unsigned_artifact(tmp_path: Path) -> None:
@@ -122,3 +167,127 @@ def test_release_workflow_exposes_authenticode_gate_switches() -> None:
     assert "SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP" in workflow
     assert "-RequireAuthenticodeSignature" in workflow
     assert "-RequireAuthenticodeTimestamp" in workflow
+
+
+def tag_release_preflight_env(**overrides: str) -> dict[str, str]:
+    values = {
+        "SCRIBER_TAURI_UPDATER_PUBLIC_KEY": "",
+        "SCRIBER_TAURI_UPDATER_ENDPOINT": "",
+        "TAURI_SIGNING_PRIVATE_KEY": "",
+        "TAURI_SIGNING_PRIVATE_KEY_PATH": "",
+        "SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE": "",
+        "SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE": "",
+        "SCRIBER_AUTHENTICODE_PUBLISHER": "",
+        "SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP": "",
+    }
+    values.update(overrides)
+    return values
+
+
+def test_tag_release_preflight_accepts_signed_updater_without_logging_keys() -> None:
+    public_key = "PUBLIC_KEY_MUST_NOT_BE_LOGGED"
+    private_key = "PRIVATE_KEY_MUST_NOT_BE_LOGGED"
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(TAG_RELEASE_PREFLIGHT_SCRIPT),
+        env=tag_release_preflight_env(
+            SCRIBER_TAURI_UPDATER_PUBLIC_KEY=public_key,
+            TAURI_SIGNING_PRIVATE_KEY=private_key,
+            SCRIBER_TAURI_UPDATER_ENDPOINT=(
+                "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json"
+            ),
+            SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE="1",
+            SCRIBER_AUTHENTICODE_PUBLISHER="Trusted Publisher",
+            SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP="1",
+        ),
+    )
+
+    combined_output = result.stdout + result.stderr
+    assert result.returncode == 0, combined_output
+    assert "Tag release preflight passed" in result.stdout
+    assert public_key not in combined_output
+    assert private_key not in combined_output
+
+
+def test_tag_release_preflight_rejects_missing_updater_signing_without_override() -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(TAG_RELEASE_PREFLIGHT_SCRIPT),
+        env=tag_release_preflight_env(),
+    )
+
+    assert result.returncode == 1
+    assert "Signed v* releases require SCRIBER_TAURI_UPDATER_PUBLIC_KEY" in result.stderr
+
+
+def test_tag_release_preflight_allows_explicit_unsigned_override() -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(TAG_RELEASE_PREFLIGHT_SCRIPT),
+        env=tag_release_preflight_env(SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE="1"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Intentional unsigned v* release override is enabled" in result.stdout
+
+
+def test_tag_release_preflight_rejects_non_https_updater_endpoint() -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(TAG_RELEASE_PREFLIGHT_SCRIPT),
+        env=tag_release_preflight_env(
+            SCRIBER_TAURI_UPDATER_PUBLIC_KEY="PUBLIC_KEY",
+            TAURI_SIGNING_PRIVATE_KEY="PRIVATE_KEY",
+            SCRIBER_TAURI_UPDATER_ENDPOINT="http://example.test/latest.json",
+        ),
+    )
+
+    assert result.returncode == 1
+    assert "must be an absolute HTTPS URL" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_error"),
+    [
+        (
+            {"SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP": "1"},
+            "SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP=1 requires",
+        ),
+        (
+            {"SCRIBER_AUTHENTICODE_PUBLISHER": "Unused Publisher"},
+            "SCRIBER_AUTHENTICODE_PUBLISHER is only valid",
+        ),
+        (
+            {"SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE": "true"},
+            "SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE must be unset, '0', or '1'",
+        ),
+    ],
+)
+def test_tag_release_preflight_rejects_inconsistent_policy(
+    overrides: dict[str, str], expected_error: str
+) -> None:
+    policy = {"SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE": "1"}
+    policy.update(overrides)
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(TAG_RELEASE_PREFLIGHT_SCRIPT),
+        env=tag_release_preflight_env(**policy),
+    )
+
+    assert result.returncode == 1
+    assert expected_error in result.stderr

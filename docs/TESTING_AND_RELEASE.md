@@ -671,6 +671,13 @@ It:
 - runs automatically only on `v*` tags as the signed updater release path;
   `workflow_dispatch` remains available for explicit diagnostics and cache
   maintenance. Ordinary `main` pushes do not build a second installer,
+- runs the tag-only signing preflight immediately after checkout and Outlook
+  validation, before computing or restoring any release cache. It rejects
+  missing updater keys unless the explicit unsigned-tag override is `1`,
+  rejects non-HTTPS updater endpoints, verifies a configured private-key path
+  exists, and rejects Authenticode timestamp/publisher settings that would be
+  silently ignored because signature verification is disabled. The preflight
+  logs only configuration state and never key material, passwords, or paths,
 - computes normalized release cache key files before dependency setup so
   version-only changes in `package-lock.json` and `src/version.py` do not
   invalidate dependency caches that do not actually depend on the app version.
@@ -684,28 +691,32 @@ It:
   refresh. A successful tag does promote a missing exact frozen backend,
   Profile B FFmpeg, or focused Rust sidecar snapshot to its internal cache
   release so sibling tags do not repeat the same unchanged build,
-- keeps full Actions-cache saves and multi-GB durable snapshots behind
-  `refresh_release_cache_artifacts=true`; bounded finished-product self-healing
-  is automatic. A normal release still compiles, packages, signs, verifies, and
-  publishes exactly one installer in one tag-triggered workflow run,
+- keeps full Actions-cache saves and multi-GB durable snapshots behind a
+  `main`-branch `refresh_release_cache_artifacts=true` maintenance run; bounded
+  finished-product self-healing is automatic for successful tags. Manual
+  feature-branch diagnostics cannot replace shared caches. A normal release still compiles, packages,
+  signs, verifies, and publishes exactly one installer in one tag-triggered
+  workflow run,
 - publishes and verifies the signed app/updater before bounded cache
   maintenance. Missing FFmpeg, backend, audio, and diarization cache products
   are then uploaded concurrently by
   `scripts\ci\publish_finished_component_caches_parallel.ps1`; each child has
   a private `GITHUB_OUTPUT`, and failures remain visible warnings without
   delaying or invalidating the verified app release,
-- overlaps frontend type checking with sidecar preparation, but starts the
-  Tauri `--no-bundle` compile only after the sidecar has staged
-  `target/release/backend`; this resource dependency is required even though
-  NSIS bundling happens later,
+- overlaps frontend type checking, sidecar preparation, and the Tauri
+  `--no-bundle` compile. The compile uses a generated config overlay with
+  `bundle.resources: []`; after the join, `tauri bundle` uses the original full
+  generated config and therefore revalidates and packages the staged backend,
 - restores release caches for Python `.venv`, Python wheels, frontend
   `node_modules`, Rust/Tauri, backend sidecars, and Profile B media tools. The
-  Node setup step also restores the npm package store from the normalized
-  `build\cache-keys\frontend-dependencies.txt` input, so a cold `node_modules`
-  cache can still install from a warmer download cache without version-only
-  lockfile churn changing that fallback key. On an exact `node_modules` cache
-  hit, the workflow checks npm install metadata only; `npm run check` remains
-  the real frontend correctness gate inside `scripts\build_windows.ps1`,
+  explicitly keyed npm package store is restored only after an exact
+  `node_modules` miss, so the hot path avoids an otherwise redundant archive
+  download while a cold install can still reuse downloaded packages. Its key
+  uses normalized `build\cache-keys\frontend-dependencies.txt`, so version-only
+  lockfile churn does not change that fallback. On an exact `node_modules`
+  cache hit, the workflow checks npm install metadata only; `npm run check`
+  remains the real frontend correctness gate inside
+  `scripts\build_windows.ps1`,
 - restores the backend sidecar cache before Python `.venv` and wheelhouse
   restore. When a prebuilt backend sidecar is available, the workflow skips the
   Python dependency environment entirely and lets the sidecar builder perform
@@ -716,9 +727,16 @@ It:
 - restores Python `.venv` from the internal `release-cache-python-venv-v1`
   artifact when the ref-scoped Actions cache is cold, so unchanged Python
   requirements can skip pip installation entirely after `pip check`,
-- restores setup-python's pip download/build cache from
-  `requirements-base.txt` and `requirements-build.txt` as a final fallback when
-  both the prebuilt backend sidecar and wheelhouse/venv layers miss,
+- restores an explicitly keyed pip download/build store from
+  `requirements-base.txt` and `requirements-build.txt` only as a final fallback
+  when the prebuilt backend sidecar and both wheelhouse/venv layers miss;
+  `actions/setup-python` does not eagerly restore that store on the hot path,
+- keeps GitHub-owned `actions/cache/restore` steps sequential within one job,
+  but downloads the independent Rust-audio, Rust-diarization, and Profile B
+  FFmpeg internal-artifact fallbacks concurrently after their Actions-cache
+  results are known. The helper uses fixed disjoint destinations and private
+  child output files; overlapping Rust/main-target, backend, `.venv`, and
+  wheelhouse restores remain serialized,
 - can import the newest internal Rust/Tauri cache artifact only when Actions
   restore reports no matched key. A partial `cache-matched-key` is retained as
   incremental state instead of downloading and expanding another 1.6 GB,
@@ -726,9 +744,9 @@ It:
   not change for ordinary app source or UI edits. A separate exact Tauri app
   binary cache is keyed by the complete app inputs, concrete version, commit,
   toolchain, target/profile, and updater-runtime fingerprint. A validated hit
-  uses `tauri bundle`. A miss prepares the sidecar first, then uses `tauri
-  build --no-bundle` after `target/release/backend` exists, followed by the
-  same `tauri bundle` path,
+  uses `tauri bundle`. On a miss, the compile-only overlay allows `tauri build
+  --no-bundle` to overlap the sidecar producer; the same full-config `tauri
+  bundle` path runs only after both complete,
 - prunes `build\tauri-sidecar-cache` to the one metadata-attested internal key
   before Actions save or durable publication, preventing cache generations
   from recursively accumulating older complete PyInstaller sidecars,
@@ -840,9 +858,13 @@ Normal tag releases restore internal release-cache artifacts and never repack
 the large Python `.venv`, wheelhouse, or Rust target automatically. When a
 bounded exact backend, audio/diarization sidecar, or Profile B asset was missing
 and had to be rebuilt, the successful tag publishes that one attested product
-for later sibling tags. Unchanged assets are not uploaded again. A full manual
-maintenance refresh remains available through `workflow_dispatch` with
-`refresh_release_cache_artifacts=true`.
+for later sibling tags; unchanged exact assets are not uploaded again on that
+tag path. A manual `main` run with
+`refresh_release_cache_artifacts=true` deliberately republishes all four
+bounded products so missing or empty durable cache releases are repaired. The
+final GC keeps exactly one Actions-cache generation per allowlisted family,
+removes superseded internal cache-release tags, and retains only the globally
+newest asset inside each current cache release.
 
 The Python backend sidecar cache is allowed to be version-neutral for
 `src/version.py` because the Tauri supervisor passes the installed app version
@@ -920,6 +942,11 @@ copying the checked-in `tauri.conf.json`. An empty
 `v*` tag release jobs fail when updater signing is missing unless
 `SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE=1` is set deliberately for a one-off
 unsigned tag test build.
+That decision is validated by
+`scripts\ci\validate_tag_release_preflight.ps1` before cache restores or tool
+setup. The same preflight validates the effective default/custom updater URL as
+an absolute HTTPS endpoint and checks conditional Authenticode policy values;
+the later generated-config/build validation remains the local-build safety net.
 `scripts\create_release_metadata.py` prefers artifacts whose filename contains
 the current app version when auto-discovering release files, and
 `scripts\build_windows.ps1` applies the same current-version filter before
@@ -1310,7 +1337,8 @@ Installer speed evidence:
   builds: with `SCRIBER_NSIS_COMPRESSION=bzip2` set for signed tags, the main
   warmup still used `nsisCompression=none`, completed the job in `2m17s`, and
   spent `58.44s` inside `build_windows.ps1`.
-- Main run `29003544425` tested removing `dtolnay/rust-toolchain@stable` in
+- Main run `29003544425` tested removing the managed
+  `dtolnay/rust-toolchain` setup in
   favor of preinstalled runner Rust. It failed as an optimization: the job took
   `8m9s`, `build_windows.ps1` took `413.9s`, and the Tauri bundle log showed
   `285` Cargo compile lines. Treat that path as rejected unless the Rust cache
@@ -1318,6 +1346,9 @@ Installer speed evidence:
 - Main run `29004179335` verified the rollback to `dtolnay`: the job returned
   to `2m34s`, `build_windows.ps1` took `55.1s`, and the Tauri bundle log showed
   only the expected single `scriber-desktop` compile line.
+- Release and hybrid workflows now pin that managed toolchain at `1.97.0`, the
+  version behind the current hot cache. Toolchain upgrades must update the pin,
+  rebuild the Rust cache, and prove a second hot run together.
 - Non-tag runs after the metadata-only artifact change should no longer upload
   the full uncompressed `none` installer by default. Inspect
   `artifact-upload-mode.json` in `scriber-windows-release`; it should report

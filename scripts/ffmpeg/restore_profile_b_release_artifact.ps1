@@ -34,7 +34,7 @@ Write-GitHubOutput -Name "source" -Value "none"
 
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
     Write-Warning "GitHub CLI is not available; skipping FFmpeg Profile B release artifact restore."
-    exit 0
+    return
 }
 
 $artifactDir = Join-Path (Split-Path $BuildRoot -Parent) "ffmpeg-profile-b-release-artifact"
@@ -58,12 +58,12 @@ $downloadExitCode = Invoke-GhCommand -Arguments @(
 )
 if ($downloadExitCode -ne 0) {
     Write-Host "FFmpeg Profile B release artifact '$AssetName' was not found on release '$Tag'."
-    exit 0
+    return
 }
 
 if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) {
     Write-Warning "GitHub release download completed, but asset was not found at $assetPath."
-    exit 0
+    return
 }
 
 if (Test-Path -LiteralPath $BuildRoot -PathType Container) {

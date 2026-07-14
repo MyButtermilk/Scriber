@@ -18,6 +18,7 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   build-windows:
@@ -34,13 +35,13 @@ jobs:
       # A tag is the only automatic full installer build. Heavy cache saves and
       # durable snapshots are explicit maintenance so a normal release needs
       # one workflow run instead of a main warm-up followed by the tag build.
-      SCRIBER_SAVE_ACTIONS_CACHES: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
-      SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
-      # Successful tags self-heal bounded finished-product caches. This avoids
-      # rebuilding an unchanged PyInstaller backend or Rust sidecar on every
-      # sibling tag without uploading the multi-GB Cargo target or Python venv.
-      SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS: ${{ (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true')) && 'true' || 'false' }}
-      SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
+      SCRIBER_SAVE_ACTIONS_CACHES: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
+      SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
+      # Successful tags self-heal bounded finished-product caches. A manual
+      # maintenance run may replace shared cache releases only from main and
+      # only when the operator explicitly requested a full cache refresh.
+      SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS: ${{ (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts == 'true')) && 'true' || 'false' }}
+      SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}
       SCRIBER_OUTLOOK_CLIENT_ID: ${{ vars.SCRIBER_OUTLOOK_CLIENT_ID }}
       CARGO_HOME: ${{ github.workspace }}/.cargo
@@ -62,6 +63,21 @@ jobs:
             throw "Official tag releases require a valid SCRIBER_OUTLOOK_CLIENT_ID repository variable in canonical GUID form."
           }
           Write-Host "Outlook public-client configuration is present and valid."
+
+      - name: Validate tag release signing preflight
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          SCRIBER_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.SCRIBER_TAURI_UPDATER_PUBLIC_KEY }}
+          SCRIBER_TAURI_UPDATER_ENDPOINT: ${{ vars.SCRIBER_TAURI_UPDATER_ENDPOINT }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PATH: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PATH }}
+          SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE: ${{ vars.SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE }}
+          SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE: ${{ vars.SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE }}
+          SCRIBER_AUTHENTICODE_PUBLISHER: ${{ vars.SCRIBER_AUTHENTICODE_PUBLISHER }}
+          SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP: ${{ vars.SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\validate_tag_release_preflight.ps1
 
       - name: Compute release cache keys
         shell: pwsh
@@ -119,21 +135,34 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: |
-            requirements-base.txt
-            requirements-build.txt
 
       - name: Set up Node
         id: setup-node
         uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: build/cache-keys/frontend-dependencies.txt
+
+      - name: Resolve package-store paths
+        id: package-store-paths
+        shell: pwsh
+        run: |
+          $npmCache = ([string](npm config get cache)).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "Resolving the npm package-store path failed with exit code $LASTEXITCODE."
+          }
+          $pipCache = ([string](python -m pip cache dir)).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "Resolving the pip package-store path failed with exit code $LASTEXITCODE."
+          }
+          if ([string]::IsNullOrWhiteSpace($npmCache) -or [string]::IsNullOrWhiteSpace($pipCache)) {
+            throw "Could not resolve npm and pip package-store paths."
+          }
+          "npm=$npmCache" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "pip=$pipCache" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Resolved npm and pip package-store paths for conditional restore."
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.0
 
       - name: Add Rust toolchain cache fingerprint
         shell: pwsh
@@ -211,8 +240,6 @@ jobs:
           key: scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}
           restore-keys: |
             scriber-rust-dependencies-v1-${{ runner.os }}-
-            scriber-rust-release-v2-${{ runner.os }}-
-            scriber-rust-release-${{ runner.os }}-
 
       - name: Restore Rust build release artifact
         id: rust-build-artifact
@@ -271,8 +298,6 @@ jobs:
         with:
           path: build/rust-audio-sidecar-cache
           key: scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}
-          restore-keys: |
-            scriber-rust-audio-sidecar-${{ runner.os }}-
 
       - name: Restore Rust diarization sidecar cache
         id: rust-diarization-sidecar-cache
@@ -280,8 +305,6 @@ jobs:
         with:
           path: build/rust-diarization-sidecar-cache
           key: scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}
-          restore-keys: |
-            scriber-rust-diarization-sidecar-${{ runner.os }}-
 
       - name: Restore Sherpa ONNX static archive cache
         id: sherpa-onnx-archive-cache
@@ -305,8 +328,6 @@ jobs:
         with:
           path: build/tauri-sidecar-cache
           key: scriber-backend-sidecar-v2-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}
-          restore-keys: |
-            scriber-backend-sidecar-v2-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-
 
       - name: Restore backend sidecar release artifact
         id: backend-sidecar-artifact
@@ -328,8 +349,6 @@ jobs:
         with:
           path: .venv
           key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
-          restore-keys: |
-            scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-
 
       - name: Restore Python venv release artifact
         id: python-venv-artifact
@@ -344,9 +363,38 @@ jobs:
             -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}.zip" `
             -DestinationPath .venv
 
+      - name: Validate restored Python environment
+        id: python-venv-validation
+        if: steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true'
+        shell: pwsh
+        run: |
+          $venvPython = ".\.venv\Scripts\python.exe"
+          $markerPath = ".\.venv\.scriber-release-python-dependencies-key"
+          $requirementsKey = "${{ runner.os }}|${{ steps.setup-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}"
+          $trustedRestore = (
+            "${{ steps.python-venv-cache.outputs.cache-hit }}" -eq "true" -or
+            "${{ steps.python-venv-artifact.outputs.restored }}" -eq "true"
+          )
+          $markerMatches = (
+            (Test-Path -LiteralPath $markerPath -PathType Leaf) -and
+            ((Get-Content -LiteralPath $markerPath -Raw).Trim() -eq $requirementsKey)
+          )
+          $usable = $false
+          if ((Test-Path -LiteralPath $venvPython -PathType Leaf) -and ($trustedRestore -or $markerMatches)) {
+            & $venvPython -m pip check
+            if ($LASTEXITCODE -eq 0) {
+              $usable = $true
+              $requirementsKey | Set-Content -LiteralPath $markerPath -Encoding ascii
+            } else {
+              Write-Warning "Restored Python environment failed pip check; dependency recovery is required."
+            }
+          }
+          "usable=$(if ($usable) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Restored Python environment usable without wheelhouse recovery: $($usable.ToString().ToLowerInvariant())"
+
       - name: Restore Python wheelhouse cache
         id: python-wheelhouse-cache
-        if: steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true'
+        if: steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.python-venv-validation.outputs.usable != 'true'
         uses: actions/cache/restore@v6
         with:
           path: build/python-wheelhouse
@@ -360,12 +408,20 @@ jobs:
         with:
           path: Frontend/node_modules
           key: scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}
+
+      - name: Restore npm package store
+        id: npm-package-store-cache
+        if: steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.package-store-paths.outputs.npm }}
+          key: scriber-npm-package-store-v1-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}
           restore-keys: |
-            scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-
+            scriber-npm-package-store-v1-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-
 
       - name: Restore Python wheelhouse release artifact
         id: python-wheelhouse-artifact
-        if: steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true'
+        if: steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.python-venv-validation.outputs.usable != 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -375,32 +431,6 @@ jobs:
             -Tag $env:SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG `
             -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}.zip" `
             -DestinationPath build\python-wheelhouse
-
-      - name: Restore Rust audio sidecar release artifact
-        id: rust-audio-sidecar-artifact
-        if: steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\restore_release_cache_artifact.ps1 `
-            -Repo "${{ github.repository }}" `
-            -Tag $env:SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG `
-            -AssetName "scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}.zip" `
-            -DestinationPath build\rust-audio-sidecar-cache
-
-      - name: Restore Rust diarization sidecar release artifact
-        id: rust-diarization-sidecar-artifact
-        if: steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\restore_release_cache_artifact.ps1 `
-            -Repo "${{ github.repository }}" `
-            -Tag $env:SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG `
-            -AssetName "scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}.zip" `
-            -DestinationPath build\rust-diarization-sidecar-cache
 
       - name: Restore FFmpeg Profile B cache
         id: ffmpeg-profile-b-cache
@@ -413,22 +443,49 @@ jobs:
             build/ffmpeg-profile-b-msys2/media-preparation-smoke-profile-b.json
             build/ffmpeg-profile-b-msys2/profile-b-msys2-build-report.json
           key: scriber-ffmpeg-profile-b-msys2-n7.0-v4-${{ runner.os }}
-          restore-keys: |
-            scriber-ffmpeg-profile-b-msys2-n7.0-v4-${{ runner.os }}
-            scriber-ffmpeg-profile-b-msys2-n7.0-${{ runner.os }}-
 
-      - name: Restore FFmpeg Profile B release artifact
-        id: ffmpeg-profile-b-artifact
-        if: steps.ffmpeg-profile-b-cache.outputs.cache-hit != 'true'
+      - name: Restore independent release-cache fallbacks in parallel
+        id: component-cache-artifacts
+        if: steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' || steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true' || steps.ffmpeg-profile-b-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 10
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ffmpeg\restore_profile_b_release_artifact.ps1 `
-            -Repo "${{ github.repository }}" `
-            -Tag $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG `
-            -AssetName $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME `
-            -BuildRoot build\ffmpeg-profile-b-msys2
+          $restoreArgs = @(
+            "-Repo", "${{ github.repository }}",
+            "-RustAudioTag", $env:SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG,
+            "-RustAudioAssetName", "scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}.zip",
+            "-RustDiarizationTag", $env:SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG,
+            "-RustDiarizationAssetName", "scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}.zip",
+            "-FfmpegTag", $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG,
+            "-FfmpegAssetName", $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME
+          )
+          if ("${{ steps.rust-audio-sidecar-cache.outputs.cache-hit }}" -ne "true") {
+            $restoreArgs += "-RestoreRustAudio"
+          }
+          if ("${{ steps.rust-diarization-sidecar-cache.outputs.cache-hit }}" -ne "true") {
+            $restoreArgs += "-RestoreRustDiarization"
+          }
+          if ("${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}" -ne "true") {
+            $restoreArgs += "-RestoreFfmpeg"
+          }
+          & .\scripts\ci\restore_component_cache_artifacts_parallel.ps1 @restoreArgs
+
+      - name: Restore pip package store
+        id: python-pip-store-cache
+        if: >-
+          steps.backend-sidecar-cache.outputs.cache-hit != 'true' &&
+          steps.backend-sidecar-artifact.outputs.restored != 'true' &&
+          steps.python-venv-validation.outputs.usable != 'true' &&
+          steps.python-wheelhouse-cache.outputs.cache-hit != 'true' &&
+          steps.python-wheelhouse-artifact.outputs.restored != 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.package-store-paths.outputs.pip }}
+          key: scriber-python-pip-store-v1-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
+          restore-keys: |
+            scriber-python-pip-store-v1-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-
 
       - name: Report release cache hits
         shell: pwsh
@@ -497,11 +554,12 @@ jobs:
 
           $pythonVenvCacheHit = Normalize-CacheOutput "${{ steps.python-venv-cache.outputs.cache-hit }}"
           $pythonVenvArtifactRestored = Normalize-CacheOutput "${{ steps.python-venv-artifact.outputs.restored }}"
+          $pythonVenvValidated = Normalize-CacheOutput "${{ steps.python-venv-validation.outputs.usable }}"
           $pythonWheelhouseCacheHit = Normalize-CacheOutput "${{ steps.python-wheelhouse-cache.outputs.cache-hit }}"
           $pythonWheelhouseArtifactRestored = Normalize-CacheOutput "${{ steps.python-wheelhouse-artifact.outputs.restored }}"
-          $pythonPipStoreCacheHit = Normalize-CacheOutput "${{ steps.setup-python.outputs.cache-hit }}"
+          $pythonPipStoreCacheHit = Normalize-CacheOutput "${{ steps.python-pip-store-cache.outputs.cache-hit }}"
           $frontendNodeModulesCacheHit = Normalize-CacheOutput "${{ steps.frontend-node-modules-cache.outputs.cache-hit }}"
-          $npmPackageStoreCacheHit = Normalize-CacheOutput "${{ steps.setup-node.outputs.cache-hit }}"
+          $npmPackageStoreCacheHit = Normalize-CacheOutput "${{ steps.npm-package-store-cache.outputs.cache-hit }}"
           $backendSidecarCacheHit = Normalize-CacheOutput "${{ steps.backend-sidecar-cache.outputs.cache-hit }}"
           $backendSidecarArtifactRestored = Normalize-CacheOutput "${{ steps.backend-sidecar-artifact.outputs.restored }}"
           $backendSidecarPrebuilt = ($backendSidecarCacheHit -eq "true") -or ($backendSidecarArtifactRestored -eq "true")
@@ -515,12 +573,12 @@ jobs:
             $rustBuildArtifactAsset = "none"
           }
           $rustAudioSidecarCacheHit = Normalize-CacheOutput "${{ steps.rust-audio-sidecar-cache.outputs.cache-hit }}"
-          $rustAudioSidecarArtifactRestored = Normalize-CacheOutput "${{ steps.rust-audio-sidecar-artifact.outputs.restored }}"
+          $rustAudioSidecarArtifactRestored = Normalize-CacheOutput "${{ steps.component-cache-artifacts.outputs.rust-audio-sidecar-restored }}"
           $rustDiarizationSidecarCacheHit = Normalize-CacheOutput "${{ steps.rust-diarization-sidecar-cache.outputs.cache-hit }}"
-          $rustDiarizationSidecarArtifactRestored = Normalize-CacheOutput "${{ steps.rust-diarization-sidecar-artifact.outputs.restored }}"
+          $rustDiarizationSidecarArtifactRestored = Normalize-CacheOutput "${{ steps.component-cache-artifacts.outputs.rust-diarization-sidecar-restored }}"
           $sherpaOnnxArchiveCacheHit = Normalize-CacheOutput "${{ steps.sherpa-onnx-archive-cache.outputs.cache-hit }}"
           $ffmpegProfileBCacheHit = Normalize-CacheOutput "${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}"
-          $ffmpegProfileBArtifactRestored = Normalize-CacheOutput "${{ steps.ffmpeg-profile-b-artifact.outputs.restored }}"
+          $ffmpegProfileBArtifactRestored = Normalize-CacheOutput "${{ steps.component-cache-artifacts.outputs.ffmpeg-profile-b-restored }}"
           $tauriBundlerCacheHit = Normalize-CacheOutput "${{ steps.tauri-bundler-cache.outputs.cache-hit }}"
           $tauriAppBinaryCacheHit = Normalize-CacheOutput "${{ steps.tauri-app-binary-cache.outputs.cache-hit }}"
 
@@ -536,9 +594,15 @@ jobs:
             $rustBuildEffective = "miss"
           }
 
-          $pythonVenvEffective = if ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } else { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored }
-          $pythonWheelhouseEffective = if ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } else { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored }
-          $pythonPipStoreEffective = if ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($pythonPipStoreCacheHit -eq "true") { "actions-cache-exact" } elseif ($pythonPipStoreCacheHit -eq "false") { "actions-cache-restore-key-or-miss" } else { "miss" }
+          $pythonVenvEffective = if ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($pythonVenvValidated -eq "true") { "validated-restored-environment" } else { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored }
+          $pythonWheelhouseEffective = if ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($pythonVenvValidated -eq "true") { "not-needed-validated-venv" } else { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored }
+          $pythonPipStoreNotNeeded = (
+            $backendSidecarPrebuilt -or
+            $pythonVenvValidated -eq "true" -or
+            $pythonWheelhouseCacheHit -eq "true" -or
+            $pythonWheelhouseArtifactRestored -eq "true"
+          )
+          $pythonPipStoreEffective = if ($pythonPipStoreNotNeeded) { "not-needed-restored-python-product" } elseif ($pythonPipStoreCacheHit -eq "true") { "actions-cache-exact" } elseif ($pythonPipStoreCacheHit -eq "false") { "actions-cache-restore-key-or-miss" } else { "miss" }
           $npmPackageStoreEffective = if ($frontendNodeModulesCacheHit -eq "true") { "not-needed-node_modules" } elseif ($npmPackageStoreCacheHit -eq "true") { "actions-cache-exact" } elseif ($npmPackageStoreCacheHit -eq "false") { "actions-cache-restore-key-or-miss" } else { "miss" }
 
           $rows = @(
@@ -560,7 +624,9 @@ jobs:
           $pathRows = @(
             Get-PathEvidence "Python venv" @(".venv")
             Get-PathEvidence "Python wheelhouse" @("build\python-wheelhouse")
+            Get-PathEvidence "Python pip package store" @("${{ steps.package-store-paths.outputs.pip }}")
             Get-PathEvidence "Frontend node_modules" @("Frontend\node_modules")
+            Get-PathEvidence "npm package store" @("${{ steps.package-store-paths.outputs.npm }}")
             Get-PathEvidence "Backend sidecar" @("build\tauri-sidecar-cache")
             Get-PathEvidence "Rust build" @(".cargo\registry\index", ".cargo\registry\cache", ".cargo\git\db", "Frontend\src-tauri\target\release\.fingerprint", "Frontend\src-tauri\target\release\deps", "Frontend\src-tauri\target\release\incremental")
             Get-PathEvidence "Rust build Cargo cache" @(".cargo\registry\index", ".cargo\registry\cache", ".cargo\git\db")
@@ -599,6 +665,7 @@ jobs:
               asset = $rustBuildArtifactAsset
             }
             backendSidecarPrebuilt = $backendSidecarPrebuilt
+            pythonVenvValidated = $pythonVenvValidated
           } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $cacheSummaryPath -Encoding utf8
           Write-Host "Wrote machine-readable cache summary: $cacheSummaryPath"
           Write-Host "Rust build release artifact exact: $rustBuildArtifactExact"
@@ -640,38 +707,47 @@ jobs:
           $requirementsKey = "${{ runner.os }}|${{ steps.setup-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}"
           $markerPath = ".\.venv\.scriber-release-python-dependencies-key"
           $venvRebuilt = $false
-          New-Item -ItemType Directory -Force -Path $wheelhouse | Out-Null
+          $wheelhouseBuilt = $false
           if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
             python -m venv .venv
-          }
-
-          $allowMissingMarker = ("${{ steps.python-venv-cache.outputs.cache-hit }}" -eq "true") -or ("${{ steps.python-venv-artifact.outputs.restored }}" -eq "true")
-          $markerMatches = (Test-Path -LiteralPath $markerPath -PathType Leaf) -and ((Get-Content -LiteralPath $markerPath -Raw).Trim() -eq $requirementsKey)
-          $venvUsable = $false
-          if ($allowMissingMarker -or $markerMatches) {
-            & $venvPython -m pip check
-            if ($LASTEXITCODE -eq 0) {
-              $venvUsable = $true
-              $requirementsKey | Set-Content -LiteralPath $markerPath -Encoding ascii
-            } else {
-              Write-Warning "Restored Python venv failed pip check; reinstalling dependencies."
+            if ($LASTEXITCODE -ne 0) {
+              throw "Creating the Python release environment failed with exit code $LASTEXITCODE."
             }
           }
+
+          $venvUsable = "${{ steps.python-venv-validation.outputs.usable }}" -eq "true"
 
           if ($venvUsable) {
             Write-Host "Using restored Python venv; requirements key is current."
           } else {
             $venvRebuilt = $true
+            New-Item -ItemType Directory -Force -Path $wheelhouse | Out-Null
             & $venvPython -m pip install --upgrade pip
+            if ($LASTEXITCODE -ne 0) {
+              throw "Upgrading pip in the release environment failed with exit code $LASTEXITCODE."
+            }
             if (("${{ steps.python-wheelhouse-cache.outputs.cache-hit }}" -ne "true") -and ("${{ steps.python-wheelhouse-artifact.outputs.restored }}" -ne "true")) {
               & $venvPython -m pip wheel --wheel-dir $wheelhouse --prefer-binary -r requirements-base.txt -r requirements-build.txt
+              if ($LASTEXITCODE -ne 0) {
+                throw "Building the Python release wheelhouse failed with exit code $LASTEXITCODE."
+              }
+              $wheelhouseBuilt = $true
             } else {
               Write-Host "Using cached/restored Python wheelhouse."
             }
             $resolvedWheelhouse = (Resolve-Path $wheelhouse).Path
             & $venvPython -m pip install --no-index --find-links $resolvedWheelhouse -r requirements-base.txt
+            if ($LASTEXITCODE -ne 0) {
+              throw "Installing base release dependencies failed with exit code $LASTEXITCODE."
+            }
             & $venvPython -m pip install --no-index --find-links $resolvedWheelhouse -r requirements-build.txt
+            if ($LASTEXITCODE -ne 0) {
+              throw "Installing build release dependencies failed with exit code $LASTEXITCODE."
+            }
             & $venvPython -m pip check
+            if ($LASTEXITCODE -ne 0) {
+              throw "The completed Python release environment failed pip check with exit code $LASTEXITCODE."
+            }
             $requirementsKey | Set-Content -LiteralPath $markerPath -Encoding ascii
           }
           (Resolve-Path ".\.venv\Scripts").Path | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
@@ -679,6 +755,7 @@ jobs:
           & $venvPython -m pip --version
           if ($env:GITHUB_OUTPUT) {
             "venv-rebuilt=$(if ($venvRebuilt) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "wheelhouse-built=$(if ($wheelhouseBuilt) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           }
 
       - name: Publish Python venv release artifact
@@ -695,7 +772,7 @@ jobs:
             -Title "Scriber Python Virtualenv Cache v1"
 
       - name: Publish Python wheelhouse release artifact
-        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true' && steps.python-wheelhouse-artifact.outputs.restored != 'true'
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.python-dependencies.outputs.wheelhouse-built == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -715,11 +792,23 @@ jobs:
           key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
 
       - name: Save Python wheelhouse cache
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.python-dependencies.outputs.wheelhouse-built == 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: build/python-wheelhouse
           key: scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
+
+      - name: Save pip package store
+        if: >-
+          env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' &&
+          steps.backend-sidecar-cache.outputs.cache-hit != 'true' &&
+          steps.backend-sidecar-artifact.outputs.restored != 'true' &&
+          steps.python-dependencies.outputs.wheelhouse-built == 'true' &&
+          steps.python-pip-store-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.package-store-paths.outputs.pip }}
+          key: scriber-python-pip-store-v1-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
 
       - name: Install frontend dependencies
         if: steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
@@ -744,6 +833,13 @@ jobs:
           path: Frontend/node_modules
           key: scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}
 
+      - name: Save npm package store
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true' && steps.npm-package-store-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.package-store-paths.outputs.npm }}
+          key: scriber-npm-package-store-v1-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}
+
       - name: Resolve cached FFmpeg Profile B media tools
         id: ffmpeg-profile-b-resolve
         shell: pwsh
@@ -754,7 +850,7 @@ jobs:
           $usable = "false"
           $mode = "miss"
           $cacheHit = "${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}" -eq "true"
-          $artifactRestored = "${{ steps.ffmpeg-profile-b-artifact.outputs.restored }}" -eq "true"
+          $artifactRestored = "${{ steps.component-cache-artifacts.outputs.ffmpeg-profile-b-restored }}" -eq "true"
           if ($cacheHit) {
             $mode = "cache-exact"
           } elseif ($artifactRestored) {
@@ -948,10 +1044,6 @@ jobs:
             Write-Host "Recording uncompressed non-tag installer size without applying the compressed release budget."
           }
           $hasUpdaterSigning = $env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY -and ($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH)
-          $allowUnsignedTagRelease = $env:SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE -eq "1"
-          if ($isTagRelease -and -not $hasUpdaterSigning -and -not $allowUnsignedTagRelease) {
-            throw "Signed tag releases require SCRIBER_TAURI_UPDATER_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY or TAURI_SIGNING_PRIVATE_KEY_PATH. Set SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE=1 only for an intentional unsigned tag test build."
-          }
           if ($hasUpdaterSigning -and $isTagRelease) {
             $buildArgs += "-EnableTauriUpdater"
             if ($env:SCRIBER_TAURI_UPDATER_ENDPOINT) {
@@ -1073,7 +1165,12 @@ jobs:
 
       - name: Select current backend sidecar cache entry
         id: backend-sidecar-cache-selection
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' || env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' || env.SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS == 'true'
+        if: >-
+          env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' ||
+          env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' ||
+          (env.SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS == 'true' &&
+           steps.backend-sidecar-cache.outputs.cache-hit != 'true' &&
+           steps.backend-sidecar-artifact.outputs.restored != 'true')
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\select_backend_sidecar_cache_entry.ps1
@@ -1285,15 +1382,21 @@ jobs:
 
       - name: Publish bounded finished component caches in parallel
         id: publish-finished-component-caches
-        if: env.SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS == 'true'
+        if: >-
+          env.SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS == 'true' &&
+          (env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' ||
+           steps.ffmpeg-profile-b-resolve.outputs.usable != 'true' ||
+           (steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' && steps.component-cache-artifacts.outputs.rust-audio-sidecar-restored != 'true') ||
+           (steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true' && steps.component-cache-artifacts.outputs.rust-diarization-sidecar-restored != 'true') ||
+           (steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.backend-sidecar-cache-selection.outputs.selected == 'true'))
         continue-on-error: true
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          SCRIBER_PUBLISH_FFMPEG_FINISHED_CACHE: ${{ steps.ffmpeg-profile-b-resolve.outputs.usable != 'true' && 'true' || 'false' }}
-          SCRIBER_PUBLISH_RUST_AUDIO_FINISHED_CACHE: ${{ steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-audio-sidecar-artifact.outputs.restored != 'true' && 'true' || 'false' }}
-          SCRIBER_PUBLISH_RUST_DIARIZATION_FINISHED_CACHE: ${{ steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true' && steps.rust-diarization-sidecar-artifact.outputs.restored != 'true' && 'true' || 'false' }}
-          SCRIBER_PUBLISH_BACKEND_FINISHED_CACHE: ${{ steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true' && steps.backend-sidecar-cache-selection.outputs.selected == 'true' && 'true' || 'false' }}
+          SCRIBER_PUBLISH_FFMPEG_FINISHED_CACHE: ${{ (env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' || steps.ffmpeg-profile-b-resolve.outputs.usable != 'true') && 'true' || 'false' }}
+          SCRIBER_PUBLISH_RUST_AUDIO_FINISHED_CACHE: ${{ (env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' || (steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' && steps.component-cache-artifacts.outputs.rust-audio-sidecar-restored != 'true')) && 'true' || 'false' }}
+          SCRIBER_PUBLISH_RUST_DIARIZATION_FINISHED_CACHE: ${{ (env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' || (steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true' && steps.component-cache-artifacts.outputs.rust-diarization-sidecar-restored != 'true')) && 'true' || 'false' }}
+          SCRIBER_PUBLISH_BACKEND_FINISHED_CACHE: ${{ steps.backend-sidecar-cache-selection.outputs.selected == 'true' && (env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' || (steps.backend-sidecar-cache.outputs.cache-hit != 'true' && steps.backend-sidecar-artifact.outputs.restored != 'true')) && 'true' || 'false' }}
         run: |
           $publishArguments = @(
             "-Repo", "${{ github.repository }}",
@@ -1310,4 +1413,15 @@ jobs:
           if ($env:SCRIBER_PUBLISH_RUST_AUDIO_FINISHED_CACHE -eq "true") { $publishArguments += "-PublishRustAudio" }
           if ($env:SCRIBER_PUBLISH_RUST_DIARIZATION_FINISHED_CACHE -eq "true") { $publishArguments += "-PublishRustDiarization" }
           if ($env:SCRIBER_PUBLISH_BACKEND_FINISHED_CACHE -eq "true") { $publishArguments += "-PublishBackend" }
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_finished_component_caches_parallel.ps1 @publishArguments
+          & .\scripts\ci\publish_finished_component_caches_parallel.ps1 @publishArguments
+
+      - name: Prune obsolete release caches
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & .\scripts\ci\prune_obsolete_release_caches.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Apply
