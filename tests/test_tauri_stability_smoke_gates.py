@@ -399,8 +399,15 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "function Complete-TrackedReleaseProcesses" in build
     assert "$null = $process.Handle" in build
     assert 'Join-Path $RepoRoot "scripts\\ci\\prepare_tauri_app.ps1"' in build
-    assert '-Label "Tauri app binary build"' in build
-    assert "$bundleExistingTauriApp = $UsePrebuiltTauriApp -or $parallelTauriAppBuilt" in build
+    assert 'Invoke-Checked -Label "Tauri app binary build"' in build
+    assert "& $powershellExe @tauriAppBuildArgs" in build
+    assert build.index("Complete-TrackedReleaseProcesses -Tasks $parallelTasks") < build.index(
+        'Invoke-Checked -Label "Tauri app binary build"'
+    )
+    assert "$bundleExistingTauriApp = $UsePrebuiltTauriApp -or $tauriAppBuiltBeforeBundle" in build
+    assert 'lastProgressStatus = ""' in build
+    assert ".TotalSeconds -ge 60" in build
+    assert "if (-not $task.Process -or $task.Disposed)" in build
     assert "$RustAudioIsolatedTarget -or $ParallelizeIndependentBuilds" in build
     assert "[switch]$ConfigureTauriUpdaterRuntime" in build
     assert "function Add-TauriBeforeBundleCommandSwitch" not in build

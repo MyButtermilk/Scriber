@@ -694,6 +694,10 @@ It:
   `scripts\ci\publish_finished_component_caches_parallel.ps1`; each child has
   a private `GITHUB_OUTPUT`, and failures remain visible warnings without
   delaying or invalidating the verified app release,
+- overlaps frontend type checking with sidecar preparation, but starts the
+  Tauri `--no-bundle` compile only after the sidecar has staged
+  `target/release/backend`; this resource dependency is required even though
+  NSIS bundling happens later,
 - restores release caches for Python `.venv`, Python wheels, frontend
   `node_modules`, Rust/Tauri, backend sidecars, and Profile B media tools. The
   Node setup step also restores the npm package store from the normalized
@@ -722,8 +726,9 @@ It:
   not change for ordinary app source or UI edits. A separate exact Tauri app
   binary cache is keyed by the complete app inputs, concrete version, commit,
   toolchain, target/profile, and updater-runtime fingerprint. A validated hit
-  uses `tauri bundle`. A miss uses `tauri build --no-bundle` concurrently with
-  sidecar preparation, then joins before the same `tauri bundle` path,
+  uses `tauri bundle`. A miss prepares the sidecar first, then uses `tauri
+  build --no-bundle` after `target/release/backend` exists, followed by the
+  same `tauri bundle` path,
 - prunes `build\tauri-sidecar-cache` to the one metadata-attested internal key
   before Actions save or durable publication, preventing cache generations
   from recursively accumulating older complete PyInstaller sidecars,

@@ -229,6 +229,7 @@ function Start-TrackedReleaseProcess {
         Process = $process
         StartedAt = $startedAt
         CompletedAt = $null
+        Disposed = $false
         StdoutPath = $stdoutPath
         StderrPath = $stderrPath
     }
@@ -238,6 +239,8 @@ function Complete-TrackedReleaseProcesses {
     param([object[]]$Tasks)
 
     $nextProgressAt = (Get-Date).ToUniversalTime().AddSeconds(20)
+    $lastProgressStatus = ""
+    $lastProgressAt = [DateTime]::MinValue
     while ($true) {
         $now = (Get-Date).ToUniversalTime()
         foreach ($task in $Tasks) {
@@ -255,7 +258,11 @@ function Complete-TrackedReleaseProcesses {
                     "$($_.Label)=$state"
                 }
             ) -join "; "
-            Write-Host "Parallel release preparation: $status"
+            if ($status -ne $lastProgressStatus -or ($now - $lastProgressAt).TotalSeconds -ge 60) {
+                Write-Host "Parallel release preparation: $status"
+                $lastProgressStatus = $status
+                $lastProgressAt = $now
+            }
             $nextProgressAt = $now.AddSeconds(20)
         }
         Start-Sleep -Seconds 2
@@ -282,6 +289,7 @@ function Complete-TrackedReleaseProcesses {
             $failures.Add("$($task.Label) failed with exit code $($task.Process.ExitCode).") | Out-Null
         }
         $task.Process.Dispose()
+        $task.Disposed = $true
     }
 
     if ($failures.Count -gt 0) {
@@ -293,16 +301,19 @@ function Stop-TrackedReleaseProcesses {
     param([object[]]$Tasks)
 
     foreach ($task in $Tasks) {
+        if (-not $task.Process -or $task.Disposed) {
+            continue
+        }
         try {
-            if ($task.Process -and -not $task.Process.HasExited) {
+            if (-not $task.Process.HasExited) {
                 $task.Process.Kill()
                 $task.Process.WaitForExit()
             }
-            if ($task.Process) {
-                $task.Process.Dispose()
-            }
         } catch {
             Write-Warning "Could not stop parallel release task '$($task.Label)': $($_.Exception.Message)"
+        } finally {
+            $task.Process.Dispose()
+            $task.Disposed = $true
         }
     }
 }
@@ -720,6 +731,7 @@ try {
         }
     }
 
+    $tauriAppBuiltBeforeBundle = $false
     if ($FastLocalStagedApp) {
         Invoke-Checked -Label "Tauri staged sidecar preparation" -Command {
             Push-Location $RepoRoot
@@ -741,7 +753,6 @@ try {
         }
     } else {
         $parallelTasks = @()
-        $parallelTauriAppBuilt = $false
         if ($ParallelizeIndependentBuilds) {
             try {
                 $powershellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
@@ -769,28 +780,27 @@ try {
                     -Arguments $sidecarArgs `
                     -WorkingDirectory $RepoRoot
 
+                Complete-TrackedReleaseProcesses -Tasks $parallelTasks
+                $parallelTasks = @()
+
                 if (-not $UsePrebuiltTauriApp) {
                     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $tauriBundleLogPath) | Out-Null
                     if (Test-Path -LiteralPath $tauriBundleLogPath -PathType Leaf) {
                         Remove-Item -LiteralPath $tauriBundleLogPath -Force
                     }
-                    $parallelTasks += Start-TrackedReleaseProcess `
-                        -Label "Tauri app binary build" `
-                        -FilePath $powershellExe `
-                        -Arguments @(
-                            "-NoProfile", "-ExecutionPolicy", "Bypass",
-                            "-File", $prepareTauriScript,
-                            "-Mode", "BuildBinary",
-                            "-RepoRoot", $RepoRoot,
-                            "-ConfigPath", $tauriBuildConfigPath,
-                            "-TauriLogPath", $tauriBundleLogPath
-                        ) `
-                        -WorkingDirectory $RepoRoot
-                    $parallelTauriAppBuilt = $true
+                    $tauriAppBuildArgs = @(
+                        "-NoProfile", "-ExecutionPolicy", "Bypass",
+                        "-File", $prepareTauriScript,
+                        "-Mode", "BuildBinary",
+                        "-RepoRoot", $RepoRoot,
+                        "-ConfigPath", $tauriBuildConfigPath,
+                        "-TauriLogPath", $tauriBundleLogPath
+                    )
+                    Invoke-Checked -Label "Tauri app binary build" -Command {
+                        & $powershellExe @tauriAppBuildArgs
+                    }
+                    $tauriAppBuiltBeforeBundle = $true
                 }
-
-                Complete-TrackedReleaseProcesses -Tasks $parallelTasks
-                $parallelTasks = @()
             } catch {
                 Stop-TrackedReleaseProcesses -Tasks $parallelTasks
                 throw
@@ -811,12 +821,12 @@ try {
             Push-Location $frontendRoot
             try {
                 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $tauriBundleLogPath) | Out-Null
-                $bundleExistingTauriApp = $UsePrebuiltTauriApp -or $parallelTauriAppBuilt
-                if (-not $parallelTauriAppBuilt -and (Test-Path -LiteralPath $tauriBundleLogPath -PathType Leaf)) {
+                $bundleExistingTauriApp = $UsePrebuiltTauriApp -or $tauriAppBuiltBeforeBundle
+                if (-not $tauriAppBuiltBeforeBundle -and (Test-Path -LiteralPath $tauriBundleLogPath -PathType Leaf)) {
                     Remove-Item -LiteralPath $tauriBundleLogPath -Force
                 }
                 $tauriLogEncoding = New-Object System.Text.UTF8Encoding($false)
-                $tauriLogWriter = [System.IO.StreamWriter]::new($tauriBundleLogPath, $parallelTauriAppBuilt, $tauriLogEncoding)
+                $tauriLogWriter = [System.IO.StreamWriter]::new($tauriBundleLogPath, $tauriAppBuiltBeforeBundle, $tauriLogEncoding)
                 $quotedConfigPath = $tauriBuildConfigPath.Replace('"', '\"')
                 $quotedBundleArg = $bundleArg.Replace('"', '\"')
                 if ($bundleExistingTauriApp) {
@@ -1303,7 +1313,8 @@ try {
         fastLocalStagedApp = [bool]$FastLocalStagedApp
         prebuiltTauriApp = [bool]$UsePrebuiltTauriApp
         parallelizeIndependentBuilds = [bool]$ParallelizeIndependentBuilds
-        tauriAppBuiltInParallel = [bool]$parallelTauriAppBuilt
+        tauriAppBuiltBeforeBundle = [bool]$tauriAppBuiltBeforeBundle
+        tauriAppBuiltInParallel = $false
         updaterRuntimeConfigured = [bool]($EnableTauriUpdater -or $ConfigureTauriUpdaterRuntime)
         installerBuilt = [bool]($artifacts.Count -gt 0)
         installerSmokeValidated = [bool]$installedPackageSmoke["ran"]
@@ -1350,7 +1361,8 @@ try {
         fastLocalStagedApp = [bool]$FastLocalStagedApp
         prebuiltTauriApp = [bool]$UsePrebuiltTauriApp
         parallelizeIndependentBuilds = [bool]$ParallelizeIndependentBuilds
-        tauriAppBuiltInParallel = [bool]$parallelTauriAppBuilt
+        tauriAppBuiltBeforeBundle = [bool]$tauriAppBuiltBeforeBundle
+        tauriAppBuiltInParallel = $false
         updaterRuntimeConfigured = [bool]($EnableTauriUpdater -or $ConfigureTauriUpdaterRuntime)
         installerBuilt = $false
         installerSmokeValidated = $false

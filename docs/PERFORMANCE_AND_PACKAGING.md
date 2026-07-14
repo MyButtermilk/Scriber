@@ -147,8 +147,9 @@ Packaging/build:
   `audio_frame_pipe.rs`, and `redaction.rs`, with a module guard in the build
   script. Sequential/local builds may share Tauri's normal Cargo target. The
   release workflow uses `-ParallelizeIndependentBuilds`, which gives the audio
-  build its isolated target so it can compile concurrently with the desktop
-  binary without waiting on Cargo's target-directory lock.
+  build its isolated target while it overlaps PyInstaller. The desktop compile
+  starts only after that sidecar phase, so it never races the isolated audio
+  target or the backend resource staging path.
 - The static Rust diarization worker has a separate focused input cache under
   `build\rust-diarization-sidecar-cache`; it hashes only its standalone crate,
   lockfile, static-CRT config, manifest writer, target contract, and pinned
@@ -281,12 +282,14 @@ Packaging/build:
   confused with a `.venv` or wheelhouse hit, but it reduces repeated downloads
   when those stronger layers miss.
 - The standard GitHub release passes `-ParallelizeIndependentBuilds`. On one
-  runner it starts frontend type checking, the Tauri `--no-bundle` app compile,
-  and sidecar preparation together. Within sidecar preparation, PyInstaller and
-  the isolated-target Rust audio build also overlap. Only after all producers
-  succeed does `tauri bundle` run NSIS, updater signing, and verification. This
-  turns the former `80 s + 102 s + 91 s` cold sequence into roughly the longest
-  producer plus the unavoidable packaging tail.
+  runner it starts frontend type checking and sidecar preparation together.
+  Within sidecar preparation, PyInstaller and the isolated-target Rust audio
+  build also overlap. The Tauri `--no-bundle` app compile deliberately starts
+  after sidecar preparation has staged `target/release/backend`: Tauri's build
+  script validates configured resource paths even for `--no-bundle`, so the
+  app compile is not independent of that producer. Only then does `tauri
+  bundle` run NSIS, updater signing, and verification. Exact backend and Rust
+  caches remain the main fast path; cold builds keep safe producer ordering.
 - Splitting that work across separate GitHub jobs is useful only for cold or
   cache-refresh builds where independent heavy outputs have to be produced
   again. A simple job split that only restores the same caches in several jobs is not

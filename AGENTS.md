@@ -121,10 +121,12 @@ Packaging and scripts:
 - `scripts/build_tauri_backend_sidecar.ps1`: sidecar build, runtime import
   checks, media-tool bundling, optional cache reuse.
 - `scripts/build_windows.ps1`: Windows installer orchestration. Official GitHub
-  releases use `-ParallelizeIndependentBuilds`: frontend typecheck, Tauri
-  `--no-bundle`, and sidecar preparation overlap; sidecar preparation likewise
-  overlaps PyInstaller with the isolated-target Rust audio build. NSIS, updater
-  signing, and verification start only after every producer succeeds.
+  releases use `-ParallelizeIndependentBuilds`: frontend typecheck and sidecar
+  preparation overlap; sidecar preparation likewise overlaps PyInstaller with
+  the isolated-target Rust audio build. The Tauri `--no-bundle` compile starts
+  only after the sidecar has staged `target/release/backend`, because Tauri's
+  build script validates that resource path. NSIS, updater signing, and
+  verification start only after every producer succeeds.
 - `native/scriber-diarization-sidecar/`: isolated, statically linked
   Sherpa-ONNX worker; release preparation stages its attested EXE under backend
   `tools/diarization`. Its worker cache and pinned Sherpa archive cache remain
