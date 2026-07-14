@@ -48,6 +48,22 @@ venv\Scripts\python.exe scripts\generate_tray_state_icons.py
 venv\Scripts\python.exe scripts\generate_windows_app_icon.py --check
 ```
 
+After installing a build, verify the icon Windows receives from the live main
+window, rather than inspecting only `icon.ico`. The smoke queries both native
+large and small HICON states and rejects a stale dark feather, a low-occupancy
+mark, or a badge state that lost the white disc. Optional PNG captures remain
+under `tmp` for visual review. The large and small results must come directly
+from `WM_GETICON/ICON_BIG` and `WM_GETICON/ICON_SMALL`; a SMALL2 or class-icon
+fallback is diagnostic-only and indicates that explicit per-window assignment
+regressed:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_taskbar_icon.ps1 `
+  -ProcessId <running-scriber-pid> `
+  -OutputPath tmp\taskbar-icon-smoke.json `
+  -CaptureDirectory tmp\taskbar-icon-smoke
+```
+
 The 2026-07-10 reliability/performance sweep passed `1099` Python tests with
 `2` expected skips, the frontend type check and production build, `110` Rust
 library tests, `27` Rust audio-sidecar tests, `cargo fmt --check`, and Clippy

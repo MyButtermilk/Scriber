@@ -769,7 +769,12 @@ that release updater configuration is missing.
   feather in `Frontend/client/public/favicon.svg`; the Windows generator wraps
   it in the disc and renders each ICO frame natively rather than enlarging the
   32 px tray bitmap. Tauri reapplies the dedicated 256 px runtime window image
-  before the main window is revealed or restored. Update and recording states
+  before the main window is revealed or restored. Because the current Tauri/Tao
+  `set_icon` path sets only the small per-window icon, Rust additionally sends
+  `WM_SETICON` for both `ICON_BIG` and `ICON_SMALL` using HICONs created from
+  the native 256 px and 32 px ICO frames and retained for the process lifetime.
+  This keeps the live taskbar HWND authoritative instead of falling back to a
+  stale PE/class icon. Update and recording states
   add only a bounded blue or red lower-right badge, generated together with
   their raw RGBA runtime pairs by `scripts/generate_tray_state_icons.py`. The
   WebView brand mark remains theme-aware and unboxed on light surfaces.

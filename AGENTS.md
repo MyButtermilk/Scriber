@@ -181,7 +181,12 @@ Packaging and scripts:
   their PNG/raw-RGBA pairs afterwards with
   `venv\Scripts\python.exe scripts\generate_tray_state_icons.py`;
   `build.rs` must watch the ICO so incremental release builds cannot retain an
-  older executable resource. This does not change the in-WebView brand mark:
+  older executable resource. Tauri/Tao's runtime `set_icon` currently updates
+  only `WM_SETICON/ICON_SMALL`, so the main HWND must also receive explicit
+  process-owned `ICON_BIG` and `ICON_SMALL` HICONs created from the native 256
+  px and 32 px ICO frames. Keep those HICONs alive for the process lifetime;
+  never destroy a handle while Windows may still query it. This does not
+  change the in-WebView brand mark:
   it stays unboxed on light surfaces and gains its white disc only in dark mode.
 - Closing the main window routes Scriber to the tray: intercept only the main
   window's close request, prevent destruction, and hide it. Tray and

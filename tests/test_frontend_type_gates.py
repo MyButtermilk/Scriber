@@ -242,6 +242,11 @@ def test_windows_taskbar_identity_uses_the_contrast_safe_tray_artwork() -> None:
     assert (tauri_root / "icons" / "window-icon.rgba").read_bytes() == window_frame.tobytes()
     assert 'cargo:rerun-if-changed=icons/icon.ico' in build_source
     assert 'include_bytes!("../icons/window-icon.rgba"), 256, 256' in lib_source
+    assert "CreateIconFromResourceEx" in lib_source
+    assert "WM_SETICON" in lib_source
+    assert "ICON_BIG as usize" in lib_source
+    assert "ICON_SMALL as usize" in lib_source
+    assert "native_windows_window_icons" in lib_source
     assert 'apply_desktop_window_icon_to_window(window, "initial reveal")' in lib_source
     assert 'apply_desktop_window_icon_to_window(&window, "main window restore")' in lib_source
 

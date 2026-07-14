@@ -9,6 +9,8 @@ mod shell_ipc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(windows)]
+use std::sync::OnceLock;
 use std::{
     env,
     fs::{self, OpenOptions},
@@ -63,6 +65,11 @@ use windows_sys::Win32::System::Registry::{
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
     CreateEventW, CreateMutexW, ReleaseMutex, SetEvent, WaitForSingleObject, INFINITE,
+};
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CreateIconFromResourceEx, DestroyIcon, SendMessageW, HICON, ICON_BIG, ICON_SMALL,
+    LR_DEFAULTCOLOR, WM_GETICON, WM_SETICON,
 };
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8765;
@@ -2022,6 +2029,200 @@ fn desktop_window_icon_image() -> Image<'static> {
     Image::new(include_bytes!("../icons/window-icon.rgba"), 256, 256)
 }
 
+#[cfg(windows)]
+const WINDOWS_ICON_RESOURCE_VERSION: u32 = 0x0003_0000;
+#[cfg(windows)]
+const WINDOWS_TASKBAR_ICON_SIZE: u16 = 256;
+#[cfg(windows)]
+const WINDOWS_TITLEBAR_ICON_SIZE: u16 = 32;
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct OwnedWindowsIcon {
+    // Store the opaque handle value rather than the pointer alias so the
+    // process-lifetime icon set can safely live in a Sync OnceLock. Windows
+    // HICON handles are immutable after creation and may be sent in a message
+    // to the window thread.
+    handle: usize,
+}
+
+#[cfg(windows)]
+impl OwnedWindowsIcon {
+    fn from_ico_resource_bits(bits: &[u8], requested_size: u16) -> Result<Self, String> {
+        let resource_size = u32::try_from(bits.len())
+            .map_err(|_| "Windows icon resource is too large".to_string())?;
+        let handle = unsafe {
+            CreateIconFromResourceEx(
+                bits.as_ptr(),
+                resource_size,
+                1,
+                WINDOWS_ICON_RESOURCE_VERSION,
+                i32::from(requested_size),
+                i32::from(requested_size),
+                LR_DEFAULTCOLOR,
+            )
+        };
+        if handle.is_null() {
+            return Err(format!(
+                "CreateIconFromResourceEx failed for {requested_size}px icon (Win32 error {})",
+                unsafe { GetLastError() }
+            ));
+        }
+        Ok(Self {
+            handle: handle as usize,
+        })
+    }
+
+    fn raw(&self) -> HICON {
+        self.handle as HICON
+    }
+}
+
+#[cfg(windows)]
+impl Drop for OwnedWindowsIcon {
+    fn drop(&mut self) {
+        if self.handle != 0 {
+            unsafe {
+                DestroyIcon(self.raw());
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct NativeWindowsWindowIcons {
+    big: OwnedWindowsIcon,
+    small: OwnedWindowsIcon,
+}
+
+#[cfg(windows)]
+static NATIVE_WINDOWS_WINDOW_ICONS: OnceLock<Result<NativeWindowsWindowIcons, String>> =
+    OnceLock::new();
+
+#[cfg(windows)]
+fn ico_resource_bits_for_size(ico: &[u8], requested_size: u16) -> Result<&[u8], String> {
+    const ICO_HEADER_BYTES: usize = 6;
+    const ICO_DIRECTORY_ENTRY_BYTES: usize = 16;
+
+    if ico.len() < ICO_HEADER_BYTES {
+        return Err("Windows icon resource has a truncated header".to_string());
+    }
+    let reserved = u16::from_le_bytes([ico[0], ico[1]]);
+    let resource_type = u16::from_le_bytes([ico[2], ico[3]]);
+    let entry_count = usize::from(u16::from_le_bytes([ico[4], ico[5]]));
+    if reserved != 0 || resource_type != 1 || entry_count == 0 {
+        return Err("Windows icon resource has an invalid ICO directory".to_string());
+    }
+    let directory_bytes = entry_count
+        .checked_mul(ICO_DIRECTORY_ENTRY_BYTES)
+        .and_then(|bytes| ICO_HEADER_BYTES.checked_add(bytes))
+        .ok_or_else(|| "Windows icon resource directory overflowed".to_string())?;
+    if ico.len() < directory_bytes {
+        return Err("Windows icon resource has a truncated directory".to_string());
+    }
+
+    for index in 0..entry_count {
+        let entry = ICO_HEADER_BYTES + index * ICO_DIRECTORY_ENTRY_BYTES;
+        let width = if ico[entry] == 0 {
+            256
+        } else {
+            u16::from(ico[entry])
+        };
+        let height = if ico[entry + 1] == 0 {
+            256
+        } else {
+            u16::from(ico[entry + 1])
+        };
+        if width != requested_size || height != requested_size {
+            continue;
+        }
+
+        let resource_size = u32::from_le_bytes([
+            ico[entry + 8],
+            ico[entry + 9],
+            ico[entry + 10],
+            ico[entry + 11],
+        ]) as usize;
+        let resource_offset = u32::from_le_bytes([
+            ico[entry + 12],
+            ico[entry + 13],
+            ico[entry + 14],
+            ico[entry + 15],
+        ]) as usize;
+        let resource_end = resource_offset
+            .checked_add(resource_size)
+            .ok_or_else(|| "Windows icon image range overflowed".to_string())?;
+        if resource_offset < directory_bytes || resource_end > ico.len() || resource_size == 0 {
+            return Err(format!(
+                "Windows {requested_size}px icon image points outside the ICO resource"
+            ));
+        }
+        return Ok(&ico[resource_offset..resource_end]);
+    }
+
+    Err(format!(
+        "Windows icon resource does not contain a native {requested_size}px frame"
+    ))
+}
+
+#[cfg(windows)]
+fn load_native_windows_window_icons() -> Result<NativeWindowsWindowIcons, String> {
+    let ico = include_bytes!("../icons/icon.ico");
+    let big_bits = ico_resource_bits_for_size(ico, WINDOWS_TASKBAR_ICON_SIZE)?;
+    let small_bits = ico_resource_bits_for_size(ico, WINDOWS_TITLEBAR_ICON_SIZE)?;
+    let big = OwnedWindowsIcon::from_ico_resource_bits(big_bits, WINDOWS_TASKBAR_ICON_SIZE)?;
+    let small = OwnedWindowsIcon::from_ico_resource_bits(small_bits, WINDOWS_TITLEBAR_ICON_SIZE)?;
+    Ok(NativeWindowsWindowIcons { big, small })
+}
+
+#[cfg(windows)]
+fn native_windows_window_icons() -> Result<&'static NativeWindowsWindowIcons, String> {
+    match NATIVE_WINDOWS_WINDOW_ICONS.get_or_init(load_native_windows_window_icons) {
+        Ok(icons) => Ok(icons),
+        Err(err) => Err(err.clone()),
+    }
+}
+
+#[cfg(windows)]
+fn apply_native_windows_window_icons<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), String> {
+    let hwnd = window
+        .hwnd()
+        .map_err(|err| format!("failed to get main window handle: {err}"))?;
+    let icons = native_windows_window_icons()?;
+
+    // Tauri's WebviewWindow::set_icon currently reaches Tao's Small icon path
+    // only. The Windows shell may ask WM_GETICON(ICON_BIG) for the live taskbar
+    // button and otherwise fall back to the PE/class icon, which can leave a
+    // stale icon visible until Windows refreshes its shell cache. Set both
+    // per-window handles explicitly so the live HWND is authoritative.
+    unsafe {
+        SendMessageW(
+            hwnd.0,
+            WM_SETICON,
+            ICON_BIG as usize,
+            icons.big.raw() as isize,
+        );
+        SendMessageW(
+            hwnd.0,
+            WM_SETICON,
+            ICON_SMALL as usize,
+            icons.small.raw() as isize,
+        );
+
+        let observed_big = SendMessageW(hwnd.0, WM_GETICON, ICON_BIG as usize, 0);
+        let observed_small = SendMessageW(hwnd.0, WM_GETICON, ICON_SMALL as usize, 0);
+        if observed_big != icons.big.raw() as isize || observed_small != icons.small.raw() as isize
+        {
+            return Err(
+                "Windows did not retain the explicit big and small window icons".to_string(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn apply_desktop_window_icon<R: Runtime>(app: &AppHandle<R>) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         write_shell_log("desktop window icon skipped: main window not found");
@@ -2034,6 +2235,12 @@ fn apply_desktop_window_icon_to_window<R: Runtime>(window: &WebviewWindow<R>, re
     if let Err(err) = window.set_icon(desktop_window_icon_image()) {
         write_shell_log(&format!(
             "desktop window icon update failed ({reason}): {err}"
+        ));
+    }
+    #[cfg(windows)]
+    if let Err(err) = apply_native_windows_window_icons(window) {
+        write_shell_log(&format!(
+            "native Windows taskbar icon update failed ({reason}): {err}"
         ));
     }
 }
@@ -4117,6 +4324,11 @@ mod tests {
         SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
         TRAY_RECENT_TRANSCRIPT_LIMIT,
     };
+    #[cfg(windows)]
+    use super::{
+        ico_resource_bits_for_size, native_windows_window_icons, WINDOWS_TASKBAR_ICON_SIZE,
+        WINDOWS_TITLEBAR_ICON_SIZE,
+    };
     use std::{
         fs,
         io::{Read, Write},
@@ -5113,6 +5325,39 @@ mod tests {
         assert_eq!(desktop_icon.rgba().len(), 256 * 256 * 4);
         assert_eq!(tray_icon.width(), 32);
         assert_eq!(tray_icon.height(), 32);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bundled_ico_builds_process_lifetime_big_and_small_win32_icons() {
+        let ico = include_bytes!("../icons/icon.ico");
+        let big_bits =
+            ico_resource_bits_for_size(ico, WINDOWS_TASKBAR_ICON_SIZE).expect("256px frame");
+        let small_bits =
+            ico_resource_bits_for_size(ico, WINDOWS_TITLEBAR_ICON_SIZE).expect("32px frame");
+
+        assert!(big_bits.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(small_bits.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        let native = native_windows_window_icons().expect("native Windows icons");
+        assert!(!native.big.raw().is_null());
+        assert!(!native.small.raw().is_null());
+        assert_ne!(native.big.raw(), native.small.raw());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ico_frame_parser_rejects_out_of_bounds_resource_data() {
+        let mut ico = vec![0_u8; 22];
+        ico[2] = 1; // ICO resource type.
+        ico[4] = 1; // One directory entry.
+        ico[6] = 32;
+        ico[7] = 32;
+        ico[14..18].copy_from_slice(&8_u32.to_le_bytes());
+        ico[18..22].copy_from_slice(&22_u32.to_le_bytes());
+
+        let error = ico_resource_bits_for_size(&ico, 32).expect_err("invalid resource range");
+        assert!(error.contains("outside the ICO resource"));
     }
 
     #[test]
