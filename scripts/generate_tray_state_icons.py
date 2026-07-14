@@ -15,11 +15,13 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
+from generate_windows_app_icon import TRAY_SIZES
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ICON_DIR = REPO_ROOT / "Frontend" / "src-tauri" / "icons"
-ICON_SIZE = 32
-BADGE_SIZE = 16
+LEGACY_ICON_SIZE = 32
+BADGE_CANVAS_SIZE = 16
 SUPERSAMPLE = 8
 
 INK = (24, 31, 38, 255)
@@ -29,7 +31,7 @@ RECORDING_RED = (229, 72, 77, 255)
 
 
 def _ellipse(draw: ImageDraw.ImageDraw, radius: float, fill: tuple[int, int, int, int]) -> None:
-    center = BADGE_SIZE / 2
+    center = BADGE_CANVAS_SIZE / 2
     bounds = tuple(
         round(value * SUPERSAMPLE)
         for value in (
@@ -42,8 +44,8 @@ def _ellipse(draw: ImageDraw.ImageDraw, radius: float, fill: tuple[int, int, int
     draw.ellipse(bounds, fill=fill)
 
 
-def _badge(kind: str) -> Image.Image:
-    canvas_size = BADGE_SIZE * SUPERSAMPLE
+def _badge(kind: str, output_size: int) -> Image.Image:
+    canvas_size = BADGE_CANVAS_SIZE * SUPERSAMPLE
     badge = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(badge)
 
@@ -79,7 +81,7 @@ def _badge(kind: str) -> Image.Image:
         )
 
     return badge.resize(
-        (BADGE_SIZE, BADGE_SIZE),
+        (output_size, output_size),
         resample=Image.Resampling.LANCZOS,
     )
 
@@ -91,24 +93,30 @@ def _write_pair(name: str, image: Image.Image) -> None:
     rgba_path.write_bytes(image.tobytes())
 
 
+def _write_rgba(name: str, image: Image.Image) -> None:
+    (ICON_DIR / f"{name}.rgba").write_bytes(image.tobytes())
+
+
 def main() -> None:
-    normal_path = ICON_DIR / "tray-normal.png"
-    with Image.open(normal_path) as source:
-        normal = source.convert("RGBA")
-    if normal.size != (ICON_SIZE, ICON_SIZE):
-        raise ValueError(f"Expected {ICON_SIZE}x{ICON_SIZE} normal tray icon, got {normal.size}")
+    for icon_size in TRAY_SIZES:
+        normal_bytes = (ICON_DIR / f"tray-normal-{icon_size}.rgba").read_bytes()
+        expected_bytes = icon_size * icon_size * 4
+        if len(normal_bytes) != expected_bytes:
+            raise ValueError(f"Expected {expected_bytes} bytes for the {icon_size}px tray icon")
+        normal = Image.frombytes("RGBA", (icon_size, icon_size), normal_bytes)
 
-    # Keep the raw normal pair synchronized as part of the same deterministic
-    # generation command, but do not rewrite its PNG identity source.
-    (ICON_DIR / "tray-normal.rgba").write_bytes(normal.tobytes())
-
-    for kind in ("update", "recording"):
-        state_icon = normal.copy()
-        state_icon.alpha_composite(
-            _badge(kind),
-            dest=(ICON_SIZE - BADGE_SIZE, ICON_SIZE - BADGE_SIZE),
-        )
-        _write_pair(f"tray-{kind}", state_icon)
+        # The 16 px Windows tray exception uses a 10 px annotation. Larger
+        # variants keep the established half-size badge proportion.
+        badge_size = 10 if icon_size == 16 else round(icon_size / 2)
+        for kind in ("update", "recording"):
+            state_icon = normal.copy()
+            state_icon.alpha_composite(
+                _badge(kind, badge_size),
+                dest=(icon_size - badge_size, icon_size - badge_size),
+            )
+            _write_rgba(f"tray-{kind}-{icon_size}", state_icon)
+            if icon_size == LEGACY_ICON_SIZE:
+                _write_pair(f"tray-{kind}", state_icon)
 
 
 if __name__ == "__main__":

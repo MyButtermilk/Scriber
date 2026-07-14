@@ -2,9 +2,10 @@ r"""Generate Scriber's vector-backed Windows app and tray identity.
 
 Windows executables and taskbar buttons consume ICO resources rather than SVG
 files.  This generator wraps the canonical feather from
-``Frontend/client/public/favicon.svg`` in the contrast-safe white disc, renders
-every ICO frame independently through Tauri's local SVG renderer, and keeps the
-normal 32 px tray artwork on the same vector source.
+``Frontend/client/public/favicon.svg`` in the contrast-safe white disc, saves
+that exact vector as the app's dark-surface mark, renders every ICO frame
+independently through Tauri's local SVG renderer, and emits native tray rasters
+for Windows display scaling from 100 through 300 percent.
 
 Run from the repository root:
 
@@ -29,6 +30,7 @@ from PIL import Image
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_ROOT = REPO_ROOT / "Frontend"
 SOURCE_SVG = FRONTEND_ROOT / "client" / "public" / "favicon.svg"
+DARK_APP_SVG = FRONTEND_ROOT / "client" / "public" / "favicon-dark.svg"
 ICON_DIR = FRONTEND_ROOT / "src-tauri" / "icons"
 MASTER_SVG = ICON_DIR / "windows-app-icon.svg"
 WINDOWS_ICO = ICON_DIR / "icon.ico"
@@ -39,8 +41,16 @@ WINDOW_RGBA = ICON_DIR / "window-icon.rgba"
 TAURI_CLI = FRONTEND_ROOT / "node_modules" / "@tauri-apps" / "cli" / "tauri.js"
 
 ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
+# Windows' notification area is nominally 16 logical pixels. These native
+# raster sizes cover 100-300% display scaling without asking Explorer to
+# resample a single 32 px source.
+TRAY_SIZES = (16, 20, 24, 28, 32, 36, 40, 48)
 MASTER_SIZE = 256
-FEATHER_BOX_WIDTH = 208.0
+# Keep both the lower-left pen tip and the right tail a few pixels inside the
+# disc while maximizing the unchanged canonical paths around that visual anchor.
+FEATHER_BOX_WIDTH = 236.0
+FEATHER_OPTICAL_OFFSET_X = 9.5
+FEATHER_OPTICAL_OFFSET_Y = -8.0
 
 
 def _number(value: float) -> str:
@@ -85,8 +95,8 @@ def _build_master_svg() -> bytes:
     source_x, source_y, source_width, source_height = view_box
     scale = FEATHER_BOX_WIDTH / source_width
     rendered_height = source_height * scale
-    offset_x = (MASTER_SIZE - FEATHER_BOX_WIDTH) / 2
-    offset_y = (MASTER_SIZE - rendered_height) / 2
+    offset_x = (MASTER_SIZE - FEATHER_BOX_WIDTH) / 2 + FEATHER_OPTICAL_OFFSET_X
+    offset_y = (MASTER_SIZE - rendered_height) / 2 + FEATHER_OPTICAL_OFFSET_Y
     transform = (
         f"translate({_number(offset_x)} {_number(offset_y)}) "
         f"scale({_number(scale)}) "
@@ -101,7 +111,7 @@ def _build_master_svg() -> bytes:
     </filter>
   </defs>
   <circle cx="128" cy="131" r="120" fill="#253037" opacity="0.2" filter="url(#disc-shadow)"/>
-  <circle cx="128" cy="128" r="120" fill="#FFFFFF" stroke="#BDC5CE" stroke-width="6"/>
+  <circle cx="128" cy="128" r="120" fill="#FFFFFF"/>
   <g transform="{transform}">
 {chr(10).join(paths)}
   </g>
@@ -124,7 +134,7 @@ def _render_frames(master_svg: bytes, output_dir: Path) -> dict[int, bytes]:
     png_dir = output_dir / "png"
     png_dir.mkdir()
     frames: dict[int, bytes] = {}
-    for size in ICON_SIZES:
+    for size in sorted(set(ICON_SIZES + TRAY_SIZES)):
         subprocess.run(
             [
                 node,
@@ -204,12 +214,19 @@ def main() -> None:
         work_dir = Path(temporary)
         frames = _render_frames(master_svg, work_dir)
         icon = _build_ico(frames)
-        tray_png = frames[32]
-        tray_rgba = _rgba_bytes(tray_png, 32, "tray-normal.png", work_dir)
+        tray_frames = {
+            size: (
+                frames[size],
+                _rgba_bytes(frames[size], size, f"tray-normal-{size}.png", work_dir),
+            )
+            for size in TRAY_SIZES
+        }
+        tray_png, tray_rgba = tray_frames[32]
         window_png = frames[256]
         window_rgba = _rgba_bytes(window_png, 256, "window-icon.png", work_dir)
 
     artifacts = {
+        DARK_APP_SVG: master_svg,
         MASTER_SVG: master_svg,
         WINDOWS_ICO: icon,
         TRAY_PNG: tray_png,
@@ -217,6 +234,8 @@ def main() -> None:
         WINDOW_PNG: window_png,
         WINDOW_RGBA: window_rgba,
     }
+    for size, (png, rgba) in tray_frames.items():
+        artifacts[ICON_DIR / f"tray-normal-{size}.rgba"] = rgba
     if args.check:
         stale = [
             str(path.relative_to(REPO_ROOT))

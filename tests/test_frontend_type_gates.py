@@ -184,13 +184,16 @@ def test_frontend_uses_current_svg_logo_asset() -> None:
     assert 'viewBox="5 99.4 118 76"' in favicon_svg
     assert "#253037" in favicon_svg
     assert "#CFAF6A" in favicon_svg
-    assert 'viewBox="5 99.4 118 76"' in dark_favicon_svg
-    assert "#F2F0EB" in dark_favicon_svg
+    assert 'viewBox="0 0 256 256"' in dark_favicon_svg
+    assert 'fill="#FFFFFF"' in dark_favicon_svg
+    assert "#253037" in dark_favicon_svg
     assert "#CFAF6A" in dark_favicon_svg
     assert brand_mark_source.count('src="/favicon.svg"') == 1
-    assert 'src="/favicon-dark.svg"' not in brand_mark_source
-    assert "dark:rounded-full" in brand_mark_source
-    assert "dark:bg-white" in brand_mark_source
+    assert brand_mark_source.count('src="/favicon-dark.svg"') == 1
+    assert "dark:hidden" in brand_mark_source
+    assert "dark:block" in brand_mark_source
+    assert "dark:rounded-full" not in brand_mark_source
+    assert "dark:bg-white" not in brand_mark_source
     assert "rounded-[10px]" not in brand_mark_source
     assert "bg-background/55" not in brand_mark_source
     assert layout_source.count("<BrandMark") == 3
@@ -205,6 +208,9 @@ def test_windows_taskbar_identity_uses_the_contrast_safe_tray_artwork() -> None:
     master_svg = (tauri_root / "icons" / "windows-app-icon.svg").read_text(
         encoding="utf-8"
     )
+    dark_app_svg = (
+        REPO_ROOT / "Frontend" / "client" / "public" / "favicon-dark.svg"
+    ).read_text(encoding="utf-8")
 
     assert config["bundle"]["icon"] == ["icons/icon.ico"]
     assert bundle_icon.read_bytes().startswith(b"\x00\x00\x01\x00")
@@ -233,7 +239,26 @@ def test_windows_taskbar_identity_uses_the_contrast_safe_tray_artwork() -> None:
         alpha >= 220 and red >= 235 and green >= 235 and blue >= 235
         for red, green, blue, alpha in taskbar_frame.getdata()
     ) >= 450
+    feather_pixels = [
+        (x, y)
+        for y in range(taskbar_frame.height)
+        for x in range(taskbar_frame.width)
+        if taskbar_frame.getpixel((x, y))[3] >= 200
+        and max(taskbar_frame.getpixel((x, y))[:3]) < 100
+    ]
+    feather_bounds = (
+        min(x for x, _ in feather_pixels),
+        min(y for _, y in feather_pixels),
+        max(x for x, _ in feather_pixels),
+        max(y for _, y in feather_pixels),
+    )
+    assert len(feather_pixels) >= 90
+    assert feather_bounds[0] <= 5
+    assert feather_bounds[1] <= 7
+    assert feather_bounds[2] >= 26
+    assert feather_bounds[2] - feather_bounds[0] + 1 >= 22
     assert taskbar_frame.getpixel((0, 0))[3] == 0
+    assert dark_app_svg == master_svg
     assert "generate_windows_app_icon.py" in master_svg
     assert 'fill="#FFFFFF"' in master_svg
     with Image.open(tauri_root / "icons" / "window-icon.png") as window_icon:
@@ -254,6 +279,21 @@ def test_windows_taskbar_identity_uses_the_contrast_safe_tray_artwork() -> None:
 def test_all_tray_states_preserve_white_disc_identity_and_semantic_badges() -> None:
     icon_dir = REPO_ROOT / "Frontend" / "src-tauri" / "icons"
     icons: dict[str, Image.Image] = {}
+
+    for size in (16, 20, 24, 28, 32, 36, 40, 48):
+        for state in ("normal", "update", "recording"):
+            rgba = (icon_dir / f"tray-{state}-{size}.rgba").read_bytes()
+            assert len(rgba) == size * size * 4
+            icon = Image.frombytes("RGBA", (size, size), rgba)
+            assert icon.getpixel((0, 0))[3] == 0
+
+        normal = Image.frombytes(
+            "RGBA", (size, size), (icon_dir / f"tray-normal-{size}.rgba").read_bytes()
+        )
+        assert sum(
+            alpha >= 200 and red >= 225 and green >= 225 and blue >= 225
+            for red, green, blue, alpha in normal.getdata()
+        ) >= round(size * size * 0.40)
 
     for state in ("normal", "update", "recording"):
         png_path = icon_dir / f"tray-{state}.png"
@@ -279,7 +319,7 @@ def test_all_tray_states_preserve_white_disc_identity_and_semantic_badges() -> N
             alpha >= 220 and red >= 235 and green >= 235 and blue >= 235
             for red, green, blue, alpha in state_icon.getdata()
         )
-        assert white_disc_pixels >= 330
+        assert white_disc_pixels >= 320
 
         # The identity remains visibly light after Windows scales a tray icon
         # to 16 px and composites it onto a representative dark taskbar.

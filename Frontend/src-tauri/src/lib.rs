@@ -1345,7 +1345,10 @@ fn install_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             }
         });
 
-    tray = tray.icon(tray_icon_image(TrayIconKind::Normal));
+    tray = tray.icon(tray_icon_image(
+        TrayIconKind::Normal,
+        tray_scale_factor_for_app(app.handle()),
+    ));
 
     tray.build(app)?;
     Ok(())
@@ -2016,13 +2019,62 @@ enum TrayIconKind {
     Recording,
 }
 
-fn tray_icon_image(kind: TrayIconKind) -> Image<'static> {
-    let bytes: &'static [u8] = match kind {
-        TrayIconKind::Normal => include_bytes!("../icons/tray-normal.rgba"),
-        TrayIconKind::Update => include_bytes!("../icons/tray-update.rgba"),
-        TrayIconKind::Recording => include_bytes!("../icons/tray-recording.rgba"),
+const TRAY_ICON_SIZES: [u32; 8] = [16, 20, 24, 28, 32, 36, 40, 48];
+
+fn tray_icon_size_for_scale_factor(scale_factor: f64) -> u32 {
+    let scale_factor = if scale_factor.is_finite() {
+        scale_factor.clamp(1.0, 3.0)
+    } else {
+        1.0
     };
-    Image::new(bytes, 32, 32)
+    let target = (16.0 * scale_factor).round() as u32;
+    *TRAY_ICON_SIZES
+        .iter()
+        .min_by_key(|size| size.abs_diff(target))
+        .expect("tray icon sizes must not be empty")
+}
+
+fn tray_icon_bytes(kind: TrayIconKind, size: u32) -> &'static [u8] {
+    match (kind, size) {
+        (TrayIconKind::Normal, 16) => include_bytes!("../icons/tray-normal-16.rgba"),
+        (TrayIconKind::Normal, 20) => include_bytes!("../icons/tray-normal-20.rgba"),
+        (TrayIconKind::Normal, 24) => include_bytes!("../icons/tray-normal-24.rgba"),
+        (TrayIconKind::Normal, 28) => include_bytes!("../icons/tray-normal-28.rgba"),
+        (TrayIconKind::Normal, 32) => include_bytes!("../icons/tray-normal-32.rgba"),
+        (TrayIconKind::Normal, 36) => include_bytes!("../icons/tray-normal-36.rgba"),
+        (TrayIconKind::Normal, 40) => include_bytes!("../icons/tray-normal-40.rgba"),
+        (TrayIconKind::Normal, 48) => include_bytes!("../icons/tray-normal-48.rgba"),
+        (TrayIconKind::Update, 16) => include_bytes!("../icons/tray-update-16.rgba"),
+        (TrayIconKind::Update, 20) => include_bytes!("../icons/tray-update-20.rgba"),
+        (TrayIconKind::Update, 24) => include_bytes!("../icons/tray-update-24.rgba"),
+        (TrayIconKind::Update, 28) => include_bytes!("../icons/tray-update-28.rgba"),
+        (TrayIconKind::Update, 32) => include_bytes!("../icons/tray-update-32.rgba"),
+        (TrayIconKind::Update, 36) => include_bytes!("../icons/tray-update-36.rgba"),
+        (TrayIconKind::Update, 40) => include_bytes!("../icons/tray-update-40.rgba"),
+        (TrayIconKind::Update, 48) => include_bytes!("../icons/tray-update-48.rgba"),
+        (TrayIconKind::Recording, 16) => include_bytes!("../icons/tray-recording-16.rgba"),
+        (TrayIconKind::Recording, 20) => include_bytes!("../icons/tray-recording-20.rgba"),
+        (TrayIconKind::Recording, 24) => include_bytes!("../icons/tray-recording-24.rgba"),
+        (TrayIconKind::Recording, 28) => include_bytes!("../icons/tray-recording-28.rgba"),
+        (TrayIconKind::Recording, 32) => include_bytes!("../icons/tray-recording-32.rgba"),
+        (TrayIconKind::Recording, 36) => include_bytes!("../icons/tray-recording-36.rgba"),
+        (TrayIconKind::Recording, 40) => include_bytes!("../icons/tray-recording-40.rgba"),
+        (TrayIconKind::Recording, 48) => include_bytes!("../icons/tray-recording-48.rgba"),
+        _ => unreachable!("unsupported tray icon size {size}"),
+    }
+}
+
+fn tray_icon_image(kind: TrayIconKind, scale_factor: f64) -> Image<'static> {
+    let size = tray_icon_size_for_scale_factor(scale_factor);
+    Image::new(tray_icon_bytes(kind, size), size, size)
+}
+
+fn tray_scale_factor_for_app<R: Runtime>(app: &AppHandle<R>) -> f64 {
+    app.primary_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| monitor.scale_factor())
+        .unwrap_or(1.0)
 }
 
 fn desktop_window_icon_image() -> Image<'static> {
@@ -2307,7 +2359,10 @@ fn refresh_tray_visuals_for_app<R: Runtime>(app: &AppHandle<R>, status: &TraySta
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
-    if let Err(err) = tray.set_icon(Some(tray_icon_image(tray_icon_kind(status)))) {
+    if let Err(err) = tray.set_icon(Some(tray_icon_image(
+        tray_icon_kind(status),
+        tray_scale_factor_for_app(app),
+    ))) {
         write_shell_log(&format!("tray icon refresh failed: {err}"));
     }
     let tooltip = tray_tooltip(status);
@@ -4314,12 +4369,12 @@ mod tests {
         shortcut_id_for_hotkey, should_hide_window_instead_of_closing,
         should_refresh_hotkey_after_backend_ready, should_show_initializing_overlay_for_hotkey,
         should_show_window_for_tray_click, should_wait_for_hotkey_backend, split_http_response,
-        tray_icon_image, tray_icon_kind, wait_for_child_exit, BackendAccess, DesktopHotkeyState,
-        NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry, ShellMenuSmokeAction,
-        TrayIconKind, TrayStatus, TrayStatusInner, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
-        BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE,
-        MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
-        MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        tray_icon_image, tray_icon_kind, tray_icon_size_for_scale_factor, wait_for_child_exit,
+        BackendAccess, DesktopHotkeyState, NativeDeviceObserveOnlyLogState,
+        RecentTranscriptMenuEntry, ShellMenuSmokeAction, TrayIconKind, TrayStatus, TrayStatusInner,
+        AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST,
+        HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
+        MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
         SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
         TRAY_RECENT_TRANSCRIPT_LIMIT,
@@ -5318,13 +5373,36 @@ mod tests {
     #[test]
     fn desktop_taskbar_icon_uses_the_high_resolution_contrast_safe_identity() {
         let desktop_icon = desktop_window_icon_image();
-        let tray_icon = tray_icon_image(TrayIconKind::Normal);
+        let tray_icon = tray_icon_image(TrayIconKind::Normal, 1.0);
 
         assert_eq!(desktop_icon.width(), 256);
         assert_eq!(desktop_icon.height(), 256);
         assert_eq!(desktop_icon.rgba().len(), 256 * 256 * 4);
-        assert_eq!(tray_icon.width(), 32);
-        assert_eq!(tray_icon.height(), 32);
+        assert_eq!(tray_icon.width(), 16);
+        assert_eq!(tray_icon.height(), 16);
+    }
+
+    #[test]
+    fn tray_icon_uses_a_native_raster_for_common_windows_scale_factors() {
+        for (scale_factor, expected_size) in [
+            (1.0, 16),
+            (1.25, 20),
+            (1.5, 24),
+            (1.75, 28),
+            (2.0, 32),
+            (2.25, 36),
+            (2.5, 40),
+            (3.0, 48),
+        ] {
+            assert_eq!(tray_icon_size_for_scale_factor(scale_factor), expected_size);
+            let icon = tray_icon_image(TrayIconKind::Normal, scale_factor);
+            assert_eq!(icon.width(), expected_size);
+            assert_eq!(icon.height(), expected_size);
+            assert_eq!(
+                icon.rgba().len(),
+                (expected_size * expected_size * 4) as usize
+            );
+        }
     }
 
     #[cfg(windows)]

@@ -175,19 +175,25 @@ Packaging and scripts:
   taskbar sizes. The canonical feather stays in
   `Frontend/client/public/favicon.svg`; regenerate the high-occupancy SVG
   master, native 16/24/32/48/64/128/256 px ICO frames, 256 px runtime window
-  image, and normal tray pair with
+  image, and 16/20/24/28/32/36/40/48 px normal tray RGBA variants with
   `venv\Scripts\python.exe scripts\generate_windows_app_icon.py`. Tray state
   changes add only a bounded blue update or red recording badge; regenerate
-  their PNG/raw-RGBA pairs afterwards with
+  their DPI-specific raw-RGBA variants and legacy 32 px preview PNGs afterwards with
   `venv\Scripts\python.exe scripts\generate_tray_state_icons.py`;
+  the Tauri tray must select the native raster nearest the primary monitor's
+  scale factor instead of making Explorer downsample one fixed 32 px HICON.
   `build.rs` must watch the ICO so incremental release builds cannot retain an
   older executable resource. Tauri/Tao's runtime `set_icon` currently updates
   only `WM_SETICON/ICON_SMALL`, so the main HWND must also receive explicit
   process-owned `ICON_BIG` and `ICON_SMALL` HICONs created from the native 256
   px and 32 px ICO frames. Keep those HICONs alive for the process lifetime;
   never destroy a handle while Windows may still query it. This does not
-  change the in-WebView brand mark:
-  it stays unboxed on light surfaces and gains its white disc only in dark mode.
+  change the in-WebView brand mark: it stays unboxed on light surfaces and uses
+  the generated white-disc SVG only in dark mode.
+  `Frontend/client/public/favicon-dark.svg` must remain byte-equal to
+  `Frontend/src-tauri/icons/windows-app-icon.svg`; both are emitted by the
+  Windows icon generator so the boot shell, app header, taskbar, and tray share
+  one vector-backed identity.
 - Closing the main window routes Scriber to the tray: intercept only the main
   window's close request, prevent destruction, and hide it. Tray and
   single-instance show actions must reveal that same WebView again; do not leave
