@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, ExitStatus, Stdio},
     sync::{
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError},
         Mutex, MutexGuard, OnceLock,
     },
@@ -39,6 +40,7 @@ const SIDECAR_STATUS_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_500);
 const SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1_500);
 const SIDECAR_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const SIDECAR_JSON_LINE_MAX_BYTES: usize = 1024 * 1024;
+static AUDIO_LIFECYCLE_EPOCH: AtomicU64 = AtomicU64::new(0);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -79,7 +81,100 @@ pub fn audio_sidecar_executable_available() -> bool {
     find_audio_sidecar_executable().is_some()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioLifecycleDomain {
+    Microphone,
+    Meeting,
+}
+
+fn audio_lifecycle_domain(command: &str) -> Option<AudioLifecycleDomain> {
+    match command {
+        "captureStart" | "captureStop" | "prewarmStart" | "prewarmStop" => {
+            Some(AudioLifecycleDomain::Microphone)
+        }
+        "meetingCaptureStart" | "meetingCaptureStop" => Some(AudioLifecycleDomain::Meeting),
+        _ => None,
+    }
+}
+
+fn audio_lifecycle_start_command(command: &str) -> bool {
+    matches!(
+        command,
+        "captureStart" | "prewarmStart" | "meetingCaptureStart"
+    )
+}
+
+fn lifecycle_start_epoch_is_current(accepted_epoch: Option<u64>, current_epoch: u64) -> bool {
+    accepted_epoch.is_none_or(|accepted_epoch| {
+        accepted_epoch == current_epoch && current_epoch.is_multiple_of(2)
+    })
+}
+
+struct AudioLifecycleShutdownEpochGuard;
+
+impl AudioLifecycleShutdownEpochGuard {
+    fn begin() -> Self {
+        // Odd generations mean a global drain is in progress. Starts can read
+        // the generation before taking their owner lane, but they may not
+        // survive across either edge of the drain.
+        AUDIO_LIFECYCLE_EPOCH.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for AudioLifecycleShutdownEpochGuard {
+    fn drop(&mut self) {
+        // Return to an even, startable generation before the lifecycle lanes
+        // are released. A start accepted during the drain therefore observes
+        // an epoch mismatch once it acquires its lane.
+        AUDIO_LIFECYCLE_EPOCH.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+fn microphone_audio_lifecycle_lane() -> &'static Mutex<()> {
+    static LANE: OnceLock<Mutex<()>> = OnceLock::new();
+    LANE.get_or_init(|| Mutex::new(()))
+}
+
+fn meeting_audio_lifecycle_lane() -> &'static Mutex<()> {
+    static LANE: OnceLock<Mutex<()>> = OnceLock::new();
+    LANE.get_or_init(|| Mutex::new(()))
+}
+
+fn lock_audio_lifecycle_lane(domain: AudioLifecycleDomain) -> MutexGuard<'static, ()> {
+    let lane = match domain {
+        AudioLifecycleDomain::Microphone => microphone_audio_lifecycle_lane(),
+        AudioLifecycleDomain::Meeting => meeting_audio_lifecycle_lane(),
+    };
+    lane.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub fn call_audio_sidecar_command(command: &str, payload: Value) -> AudioSidecarCallResult {
+    // A start is accepted in the current lifecycle generation before it waits for its owner
+    // lane. A concurrent global shutdown increments the generation while holding both lanes;
+    // once this call acquires its lane, an old accepted start is rejected instead of recreating a
+    // sidecar behind the shutdown drain.
+    let accepted_epoch = audio_lifecycle_start_command(command)
+        .then(|| AUDIO_LIFECYCLE_EPOCH.load(Ordering::Acquire));
+    let _lifecycle_guard = audio_lifecycle_domain(command).map(lock_audio_lifecycle_lane);
+    let current_epoch = AUDIO_LIFECYCLE_EPOCH.load(Ordering::Acquire);
+    if !lifecycle_start_epoch_is_current(accepted_epoch, current_epoch) {
+        return unavailable_result(
+            "audioLifecycleStartInvalidated",
+            "Audio lifecycle changed while capture start was waiting; retry the start",
+            json!({
+                "sidecar": AUDIO_SIDECAR_NAME,
+                "retryable": true,
+                "command": command,
+            }),
+            None,
+            None,
+        );
+    }
+    call_audio_sidecar_command_unlocked(command, payload)
+}
+
+fn call_audio_sidecar_command_unlocked(command: &str, payload: Value) -> AudioSidecarCallResult {
     match command {
         "captureStart" => return start_audio_sidecar_capture(payload),
         "captureStatus" => return status_audio_sidecar_capture(payload),
@@ -109,6 +204,11 @@ pub fn call_audio_sidecar_command(command: &str, payload: Value) -> AudioSidecar
 }
 
 pub fn shutdown_all_audio_sidecars(reason: &str) -> usize {
+    // Keep shutdown ordered with every owner mutation. The fixed Microphone -> Meeting order is
+    // also used by all future multi-domain work to prevent lock inversion.
+    let _microphone_guard = lock_audio_lifecycle_lane(AudioLifecycleDomain::Microphone);
+    let _meeting_guard = lock_audio_lifecycle_lane(AudioLifecycleDomain::Meeting);
+    let _shutdown_epoch_guard = AudioLifecycleShutdownEpochGuard::begin();
     let mut sessions = lock_active_audio_sidecars();
     let entries: Vec<(String, ActiveAudioSidecar)> = sessions.drain().collect();
     drop(sessions);
@@ -188,7 +288,23 @@ fn payload_prewarm_id(payload: &Value) -> String {
         .collect()
 }
 
+fn drain_active_capture_sidecars(reason: &str) -> usize {
+    let entries: Vec<(String, ActiveAudioSidecar)> = {
+        let mut sessions = lock_active_audio_sidecars();
+        sessions.drain().collect()
+    };
+    let stopped = entries.len();
+    for (stream_id, mut sidecar) in entries {
+        stop_sidecar_process(&stream_id, &mut sidecar, reason);
+    }
+    stopped
+}
+
 fn start_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
+    // Microphone capture has exactly one owner. Reconcile any capture whose
+    // previous Python stop timed out before starting or adopting a replacement.
+    // The owner lifecycle lane is held by the public dispatcher while this runs.
+    drain_active_capture_sidecars("captureStartReplacedActiveCapture");
     let prewarm_id = payload_prewarm_id(&payload);
     if !prewarm_id.is_empty() {
         let mut prewarm_sessions = lock_active_audio_prewarm_sidecars();
@@ -294,10 +410,9 @@ fn start_audio_sidecar_capture_with_sidecar(
 
     let replaced = {
         let mut sessions = lock_active_audio_sidecars();
-        sessions
-            .insert(stream_id.clone(), sidecar)
-            .map(|old| vec![(stream_id.clone(), old)])
-            .unwrap_or_default()
+        let replaced: Vec<(String, ActiveAudioSidecar)> = sessions.drain().collect();
+        sessions.insert(stream_id.clone(), sidecar);
+        replaced
     };
     for (old_stream_id, mut old_sidecar) in replaced {
         let reason = if old_stream_id == stream_id {
@@ -470,6 +585,10 @@ fn call_active_meeting_sidecar(
 }
 
 fn start_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
+    // Idle prewarm follows active capture. If the previous bounded stop lost
+    // its response, starting prewarm is the next owner transition and must
+    // reconcile that still-registered capture before opening the endpoint.
+    drain_active_capture_sidecars("prewarmStartReplacedActiveCapture");
     let Some(program) = find_audio_sidecar_executable() else {
         return unavailable_result(
             "audioPrewarmUnavailable",
@@ -1798,6 +1917,48 @@ mod tests {
         assert!(!format!("{result:?}").contains(r"C:\secret"));
         assert!(result.executable_available);
         assert_eq!(result.pid, Some(123));
+    }
+
+    #[test]
+    fn audio_lifecycle_domains_serialize_only_owner_mutations() {
+        assert_eq!(
+            audio_lifecycle_domain("captureStart"),
+            Some(AudioLifecycleDomain::Microphone)
+        );
+        assert_eq!(
+            audio_lifecycle_domain("prewarmStop"),
+            Some(AudioLifecycleDomain::Microphone)
+        );
+        assert_eq!(
+            audio_lifecycle_domain("meetingCaptureStart"),
+            Some(AudioLifecycleDomain::Meeting)
+        );
+        assert_eq!(
+            audio_lifecycle_domain("meetingCaptureStop"),
+            Some(AudioLifecycleDomain::Meeting)
+        );
+        assert_eq!(audio_lifecycle_domain("captureStatus"), None);
+        assert_eq!(audio_lifecycle_domain("prewarmStatus"), None);
+        assert_eq!(audio_lifecycle_domain("meetingCaptureStatus"), None);
+        assert_eq!(audio_lifecycle_domain("selfTest"), None);
+        assert!(audio_lifecycle_start_command("captureStart"));
+        assert!(audio_lifecycle_start_command("prewarmStart"));
+        assert!(audio_lifecycle_start_command("meetingCaptureStart"));
+        assert!(!audio_lifecycle_start_command("captureStop"));
+        assert!(!audio_lifecycle_start_command("prewarmStatus"));
+        assert!(!audio_lifecycle_start_command("meetingCaptureStop"));
+    }
+
+    #[test]
+    fn lifecycle_epoch_invalidates_only_starts_accepted_before_shutdown() {
+        assert!(lifecycle_start_epoch_is_current(Some(40), 40));
+        assert!(!lifecycle_start_epoch_is_current(Some(40), 41));
+        assert!(!lifecycle_start_epoch_is_current(Some(40), 42));
+        assert!(lifecycle_start_epoch_is_current(Some(42), 42));
+        assert!(!lifecycle_start_epoch_is_current(Some(43), 43));
+        assert!(!lifecycle_start_epoch_is_current(Some(43), 44));
+        assert!(lifecycle_start_epoch_is_current(Some(44), 44));
+        assert!(lifecycle_start_epoch_is_current(None, 42));
     }
 
     #[test]

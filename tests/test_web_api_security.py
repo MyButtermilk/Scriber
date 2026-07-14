@@ -205,6 +205,33 @@ async def test_live_mic_toggle_acknowledges_stop_without_waiting(monkeypatch, tm
     assert payload["finalizing"] is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "endpoint",
+    ("/api/live-mic/toggle", "/api/live-mic/toggle-post-processing"),
+)
+async def test_live_mic_toggle_propagates_start_rejection(monkeypatch, tmp_path, endpoint):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._voice_enrollment_active = True
+    app = web_api.create_app(ctl)
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        response = await client.post(endpoint)
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 400
+    assert payload["code"] == "voice_enrollment_active"
+    assert payload["message"] == (
+        "Wait for the Voice Library sample to finish before starting Live Mic."
+    )
+    assert ctl.get_state()["listening"] is False
+
+
 def _fake_local_model_module(*, kind: str, model_id: str = "local-smoke-model", available: bool = True):
     module = types.ModuleType(f"src.{kind}_stt")
     state = {"downloading": False, "downloaded": False, "deleted": False}

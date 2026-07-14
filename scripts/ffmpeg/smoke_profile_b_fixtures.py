@@ -29,6 +29,7 @@ from src.runtime.ffmpeg_commands import (  # noqa: E402
     mp3_encode_pcm_pipe_args,
     mp3_transcode_args,
     pcm_pipe_decode_args,
+    wav_pcm_transcode_args,
     webm_opus_transcode_args,
 )
 from src.runtime.subprocess_utils import hidden_subprocess_kwargs  # noqa: E402
@@ -275,6 +276,32 @@ def check_transcode_to_mp3(candidate_ffmpeg: Path, source: Path, target: Path, t
     )
     assert_media_file(target)
     return {"input": file_info(source), "output": file_info(target)}
+
+
+def check_transcode_to_wav(candidate_ffmpeg: Path, source: Path, target: Path, timeout_sec: float) -> dict[str, Any]:
+    run_command(
+        wav_pcm_transcode_args(
+            str(candidate_ffmpeg),
+            source,
+            target,
+            sample_rate=16_000,
+            channels=1,
+        ),
+        timeout_sec=timeout_sec,
+    )
+    assert_media_file(target)
+    with wave.open(str(target), "rb") as reader:
+        contract = {
+            "channels": reader.getnchannels(),
+            "sampleWidthBytes": reader.getsampwidth(),
+            "sampleRate": reader.getframerate(),
+            "frameCount": reader.getnframes(),
+        }
+    if contract["channels"] != 1 or contract["sampleWidthBytes"] != 2:
+        raise AssertionError(f"unexpected local diarization WAV contract: {contract}")
+    if contract["sampleRate"] != 16_000 or contract["frameCount"] <= 0:
+        raise AssertionError(f"unexpected local diarization WAV contract: {contract}")
+    return {"input": file_info(source), "output": file_info(target), **contract}
 
 
 def check_meeting_multitrack_flac(
@@ -677,6 +704,16 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             checks,
             "webm_opus_to_pcm_pipe",
             lambda: check_pcm_pipe(candidate_ffmpeg, fixtures["webm_opus"], args.timeout_sec),
+        )
+        run_check(
+            checks,
+            "local_diarization_webm_to_wav_pcm",
+            lambda: check_transcode_to_wav(
+                candidate_ffmpeg,
+                fixtures["webm_opus"],
+                work_dir / "local-diarization.wav",
+                args.timeout_sec,
+            ),
         )
         run_check(
             checks,

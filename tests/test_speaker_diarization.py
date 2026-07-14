@@ -634,3 +634,26 @@ async def test_file_and_youtube_postprocess_uses_response_evidence_not_provider_
     )
     assert skipped == []
     assert long_record.content_text() == "Keep this STT result."
+
+    async def broken_preparation(**_kwargs):
+        raise RuntimeError("Audio preparation for local speaker separation failed.")
+
+    monkeypatch.setattr(
+        controller._speaker_diarizer,
+        "transcribe_with_fallback_speakers",
+        broken_preparation,
+    )
+    completed_provider_record = web_api.TranscriptRecord(
+        id="provider-complete", title="Provider complete", date="Today", duration="08:56",
+        status="processing", type="youtube", language="auto",
+        content="Keep the completed provider transcript.",
+    )
+    degraded = await web_api.ScriberWebController._apply_speaker_diarization_fallback(
+        controller,
+        completed_provider_record,
+        provider="azure_mai",
+        pipeline=pipeline,
+        audio_path=tmp_path / "youtube.webm",
+    )
+    assert degraded == []
+    assert completed_provider_record.content_text() == "Keep the completed provider transcript."

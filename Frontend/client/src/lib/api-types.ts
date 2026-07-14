@@ -365,6 +365,8 @@ export interface MeetingAudioDevicesResponse {
   available: boolean;
   capture: MeetingAudioEndpoint[];
   render: MeetingAudioEndpoint[];
+  source: "rust-wasapi" | "rust-wasapi+pycaw-fallback" | "pycaw-fallback" | "unavailable";
+  partial: boolean;
   reason: string;
 }
 

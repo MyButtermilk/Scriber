@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex, MutexGuard, OnceLock,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -14,7 +14,9 @@ use crate::audio_devices::{
     run_passive_audio_probe, PassiveAudioProbeOptions,
 };
 use crate::audio_frame_pipe::{AUDIO_FRAME_HEADER_LEN, AUDIO_FRAME_VERSION};
-use crate::audio_sidecar_client::{audio_sidecar_executable_available, call_audio_sidecar_command};
+use crate::audio_sidecar_client::{
+    audio_sidecar_executable_available, call_audio_sidecar_command, AudioSidecarCallResult,
+};
 
 const API_VERSION: &str = "1";
 const MAX_REQUEST_BYTES: usize = 512 * 1024;
@@ -27,6 +29,12 @@ const DEFAULT_CLIPBOARD_RETRY_DELAY_MS: u64 = 5;
 const DEFAULT_RESTORE_DELAY_MS: u64 = 1500;
 const DEFAULT_INJECT_DEADLINE_MS: u64 = 2_000;
 const CLIENT_READ_TIMEOUT_MS: u64 = 750;
+const CLIENT_RESPONSE_ACK_TIMEOUT_MS: u64 = 1_000;
+const MAX_RESPONSE_ACK_BYTES: usize = 1_024;
+const SHELL_IPC_CLIENT_WORKER_LIMIT: usize = 6;
+const SHELL_IPC_PIPE_INSTANCE_LIMIT: u32 = (SHELL_IPC_CLIENT_WORKER_LIMIT as u32) + 1;
+const SHELL_IPC_SHUTDOWN_GRACE_MS: u64 = 1_000;
+const SHELL_IPC_SERVER_JOIN_GRACE_MS: u64 = 1_250;
 
 #[derive(Debug, Clone)]
 struct InjectTextOptions {
@@ -76,6 +84,13 @@ impl ShellCommandError {
     }
 }
 
+fn inject_text_mutation_lock() -> MutexGuard<'static, ()> {
+    static LANE: OnceLock<Mutex<()>> = OnceLock::new();
+    LANE.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[derive(Debug, Clone)]
 pub struct ShellIpcConfig {
     pub pipe_name: String,
@@ -105,8 +120,20 @@ pub struct ShellIpcServerHandle {
 impl Drop for ShellIpcServerHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        wake_pipe_server(&self.pipe_name);
-        let _ = self.join_handle.take();
+        if let Some(join_handle) = self.join_handle.take() {
+            let deadline = Instant::now() + Duration::from_millis(SHELL_IPC_SERVER_JOIN_GRACE_MS);
+            while !join_handle.is_finished() && Instant::now() < deadline {
+                // Retrying the wake closes the small race where the accept loop is between pipe
+                // instances when shutdown starts. Never turn Drop into an unbounded join.
+                wake_pipe_server(&self.pipe_name);
+                thread::sleep(Duration::from_millis(5));
+            }
+            if join_handle.is_finished() {
+                let _ = join_handle.join();
+            }
+        } else {
+            wake_pipe_server(&self.pipe_name);
+        }
     }
 }
 
@@ -289,17 +316,20 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                 "audioFrameProtocol": audio_frame_protocol_payload(),
             }),
         ),
-        "injectText" => match inject_text(payload) {
-            Ok(payload) => response_line(request_id, true, "", "", started, payload),
-            Err(err) => response_line(
-                request_id,
-                false,
-                err.code,
-                &err.reason,
-                started,
-                err.payload,
-            ),
-        },
+        "injectText" => {
+            let _mutation_guard = inject_text_mutation_lock();
+            match inject_text(payload) {
+                Ok(payload) => response_line(request_id, true, "", "", started, payload),
+                Err(err) => response_line(
+                    request_id,
+                    false,
+                    err.code,
+                    &err.reason,
+                    started,
+                    err.payload,
+                ),
+            }
+        }
         "nativeDeviceEventsStatus" => response_line(
             request_id,
             true,
@@ -396,7 +426,7 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                     }),
                 );
                 let payload = audio_capture_stop_shell_payload(result.payload.clone(), &result);
-                response_line(request_id, true, "", "", started, payload)
+                audio_sidecar_result_response_line(request_id, started, payload, &result)
             }
             Err(err) => response_line(
                 request_id,
@@ -442,7 +472,7 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
                     }),
                 );
                 let payload = audio_prewarm_stop_shell_payload(result.payload.clone(), &result);
-                response_line(request_id, true, "", "", started, payload)
+                audio_sidecar_result_response_line(request_id, started, payload, &result)
             }
             Err(err) => response_line(
                 request_id,
@@ -492,7 +522,9 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
             ),
         },
         "audioMeetingStatus" => match status_meeting_audio(payload) {
-            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Ok((payload, result)) => {
+                audio_sidecar_result_response_line(request_id, started, payload, &result)
+            }
             Err(err) => response_line(
                 request_id,
                 false,
@@ -503,7 +535,9 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
             ),
         },
         "audioMeetingPause" | "audioMeetingStop" => match stop_meeting_audio(payload) {
-            Ok(payload) => response_line(request_id, true, "", "", started, payload),
+            Ok((payload, result)) => {
+                audio_sidecar_result_response_line(request_id, started, payload, &result)
+            }
             Err(err) => response_line(
                 request_id,
                 false,
@@ -1015,7 +1049,9 @@ fn start_meeting_audio(payload: &Value) -> Result<Value, ShellCommandError> {
     Ok(response)
 }
 
-fn stop_meeting_audio(payload: &Value) -> Result<Value, ShellCommandError> {
+fn stop_meeting_audio(
+    payload: &Value,
+) -> Result<(Value, AudioSidecarCallResult), ShellCommandError> {
     let capture_id = payload
         .get("captureId")
         .and_then(Value::as_str)
@@ -1031,10 +1067,13 @@ fn stop_meeting_audio(payload: &Value) -> Result<Value, ShellCommandError> {
         "meetingCaptureStop",
         json!({"meetingCaptureId": capture_id}),
     );
-    Ok(json!({"captureId": capture_id, "stopped": true, "sidecar": result.payload}))
+    let response = meeting_audio_stop_shell_payload(capture_id, &result);
+    Ok((response, result))
 }
 
-fn status_meeting_audio(payload: &Value) -> Result<Value, ShellCommandError> {
+fn status_meeting_audio(
+    payload: &Value,
+) -> Result<(Value, AudioSidecarCallResult), ShellCommandError> {
     let capture_id = payload
         .get("captureId")
         .and_then(Value::as_str)
@@ -1050,17 +1089,52 @@ fn status_meeting_audio(payload: &Value) -> Result<Value, ShellCommandError> {
         "meetingCaptureStatus",
         json!({"meetingCaptureId": capture_id}),
     );
+    let response = meeting_audio_status_shell_payload(capture_id, &result);
+    Ok((response, result))
+}
+
+fn meeting_audio_stop_shell_payload(capture_id: &str, result: &AudioSidecarCallResult) -> Value {
+    let stopped = result.success
+        && result
+            .payload
+            .get("stopped")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+    json!({
+        "captureId": capture_id,
+        "stopped": stopped,
+        "sidecar": result.payload,
+        "sidecarStatus": sidecar_status_payload(result),
+    })
+}
+
+fn meeting_audio_status_shell_payload(capture_id: &str, result: &AudioSidecarCallResult) -> Value {
     let active = result
         .payload
         .get("active")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    Ok(json!({
+    let sidecar_reason = result
+        .payload
+        .get("reason")
+        .and_then(Value::as_str)
+        .filter(|reason| !reason.trim().is_empty());
+    let reason = if !result.success {
+        sidecar_reason
+            .or(result.error_code.as_deref())
+            .unwrap_or("meetingCaptureStatusFailed")
+    } else if active {
+        "active"
+    } else {
+        sidecar_reason.unwrap_or("meetingCaptureSourceInactive")
+    };
+    json!({
         "captureId": capture_id,
         "active": active,
-        "reason": if active { "active" } else { "meetingCaptureSourceInactive" },
+        "reason": reason,
         "sidecar": result.payload,
-    }))
+        "sidecarStatus": sidecar_status_payload(result),
+    })
 }
 
 fn audio_capture_start_sidecar_payload(options: &AudioCaptureStartOptions) -> Value {
@@ -1075,6 +1149,22 @@ fn audio_capture_start_sidecar_payload(options: &AudioCaptureStartOptions) -> Va
         "prewarmId": options.prewarm_id,
         "frameProtocol": audio_frame_protocol_payload(),
     })
+}
+
+fn audio_sidecar_result_response_line(
+    request_id: &str,
+    started: Instant,
+    payload: Value,
+    result: &crate::audio_sidecar_client::AudioSidecarCallResult,
+) -> String {
+    response_line(
+        request_id,
+        result.success,
+        result.error_code.as_deref().unwrap_or(""),
+        result.fallback_reason.as_deref().unwrap_or(""),
+        started,
+        payload,
+    )
 }
 
 fn audio_prewarm_start_sidecar_payload(options: &AudioCaptureStartOptions) -> Value {
@@ -2683,6 +2773,104 @@ fn create_shell_ipc_security_attributes() -> Result<PipeSecurityAttributes, Stri
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LifecycleStartResource {
+    Capture(String),
+    Prewarm(String),
+    Meeting(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LifecycleStartDelivery {
+    resource: LifecycleStartResource,
+    api_version: String,
+    request_id: String,
+}
+
+impl LifecycleStartResource {
+    fn cleanup(&self) -> bool {
+        let result = match self {
+            Self::Capture(stream_id) => {
+                call_audio_sidecar_command("captureStop", json!({"streamId": stream_id}))
+            }
+            Self::Prewarm(prewarm_id) => {
+                call_audio_sidecar_command("prewarmStop", json!({"prewarmId": prewarm_id}))
+            }
+            Self::Meeting(meeting_capture_id) => call_audio_sidecar_command(
+                "meetingCaptureStop",
+                json!({"meetingCaptureId": meeting_capture_id}),
+            ),
+        };
+        result.success
+    }
+}
+
+fn lifecycle_start_resource(
+    request_raw: &str,
+    response_raw: &str,
+) -> Option<LifecycleStartResource> {
+    let request: Value = serde_json::from_str(request_raw).ok()?;
+    let response: Value = serde_json::from_str(response_raw.trim()).ok()?;
+    if !response
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let command = request.get("command").and_then(Value::as_str)?;
+    let payload = response.get("payload")?;
+    let bounded_id = |field: &str| {
+        let value = payload.get(field).and_then(Value::as_str)?.trim();
+        (!value.is_empty() && value.len() <= 96).then(|| value.to_string())
+    };
+    match command {
+        "audioCaptureStart" => bounded_id("streamId").map(LifecycleStartResource::Capture),
+        "audioPrewarmStart" => bounded_id("prewarmId").map(LifecycleStartResource::Prewarm),
+        "audioMeetingStart" | "audioMeetingResume" => {
+            bounded_id("captureId").map(LifecycleStartResource::Meeting)
+        }
+        _ => None,
+    }
+}
+
+fn lifecycle_start_delivery(
+    request_raw: &str,
+    response_raw: &str,
+) -> Option<LifecycleStartDelivery> {
+    let resource = lifecycle_start_resource(request_raw, response_raw)?;
+    let request: Value = serde_json::from_str(request_raw).ok()?;
+    let response: Value = serde_json::from_str(response_raw.trim()).ok()?;
+    let api_version = request.get("apiVersion").and_then(Value::as_str)?.trim();
+    let request_id = request.get("requestId").and_then(Value::as_str)?.trim();
+    if api_version.is_empty()
+        || api_version.len() > 16
+        || request_id.is_empty()
+        || request_id.len() > 128
+        || response.get("apiVersion").and_then(Value::as_str) != Some(api_version)
+        || response.get("requestId").and_then(Value::as_str) != Some(request_id)
+    {
+        return None;
+    }
+    Some(LifecycleStartDelivery {
+        resource,
+        api_version: api_version.to_string(),
+        request_id: request_id.to_string(),
+    })
+}
+
+fn lifecycle_start_ack_matches(raw: &str, delivery: &LifecycleStartDelivery) -> bool {
+    let acknowledgement: Value = match serde_json::from_str(raw.trim()) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    acknowledgement.get("type").and_then(Value::as_str) == Some("responseAck")
+        && acknowledgement.get("apiVersion").and_then(Value::as_str)
+            == Some(delivery.api_version.as_str())
+        && acknowledgement.get("requestId").and_then(Value::as_str)
+            == Some(delivery.request_id.as_str())
+}
+
 #[cfg(windows)]
 fn run_shell_ipc_server<L>(config: ShellIpcConfig, stop: Arc<AtomicBool>, log: &mut L)
 where
@@ -2692,9 +2880,37 @@ where
         "shell IPC server starting pipe_hash={}",
         config.pipe_name_hash()
     ));
+    let mut workers = Vec::<JoinHandle<Result<(), String>>>::new();
     while !stop.load(Ordering::SeqCst) {
-        match serve_one_client(&config) {
-            Ok(()) => {}
+        reap_finished_shell_ipc_workers(&mut workers, log);
+        if workers.len() >= SHELL_IPC_CLIENT_WORKER_LIMIT {
+            thread::sleep(Duration::from_millis(5));
+            continue;
+        }
+
+        match accept_shell_ipc_client(&config) {
+            Ok(pipe) => {
+                if stop.load(Ordering::SeqCst) {
+                    disconnect_and_close_pipe(pipe);
+                    break;
+                }
+
+                let pipe_value = pipe as usize;
+                let expected_token = config.token.clone();
+                let stop_for_worker = Arc::clone(&stop);
+                match thread::Builder::new()
+                    .name("shell-ipc-client".to_string())
+                    .spawn(move || {
+                        let pipe = pipe_value as windows_sys::Win32::Foundation::HANDLE;
+                        serve_connected_client(pipe, &expected_token, &stop_for_worker)
+                    }) {
+                    Ok(worker) => workers.push(worker),
+                    Err(err) => {
+                        disconnect_and_close_pipe(pipe);
+                        log(format!("shell IPC client worker could not start: {err}"));
+                    }
+                }
+            }
             Err(err) => {
                 if !stop.load(Ordering::SeqCst) {
                     log(format!("shell IPC request failed: {err}"));
@@ -2702,20 +2918,60 @@ where
             }
         }
     }
+
+    let shutdown_deadline = Instant::now() + Duration::from_millis(SHELL_IPC_SHUTDOWN_GRACE_MS);
+    while !workers.is_empty() && Instant::now() < shutdown_deadline {
+        reap_finished_shell_ipc_workers(&mut workers, log);
+        if !workers.is_empty() {
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    reap_finished_shell_ipc_workers(&mut workers, log);
+    if !workers.is_empty() {
+        log(format!(
+            "shell IPC server detached {} client worker(s) during shutdown",
+            workers.len()
+        ));
+    }
     log("shell IPC server stopped".to_string());
 }
 
 #[cfg(windows)]
-fn serve_one_client(config: &ShellIpcConfig) -> Result<(), String> {
+fn reap_finished_shell_ipc_workers<L>(
+    workers: &mut Vec<JoinHandle<Result<(), String>>>,
+    log: &mut L,
+) where
+    L: FnMut(String),
+{
+    let mut index = 0usize;
+    while index < workers.len() {
+        if !workers[index].is_finished() {
+            index += 1;
+            continue;
+        }
+
+        let worker = workers.swap_remove(index);
+        match worker.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => log(format!("shell IPC request failed: {err}")),
+            Err(_) => log("shell IPC client worker panicked".to_string()),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn accept_shell_ipc_client(
+    config: &ShellIpcConfig,
+) -> Result<windows_sys::Win32::Foundation::HANDLE, String> {
     use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
     use windows_sys::Win32::{
         Foundation::{
             CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
         },
-        Storage::FileSystem::{FlushFileBuffers, PIPE_ACCESS_DUPLEX},
+        Storage::FileSystem::PIPE_ACCESS_DUPLEX,
         System::Pipes::{
-            ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE,
-            PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE, PIPE_WAIT,
+            ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_TYPE_MESSAGE, PIPE_WAIT,
         },
     };
 
@@ -2729,7 +2985,7 @@ fn serve_one_client(config: &ShellIpcConfig) -> Result<(), String> {
             name.as_ptr(),
             PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            1,
+            SHELL_IPC_PIPE_INSTANCE_LIMIT,
             PIPE_BUFFER_BYTES,
             PIPE_BUFFER_BYTES,
             250,
@@ -2752,20 +3008,171 @@ fn serve_one_client(config: &ShellIpcConfig) -> Result<(), String> {
         return Err(format!("ConnectNamedPipe failed with {err}"));
     }
 
-    let result = handle_connected_client(pipe, &config.token);
+    Ok(pipe)
+}
+
+#[cfg(windows)]
+fn serve_connected_client(
+    pipe: windows_sys::Win32::Foundation::HANDLE,
+    expected_token: &str,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    let result = match handle_connected_client(pipe, expected_token, stop) {
+        Ok(ClientServiceOutcome::ResponseWritten {
+            lifecycle_start: Some(delivery),
+        }) => {
+            let acknowledgement = wait_for_lifecycle_start_ack(pipe, stop, &delivery);
+            if !acknowledgement.requires_rollback() {
+                Ok(())
+            } else {
+                let cleanup_succeeded = delivery.resource.cleanup();
+                Err(format!(
+                    "shell IPC lifecycle response acknowledgement failed: outcome={}; cleanup_success={cleanup_succeeded}",
+                    acknowledgement.diagnostic_code()
+                ))
+            }
+        }
+        Ok(ClientServiceOutcome::ResponseWritten {
+            lifecycle_start: None,
+        }) => Ok(()),
+        Ok(ClientServiceOutcome::ClosedWithoutResponse) => Ok(()),
+        Err(err) => Err(err),
+    };
+    disconnect_and_close_pipe(pipe);
+    result
+}
+
+#[cfg(windows)]
+fn wait_for_lifecycle_start_ack(
+    pipe: windows_sys::Win32::Foundation::HANDLE,
+    stop: &AtomicBool,
+    delivery: &LifecycleStartDelivery,
+) -> LifecycleAckOutcome {
+    use std::ptr;
+    use windows_sys::Win32::{
+        Foundation::GetLastError, Storage::FileSystem::ReadFile, System::Pipes::PeekNamedPipe,
+    };
+
+    // Client disconnect is not proof of delivery: a Python ReadFile timeout also cancels and
+    // closes the pipe. Keep cleanup ownership until a bounded, request-bound ACK is read.
+    let deadline = Instant::now() + Duration::from_millis(CLIENT_RESPONSE_ACK_TIMEOUT_MS);
+    let mut acknowledgement = Vec::<u8>::new();
+    while Instant::now() < deadline {
+        if stop.load(Ordering::SeqCst) {
+            return LifecycleAckOutcome::ServerStopping;
+        }
+        let mut available = 0u32;
+        let connected = unsafe {
+            PeekNamedPipe(
+                pipe,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                &mut available,
+                ptr::null_mut(),
+            )
+        } != 0;
+        if !connected {
+            return LifecycleAckOutcome::Disconnected;
+        }
+        if available == 0 {
+            thread::sleep(Duration::from_millis(2));
+            continue;
+        }
+
+        let mut buffer = [0u8; 256];
+        let mut bytes_read = 0u32;
+        let bytes_to_read = available.min(buffer.len() as u32);
+        let ok = unsafe {
+            ReadFile(
+                pipe,
+                buffer.as_mut_ptr(),
+                bytes_to_read,
+                &mut bytes_read,
+                ptr::null_mut(),
+            )
+        };
+        let read_error = if ok == 0 {
+            unsafe { GetLastError() }
+        } else {
+            0
+        };
+        let read_status = match pipe_read_chunk_status(ok, bytes_read, read_error) {
+            Ok(status) => status,
+            Err(_) => return LifecycleAckOutcome::Disconnected,
+        };
+        if matches!(read_status, PipeReadChunkStatus::Finished) {
+            return LifecycleAckOutcome::Disconnected;
+        }
+        acknowledgement.extend_from_slice(&buffer[..bytes_read as usize]);
+        if acknowledgement.len() > MAX_RESPONSE_ACK_BYTES {
+            return LifecycleAckOutcome::Invalid;
+        }
+        if let Some(newline_at) = acknowledgement.iter().position(|byte| *byte == b'\n') {
+            let first_line = &acknowledgement[..newline_at];
+            let raw = String::from_utf8_lossy(first_line);
+            return if lifecycle_start_ack_matches(raw.as_ref(), delivery) {
+                LifecycleAckOutcome::Acknowledged
+            } else {
+                LifecycleAckOutcome::Invalid
+            };
+        }
+    }
+    LifecycleAckOutcome::TimedOut
+}
+
+#[cfg(windows)]
+fn disconnect_and_close_pipe(pipe: windows_sys::Win32::Foundation::HANDLE) {
+    use windows_sys::Win32::{Foundation::CloseHandle, System::Pipes::DisconnectNamedPipe};
+
     unsafe {
-        let _ = FlushFileBuffers(pipe);
         let _ = DisconnectNamedPipe(pipe);
         let _ = CloseHandle(pipe);
     }
-    result
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LifecycleAckOutcome {
+    Acknowledged,
+    Invalid,
+    Disconnected,
+    TimedOut,
+    ServerStopping,
+}
+
+#[cfg(windows)]
+impl LifecycleAckOutcome {
+    fn requires_rollback(self) -> bool {
+        self != Self::Acknowledged
+    }
+
+    fn diagnostic_code(self) -> &'static str {
+        match self {
+            Self::Acknowledged => "acknowledged",
+            Self::Invalid => "invalid",
+            Self::Disconnected => "disconnected",
+            Self::TimedOut => "timedOut",
+            Self::ServerStopping => "serverStopping",
+        }
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClientServiceOutcome {
+    ResponseWritten {
+        lifecycle_start: Option<LifecycleStartDelivery>,
+    },
+    ClosedWithoutResponse,
 }
 
 #[cfg(windows)]
 fn handle_connected_client(
     pipe: windows_sys::Win32::Foundation::HANDLE,
     expected_token: &str,
-) -> Result<(), String> {
+    stop: &AtomicBool,
+) -> Result<ClientServiceOutcome, String> {
     use std::ptr;
     use windows_sys::Win32::{
         Foundation::GetLastError, Storage::FileSystem::ReadFile, System::Pipes::PeekNamedPipe,
@@ -2774,6 +3181,9 @@ fn handle_connected_client(
     let mut request = Vec::<u8>::new();
     let read_started = Instant::now();
     loop {
+        if stop.load(Ordering::SeqCst) {
+            return Ok(ClientServiceOutcome::ClosedWithoutResponse);
+        }
         if read_started.elapsed() > Duration::from_millis(CLIENT_READ_TIMEOUT_MS) {
             return write_response(
                 pipe,
@@ -2785,7 +3195,10 @@ fn handle_connected_client(
                     read_started,
                     json!({}),
                 ),
-            );
+            )
+            .map(|_| ClientServiceOutcome::ResponseWritten {
+                lifecycle_start: None,
+            });
         }
 
         let mut available = 0u32;
@@ -2828,7 +3241,7 @@ fn handle_connected_client(
         };
         let read_status = pipe_read_chunk_status(ok, bytes_read, read_error)?;
         if matches!(read_status, PipeReadChunkStatus::Finished) {
-            break;
+            return Ok(ClientServiceOutcome::ClosedWithoutResponse);
         }
         request.extend_from_slice(&buffer[..bytes_read as usize]);
         if request.len() > MAX_REQUEST_BYTES {
@@ -2842,7 +3255,10 @@ fn handle_connected_client(
                     Instant::now(),
                     json!({}),
                 ),
-            );
+            )
+            .map(|_| ClientServiceOutcome::ResponseWritten {
+                lifecycle_start: None,
+            });
         }
         if request.contains(&b'\n') {
             break;
@@ -2855,7 +3271,20 @@ fn handle_connected_client(
         .unwrap_or_default();
     let raw = String::from_utf8_lossy(first_line);
     let response = handle_shell_ipc_request(raw.trim(), expected_token);
-    write_response(pipe, &response)
+    let lifecycle_start = lifecycle_start_delivery(raw.trim(), &response);
+    match write_response(pipe, &response) {
+        Ok(()) => Ok(ClientServiceOutcome::ResponseWritten { lifecycle_start }),
+        Err(err) => {
+            if let Some(delivery) = lifecycle_start {
+                let cleanup_succeeded = delivery.resource.cleanup();
+                Err(format!(
+                    "{err}; lifecycle start cleanup_success={cleanup_succeeded}"
+                ))
+            } else {
+                Err(err)
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -2956,6 +3385,22 @@ mod tests {
     use serde_json::json;
     use std::time::Instant;
 
+    #[cfg(windows)]
+    fn open_test_pipe(pipe_name: &str, timeout: std::time::Duration) -> std::fs::File {
+        use std::{fs::OpenOptions, thread, time::Duration};
+
+        let deadline = Instant::now() + timeout;
+        loop {
+            match OpenOptions::new().read(true).write(true).open(pipe_name) {
+                Ok(file) => return file,
+                Err(_) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(err) => panic!("could not connect to test shell IPC pipe: {err}"),
+            }
+        }
+    }
+
     #[test]
     fn shell_ipc_config_uses_private_pipe_and_token() {
         let config = ShellIpcConfig::new();
@@ -2965,6 +3410,247 @@ mod tests {
         assert!(!config.pipe_name.contains(&config.token));
         assert_ne!(config.pipe_name_hash(), config.pipe_name);
         assert_eq!(config.pipe_name_hash().len(), 16);
+    }
+
+    #[test]
+    fn inject_text_mutation_lane_serializes_clipboard_side_effects() {
+        use std::{sync::mpsc, thread, time::Duration};
+
+        let first = super::inject_text_mutation_lock();
+        let (acquired_tx, acquired_rx) = mpsc::sync_channel(1);
+        let waiter = thread::spawn(move || {
+            let _second = super::inject_text_mutation_lock();
+            let _ = acquired_tx.send(());
+        });
+
+        assert!(acquired_rx.recv_timeout(Duration::from_millis(25)).is_err());
+        drop(first);
+        acquired_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("second injection should proceed after the mutation lane is released");
+        waiter.join().unwrap();
+    }
+
+    #[test]
+    fn successful_lifecycle_start_response_retains_cleanup_ownership() {
+        use super::LifecycleStartResource;
+
+        let capture_request = json!({"command": "audioCaptureStart"}).to_string();
+        let capture_response =
+            json!({"success": true, "payload": {"streamId": "stream-1"}}).to_string();
+        assert_eq!(
+            super::lifecycle_start_resource(&capture_request, &capture_response),
+            Some(LifecycleStartResource::Capture("stream-1".to_string()))
+        );
+
+        let prewarm_request = json!({"command": "audioPrewarmStart"}).to_string();
+        let prewarm_response =
+            json!({"success": true, "payload": {"prewarmId": "prewarm-1"}}).to_string();
+        assert_eq!(
+            super::lifecycle_start_resource(&prewarm_request, &prewarm_response),
+            Some(LifecycleStartResource::Prewarm("prewarm-1".to_string()))
+        );
+
+        let meeting_request = json!({"command": "audioMeetingResume"}).to_string();
+        let meeting_response =
+            json!({"success": true, "payload": {"captureId": "meeting-1"}}).to_string();
+        assert_eq!(
+            super::lifecycle_start_resource(&meeting_request, &meeting_response),
+            Some(LifecycleStartResource::Meeting("meeting-1".to_string()))
+        );
+
+        let failed_response =
+            json!({"success": false, "payload": {"streamId": "stream-2"}}).to_string();
+        assert_eq!(
+            super::lifecycle_start_resource(&capture_request, &failed_response),
+            None
+        );
+
+        let delivery_request = json!({
+            "apiVersion": API_VERSION,
+            "requestId": "delivery-1",
+            "command": "audioCaptureStart"
+        })
+        .to_string();
+        let delivery_response = json!({
+            "apiVersion": API_VERSION,
+            "requestId": "delivery-1",
+            "success": true,
+            "payload": {"streamId": "stream-1"}
+        })
+        .to_string();
+        let delivery = super::lifecycle_start_delivery(&delivery_request, &delivery_response)
+            .expect("successful starts retain request-bound delivery ownership");
+        assert_eq!(delivery.request_id, "delivery-1");
+        assert_eq!(delivery.api_version, API_VERSION);
+        assert!(super::lifecycle_start_ack_matches(
+            &json!({
+                "apiVersion": API_VERSION,
+                "requestId": "delivery-1",
+                "type": "responseAck"
+            })
+            .to_string(),
+            &delivery
+        ));
+        assert!(!super::lifecycle_start_ack_matches(
+            &json!({
+                "apiVersion": API_VERSION,
+                "requestId": "another-request",
+                "type": "responseAck"
+            })
+            .to_string(),
+            &delivery
+        ));
+        assert!(super::lifecycle_start_delivery(
+            &delivery_request,
+            &delivery_response.replace("delivery-1", "mismatched-response")
+        )
+        .is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lifecycle_ack_timeout_disconnect_and_invalid_data_require_rollback() {
+        use super::LifecycleAckOutcome;
+
+        assert!(!LifecycleAckOutcome::Acknowledged.requires_rollback());
+        assert!(LifecycleAckOutcome::TimedOut.requires_rollback());
+        assert!(LifecycleAckOutcome::Disconnected.requires_rollback());
+        assert!(LifecycleAckOutcome::Invalid.requires_rollback());
+        assert!(LifecycleAckOutcome::ServerStopping.requires_rollback());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stalled_shell_ipc_client_does_not_block_a_second_request() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            sync::mpsc,
+            thread,
+            time::Duration,
+        };
+
+        let config = ShellIpcConfig::new();
+        let server = super::start_shell_ipc_server(config.clone(), |_| {})
+            .expect("server should start")
+            .expect("Windows server should be available");
+
+        let mut stalled_client = open_test_pipe(&config.pipe_name, Duration::from_secs(1));
+        stalled_client
+            .write_all(br#"{"apiVersion":"1""#)
+            .expect("partial request should be written");
+        thread::sleep(Duration::from_millis(20));
+
+        // This connection must become available while the first client's 750 ms read timeout is
+        // still running; a single-instance server cannot satisfy it within this deadline.
+        let second_client = open_test_pipe(&config.pipe_name, Duration::from_millis(500));
+        let token = config.token.clone();
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let result = (|| -> Result<String, String> {
+                let mut client = second_client;
+                let request = json!({
+                    "apiVersion": API_VERSION,
+                    "requestId": "parallel-ping",
+                    "command": "ping",
+                    "token": token,
+                    "payload": {}
+                });
+                client
+                    .write_all(format!("{request}\n").as_bytes())
+                    .map_err(|err| err.to_string())?;
+                let mut response = String::new();
+                BufReader::new(client)
+                    .read_line(&mut response)
+                    .map_err(|err| err.to_string())?;
+                Ok(response)
+            })();
+            let _ = response_tx.send(result);
+        });
+
+        let response = response_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("second request should finish")
+            .expect("second request should succeed");
+        let response: serde_json::Value =
+            serde_json::from_str(response.trim()).expect("response should be valid JSON");
+        assert_eq!(response["requestId"], "parallel-ping");
+        assert_eq!(response["success"], true);
+        assert_eq!(response["payload"]["pong"], true);
+
+        drop(stalled_client);
+        drop(server);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn non_lifecycle_response_does_not_wait_for_client_close() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            time::Duration,
+        };
+
+        let config = ShellIpcConfig::new();
+        let server = super::start_shell_ipc_server(config.clone(), |_| {})
+            .expect("server should start")
+            .expect("Windows server should be available");
+        let mut client = open_test_pipe(&config.pipe_name, Duration::from_secs(1));
+        let request = json!({
+            "apiVersion": API_VERSION,
+            "requestId": "slow-reader-ping",
+            "command": "ping",
+            "token": config.token,
+            "payload": {}
+        });
+        client
+            .write_all(format!("{request}\n").as_bytes())
+            .expect("ping should be written");
+
+        let mut response = String::new();
+        BufReader::new(&mut client)
+            .read_line(&mut response)
+            .expect("client should receive the response");
+        let response: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(response["requestId"], "slow-reader-ping");
+        assert_eq!(response["success"], true);
+
+        // Keeping this client handle open must not keep the server worker alive.
+        let next_client = open_test_pipe(&config.pipe_name, Duration::from_millis(250));
+        drop(next_client);
+        drop(server);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shell_ipc_server_shutdown_does_not_flush_a_stalled_client() {
+        use std::{
+            io::Write,
+            sync::mpsc,
+            thread,
+            time::{Duration, Instant},
+        };
+
+        let config = ShellIpcConfig::new();
+        let (log_tx, log_rx) = mpsc::channel();
+        let server = super::start_shell_ipc_server(config.clone(), move |message| {
+            let _ = log_tx.send(message);
+        })
+        .expect("server should start")
+        .expect("Windows server should be available");
+        let mut stalled_client = open_test_pipe(&config.pipe_name, Duration::from_secs(1));
+        stalled_client
+            .write_all(br#"{"apiVersion":"1""#)
+            .expect("partial request should be written");
+        thread::sleep(Duration::from_millis(20));
+
+        let started = Instant::now();
+        drop(server);
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(log_rx
+            .try_iter()
+            .any(|message| message == "shell IPC server stopped"));
+
+        drop(stalled_client);
     }
 
     #[test]
@@ -3493,6 +4179,31 @@ mod tests {
     }
 
     #[test]
+    fn audio_prewarm_stop_response_propagates_sidecar_failure() {
+        let result = crate::audio_sidecar_client::AudioSidecarCallResult {
+            success: false,
+            error_code: Some("audioSidecarResponseTimeout".to_string()),
+            fallback_reason: Some("prewarm stop timed out".to_string()),
+            payload: json!({"stopped": false, "prewarmId": "prewarm-1"}),
+            executable_available: true,
+            executable_path_hash: Some("hash".to_string()),
+            pid: Some(9876),
+        };
+
+        let response = super::audio_sidecar_result_response_line(
+            "prewarm-stop-failed",
+            Instant::now(),
+            json!({"stopped": false}),
+            &result,
+        );
+        let response: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+
+        assert_eq!(response["success"], false);
+        assert_eq!(response["errorCode"], "audioSidecarResponseTimeout");
+        assert_eq!(response["fallbackReason"], "prewarm stop timed out");
+    }
+
+    #[test]
     fn audio_prewarm_status_shell_payload_preserves_status_fields() {
         let result = crate::audio_sidecar_client::AudioSidecarCallResult {
             success: true,
@@ -3560,6 +4271,136 @@ mod tests {
         assert!(payload["sidecarWaitError"].is_null());
         assert_eq!(payload["sidecar"]["pid"], 9876);
         assert_eq!(payload["sidecarPayload"]["streamId"], "stream-1");
+    }
+
+    #[test]
+    fn audio_capture_stop_response_propagates_sidecar_failure() {
+        let result = crate::audio_sidecar_client::AudioSidecarCallResult {
+            success: false,
+            error_code: Some("audioSidecarResponseTimeout".to_string()),
+            fallback_reason: Some("capture stop timed out".to_string()),
+            payload: json!({
+                "stopped": false,
+                "streamId": "stream-1",
+                "reason": "responseTimeout",
+            }),
+            executable_available: true,
+            executable_path_hash: Some("hash".to_string()),
+            pid: Some(9876),
+        };
+        let payload = super::audio_capture_stop_shell_payload(result.payload.clone(), &result);
+
+        let response = super::audio_sidecar_result_response_line(
+            "capture-stop-failed",
+            Instant::now(),
+            payload,
+            &result,
+        );
+        let response: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+
+        assert_eq!(response["success"], false);
+        assert_eq!(response["errorCode"], "audioSidecarResponseTimeout");
+        assert_eq!(response["fallbackReason"], "capture stop timed out");
+        assert_eq!(response["payload"]["stopped"], false);
+        assert_eq!(
+            response["payload"]["sidecar"]["errorCode"],
+            "audioSidecarResponseTimeout"
+        );
+    }
+
+    #[test]
+    fn meeting_audio_stop_response_propagates_sidecar_failure() {
+        let result = crate::audio_sidecar_client::AudioSidecarCallResult {
+            success: false,
+            error_code: Some("audioSidecarWriteFailed".to_string()),
+            fallback_reason: Some("meeting stop transport failed".to_string()),
+            payload: json!({
+                "stopped": false,
+                "meetingCaptureId": "meeting-1",
+                "reason": "transportFailure",
+            }),
+            executable_available: true,
+            executable_path_hash: Some("hash".to_string()),
+            pid: Some(9876),
+        };
+        let payload = super::meeting_audio_stop_shell_payload("meeting-1", &result);
+
+        let response = super::audio_sidecar_result_response_line(
+            "meeting-stop-failed",
+            Instant::now(),
+            payload,
+            &result,
+        );
+        let response: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+
+        assert_eq!(response["success"], false);
+        assert_eq!(response["errorCode"], "audioSidecarWriteFailed");
+        assert_eq!(response["fallbackReason"], "meeting stop transport failed");
+        assert_eq!(response["payload"]["stopped"], false);
+        assert_eq!(response["payload"]["sidecar"]["reason"], "transportFailure");
+        assert_eq!(
+            response["payload"]["sidecarStatus"]["errorCode"],
+            "audioSidecarWriteFailed"
+        );
+    }
+
+    #[test]
+    fn meeting_audio_status_failure_is_not_reported_as_normal_inactive() {
+        let result = crate::audio_sidecar_client::AudioSidecarCallResult {
+            success: false,
+            error_code: Some("audioSidecarResponseTimeout".to_string()),
+            fallback_reason: Some("meeting status timed out".to_string()),
+            payload: json!({
+                "active": false,
+                "meetingCaptureId": "meeting-1",
+            }),
+            executable_available: true,
+            executable_path_hash: Some("hash".to_string()),
+            pid: Some(9876),
+        };
+        let payload = super::meeting_audio_status_shell_payload("meeting-1", &result);
+
+        assert_eq!(payload["active"], false);
+        assert_eq!(payload["reason"], "audioSidecarResponseTimeout");
+        assert_ne!(payload["reason"], "meetingCaptureSourceInactive");
+        assert_eq!(
+            payload["sidecarStatus"]["errorCode"],
+            "audioSidecarResponseTimeout"
+        );
+
+        let response = super::audio_sidecar_result_response_line(
+            "meeting-status-failed",
+            Instant::now(),
+            payload,
+            &result,
+        );
+        let response: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(response["success"], false);
+        assert_eq!(response["errorCode"], "audioSidecarResponseTimeout");
+        assert_eq!(response["fallbackReason"], "meeting status timed out");
+    }
+
+    #[test]
+    fn meeting_audio_status_preserves_normal_inactive_sidecar_reason() {
+        let result = crate::audio_sidecar_client::AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({
+                "active": false,
+                "meetingCaptureId": "meeting-1",
+                "reason": "noActiveMeetingCapture",
+            }),
+            executable_available: true,
+            executable_path_hash: Some("hash".to_string()),
+            pid: None,
+        };
+
+        let payload = super::meeting_audio_status_shell_payload("meeting-1", &result);
+
+        assert_eq!(payload["active"], false);
+        assert_eq!(payload["reason"], "noActiveMeetingCapture");
+        assert!(payload["sidecarStatus"]["errorCode"].is_null());
     }
 
     #[test]

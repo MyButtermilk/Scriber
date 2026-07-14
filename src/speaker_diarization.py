@@ -26,6 +26,7 @@ from uuid import uuid4
 from aiohttp import ClientSession
 
 from src.provider_transcript import group_provider_words, normalize_provider_words
+from src.runtime.ffmpeg_commands import wav_pcm_transcode_args
 from src.runtime.paths import app_root, data_dir, is_frozen, repo_root
 from src.runtime.media_tools import require_media_tool
 from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
@@ -852,9 +853,13 @@ class SherpaOnnxDiarizer:
     async def _prepare_audio(audio_path: Path, prepared: Path) -> None:
         ffmpeg = require_media_tool("ffmpeg")
         conversion = await asyncio.create_subprocess_exec(
-            ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(audio_path),
-            "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-f", "wav",
-            str(prepared),
+            *wav_pcm_transcode_args(
+                ffmpeg,
+                audio_path,
+                prepared,
+                sample_rate=16_000,
+                channels=1,
+            ),
             stdout=subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
             **hidden_subprocess_kwargs(),
@@ -873,6 +878,7 @@ class SherpaOnnxDiarizer:
             conversion.returncode != 0
             or len(stderr or b"") > MAX_WORKER_DIAGNOSTIC_BYTES
             or not prepared.is_file()
+            or prepared.stat().st_size <= 44
         ):
             raise RuntimeError("Audio preparation for local speaker separation failed.")
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import queue
 import re
 import sys
 import threading
@@ -17,6 +16,14 @@ SHELL_IPC_API_VERSION_ENV = "SCRIBER_SHELL_IPC_API_VERSION"
 DEFAULT_API_VERSION = "1"
 DEFAULT_TIMEOUT_SECONDS = 0.75
 MAX_RESPONSE_BYTES = 512 * 1024
+_LIFECYCLE_START_RESOURCE_ID_FIELDS = {
+    "audioCaptureStart": "streamId",
+    "audioPrewarmStart": "prewarmId",
+    "audioMeetingStart": "captureId",
+    "audioMeetingResume": "captureId",
+}
+_LIFECYCLE_START_COMMANDS = frozenset(_LIFECYCLE_START_RESOURCE_ID_FIELDS)
+_RESPONSE_ACK_TYPE = "responseAck"
 _PIPE_NAME_PATTERN = re.compile(
     r"(?:\\\\){1,2}\.(?:\\){1,2}pipe(?:\\){1,2}scriber-shell-[A-Za-z0-9_.-]+",
     re.IGNORECASE,
@@ -30,7 +37,17 @@ _last_fallback_reason: str | None = None
 _last_success: bool | None = None
 _last_command_at: float | None = None
 _last_response_summary: dict[str, Any] | None = None
-_transport_lock = threading.Lock()
+
+# Commands that mutate the same shell-owned resource must preserve caller order,
+# but unrelated capabilities must never share one process-wide transport lock.
+# In particular, a slow Outlook request must not delay microphone or overlay
+# work.  The actual named-pipe transport remains fully concurrent.
+_command_domain_locks = {
+    "audio": threading.Lock(),
+    "inject": threading.Lock(),
+    "outlook": threading.Lock(),
+    "overlay": threading.Lock(),
+}
 
 
 def available() -> bool:
@@ -112,7 +129,8 @@ def call_shell_ipc(
     }
     request_line = json.dumps(request, separators=(",", ":")) + "\n"
     try:
-        response_line = _call_shell_ipc_windows(
+        response_line = _call_shell_ipc_ordered(
+            cleaned_command,
             pipe_name,
             request_line,
             max(0.05, float(timeout_seconds or DEFAULT_TIMEOUT_SECONDS)),
@@ -370,61 +388,74 @@ def _redact_sensitive_text(value: str) -> str:
     return redacted
 
 
-def _call_shell_ipc_windows(pipe_name: str, request_line: str, timeout_seconds: float) -> str:
-    result_queue: queue.Queue[tuple[bool, str]] = queue.Queue(maxsize=1)
+def _command_serialization_domain(command: str) -> str | None:
+    """Return the narrow shell-ownership domain for an ordered command."""
+    normalized = str(command or "").strip().lower()
+    if normalized == "injecttext":
+        return "inject"
+    if normalized.startswith("overlay"):
+        return "overlay"
+    if normalized.startswith("outlook"):
+        return "outlook"
+    if normalized.startswith(("audiocapture", "audioprewarm", "audiomeeting")):
+        return "audio"
+    if normalized == "audioprobe":
+        return "audio"
+    return None
 
-    def worker() -> None:
-        try:
-            deadline = time.monotonic() + max(0.05, timeout_seconds)
-            if not _transport_lock.acquire(timeout=max(0.01, timeout_seconds)):
-                raise TimeoutError("shell IPC transport busy")
-            try:
-                remaining = max(0.05, deadline - time.monotonic())
-                response = _send_request_over_pipe(pipe_name, request_line, remaining)
-            finally:
-                _transport_lock.release()
-            result_queue.put((True, response), block=False)
-        except Exception as exc:
-            result_queue.put((False, f"{type(exc).__name__}: {exc}"), block=False)
 
-    thread = threading.Thread(target=worker, name="scriber-shell-ipc", daemon=True)
-    thread.start()
+def _call_shell_ipc_ordered(
+    command: str,
+    pipe_name: str,
+    request_line: str,
+    timeout_seconds: float,
+) -> str:
+    """Serialize only commands that mutate the same native resource domain."""
+    timeout_budget = max(0.05, float(timeout_seconds or DEFAULT_TIMEOUT_SECONDS))
+    domain = _command_serialization_domain(command)
+    if domain is None:
+        return _call_shell_ipc_windows(pipe_name, request_line, timeout_budget)
+
+    domain_lock = _command_domain_locks[domain]
+    deadline = time.monotonic() + timeout_budget
+    acquired = domain_lock.acquire(timeout=timeout_budget)
+    if not acquired:
+        raise TimeoutError(
+            f"shell IPC {domain} command queue timed out after {timeout_budget:.3f}s"
+        )
     try:
-        ok, result = result_queue.get(timeout=timeout_seconds + 0.05)
-    except queue.Empty as exc:
-        _cancel_synchronous_io(thread)
-        thread.join(timeout=0.1)
-        raise TimeoutError(f"shell IPC timed out after {timeout_seconds:.3f}s") from exc
-    if not ok:
-        raise RuntimeError(result)
-    return result
-
-
-def _cancel_synchronous_io(thread: threading.Thread) -> bool:
-    """Best-effort cancellation for a timed-out Windows transport worker."""
-    native_id = thread.native_id
-    if os.name != "nt" or native_id is None:
-        return False
-
-    import ctypes
-    from ctypes import wintypes
-
-    thread_terminate = 0x0001
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenThread.restype = wintypes.HANDLE
-    kernel32.CancelSynchronousIo.restype = wintypes.BOOL
-    kernel32.CloseHandle.restype = wintypes.BOOL
-    handle = kernel32.OpenThread(
-        wintypes.DWORD(thread_terminate),
-        wintypes.BOOL(False),
-        wintypes.DWORD(native_id),
-    )
-    if not handle:
-        return False
-    try:
-        return bool(kernel32.CancelSynchronousIo(wintypes.HANDLE(handle)))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"shell IPC {domain} command queue timed out after {timeout_budget:.3f}s"
+            )
+        return _call_shell_ipc_windows(
+            pipe_name,
+            request_line,
+            max(0.05, remaining),
+        )
     finally:
-        kernel32.CloseHandle(wintypes.HANDLE(handle))
+        domain_lock.release()
+
+
+def _call_shell_ipc_windows(pipe_name: str, request_line: str, timeout_seconds: float) -> str:
+    """Run one independently bounded request against a multi-instance pipe.
+
+    The transport used to create an extra synchronous worker and serialize every
+    command behind one process-wide lock.  If Windows left that worker blocked in
+    pipe I/O after its caller timed out, the lock survived and starved overlay,
+    prewarm, capture, and Outlook commands together.  The Windows implementation
+    below uses overlapped I/O with CancelIoEx, so each request owns its timeout and
+    no abandoned worker or global transport lock can wedge later calls.
+    """
+    try:
+        return _send_request_over_pipe(
+            pipe_name,
+            request_line,
+            max(0.05, float(timeout_seconds or DEFAULT_TIMEOUT_SECONDS)),
+        )
+    except Exception as exc:
+        raise RuntimeError(f"{type(exc).__name__}: {exc}") from exc
 
 
 def _send_request_over_pipe(
@@ -441,14 +472,95 @@ def _send_request_over_pipe_file(pipe_name: str, request_line: str) -> str:
     with open(pipe_name, "r+b", buffering=0) as pipe:
         pipe.write(request_line.encode("utf-8"))
         chunks: list[bytes] = []
+        newline_received = False
         while True:
             chunk = pipe.read(1)
             if not chunk:
                 break
             if chunk == b"\n":
+                newline_received = True
                 break
             chunks.append(chunk)
-        return b"".join(chunks).decode("utf-8", errors="replace")
+        response_line = b"".join(chunks).decode("utf-8", errors="replace")
+        acknowledgement = _lifecycle_start_ack_line(
+            request_line,
+            response_line,
+            newline_received=newline_received,
+        )
+        if acknowledgement is not None:
+            pipe.write(acknowledgement.encode("utf-8"))
+        return response_line
+
+
+def _lifecycle_start_ack_line(
+    request_line: str,
+    response_line: str,
+    *,
+    newline_received: bool,
+) -> str | None:
+    """Build the delivery ACK required by successful shell-owned audio starts.
+
+    A closed pipe is ambiguous: it can mean either that the caller consumed the
+    response or that a timed-out OVERLAPPED read was cancelled.  Rust therefore
+    retains cleanup ownership until this request-bound acknowledgement arrives.
+    The acknowledgement is intentionally created only after the complete
+    newline-delimited response has passed the minimum envelope checks.
+    """
+
+    request = json.loads(request_line)
+    if not isinstance(request, dict):
+        raise ValueError("shell IPC request was not an object")
+    if request.get("command") not in _LIFECYCLE_START_COMMANDS:
+        return None
+    if not newline_received:
+        raise ValueError("shell IPC lifecycle response was not newline delimited")
+
+    api_version = request.get("apiVersion")
+    request_id = request.get("requestId")
+    if not isinstance(api_version, str) or not api_version:
+        raise ValueError("shell IPC request apiVersion was invalid")
+    if not isinstance(request_id, str) or not request_id:
+        raise ValueError("shell IPC request requestId was invalid")
+
+    response = json.loads(response_line)
+    if not isinstance(response, dict):
+        raise ValueError("shell IPC response was not an object")
+    if response.get("apiVersion") != api_version:
+        raise ValueError("shell IPC response apiVersion mismatch")
+    if response.get("requestId") != request_id:
+        raise ValueError("shell IPC response requestId mismatch")
+    success = response.get("success")
+    if not isinstance(success, bool):
+        raise ValueError("shell IPC response success must be bool")
+    if not success:
+        return None
+
+    # Match Rust's cleanup-ownership predicate exactly. A malformed successful
+    # response without a bounded resource identifier does not leave Rust
+    # waiting for an ACK, so Python must not race a write against an already
+    # reclaimed pipe instance either.
+    payload = response.get("payload")
+    resource_id_field = _LIFECYCLE_START_RESOURCE_ID_FIELDS[request["command"]]
+    if not isinstance(payload, dict):
+        return None
+    resource_id = payload.get(resource_id_field)
+    if not isinstance(resource_id, str):
+        return None
+    cleaned_resource_id = resource_id.strip()
+    if not cleaned_resource_id or len(cleaned_resource_id.encode("utf-8")) > 96:
+        return None
+
+    return (
+        json.dumps(
+            {
+                "apiVersion": api_version,
+                "requestId": request_id,
+                "type": _RESPONSE_ACK_TYPE,
+            },
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
 
 
 def _send_request_over_pipe_windows(
@@ -459,109 +571,236 @@ def _send_request_over_pipe_windows(
     import ctypes
     from ctypes import wintypes
 
+    class OVERLAPPED(ctypes.Structure):
+        _fields_ = [
+            ("Internal", ctypes.c_size_t),
+            ("InternalHigh", ctypes.c_size_t),
+            ("Offset", wintypes.DWORD),
+            ("OffsetHigh", wintypes.DWORD),
+            ("hEvent", wintypes.HANDLE),
+        ]
+
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     generic_read = 0x80000000
     generic_write = 0x40000000
     open_existing = 3
     file_attribute_normal = 0x80
+    file_flag_overlapped = 0x40000000
     invalid_handle_value = ctypes.c_void_p(-1).value
+    error_pipe_busy = 231
+    error_io_pending = 997
     error_more_data = 234
-    error_broken_pipe = 109
-    buffer_size = 4096
-    timeout_ms = max(1, int(max(0.05, timeout_seconds) * 1000))
+    wait_object_0 = 0
+    wait_timeout = 258
+    wait_failed = 0xFFFFFFFF
+    deadline = time.monotonic() + max(0.05, timeout_seconds)
+
+    def remaining_ms() -> int:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return 0
+        return max(1, min(0xFFFFFFFE, int(remaining * 1000)))
+
+    def wait_for_io(
+        handle: int,
+        overlapped: OVERLAPPED,
+        operation: str,
+    ) -> int:
+        wait_ms = remaining_ms()
+        if wait_ms <= 0:
+            raise TimeoutError(
+                f"shell IPC {operation} timed out after {timeout_seconds:.3f}s"
+            )
+        wait_result = kernel32.WaitForSingleObject(
+            wintypes.HANDLE(overlapped.hEvent),
+            wintypes.DWORD(wait_ms),
+        )
+        if wait_result == wait_timeout:
+            raise TimeoutError(
+                f"shell IPC {operation} timed out after {timeout_seconds:.3f}s"
+            )
+        if wait_result != wait_object_0:
+            error = ctypes.get_last_error() if wait_result == wait_failed else int(wait_result)
+            raise OSError(error, f"WaitForSingleObject failed during {operation}")
+        transferred = wintypes.DWORD(0)
+        if not kernel32.GetOverlappedResult(
+            wintypes.HANDLE(handle),
+            ctypes.byref(overlapped),
+            ctypes.byref(transferred),
+            wintypes.BOOL(False),
+        ):
+            error = ctypes.get_last_error()
+            if error == error_more_data:
+                raise ValueError("shell IPC response exceeded maximum size")
+            raise OSError(error, f"GetOverlappedResult failed during {operation}")
+        return int(transferred.value)
+
+    def cancel_and_drain_io(handle: int, overlapped: OVERLAPPED) -> None:
+        """Cancel one pending operation and retain its storage until completion.
+
+        CancelIoEx only marks an operation for cancellation.  The OVERLAPPED
+        structure, its event, and the associated buffer must remain alive until
+        GetOverlappedResult observes final completion.  Calling it even when
+        CancelIoEx reports ERROR_NOT_FOUND also closes the completion race where
+        the operation finished between the timeout and cancellation request.
+        """
+        try:
+            kernel32.CancelIoEx(
+                wintypes.HANDLE(handle),
+                ctypes.byref(overlapped),
+            )
+        finally:
+            transferred = wintypes.DWORD(0)
+            kernel32.GetOverlappedResult(
+                wintypes.HANDLE(handle),
+                ctypes.byref(overlapped),
+                ctypes.byref(transferred),
+                wintypes.BOOL(True),
+            )
 
     kernel32.WaitNamedPipeW.restype = wintypes.BOOL
     kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateEventW.restype = wintypes.HANDLE
     kernel32.WriteFile.restype = wintypes.BOOL
-    kernel32.PeekNamedPipe.restype = wintypes.BOOL
     kernel32.ReadFile.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.GetOverlappedResult.restype = wintypes.BOOL
+    kernel32.CancelIoEx.restype = wintypes.BOOL
     kernel32.CloseHandle.restype = wintypes.BOOL
 
-    if not kernel32.WaitNamedPipeW(wintypes.LPCWSTR(pipe_name), wintypes.DWORD(timeout_ms)):
-        raise OSError(ctypes.get_last_error(), "WaitNamedPipeW failed")
+    handle = invalid_handle_value
+    while handle == invalid_handle_value:
+        timeout_ms = remaining_ms()
+        if timeout_ms <= 0 or not kernel32.WaitNamedPipeW(
+            wintypes.LPCWSTR(pipe_name), wintypes.DWORD(timeout_ms)
+        ):
+            raise OSError(ctypes.get_last_error(), "WaitNamedPipeW failed")
 
-    handle = kernel32.CreateFileW(
-        wintypes.LPCWSTR(pipe_name),
-        wintypes.DWORD(generic_read | generic_write),
-        wintypes.DWORD(0),
-        None,
-        wintypes.DWORD(open_existing),
-        wintypes.DWORD(file_attribute_normal),
-        None,
-    )
-    if handle == invalid_handle_value:
-        raise OSError(ctypes.get_last_error(), "CreateFileW failed")
-
-    try:
-        request_bytes = request_line.encode("utf-8")
-        written = wintypes.DWORD(0)
-        ok = kernel32.WriteFile(
-            wintypes.HANDLE(handle),
-            ctypes.c_char_p(request_bytes),
-            wintypes.DWORD(len(request_bytes)),
-            ctypes.byref(written),
+        handle = kernel32.CreateFileW(
+            wintypes.LPCWSTR(pipe_name),
+            wintypes.DWORD(generic_read | generic_write),
+            wintypes.DWORD(0),
+            None,
+            wintypes.DWORD(open_existing),
+            wintypes.DWORD(file_attribute_normal | file_flag_overlapped),
             None,
         )
-        if not ok or int(written.value) != len(request_bytes):
-            raise OSError(ctypes.get_last_error(), "WriteFile failed")
+        if handle != invalid_handle_value:
+            break
+        create_error = ctypes.get_last_error()
+        if create_error != error_pipe_busy:
+            raise OSError(create_error, "CreateFileW failed")
+        # WaitNamedPipe does not reserve an instance. Another concurrent client
+        # may win between the wait and CreateFile, so retry within this request's
+        # original deadline instead of surfacing a spurious transport failure.
+        if remaining_ms() <= 0:
+            raise OSError(create_error, "CreateFileW remained busy until timeout")
 
-        chunks: list[bytes] = []
-        response_size = 0
-        deadline = time.monotonic() + max(0.05, timeout_seconds)
-        while True:
-            available = wintypes.DWORD(0)
-            peek_ok = kernel32.PeekNamedPipe(
-                wintypes.HANDLE(handle),
-                None,
-                wintypes.DWORD(0),
-                None,
-                ctypes.byref(available),
-                None,
-            )
-            if not peek_ok:
-                error = ctypes.get_last_error()
-                if error == error_broken_pipe:
-                    break
-                raise OSError(error, "PeekNamedPipe failed")
-            if not available.value:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"shell IPC response timed out after {timeout_seconds:.3f}s"
-                    )
-                time.sleep(min(0.005, max(0.0, deadline - time.monotonic())))
-                continue
-
-            buffer = ctypes.create_string_buffer(buffer_size)
-            bytes_read = wintypes.DWORD(0)
-            read_size = min(buffer_size, int(available.value))
-            ok = kernel32.ReadFile(
-                wintypes.HANDLE(handle),
-                buffer,
-                wintypes.DWORD(read_size),
-                ctypes.byref(bytes_read),
-                None,
-            )
-            error = 0 if ok else ctypes.get_last_error()
-            if ok or error == error_more_data:
-                if bytes_read.value:
-                    chunk = buffer.raw[: bytes_read.value]
-                    response_size += len(chunk)
-                    if response_size > MAX_RESPONSE_BYTES:
-                        raise ValueError("shell IPC response exceeded maximum size")
-                    chunks.append(chunk)
-                    newline_at = chunk.find(b"\n")
-                    if newline_at >= 0:
-                        chunks[-1] = chunk[:newline_at]
-                        return b"".join(chunks).decode("utf-8", errors="replace")
-                if ok and not bytes_read.value:
-                    break
-                continue
-            if error == error_broken_pipe:
-                break
-            raise OSError(error, "ReadFile failed")
-        return b"".join(chunks).decode("utf-8", errors="replace")
-    finally:
+    event = kernel32.CreateEventW(None, wintypes.BOOL(True), wintypes.BOOL(False), None)
+    if not event:
         kernel32.CloseHandle(wintypes.HANDLE(handle))
+        raise OSError(ctypes.get_last_error(), "CreateEventW failed")
+
+    pending_overlapped: OVERLAPPED | None = None
+    try:
+        request_bytes = request_line.encode("utf-8")
+        request_buffer = ctypes.create_string_buffer(request_bytes)
+        written = wintypes.DWORD(0)
+        write_overlapped = OVERLAPPED(hEvent=wintypes.HANDLE(event))
+        ok = kernel32.WriteFile(
+            wintypes.HANDLE(handle),
+            request_buffer,
+            wintypes.DWORD(len(request_bytes)),
+            ctypes.byref(written),
+            ctypes.byref(write_overlapped),
+        )
+        if not ok:
+            error = ctypes.get_last_error()
+            if error != error_io_pending:
+                raise OSError(error, "WriteFile failed")
+            pending_overlapped = write_overlapped
+            written_count = wait_for_io(handle, write_overlapped, "write")
+            pending_overlapped = None
+        else:
+            written_count = int(written.value)
+        if written_count != len(request_bytes):
+            raise OSError(0, "WriteFile returned a partial shell IPC request")
+
+        if not kernel32.ResetEvent(wintypes.HANDLE(event)):
+            raise OSError(ctypes.get_last_error(), "ResetEvent failed")
+        response_buffer = ctypes.create_string_buffer(MAX_RESPONSE_BYTES + 1)
+        bytes_read = wintypes.DWORD(0)
+        read_overlapped = OVERLAPPED(hEvent=wintypes.HANDLE(event))
+        ok = kernel32.ReadFile(
+            wintypes.HANDLE(handle),
+            response_buffer,
+            wintypes.DWORD(MAX_RESPONSE_BYTES + 1),
+            ctypes.byref(bytes_read),
+            ctypes.byref(read_overlapped),
+        )
+        if not ok:
+            error = ctypes.get_last_error()
+            if error == error_more_data:
+                raise ValueError("shell IPC response exceeded maximum size")
+            if error != error_io_pending:
+                raise OSError(error, "ReadFile failed")
+            pending_overlapped = read_overlapped
+            response_size = wait_for_io(handle, read_overlapped, "response")
+            pending_overlapped = None
+        else:
+            response_size = int(bytes_read.value)
+        if response_size > MAX_RESPONSE_BYTES:
+            raise ValueError("shell IPC response exceeded maximum size")
+        response = response_buffer.raw[:response_size]
+        newline_at = response.find(b"\n")
+        if newline_at >= 0:
+            response = response[:newline_at]
+        response_line = response.decode("utf-8", errors="replace")
+        acknowledgement = _lifecycle_start_ack_line(
+            request_line,
+            response_line,
+            newline_received=newline_at >= 0,
+        )
+        if acknowledgement is not None:
+            if not kernel32.ResetEvent(wintypes.HANDLE(event)):
+                raise OSError(ctypes.get_last_error(), "ResetEvent failed")
+            acknowledgement_bytes = acknowledgement.encode("utf-8")
+            acknowledgement_buffer = ctypes.create_string_buffer(acknowledgement_bytes)
+            acknowledgement_written = wintypes.DWORD(0)
+            acknowledgement_overlapped = OVERLAPPED(hEvent=wintypes.HANDLE(event))
+            ok = kernel32.WriteFile(
+                wintypes.HANDLE(handle),
+                acknowledgement_buffer,
+                wintypes.DWORD(len(acknowledgement_bytes)),
+                ctypes.byref(acknowledgement_written),
+                ctypes.byref(acknowledgement_overlapped),
+            )
+            if not ok:
+                error = ctypes.get_last_error()
+                if error != error_io_pending:
+                    raise OSError(error, "WriteFile failed for shell IPC acknowledgement")
+                pending_overlapped = acknowledgement_overlapped
+                acknowledgement_written_count = wait_for_io(
+                    handle,
+                    acknowledgement_overlapped,
+                    "acknowledgement",
+                )
+                pending_overlapped = None
+            else:
+                acknowledgement_written_count = int(acknowledgement_written.value)
+            if acknowledgement_written_count != len(acknowledgement_bytes):
+                raise OSError(
+                    0,
+                    "WriteFile returned a partial shell IPC acknowledgement",
+                )
+        return response_line
+    finally:
+        try:
+            if pending_overlapped is not None:
+                cancel_and_drain_io(handle, pending_overlapped)
+        finally:
+            kernel32.CloseHandle(wintypes.HANDLE(event))
+            kernel32.CloseHandle(wintypes.HANDLE(handle))
 
 
 def _reset_diagnostics_for_tests() -> None:

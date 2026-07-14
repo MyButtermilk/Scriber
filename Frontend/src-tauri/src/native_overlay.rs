@@ -18,6 +18,7 @@ const OVERLAY_BOTTOM_MARGIN: f64 = 12.0;
 #[cfg(not(test))]
 static OVERLAY_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 static OVERLAY_STATE: OnceLock<Mutex<OverlayState>> = OnceLock::new();
+static OVERLAY_MUTATION_LANE: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 struct OverlayState {
@@ -97,6 +98,14 @@ pub fn create_overlay_window(_app: &tauri::App) -> tauri::Result<()> {
 }
 
 pub fn handle_shell_command(command: &str, payload: &Value) -> Result<Value, String> {
+    // Showing and hiding a WebView is a multi-step state transition. Shell IPC can serve
+    // independent clients concurrently and the desktop hotkey calls this boundary directly, so
+    // keep mutations in one owner-level lane instead of relying on transport serialization.
+    let _mutation_guard = if command == "overlayStatus" {
+        None
+    } else {
+        Some(overlay_mutation_lock())
+    };
     match command {
         "overlayPrepare" => prepare_overlay(payload),
         "overlayShow" => show_overlay(payload),
@@ -160,6 +169,13 @@ fn show_overlay_mode(mode: String) -> Result<Value, String> {
     app.emit_to(OVERLAY_WINDOW_LABEL, OVERLAY_EVENT, event_payload)
         .map_err(|err| format!("overlay event emit failed: {err}"))?;
     Ok(status_payload())
+}
+
+fn overlay_mutation_lock() -> std::sync::MutexGuard<'static, ()> {
+    OVERLAY_MUTATION_LANE
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
@@ -429,5 +445,24 @@ mod tests {
         let status = status_payload();
         assert_eq!(status["renderer"], "tauri-webview");
         assert_eq!(status["available"], false);
+    }
+
+    #[test]
+    fn overlay_mutation_lane_serializes_owner_transitions() {
+        use std::{sync::mpsc, thread, time::Duration};
+
+        let first = overlay_mutation_lock();
+        let (acquired_tx, acquired_rx) = mpsc::sync_channel(1);
+        let waiter = thread::spawn(move || {
+            let _second = overlay_mutation_lock();
+            let _ = acquired_tx.send(());
+        });
+
+        assert!(acquired_rx.recv_timeout(Duration::from_millis(25)).is_err());
+        drop(first);
+        acquired_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("second overlay mutation should proceed after the owner lane is released");
+        waiter.join().unwrap();
     }
 }

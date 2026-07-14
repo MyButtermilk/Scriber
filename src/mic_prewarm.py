@@ -149,6 +149,7 @@ class RustAudioPrewarmManager:
         self._paused_for_active_capture = False
         self._paused_for_device_refresh = False
         self._active_capture_attached = False
+        self._pending_adoption_prewarm_id = ""
         self._last_error = ""
         self._last_error_log_at = 0.0
         self._last_transition = ""
@@ -165,6 +166,8 @@ class RustAudioPrewarmManager:
         self._active_capture_resume_ready_count = 0
         self._active_capture_resume_failed_count = 0
         self._adoption_count = 0
+        self._adoption_commit_count = 0
+        self._adoption_rollback_count = 0
         self._last_adopted_prewarm_id_hash: str | None = None
         self._last_active_capture_detach_at = 0.0
         self._last_active_capture_resume_attempt_at = 0.0
@@ -205,6 +208,10 @@ class RustAudioPrewarmManager:
                 "hasStream": bool(self._prewarm_id),
                 "prewarmIdHash": self._hash_hint(self._prewarm_id),
                 "activeCaptureAttached": self._active_capture_attached,
+                "adoptionPending": bool(self._pending_adoption_prewarm_id),
+                "pendingAdoptionPrewarmIdHash": self._hash_hint(
+                    self._pending_adoption_prewarm_id
+                ),
                 "pausedForActiveCapture": self._paused_for_active_capture,
                 "pausedForDeviceRefresh": self._paused_for_device_refresh,
                 "streamStartedAgoSeconds": (
@@ -225,6 +232,8 @@ class RustAudioPrewarmManager:
                 "lastActiveCaptureStopToReadyMs": self._last_active_capture_stop_to_ready_ms,
                 "maxActiveCaptureStopToReadyMs": self._max_active_capture_stop_to_ready_ms,
                 "adoptionCount": self._adoption_count,
+                "adoptionCommitCount": self._adoption_commit_count,
+                "adoptionRollbackCount": self._adoption_rollback_count,
                 "lastAdoptedPrewarmIdHash": self._last_adopted_prewarm_id_hash,
                 "lastActiveCaptureDetachAgoSeconds": (
                     round(time.monotonic() - self._last_active_capture_detach_at, 3)
@@ -705,10 +714,10 @@ class RustAudioPrewarmManager:
                 return None
 
             prewarm_id = self._prewarm_id
-            self._prewarm_id = ""
             self._temporary_idle_prewarm = False
             self._active_capture_attached = True
             self._paused_for_active_capture = True
+            self._pending_adoption_prewarm_id = prewarm_id
             self._active_capture_pause_count += 1
             self._adoption_count += 1
             self._last_adopted_prewarm_id_hash = self._hash_hint(prewarm_id)
@@ -730,12 +739,57 @@ class RustAudioPrewarmManager:
                 "device": str(device),
             }
 
+    def commit_active_capture(self, prewarm_id: str) -> bool:
+        """Commit a leased prewarm only after native capture returned ready.
+
+        Keeping the local prewarm id until this point prevents a failed or lost
+        capture-start response from silently erasing ownership and sending the
+        watchdog into an endless restart loop.
+        """
+        with self._lock:
+            if not prewarm_id or self._pending_adoption_prewarm_id != prewarm_id:
+                return False
+            if self._prewarm_id == prewarm_id:
+                self._prewarm_id = ""
+                self._prewarm_payload = {}
+                self._stream_signature = {}
+            self._pending_adoption_prewarm_id = ""
+            self._adoption_commit_count += 1
+            self._record_transition_locked("adoption_committed", "active_capture")
+            self._record_event_locked(
+                "adoption_committed",
+                "active_capture",
+                prewarmIdHash=self._hash_hint(prewarm_id),
+            )
+            return True
+
+    def rollback_active_capture(self, prewarm_id: str) -> bool:
+        """Release a failed adoption while retaining the session for validation."""
+        with self._lock:
+            if not prewarm_id or self._pending_adoption_prewarm_id != prewarm_id:
+                return False
+            self._pending_adoption_prewarm_id = ""
+            self._active_capture_attached = False
+            self._paused_for_active_capture = False
+            self._adoption_rollback_count += 1
+            self._record_transition_locked("adoption_rolled_back", "capture_start_failed")
+            self._record_event_locked(
+                "adoption_rolled_back",
+                "capture_start_failed",
+                prewarmIdHash=self._hash_hint(prewarm_id),
+            )
+        # The shell may have consumed the prewarm before its capture response was
+        # lost. Querying through the normal health boundary either keeps a still
+        # active session or clears/restarts a consumed one.
+        return self.ensure_healthy(reason="capture_start_failed")
+
     def detach_active_capture(
         self,
         _callback: Callable[[Any, int, Any, Any], None] | None = None,
     ) -> bool:
         with self._lock:
             self._active_capture_attached = False
+            self._pending_adoption_prewarm_id = ""
             self._last_active_capture_detach_at = time.monotonic()
             self._record_event_locked("detached_active_capture", "active_capture")
             return bool(self._prewarm_id)
@@ -744,6 +798,7 @@ class RustAudioPrewarmManager:
         with self._lock:
             self._paused_for_active_capture = True
             self._active_capture_attached = False
+            self._pending_adoption_prewarm_id = ""
             self._active_capture_pause_count += 1
             self._record_event_locked("pause_active_capture", "active_capture")
         self.stop(reason="active_capture")
@@ -752,6 +807,7 @@ class RustAudioPrewarmManager:
         with self._lock:
             self._paused_for_active_capture = False
             self._active_capture_attached = False
+            self._pending_adoption_prewarm_id = ""
             self._active_capture_resume_count += 1
             self._last_active_capture_resume_attempt_at = time.monotonic()
             self._pending_active_capture_resume_attempt_at = self._last_active_capture_resume_attempt_at
@@ -944,20 +1000,40 @@ class RustAudioPrewarmManager:
             response_payload = response.get("payload") if isinstance(response, dict) else None
             if not isinstance(response_payload, dict):
                 response_payload = {}
+            response_success = bool(response.get("success")) if isinstance(response, dict) else False
+            response_error = (
+                str(
+                    response.get("fallbackReason")
+                    or response.get("errorCode")
+                    or "audioPrewarmStopFailed"
+                )
+                if isinstance(response, dict) and not response_success
+                else ""
+            )
             with self._lock:
                 self._last_stop_payload = dict(response_payload)
                 self._last_stop_response_ms = stop_response_ms
-                self._last_stop_success = bool(response.get("success", True))
+                self._last_stop_success = response_success
+                self._last_stop_error = response_error
                 self._stream_close_count += 1
-                self._record_transition_locked("closed", reason)
+                self._record_transition_locked(
+                    "closed" if response_success else "close_error",
+                    reason,
+                )
                 self._record_event_locked(
-                    "stopped",
+                    "stopped" if response_success else "stop_failed",
                     reason,
                     prewarmIdHash=self._hash_hint(prewarm_id),
                     success=self._last_stop_success,
+                    error=response_error or None,
                     responseMs=stop_response_ms,
                 )
-            logger.debug(f"Rust mic prewarm session stopped ({reason})")
+            if response_success:
+                logger.debug(f"Rust mic prewarm session stopped ({reason})")
+            else:
+                logger.debug(
+                    f"Rust mic prewarm stop was not accepted ({reason}): {response_error}"
+                )
         except Exception as exc:
             with self._lock:
                 self._last_error = str(exc)
@@ -987,6 +1063,7 @@ class RustAudioPrewarmManager:
             self._prewarm_payload = {}
             self._stream_signature = {}
             self._temporary_idle_prewarm = False
+            self._pending_adoption_prewarm_id = ""
             if reason in {"disabled", "settings_disabled", "shutdown"}:
                 self._paused_for_active_capture = False
                 self._paused_for_device_refresh = False

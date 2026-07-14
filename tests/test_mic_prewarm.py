@@ -101,6 +101,8 @@ def test_rust_audio_prewarm_manager_adopts_session_without_stopping(monkeypatch)
 
     assert adopted is not None
     assert adopted["prewarmId"] == "prewarm-1"
+    assert manager.is_active is True
+    assert manager.commit_active_capture("prewarm-1") is True
     assert manager.is_active is False
     assert [command for command, _payload in commands] == ["audioPrewarmStart"]
     assert commands[0][1]["prebufferMs"] == 400
@@ -109,6 +111,8 @@ def test_rust_audio_prewarm_manager_adopts_session_without_stopping(monkeypatch)
     assert snapshot["engine"] == "rust-wasapi"
     assert snapshot["activeCaptureAttached"] is True
     assert snapshot["adoptionCount"] == 1
+    assert snapshot["adoptionCommitCount"] == 1
+    assert snapshot["adoptionPending"] is False
     assert snapshot["lastAdoptedPrewarmIdHash"]
     assert "prewarm-1" not in str(snapshot)
 
@@ -161,12 +165,71 @@ def test_rust_audio_prewarm_manager_adopts_temporary_session_without_always_on(m
 
     assert adopted is not None
     assert adopted["prewarmId"] == "prewarm-temporary"
+    assert manager.is_active is True
+    assert manager.commit_active_capture("prewarm-temporary") is True
     assert manager.is_active is False
     assert [command for command, _payload in commands] == ["audioPrewarmStart"]
     snapshot = manager.diagnostic_snapshot()
     assert snapshot["temporaryIdlePrewarm"] is False
     assert snapshot["adoptionCount"] == 1
+    assert snapshot["adoptionCommitCount"] == 1
     assert "prewarm-temporary" not in str(snapshot)
+
+
+def test_rust_audio_prewarm_manager_rolls_back_failed_capture_without_losing_session(
+    monkeypatch,
+):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    commands: list[tuple[str, dict]] = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": "prewarm-rollback"}}
+        if command == "audioPrewarmStatus":
+            return {
+                "success": True,
+                "payload": {
+                    "active": True,
+                    "prewarmId": payload["prewarmId"],
+                    "reason": "active",
+                },
+            }
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_build_start_payload",
+        lambda: {
+            "sampleRate": 16000,
+            "channels": 1,
+            "blockSize": 160,
+            "devicePreference": "default",
+        },
+    )
+
+    assert manager.start_if_enabled() is True
+    assert manager.attach_active_capture(
+        None,
+        sample_rate=16000,
+        target_channels=1,
+        block_size=160,
+        device="default",
+    ) is not None
+    assert manager.rollback_active_capture("prewarm-rollback") is True
+
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["active"] is True
+    assert snapshot["activeCaptureAttached"] is False
+    assert snapshot["pausedForActiveCapture"] is False
+    assert snapshot["adoptionPending"] is False
+    assert snapshot["adoptionRollbackCount"] == 1
+    assert [command for command, _payload in commands] == [
+        "audioPrewarmStart",
+        "audioPrewarmStatus",
+    ]
+    assert "prewarm-rollback" not in str(snapshot)
 
 
 def test_rust_audio_prewarm_manager_rejects_non_temporary_session_without_always_on(monkeypatch):
@@ -454,6 +517,7 @@ def test_rust_audio_prewarm_manager_records_resume_gap_after_capture(monkeypatch
         device="default",
     )
     assert adopted is not None
+    assert manager.commit_active_capture("prewarm-capture") is True
 
     assert manager.detach_active_capture(None) is False
     assert manager.resume_after_active_capture() is True
@@ -661,6 +725,43 @@ def test_rust_audio_prewarm_manager_pause_stops_sidecar_session(monkeypatch):
     assert commands[-1][1]["prewarmId"] == "prewarm-2"
     assert snapshot["lastStop"]["prewarmIdHash"]
     assert "prewarm-2" not in str(snapshot)
+
+
+def test_rust_audio_prewarm_stop_does_not_report_failed_transport_as_stopped(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+
+    def shell_call(command, payload=None, **_kwargs):
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": "prewarm-stop-failure"}}
+        if command == "audioPrewarmStop":
+            return {
+                "success": False,
+                "errorCode": "transportError",
+                "fallbackReason": "pipe busy",
+                "payload": {},
+            }
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_build_start_payload",
+        lambda: {
+            "sampleRate": 16000,
+            "channels": 1,
+            "blockSize": 160,
+            "devicePreference": "default",
+        },
+    )
+
+    assert manager.start_if_enabled() is True
+    manager.stop(reason="test")
+
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["lastStopSuccess"] is False
+    assert snapshot["lastStopError"] == "pipe busy"
+    assert snapshot["lastTransition"] == "close_error"
+    assert snapshot["recentEvents"][-1]["event"] == "stop_failed"
 
 
 def test_rust_audio_prewarm_watchdog_queries_sidecar_status(monkeypatch):

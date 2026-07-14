@@ -1,3 +1,4 @@
+import asyncio
 import threading
 import types
 
@@ -312,6 +313,78 @@ def test_rust_frame_source_stops_started_sidecar_on_contract_mismatch(
     assert commands[-1][1] == {"streamId": "stream-contract-mismatch"}
     assert source.stream_id == ""
     assert source.diagnostic_snapshot()["framePipeHash"] is None
+
+
+def test_rust_frame_source_retries_unconfirmed_sidecar_stop():
+    calls: list[tuple[str, dict, float]] = []
+
+    def shell_call(command, payload, *, timeout_seconds):
+        calls.append((command, payload, timeout_seconds))
+        if len(calls) == 1:
+            return {
+                "success": False,
+                "errorCode": "transportError",
+                "fallbackReason": "audio shell IPC timed out",
+                "payload": {},
+            }
+        return {
+            "success": True,
+            "payload": {"stopped": True, "reason": "stopped"},
+        }
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16_000,
+        target_channels=1,
+        block_size=512,
+        device=None,
+        shell_call=shell_call,
+    )
+    source.stream_id = "stream-retry-stop"
+    source._frame_pipe = r"\\.\pipe\private-test-pipe"
+    source._frame_pipe_hash = "redacted-hash"
+
+    source.stop(close=True)
+
+    assert [call[0] for call in calls] == ["audioCaptureStop", "audioCaptureStop"]
+    assert [call[2] for call in calls] == [0.75, 2.0]
+    assert source.stream_id == ""
+    assert source._pending_stop_stream_id == ""
+    assert source.diagnostic_snapshot()["sidecarStopConfirmed"] is True
+
+
+def test_rust_frame_source_retains_redacted_owner_after_unconfirmed_stop():
+    calls: list[tuple[str, dict, float]] = []
+
+    def shell_call(command, payload, *, timeout_seconds):
+        calls.append((command, payload, timeout_seconds))
+        return {
+            "success": False,
+            "errorCode": "transportError",
+            "fallbackReason": "audio shell IPC timed out",
+            "payload": {},
+        }
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16_000,
+        target_channels=1,
+        block_size=512,
+        device=None,
+        shell_call=shell_call,
+    )
+    source.stream_id = "stream-deferred-stop"
+    source._frame_pipe = r"\\.\pipe\private-test-pipe"
+    source._frame_pipe_hash = "redacted-hash"
+
+    source.stop(close=False)
+
+    snapshot = source.diagnostic_snapshot()
+    assert len(calls) == 2
+    assert source.stream_id == ""
+    assert source._pending_stop_stream_id == "stream-deferred-stop"
+    assert snapshot["pendingStopStreamIdHash"]
+    assert "stream-deferred-stop" not in str(snapshot)
+    assert snapshot["sidecarStopConfirmed"] is False
+    assert snapshot["framePipeHash"] is None
 
 
 def test_rust_frame_source_rejects_success_without_stream_id(monkeypatch):
@@ -835,6 +908,299 @@ def test_rust_prototype_frame_source_tracks_prebuffer_before_live_frames(monkeyp
     np.testing.assert_array_equal(calls[1][0], live_audio)
 
 
+def test_rust_prototype_start_waits_for_live_frame_after_callbacking_prebuffer(monkeypatch):
+    prebuffer_audio = np.full((16, 1), 100, dtype=np.int16)
+    live_audio = np.full((16, 1), 200, dtype=np.int16)
+    prebuffer_frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=len(prebuffer_audio.tobytes()),
+            sequence=0,
+            timestamp_micros=1,
+            frame_count=16,
+            channels=1,
+            flags=AUDIO_FRAME_FLAG_PREBUFFER,
+        ),
+        prebuffer_audio.tobytes(),
+    )
+    live_frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=len(live_audio.tobytes()),
+            sequence=1,
+            timestamp_micros=2,
+            frame_count=16,
+            channels=1,
+        ),
+        live_audio.tobytes(),
+    )
+    waiting_for_live = threading.Event()
+    release_live = threading.Event()
+    calls: list[tuple[np.ndarray, int, dict, object]] = []
+    commands: list[str] = []
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "portAudioLabel": "Default Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "endpoint-hash",
+        },
+    )
+
+    class GatedReader:
+        def __init__(self) -> None:
+            self._payload = prebuffer_frame + live_frame
+            self._offset = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size: int) -> bytes:
+            if self._offset >= len(prebuffer_frame) and self._offset < len(self._payload):
+                waiting_for_live.set()
+                if not release_live.wait(timeout=2.0):
+                    return b""
+            if self._offset >= len(self._payload):
+                return b""
+            end = min(len(self._payload), self._offset + size)
+            chunk = self._payload[self._offset:end]
+            self._offset = end
+            return chunk
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream-live-ready-gate",
+                    "framePipe": "memory-pipe",
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                    "nativeEndpointIdHash": "endpoint-hash",
+                },
+            }
+        if command == "audioCaptureStop":
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "reason": "captureStop",
+                    "connected": True,
+                    "framesWritten": 2,
+                    "prebufferFramesWritten": 1,
+                    "liveFramesWritten": 1,
+                    "bytesWritten": len(prebuffer_frame) + len(live_frame),
+                    "writerError": None,
+                    "exitStatus": 0,
+                },
+            }
+        raise AssertionError(command)
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=shell_call,
+        reader_factory=lambda *_args, **_kwargs: GatedReader(),
+        first_frame_timeout_seconds=1.0,
+    )
+    source.open(lambda *args: calls.append(args))
+    start_result: list[object] = []
+
+    def start_source() -> None:
+        try:
+            source.start()
+            start_result.append("ready")
+        except Exception as exc:  # pragma: no cover - assertion reports the captured exception
+            start_result.append(exc)
+
+    start_thread = threading.Thread(target=start_source)
+    start_thread.start()
+    assert waiting_for_live.wait(timeout=1.0)
+    assert len(calls) == 1
+    np.testing.assert_array_equal(calls[0][0], prebuffer_audio)
+    assert start_thread.is_alive(), "PREBUFFER must not make native capture live-ready"
+
+    release_live.set()
+    start_thread.join(timeout=1.0)
+    assert not start_thread.is_alive()
+    assert start_result == ["ready"]
+    assert len(calls) == 2
+    np.testing.assert_array_equal(calls[1][0], live_audio)
+    source.stop(close=True)
+    assert commands[-1] == "audioCaptureStop"
+
+
+def test_rust_prototype_prebuffer_only_eof_wakes_start_and_fails(monkeypatch):
+    import io
+    import time
+
+    prebuffer_audio = np.full((16, 1), 100, dtype=np.int16)
+    prebuffer_frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=len(prebuffer_audio.tobytes()),
+            sequence=0,
+            timestamp_micros=1,
+            frame_count=16,
+            channels=1,
+            flags=AUDIO_FRAME_FLAG_PREBUFFER,
+        ),
+        prebuffer_audio.tobytes(),
+    )
+    calls: list[tuple[np.ndarray, int, dict, object]] = []
+    commands: list[str] = []
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "portAudioLabel": "Default Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "endpoint-hash",
+        },
+    )
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream-prebuffer-only",
+                    "framePipe": "memory-pipe",
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                    "nativeEndpointIdHash": "endpoint-hash",
+                },
+            }
+        if command == "audioCaptureStop":
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "reason": "captureStop",
+                    "connected": True,
+                    "framesWritten": 1,
+                    "prebufferFramesWritten": 1,
+                    "liveFramesWritten": 0,
+                    "bytesWritten": len(prebuffer_frame),
+                    "writerError": None,
+                    "exitStatus": 0,
+                },
+            }
+        raise AssertionError(command)
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=shell_call,
+        reader_factory=lambda *_args, **_kwargs: io.BytesIO(prebuffer_frame),
+        first_frame_timeout_seconds=1.0,
+    )
+    source.open(lambda *args: calls.append(args))
+    started = time.monotonic()
+
+    with pytest.raises(RuntimeError, match="failed before first frame became live-ready"):
+        source.start()
+
+    assert time.monotonic() - started < 0.5
+    assert len(calls) == 1, "PREBUFFER remains durable and must still reach the callback"
+    snapshot = source.diagnostic_snapshot()
+    assert snapshot["framePipePrebufferFramesRead"] == 1
+    assert snapshot["framePipeLiveFramesRead"] == 0
+    assert snapshot["fallbackReason"] == "rustFramePipeClosedBeforeFirstLiveFrame"
+    assert commands[-1] == "audioCaptureStop"
+
+
+def test_rust_prototype_first_live_callback_failure_does_not_report_ready(monkeypatch):
+    import io
+
+    live_audio = np.full((16, 1), 200, dtype=np.int16)
+    live_frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=len(live_audio.tobytes()),
+            sequence=0,
+            timestamp_micros=1,
+            frame_count=16,
+            channels=1,
+        ),
+        live_audio.tobytes(),
+    )
+    commands: list[str] = []
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "portAudioLabel": "Default Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "endpoint-hash",
+        },
+    )
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream-live-callback-failure",
+                    "framePipe": "memory-pipe",
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                    "nativeEndpointIdHash": "endpoint-hash",
+                },
+            }
+        if command == "audioCaptureStop":
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "reason": "captureStop",
+                    "connected": True,
+                    "framesWritten": 1,
+                    "prebufferFramesWritten": 0,
+                    "liveFramesWritten": 1,
+                    "bytesWritten": len(live_frame),
+                    "writerError": None,
+                    "exitStatus": 0,
+                },
+            }
+        raise AssertionError(command)
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=shell_call,
+        reader_factory=lambda *_args, **_kwargs: io.BytesIO(live_frame),
+        first_frame_timeout_seconds=1.0,
+    )
+
+    def failing_callback(*_args):
+        raise RuntimeError("downstream callback failed")
+
+    source.open(failing_callback)
+    with pytest.raises(RuntimeError, match="failed before first frame became live-ready"):
+        source.start()
+
+    snapshot = source.diagnostic_snapshot()
+    assert snapshot["framePipeLiveFramesRead"] == 1
+    assert snapshot["callbackCount"] == 0
+    assert snapshot["liveCaptureReady"] is False
+    assert snapshot["fallbackReason"] == "rustFramePipeReadError"
+    assert "downstream callback failed" in snapshot["lastError"]
+    assert commands[-1] == "audioCaptureStop"
+
+
 def test_rust_prototype_frame_source_rejects_prebuffer_after_live_frame(monkeypatch):
     live_audio = np.full((16, 1), 200, dtype=np.int16)
     late_prebuffer_audio = np.full((16, 1), 100, dtype=np.int16)
@@ -1210,6 +1576,427 @@ async def test_rust_prototype_adopts_rust_prewarm_id_when_always_on(monkeypatch)
     assert snapshot["rustPrewarmAdoption"]["adopted"] is True
     assert snapshot["rustPrewarmAdoption"]["prewarmIdHash"]
     assert "prewarm-rust-1" not in str(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_microphone_input_opens_native_frame_source_off_event_loop(monkeypatch):
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
+    open_entered = threading.Event()
+    release_open = threading.Event()
+    events: list[str] = []
+
+    class BlockingFrameSource(_FakeRustFrameSource):
+        def open(self, callback):
+            events.append("open-entered")
+            open_entered.set()
+            release_open.wait(timeout=1.5)
+            events.append("open-returned")
+            return super().open(callback)
+
+    fake_source = BlockingFrameSource()
+    mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
+    mic._create_audio_task = lambda: None
+
+    async def fake_drain_queue():
+        return None
+
+    mic._drain_queue = fake_drain_queue
+    mic._create_frame_source = lambda: fake_source
+
+    # The timer prevents a regressed implementation from hanging the suite. If
+    # open() runs on the asyncio thread, it fires before the heartbeat can run
+    # and the event ordering assertion below fails deterministically.
+    fail_safe = threading.Timer(1.0, release_open.set)
+    fail_safe.start()
+    start_task = asyncio.create_task(mic.start(microphone.StartFrame()))
+    try:
+        while not open_entered.is_set():
+            await asyncio.sleep(0.005)
+        events.append("event-loop-heartbeat")
+        release_open.set()
+        await asyncio.wait_for(start_task, timeout=1.0)
+    finally:
+        fail_safe.cancel()
+
+    await mic.stop(microphone.EndFrame())
+
+    assert events.index("event-loop-heartbeat") < events.index("open-returned")
+    assert fake_source.open_calls == 1
+    assert fake_source.start_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_rust_prewarm_adoption_commits_only_after_native_capture_opens(monkeypatch):
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
+    events: list[str] = []
+    commit_ids: list[str] = []
+
+    class OrderedFrameSource(_FakeRustFrameSource):
+        def open(self, callback):
+            events.append("open")
+            assert commit_ids == []
+            return super().open(callback)
+
+        def start(self) -> None:
+            events.append("start")
+            assert commit_ids == []
+            super().start()
+
+    class FakeRustPrewarmManager:
+        engine = "rust-wasapi"
+
+        def attach_active_capture(self, *_args, **_kwargs):
+            events.append("attach")
+            return {"prewarmId": "prewarm-rust-commit"}
+
+        def commit_active_capture(self, prewarm_id: str) -> bool:
+            events.append("commit")
+            commit_ids.append(prewarm_id)
+            return True
+
+    fake_source = OrderedFrameSource()
+    mic = microphone.MicrophoneInput(
+        sample_rate=16000,
+        channels=1,
+        block_size=512,
+        keep_alive=True,
+        prewarm_manager=FakeRustPrewarmManager(),
+    )
+    mic._create_audio_task = lambda: None
+
+    async def fake_drain_queue():
+        return None
+
+    mic._drain_queue = fake_drain_queue
+    mic._create_frame_source = lambda: fake_source
+
+    await mic.start(microphone.StartFrame())
+    await mic.stop(microphone.EndFrame())
+
+    assert events[:4] == ["attach", "open", "start", "commit"]
+    assert commit_ids == ["prewarm-rust-commit"]
+
+
+@pytest.mark.asyncio
+async def test_failed_native_open_rolls_back_same_prewarm_after_source_cleanup(monkeypatch):
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
+    events: list[str] = []
+    commit_ids: list[str] = []
+    rollback_ids: list[str] = []
+
+    class FailingFrameSource(_FakeRustFrameSource):
+        def open(self, callback):
+            events.append("open")
+            raise OSError("native open failed")
+
+        def stop(self, *, close: bool) -> None:
+            events.append(f"cleanup:{close}")
+            super().stop(close=close)
+
+    class FakeRustPrewarmManager:
+        engine = "rust-wasapi"
+
+        def attach_active_capture(self, *_args, **_kwargs):
+            events.append("attach")
+            return {"prewarmId": "prewarm-rust-rollback"}
+
+        def commit_active_capture(self, prewarm_id: str) -> bool:
+            events.append("commit")
+            commit_ids.append(prewarm_id)
+            return True
+
+        def rollback_active_capture(self, prewarm_id: str) -> bool:
+            events.append("rollback")
+            rollback_ids.append(prewarm_id)
+            return True
+
+    fake_source = FailingFrameSource()
+    mic = microphone.MicrophoneInput(
+        sample_rate=16000,
+        channels=1,
+        block_size=512,
+        keep_alive=True,
+        prewarm_manager=FakeRustPrewarmManager(),
+    )
+    mic._create_audio_task = lambda: None
+
+    async def fake_drain_queue():
+        return None
+
+    mic._drain_queue = fake_drain_queue
+    mic._create_frame_source = lambda: fake_source
+
+    with pytest.raises(RuntimeError, match="Microphone initialization failed"):
+        await mic.start(microphone.StartFrame())
+
+    assert commit_ids == []
+    assert rollback_ids == ["prewarm-rust-rollback"]
+    assert events == ["attach", "open", "cleanup:True", "rollback"]
+
+
+@pytest.mark.asyncio
+async def test_failed_live_ready_does_not_commit_or_publish_ready_and_rolls_back(monkeypatch):
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
+    events: list[str] = []
+    commit_ids: list[str] = []
+    rollback_ids: list[str] = []
+    ready_events: list[str] = []
+
+    class FailingLiveReadyFrameSource(_FakeRustFrameSource):
+        def open(self, callback):
+            events.append("open")
+            return super().open(callback)
+
+        def start(self) -> None:
+            events.append("start")
+            self.stream.start()
+            raise RuntimeError("first live callback failed")
+
+        def stop(self, *, close: bool) -> None:
+            events.append(f"cleanup:{close}")
+            super().stop(close=close)
+
+    class FakeRustPrewarmManager:
+        engine = "rust-wasapi"
+
+        def attach_active_capture(self, *_args, **_kwargs):
+            events.append("attach")
+            return {"prewarmId": "prewarm-rust-live-ready-failure"}
+
+        def commit_active_capture(self, prewarm_id: str) -> bool:
+            events.append("commit")
+            commit_ids.append(prewarm_id)
+            return True
+
+        def rollback_active_capture(self, prewarm_id: str) -> bool:
+            events.append("rollback")
+            rollback_ids.append(prewarm_id)
+            return True
+
+    fake_source = FailingLiveReadyFrameSource()
+    mic = microphone.MicrophoneInput(
+        sample_rate=16000,
+        channels=1,
+        block_size=512,
+        keep_alive=True,
+        prewarm_manager=FakeRustPrewarmManager(),
+        on_ready=lambda: ready_events.append("ready"),
+    )
+    mic._create_audio_task = lambda: None
+
+    async def fake_drain_queue():
+        return None
+
+    mic._drain_queue = fake_drain_queue
+    mic._create_frame_source = lambda: fake_source
+
+    with pytest.raises(RuntimeError, match="Microphone initialization failed"):
+        await mic.start(microphone.StartFrame())
+
+    assert commit_ids == []
+    assert ready_events == []
+    assert rollback_ids == ["prewarm-rust-live-ready-failure"]
+    assert events == ["attach", "open", "start", "cleanup:True", "rollback"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_phase", ["attach", "open", "commit"])
+async def test_cancelled_start_waits_for_native_ownership_transition_and_rolls_back(
+    monkeypatch,
+    blocked_phase,
+):
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
+    transition_entered = threading.Event()
+    release_transition = threading.Event()
+    events: list[str] = []
+    rollback_ids: list[str] = []
+
+    def block_if_selected(phase: str) -> None:
+        if blocked_phase != phase:
+            return
+        events.append(f"{phase}-blocked")
+        transition_entered.set()
+        release_transition.wait(timeout=1.5)
+        events.append(f"{phase}-returned")
+
+    class BlockingFrameSource(_FakeRustFrameSource):
+        def open(self, callback):
+            events.append("open")
+            block_if_selected("open")
+            return super().open(callback)
+
+        def start(self) -> None:
+            events.append("start")
+            super().start()
+
+        def stop(self, *, close: bool) -> None:
+            events.append(f"stop:{close}")
+            super().stop(close=close)
+
+    class BlockingPrewarmManager:
+        engine = "rust-wasapi"
+
+        def attach_active_capture(self, *_args, **_kwargs):
+            events.append("attach")
+            block_if_selected("attach")
+            return {"prewarmId": "prewarm-rust-cancel"}
+
+        def commit_active_capture(self, prewarm_id: str) -> bool:
+            assert prewarm_id == "prewarm-rust-cancel"
+            events.append("commit")
+            block_if_selected("commit")
+            return True
+
+        def rollback_active_capture(self, prewarm_id: str) -> bool:
+            events.append("rollback")
+            rollback_ids.append(prewarm_id)
+            return True
+
+    fake_source = BlockingFrameSource()
+    mic = microphone.MicrophoneInput(
+        sample_rate=16000,
+        channels=1,
+        block_size=512,
+        keep_alive=True,
+        prewarm_manager=BlockingPrewarmManager(),
+    )
+    mic._create_audio_task = lambda: None
+
+    async def fake_drain_queue():
+        return None
+
+    mic._drain_queue = fake_drain_queue
+    mic._create_frame_source = lambda: fake_source
+
+    fail_safe = threading.Timer(1.0, release_transition.set)
+    fail_safe.start()
+    start_task = asyncio.create_task(mic.start(microphone.StartFrame()))
+    try:
+        while not transition_entered.is_set():
+            await asyncio.sleep(0.005)
+        start_task.cancel()
+        await asyncio.sleep(0.02)
+        assert not start_task.done()
+        release_transition.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(start_task, timeout=1.0)
+    finally:
+        fail_safe.cancel()
+
+    assert rollback_ids == ["prewarm-rust-cancel"]
+    assert events.index(f"{blocked_phase}-returned") < events.index("rollback")
+    assert fake_source.stream.active is False
+    if blocked_phase in {"open", "commit"}:
+        assert fake_source.stream.closed is True
+        assert "stop:True" in events
+    else:
+        assert fake_source.open_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_false_prewarm_commit_fails_start_closes_capture_and_rolls_back(monkeypatch):
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
+    events: list[str] = []
+    rollback_ids: list[str] = []
+
+    class OrderedFrameSource(_FakeRustFrameSource):
+        def open(self, callback):
+            events.append("open")
+            return super().open(callback)
+
+        def start(self) -> None:
+            events.append("start")
+            super().start()
+
+        def stop(self, *, close: bool) -> None:
+            events.append(f"stop:{close}")
+            super().stop(close=close)
+
+    class RejectingPrewarmManager:
+        engine = "rust-wasapi"
+
+        def attach_active_capture(self, *_args, **_kwargs):
+            events.append("attach")
+            return {"prewarmId": "prewarm-rust-rejected"}
+
+        def commit_active_capture(self, prewarm_id: str) -> bool:
+            events.append("commit")
+            assert prewarm_id == "prewarm-rust-rejected"
+            return False
+
+        def rollback_active_capture(self, prewarm_id: str) -> bool:
+            events.append("rollback")
+            rollback_ids.append(prewarm_id)
+            return True
+
+    fake_source = OrderedFrameSource()
+    mic = microphone.MicrophoneInput(
+        sample_rate=16000,
+        channels=1,
+        block_size=512,
+        keep_alive=True,
+        prewarm_manager=RejectingPrewarmManager(),
+    )
+    mic._create_audio_task = lambda: None
+
+    async def fake_drain_queue():
+        return None
+
+    mic._drain_queue = fake_drain_queue
+    mic._create_frame_source = lambda: fake_source
+
+    with pytest.raises(RuntimeError, match="could not be committed"):
+        await mic.start(microphone.StartFrame())
+
+    assert events == ["attach", "open", "start", "commit", "stop:True", "rollback"]
+    assert rollback_ids == ["prewarm-rust-rejected"]
+    assert fake_source.stream.active is False
+    assert fake_source.stream.closed is True
+
+
+@pytest.mark.asyncio
+async def test_microphone_stop_releases_native_source_off_event_loop(monkeypatch):
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
+    stop_entered = threading.Event()
+    release_stop = threading.Event()
+    events: list[str] = []
+
+    class BlockingStopFrameSource(_FakeRustFrameSource):
+        def stop(self, *, close: bool) -> None:
+            events.append("stop-entered")
+            stop_entered.set()
+            release_stop.wait(timeout=1.5)
+            events.append("stop-returned")
+            super().stop(close=close)
+
+    fake_source = BlockingStopFrameSource()
+    mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
+    mic._create_audio_task = lambda: None
+
+    async def fake_drain_queue():
+        return None
+
+    mic._drain_queue = fake_drain_queue
+    mic._create_frame_source = lambda: fake_source
+    await mic.start(microphone.StartFrame())
+
+    fail_safe = threading.Timer(1.0, release_stop.set)
+    fail_safe.start()
+    stop_task = asyncio.create_task(mic.stop(microphone.EndFrame()))
+    try:
+        while not stop_entered.is_set():
+            await asyncio.sleep(0.005)
+        events.append("event-loop-heartbeat")
+        release_stop.set()
+        await asyncio.wait_for(stop_task, timeout=1.0)
+    finally:
+        fail_safe.cancel()
+
+    assert events.index("event-loop-heartbeat") < events.index("stop-returned")
+    assert fake_source.stream.active is False
+    assert fake_source.stream.closed is True
+
+
 def test_rust_audio_timeout_configuration_is_finite_and_bounded(monkeypatch):
     monkeypatch.setenv("SCRIBER_RUST_AUDIO_FIRST_FRAME_TIMEOUT_SEC", "inf")
     monkeypatch.setenv("SCRIBER_RUST_AUDIO_FAILURE_COOLDOWN_SEC", "inf")

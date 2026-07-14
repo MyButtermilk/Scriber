@@ -838,6 +838,16 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     staleTime: 10_000,
     refetchInterval: selectedId ? false : 15_000,
   });
+  useEffect(() => {
+    const inventory = audioDevicesQuery.data;
+    if (!inventory?.available) return;
+    setMicrophoneEndpointHash((current) => (
+      current && !inventory.capture.some((endpoint) => endpoint.endpointIdHash === current) ? "" : current
+    ));
+    setRenderEndpointHash((current) => (
+      current && !inventory.render.some((endpoint) => endpoint.endpointIdHash === current) ? "" : current
+    ));
+  }, [audioDevicesQuery.data]);
   const detectionQuery = useQuery<MeetingDetectionResponse>({
     queryKey: ["/api/meetings/detection"],
     queryFn: ({ signal }) => fetchJson("/api/meetings/detection", signal),
@@ -928,6 +938,9 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   }, [queryClient]);
 
   const handleWsMessage = useCallback((message: ScriberWebSocketMessage) => {
+    if (message.type === "microphones_updated") {
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/audio-devices"], exact: true });
+    }
     if (message.type === "meeting_state") {
       applyMeetingSummaryEvent(queryClient, message.meeting);
       if (TERMINAL_MEETING_STATES.has(message.meeting.state)) {
@@ -1475,6 +1488,33 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const selectedProfile = profilesQuery.data?.profiles.find((item) => item.id === profilesQuery.data?.defaultProfileId)
     ?? profilesQuery.data?.profiles[0];
   const selectedProfileCostPerHour = selectedProfile?.costEstimate?.totalPerMeetingHour;
+  const audioDeviceInventory = audioDevicesQuery.data;
+  const audioDeviceInitialLoading = audioDevicesQuery.isPending;
+  const audioDeviceInventoryUnavailable = audioDevicesQuery.isError
+    || Boolean(audioDeviceInventory && !audioDeviceInventory.available);
+  const captureEndpoints = audioDeviceInventory?.capture ?? [];
+  const renderEndpoints = audioDeviceInventory?.render ?? [];
+  const microphoneCountLabel = `${captureEndpoints.length} microphone${captureEndpoints.length === 1 ? "" : "s"}`;
+  const speakerCountLabel = `${renderEndpoints.length} speaker choice${renderEndpoints.length === 1 ? "" : "s"}`;
+  const microphoneSelectDisabled = audioDeviceInitialLoading
+    || audioDeviceInventoryUnavailable
+    || captureEndpoints.length === 0;
+  const renderSelectDisabled = audioDeviceInitialLoading
+    || audioDeviceInventoryUnavailable
+    || renderEndpoints.length === 0;
+  const audioDeviceStatus = audioDeviceInitialLoading
+    ? "Looking for microphones and speakers…"
+    : audioDevicesQuery.isError
+      ? "The device list could not be loaded. Scriber will keep the Windows defaults; choose Refresh to try again."
+      : !audioDeviceInventory?.available
+        ? "Individual device selection is unavailable. Scriber will use the Windows default microphone and speakers."
+        : captureEndpoints.length === 0 && renderEndpoints.length === 0
+          ? "No individual audio devices were returned. Scriber will use the Windows defaults."
+          : captureEndpoints.length === 0
+            ? `No individual microphones were returned. Windows default will be used · ${speakerCountLabel} available.`
+            : renderEndpoints.length === 0
+              ? `${microphoneCountLabel} available · Windows default speakers will be used.`
+              : `${microphoneCountLabel} and ${speakerCountLabel} available.`;
   const longSession = capabilitiesQuery.data?.longSession;
   const finalProviderCapability = selectedProfile
     ? profilesQuery.data?.providerCapabilities[selectedProfile.finalProvider]
@@ -1943,10 +1983,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       <Button type="button" size="sm" variant="ghost" disabled={audioDevicesQuery.isFetching} onClick={() => void audioDevicesQuery.refetch()}><RefreshCw className={`mr-2 h-3.5 w-3.5 ${audioDevicesQuery.isFetching ? "animate-spin" : ""}`} />Refresh</Button>
                     </div>
                     <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                      <div className="min-w-0"><label htmlFor="meeting-microphone" className="text-xs text-muted-foreground">Microphone</label><select id="meeting-microphone" value={microphoneEndpointHash} onChange={(event) => setMicrophoneEndpointHash(event.target.value)} className="mt-1 h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs"><option value="">Windows default microphone</option>{audioDevicesQuery.data?.capture.map((endpoint) => <option key={endpoint.endpointIdHash} value={endpoint.endpointIdHash}>{endpoint.friendlyName}{endpoint.isDefault ? " (default)" : ""}</option>)}</select></div>
-                      <div className="min-w-0"><label htmlFor="meeting-render" className="text-xs text-muted-foreground">Speakers / meeting audio</label><select id="meeting-render" value={renderEndpointHash} onChange={(event) => setRenderEndpointHash(event.target.value)} className="mt-1 h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs"><option value="">Windows default speakers</option>{audioDevicesQuery.data?.render.map((endpoint) => <option key={endpoint.endpointIdHash} value={endpoint.endpointIdHash}>{endpoint.friendlyName}{endpoint.isDefault ? " (default)" : ""}</option>)}</select></div>
+                      <div className="min-w-0"><label htmlFor="meeting-microphone" className="text-xs text-muted-foreground">Microphone</label><select id="meeting-microphone" value={microphoneEndpointHash} disabled={microphoneSelectDisabled} onChange={(event) => setMicrophoneEndpointHash(event.target.value)} className="mt-1 h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60"><option value="">{audioDeviceInitialLoading ? "Looking for microphones…" : captureEndpoints.length === 0 ? "Windows default microphone (automatic)" : "Windows default microphone"}</option>{captureEndpoints.map((endpoint) => <option key={endpoint.endpointIdHash} value={endpoint.endpointIdHash}>{endpoint.friendlyName}{endpoint.isDefault ? " (default)" : ""}</option>)}</select></div>
+                      <div className="min-w-0"><label htmlFor="meeting-render" className="text-xs text-muted-foreground">Speakers / meeting audio</label><select id="meeting-render" value={renderEndpointHash} disabled={renderSelectDisabled} onChange={(event) => setRenderEndpointHash(event.target.value)} className="mt-1 h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60"><option value="">{audioDeviceInitialLoading ? "Looking for speakers…" : renderEndpoints.length === 0 ? "Windows default speakers (automatic)" : "Windows default speakers"}</option>{renderEndpoints.map((endpoint) => <option key={endpoint.endpointIdHash} value={endpoint.endpointIdHash}>{endpoint.friendlyName}{endpoint.isDefault ? " (default)" : ""}</option>)}</select></div>
                     </div>
-                    <p className="mt-2 text-xs leading-5 text-muted-foreground">{audioDevicesQuery.data?.available ? `${audioDevicesQuery.data.capture.length} microphones and ${audioDevicesQuery.data.render.length} speaker choices available.` : "Windows audio devices are unavailable."}</p>
+                    <p className={`mt-2 text-xs leading-5 ${audioDeviceInventoryUnavailable ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground"}`} role="status" aria-live="polite">{audioDeviceStatus}</p>
                     <Button type="button" size="sm" variant="outline" className="mt-3 h-auto min-h-9 w-full whitespace-normal px-3 text-center leading-5" disabled={!audioDevicesQuery.data?.available || deviceTestMutation.isPending || capabilitiesQuery.data?.liveMicBusy || Boolean(capabilitiesQuery.data?.activeMeeting)} onClick={() => deviceTestMutation.mutate()}>
                       {deviceTestMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Waves className="mr-2 h-3.5 w-3.5" />}Test microphone and playback
                     </Button>

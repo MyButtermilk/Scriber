@@ -266,6 +266,6 @@ Get-ChildItem -LiteralPath $backendSourceRoot -Recurse -File |
             $backendEntries.Add("file`t$relative`t$(Get-FileSha256 $_.FullName)")
         }
     }
-$backendEntries.Add("constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v3")
+$backendEntries.Add("constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v4")
 $backendEntries.Add("constant`tbackend-sidecar-flags`tBundleMediaTools;UseProfileB;ValidateSlim")
 Write-KeyFile -Name "backend-sidecar.txt" -Entries $backendEntries

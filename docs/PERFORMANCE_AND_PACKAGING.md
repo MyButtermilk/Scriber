@@ -343,8 +343,8 @@ In GitHub release builds, Profile B reuse is layered:
 
 1. Restore the normal Actions cache for the current ref.
 2. If that misses, download the internal reusable release artifact
-   `scriber-ffmpeg-profile-b-n7.0-v3-Windows.zip` from tag
-   `ffmpeg-profile-b-n7.0-v3`.
+   `scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip` from tag
+   `ffmpeg-profile-b-n7.0-v4`.
 3. Validate the restored tools and media-preparation behavior.
 4. Build through MSYS2 only if both restored sources are absent or invalid.
 
@@ -357,12 +357,19 @@ Profile B keeps required Scriber capabilities:
 - MP3 encode/decode through `libmp3lame`.
 - WebM/Opus support.
 - AAC, Opus, MP3, FLAC, ALAC decode and FLAC encode.
-- FLAC, Matroska, Ogg/Opus, and WebM muxing plus the `adelay` and `amix`
+- FLAC, Matroska, Ogg/Opus, WebM, and PCM WAV muxing plus the `adelay` and `amix`
   filters required by Meeting finalization and Meeting-clock alignment.
 - stdout `pcm_s16le`.
 - raw `s16le`.
 - common local demuxers/muxers.
 - `file` and `pipe` protocols.
+
+Profile B cache generation `n7.0-v4` adds the previously missing WAV muxer and
+an explicit WebM/Opus-to-mono-16-kHz-PCM-WAV fixture. This is the normalization
+contract used before the optional Sherpa-ONNX speaker pass and by local ONNX
+ASR. Local speaker separation remains best-effort after a provider transcript:
+if audio preparation, the downloaded model, or the isolated worker fails, the
+provider transcript is kept and the File/YouTube job still completes.
 
 It intentionally excludes unrelated network protocols, GPL/nonfree flags, video
 encoders, and hardware acceleration stacks.
@@ -442,7 +449,7 @@ Release workflow:
   durable internal release artifacts from `release-cache-python-venv-v1`,
   `release-cache-python-wheelhouse-v2`, `release-cache-backend-sidecar-v2`,
   `release-cache-rust-build-v2`, `release-cache-rust-audio-sidecar-v1`, and
-  `ffmpeg-profile-b-n7.0-v3`. Those releases are implementation caches, not
+  `ffmpeg-profile-b-n7.0-v4`. Those releases are implementation caches, not
   user-facing app updates, and are published with `--latest=false`. Only an
   explicit manual cache-refresh dispatch publishes them; ordinary `main` and
   signed `v*` runs do not.
@@ -1505,6 +1512,18 @@ Implementation status on `codex/rust-expansion-plan`:
   call timeout support, redacted pipe-name hashing, and redacted transport
   failure text so raw pipe names and session tokens are not persisted in
   diagnostics or returned fallback reasons.
+- Hardened the transport against one abandoned client wedging every native
+  feature: the Rust server now accepts a bounded number of concurrent pipe
+  instances, and the Python client uses OVERLAPPED reads/writes with
+  `CancelIoEx` plus completion draining. Per-domain Python locks order audio,
+  overlay, injection, and Outlook mutations while unrelated commands remain
+  concurrent. Rust owner-level audio-lifecycle and overlay mutation lanes also
+  cover direct shell/hotkey calls that do not pass through Python IPC.
+- Removed the unbounded response-side `FlushFileBuffers` wait. Response delivery
+  has a bounded grace period. Successful capture, prewarm, and Meeting audio
+  starts require a request-ID- and API-version-bound `responseAck`; disconnecting
+  is not an acknowledgement. Rust rolls an unacknowledged start back, preventing
+  orphaned sidecars after a timed-out client.
 - `/api/runtime/audio-diagnostics` now reports `textInjection.shellIpc` status
   without calling the pipe from readiness or startup paths.
 - Added the `injectText` shell IPC command for opt-in Tauri text injection. The
@@ -1833,6 +1852,10 @@ Missing prerequisites:
      private Windows named pipe and writes synthetic silence frames in the shared
      `SAF1` protocol. This proves transport and lifecycle plumbing only; it is
      not a microphone capture engine.
+   - Frame-pipe connection waits have a hard deadline. Live and synthetic
+     capture pipes stay nonblocking after connection so a stalled Python reader
+     cannot block the audio writer; Meeting relay outputs switch to blocking
+     mode only after their bounded connection succeeds.
    - For normal app runs, the sidecar opens either the Windows default capture
      endpoint or a selected endpoint by redacted native endpoint hash through
      WASAPI shared mode, converts supported float/PCM mix formats to requested
@@ -2025,7 +2048,9 @@ Implementation plan:
    - Partly implemented: the Python Rust frame source understands the
      `AUDIO_FRAME_FLAG_PREBUFFER` flag, preserves prebuffer frames before live
      frames, exposes prebuffer/live counters, and treats prebuffer-after-live as
-     a protocol failure.
+     a protocol failure. It commits an adopted prewarm session and fires
+     `on_ready` only after a non-prebuffer live frame has been processed
+     successfully; prebuffer-only or callback-failing starts roll back.
    - Partly implemented: Python now sends the configured bounded
      `MIC_PREBUFFER_MS` value as `prebufferMs` when starting the Rust WASAPI
      frame source, and diagnostics expose the requested value.

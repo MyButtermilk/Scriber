@@ -95,6 +95,7 @@ def test_create_profile_b_build_kit_writes_reproducible_artifacts(tmp_path: Path
     assert "./configure --prefix=\"$PREFIX_DIR\"" in script_text
     assert "+  --" not in script_text
     assert "--enable-demuxer=pcm_s16le" in script_text
+    assert "--enable-muxer=wav" in script_text
     assert "build_profile_b_msys2.ps1" in json.dumps(plan)
     assert "-InstallDependencies" in json.dumps(plan)
     assert "validate_ffmpeg_profile.py" in json.dumps(plan)

@@ -38,8 +38,8 @@ use windows_sys::Win32::{
         PIPE_ACCESS_OUTBOUND,
     },
     System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_NOWAIT, PIPE_READMODE_BYTE,
-        PIPE_TYPE_BYTE, PIPE_WAIT,
+        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, SetNamedPipeHandleState,
+        PIPE_NOWAIT, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
     },
 };
 
@@ -67,6 +67,7 @@ const SYNTHETIC_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE";
 const SYNTHETIC_SIGNAL_ENV: &str = "SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL";
 const WASAPI_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_WASAPI_CAPTURE";
 const DISABLE_WASAPI_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE";
+const FRAME_PIPE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const WAVE_FORMAT_IEEE_FLOAT_TAG: u16 = 3;
 const WAVE_FORMAT_EXTENSIBLE_TAG: u16 = 0xfffe;
 
@@ -1843,6 +1844,7 @@ fn start_synthetic_prewarm_impl(
 ) -> Result<(PrewarmSession, Value), String> {
     let prewarm_id = Uuid::new_v4().simple().to_string();
     let (stop_tx, stop_rx) = mpsc::channel();
+    let (ready_tx, ready_rx) = mpsc::channel();
     let worker_request = request.clone();
     let buffer = Arc::new(Mutex::new(PrewarmBuffer::new(
         requested_prebuffer_frame_count(&request),
@@ -1850,8 +1852,30 @@ fn start_synthetic_prewarm_impl(
     let worker_buffer = Arc::clone(&buffer);
     let join_handle = thread::Builder::new()
         .name("scriber-audio-synthetic-prewarm".to_string())
-        .spawn(move || run_synthetic_prewarm_worker(worker_request, stop_rx, worker_buffer))
+        .spawn(move || {
+            run_synthetic_prewarm_worker(worker_request, stop_rx, worker_buffer, ready_tx)
+        })
         .map_err(|err| format!("synthetic prewarm worker thread spawn failed: {err}"))?;
+
+    // Synthetic capture is the deterministic transport harness used by installed and unit
+    // tests. Do not advertise a usable prewarm session before the worker has actually observed
+    // its first audio block; otherwise an immediate capture adoption can legitimately snapshot
+    // an empty rolling buffer under scheduler pressure.
+    match ready_rx.recv_timeout(Duration::from_secs(1)) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            let _ = stop_tx.send(());
+            let _ = join_handle.join();
+            return Err(err);
+        }
+        Err(err) => {
+            let _ = stop_tx.send(());
+            let _ = join_handle.join();
+            return Err(format!(
+                "synthetic prewarm did not observe its first audio block: {err}"
+            ));
+        }
+    }
 
     let endpoint_selection = endpoint_selection_payload(
         &request,
@@ -1976,8 +2000,10 @@ fn run_synthetic_prewarm_worker(
     request: CaptureRequest,
     stop_rx: mpsc::Receiver<()>,
     buffer: Arc<Mutex<PrewarmBuffer>>,
+    ready_tx: Sender<Result<(), String>>,
 ) -> PrewarmStats {
     let mut stats = PrewarmStats::default();
+    let mut ready_tx = Some(ready_tx);
     let frame_interval = Duration::from_secs_f64(
         (request.block_size as f64 / f64::from(request.sample_rate)).max(0.001),
     );
@@ -2002,10 +2028,17 @@ fn run_synthetic_prewarm_worker(
                     stats.buffered_payload_bytes = buffer.payload_bytes();
                 }
                 Err(_) => {
-                    stats.error = Some("prewarmBufferLockPoisoned".to_string());
+                    let error = "prewarmBufferLockPoisoned".to_string();
+                    if let Some(ready_tx) = ready_tx.take() {
+                        let _ = ready_tx.send(Err(error.clone()));
+                    }
+                    stats.error = Some(error);
                     break;
                 }
             }
+        }
+        if let Some(ready_tx) = ready_tx.take() {
+            let _ = ready_tx.send(Ok(()));
         }
     }
     stats
@@ -2018,10 +2051,10 @@ fn create_frame_pipe(pipe_path: &str) -> Result<HANDLE, String> {
 
 #[cfg(windows)]
 fn create_meeting_output_pipe(pipe_path: &str) -> Result<HANDLE, String> {
-    // Python consumes the public relay outputs as ordinary blocking byte
-    // streams. PIPE_NOWAIT can surface an empty read/EINVAL before the first
-    // 10 ms frame and make every meeting consumer exit prematurely.
-    create_frame_pipe_with_wait_mode(pipe_path, PIPE_WAIT)
+    // ConnectNamedPipe cannot be bounded on a synchronous PIPE_WAIT instance. Create every
+    // server end nonblocking, poll it with a deadline, then switch the connected instance back
+    // to PIPE_WAIT before writing. Python still consumes an ordinary blocking byte stream.
+    create_frame_pipe_with_wait_mode(pipe_path, PIPE_NOWAIT)
 }
 
 #[cfg(windows)]
@@ -2127,7 +2160,7 @@ fn read_meeting_frame(
 
 #[cfg(windows)]
 fn pcm_i16_into(payload: &[u8], samples: &mut Vec<i16>) -> Result<(), String> {
-    if payload.len() % 2 != 0 {
+    if !payload.len().is_multiple_of(2) {
         return Err("meeting PCM payload has an odd byte length".to_string());
     }
     samples.clear();
@@ -2155,7 +2188,7 @@ fn downsample_meeting_48k_to_16k_into(
     samples: &[i16],
     output: &mut Vec<i16>,
 ) -> Result<(), String> {
-    if samples.len() != MEETING_AEC_FRAME_SAMPLES || samples.len() % 3 != 0 {
+    if samples.len() != MEETING_AEC_FRAME_SAMPLES || !samples.len().is_multiple_of(3) {
         return Err("meeting downsampler requires one 48 kHz 10ms frame".to_string());
     }
     output.clear();
@@ -2240,7 +2273,7 @@ fn run_meeting_aec_relay(
         };
         let processing = (|| -> Result<(), String> {
             for handle in &outputs {
-                wait_for_pipe_client(*handle, &stop_rx)?;
+                wait_for_meeting_output_pipe_client(*handle, &stop_rx)?;
             }
             let mut aec = if aec_enabled {
                 Some(MeetingAec3::new(delay_ms)?)
@@ -3259,28 +3292,96 @@ unsafe fn wasapi_mix_format_from_ptr(
 
 #[cfg(windows)]
 fn wait_for_pipe_client(pipe_handle: HANDLE, stop_rx: &mpsc::Receiver<()>) -> Result<(), String> {
+    wait_for_pipe_client_with_timeout(
+        pipe_handle,
+        stop_rx,
+        FRAME_PIPE_CONNECT_TIMEOUT,
+        FramePipePostConnectMode::PreserveNonBlocking,
+    )
+}
+
+#[cfg(windows)]
+fn wait_for_meeting_output_pipe_client(
+    pipe_handle: HANDLE,
+    stop_rx: &mpsc::Receiver<()>,
+) -> Result<(), String> {
+    wait_for_pipe_client_with_timeout(
+        pipe_handle,
+        stop_rx,
+        FRAME_PIPE_CONNECT_TIMEOUT,
+        FramePipePostConnectMode::SwitchToBlocking,
+    )
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FramePipePostConnectMode {
+    PreserveNonBlocking,
+    SwitchToBlocking,
+}
+
+#[cfg(windows)]
+fn wait_for_pipe_client_with_timeout(
+    pipe_handle: HANDLE,
+    stop_rx: &mpsc::Receiver<()>,
+    timeout: Duration,
+    post_connect_mode: FramePipePostConnectMode,
+) -> Result<(), String> {
+    let started = Instant::now();
     loop {
         match stop_rx.try_recv() {
             Ok(()) | Err(TryRecvError::Disconnected) => {
-                return Err("synthetic frame pipe stopped before client connected".to_string())
+                return Err("audio frame pipe stopped before client connected".to_string())
             }
             Err(TryRecvError::Empty) => {}
         }
+        if started.elapsed() >= timeout {
+            return Err(format!(
+                "audio frame pipe client did not connect within {} ms",
+                timeout.as_millis()
+            ));
+        }
         let connected = unsafe { ConnectNamedPipe(pipe_handle, null_mut()) };
         if connected != 0 {
-            return Ok(());
+            return finish_frame_pipe_connect(pipe_handle, post_connect_mode);
         }
         let err = unsafe { GetLastError() };
         if err == ERROR_PIPE_CONNECTED {
-            return Ok(());
+            return finish_frame_pipe_connect(pipe_handle, post_connect_mode);
         }
         if err == ERROR_PIPE_LISTENING {
             thread::sleep(Duration::from_millis(10));
             continue;
         }
         return Err(format!(
-            "ConnectNamedPipe failed for synthetic frame pipe: {err}"
+            "ConnectNamedPipe failed for audio frame pipe: {err}"
         ));
+    }
+}
+
+#[cfg(windows)]
+fn finish_frame_pipe_connect(
+    pipe_handle: HANDLE,
+    post_connect_mode: FramePipePostConnectMode,
+) -> Result<(), String> {
+    let Some(mode) = frame_pipe_wait_mode_update(post_connect_mode) else {
+        return Ok(());
+    };
+    let updated = unsafe { SetNamedPipeHandleState(pipe_handle, &mode, null_mut(), null_mut()) };
+    if updated == 0 {
+        return Err(format!(
+            "SetNamedPipeHandleState failed for connected audio frame pipe: {}",
+            unsafe { GetLastError() }
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn frame_pipe_wait_mode_update(post_connect_mode: FramePipePostConnectMode) -> Option<u32> {
+    match post_connect_mode {
+        FramePipePostConnectMode::PreserveNonBlocking => None,
+        FramePipePostConnectMode::SwitchToBlocking => Some(PIPE_WAIT),
     }
 }
 
@@ -3675,6 +3776,90 @@ mod tests {
         assert_eq!(loopback.stream_flags, AUDCLNT_STREAMFLAGS_LOOPBACK);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn frame_pipe_connect_wait_has_a_hard_deadline() {
+        let pipe_path = format!(
+            r"\\.\pipe\scriber-audio-connect-timeout-{}",
+            Uuid::new_v4().simple()
+        );
+        let handle = create_frame_pipe(&pipe_path).expect("test frame pipe should be created");
+        let (_stop_tx, stop_rx) = mpsc::channel::<()>();
+        let started = Instant::now();
+
+        let error = wait_for_pipe_client_with_timeout(
+            handle,
+            &stop_rx,
+            Duration::from_millis(40),
+            FramePipePostConnectMode::PreserveNonBlocking,
+        )
+        .expect_err("a frame pipe without a client must time out");
+
+        unsafe {
+            CloseHandle(handle);
+        }
+        assert!(error.contains("did not connect within 40 ms"));
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[cfg(windows)]
+    fn connect_test_frame_pipe(post_connect_mode: FramePipePostConnectMode) {
+        use std::{fs::OpenOptions, sync::mpsc, thread};
+
+        let pipe_path = format!(
+            r"\\.\pipe\scriber-audio-connect-mode-{}",
+            Uuid::new_v4().simple()
+        );
+        let handle = create_frame_pipe(&pipe_path).expect("test frame pipe should be created");
+        let client_path = pipe_path.clone();
+        let (connected_tx, connected_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let client = thread::spawn(move || {
+            let file = OpenOptions::new()
+                .read(true)
+                .open(client_path)
+                .expect("test client should connect");
+            connected_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(1));
+            drop(file);
+        });
+        let (_stop_tx, stop_rx) = mpsc::channel::<()>();
+
+        wait_for_pipe_client_with_timeout(
+            handle,
+            &stop_rx,
+            Duration::from_secs(1),
+            post_connect_mode,
+        )
+        .expect("connected frame pipe should finish in its requested mode");
+        connected_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("client should report its connection");
+
+        let _ = release_tx.send(());
+        client.join().unwrap();
+        unsafe {
+            DisconnectNamedPipe(handle);
+            CloseHandle(handle);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn live_frame_pipe_preserves_nonblocking_writes_after_connect() {
+        let mode = FramePipePostConnectMode::PreserveNonBlocking;
+        assert_eq!(frame_pipe_wait_mode_update(mode), None);
+        connect_test_frame_pipe(mode);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn meeting_output_pipe_switches_to_blocking_mode_after_connect() {
+        let mode = FramePipePostConnectMode::SwitchToBlocking;
+        assert_eq!(frame_pipe_wait_mode_update(mode), Some(PIPE_WAIT));
+        connect_test_frame_pipe(mode);
+    }
+
     #[test]
     fn loopback_silence_deadline_keeps_ten_ms_cadence() {
         let start = Instant::now();
@@ -3830,7 +4015,6 @@ mod tests {
         };
 
         let (session, _) = start_synthetic_prewarm_impl(request).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
         let mut deferred_session = Some(session);
         let stop = stop_deferred_prewarm_session(&mut deferred_session, "adoptedIntoCapture")
             .expect("deferred prewarm stop payload");
@@ -4091,7 +4275,6 @@ mod tests {
             clock_origin: None,
         };
         let (mut prewarm_session, _) = start_synthetic_prewarm_impl(prewarm_request).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
         let adopted = prewarm_session.snapshot_buffer();
         assert_eq!(adopted.block_count, 1);
         let prewarm_stop = prewarm_session.stop("adoptedIntoCapture");

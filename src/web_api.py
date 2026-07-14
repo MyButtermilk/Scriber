@@ -6640,6 +6640,19 @@ class ScriberWebController:
                 "60-minute eligibility limit; keeping the provider transcript unchanged"
             )
             return []
+        except Exception as exc:
+            # Speaker separation is an optional post-processing step. The
+            # provider transcript has already completed and been persisted, so
+            # a local model/media failure must degrade gracefully instead of
+            # turning a successful File or YouTube transcription into a failed
+            # job.
+            logger.warning(
+                "Optional local speaker separation failed; keeping the provider transcript "
+                "unchanged: {}: {}",
+                type(exc).__name__,
+                str(exc),
+            )
+            return []
         rendered = format_speaker_transcript(segments)
         if rendered:
             rec.replace_content(rendered)
@@ -10625,6 +10638,52 @@ async def session_token_middleware(request: web.Request, handler):
     return await handler(request)
 
 
+def _safe_meeting_audio_inventory_reason(value: Any, *, default: str) -> str:
+    reason = str(value or "").strip()
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", reason):
+        return reason
+    return default
+
+
+def _group_meeting_audio_endpoints(endpoints: Any) -> dict[str, list[dict[str, Any]]]:
+    """Return the public, redacted subset of a native endpoint inventory."""
+
+    grouped: dict[str, list[dict[str, Any]]] = {"capture": [], "render": []}
+    if not isinstance(endpoints, (list, tuple)):
+        return grouped
+
+    seen: dict[str, set[str]] = {"capture": set(), "render": set()}
+    for endpoint in endpoints[:128]:
+        if not isinstance(endpoint, Mapping):
+            continue
+        flow = str(endpoint.get("flow", "")).strip().lower()
+        endpoint_hash = str(endpoint.get("endpointIdHash", "")).strip().lower()
+        friendly_name = str(endpoint.get("friendlyName", "")).strip()[:160]
+        if flow not in grouped or not re.fullmatch(r"[0-9a-f]{8,128}", endpoint_hash):
+            continue
+        if endpoint_hash in seen[flow]:
+            continue
+        seen[flow].add(endpoint_hash)
+        if not friendly_name:
+            friendly_name = "Microphone" if flow == "capture" else "Playback device"
+        roles = endpoint.get("defaultRoles")
+        grouped[flow].append(
+            {
+                "endpointIdHash": endpoint_hash,
+                "friendlyName": friendly_name,
+                "isDefault": bool(endpoint.get("isDefault")),
+                "defaultRoles": [
+                    str(role)
+                    for role in roles[:4]
+                    if str(role) in {"console", "communications", "multimedia"}
+                ]
+                if isinstance(roles, (list, tuple))
+                else [],
+            }
+        )
+    return grouped
+
+
 def create_app(controller: ScriberWebController) -> web.Application:
     app = web.Application(middlewares=[cors_middleware, session_token_middleware])
     app[APP_CONTROLLER] = controller
@@ -10839,7 +10898,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
             payload["finalizing"] = True
             return web.json_response(payload, status=202)
 
-        await ctl.start_listening()
+        start_error = await ctl.start_listening()
+        if start_error is not None:
+            return web.json_response(
+                version_event_payload(ctl._provider_error_event_from_info(start_error)),
+                status=400,
+            )
         return web.json_response(ctl.get_state())
 
     async def toggle_live_post_processing(request: web.Request):
@@ -10857,7 +10921,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
             payload["finalizing"] = True
             return web.json_response(payload, status=202)
 
-        await ctl.start_listening(post_process=True)
+        start_error = await ctl.start_listening(post_process=True)
+        if start_error is not None:
+            return web.json_response(
+                version_event_payload(ctl._provider_error_event_from_info(start_error)),
+                status=400,
+            )
         return web.json_response(ctl.get_state())
 
     async def get_settings(request: web.Request):
@@ -11606,55 +11675,95 @@ def create_app(controller: ScriberWebController) -> web.Application:
         )
 
     async def meeting_audio_devices(_request: web.Request):
-        if not shell_ipc_available():
-            return web.json_response({
-                "apiVersion": REST_API_VERSION,
-                "available": False,
-                "capture": [],
-                "render": [],
-                "reason": "shellIpcUnavailable",
-            })
-        try:
-            response = await asyncio.to_thread(
-                call_shell_ipc, "audioEndpointInventory", {}, timeout_seconds=2.0
-            )
-        except Exception as exc:
-            return web.json_response({
-                "apiVersion": REST_API_VERSION,
-                "available": False,
-                "capture": [],
-                "render": [],
-                "reason": type(exc).__name__,
-            })
-        payload = response.get("payload") if isinstance(response, dict) else None
-        endpoints = payload.get("endpoints") if isinstance(payload, dict) else None
         grouped: dict[str, list[dict[str, Any]]] = {"capture": [], "render": []}
-        if isinstance(endpoints, list):
-            for endpoint in endpoints[:128]:
-                if not isinstance(endpoint, dict):
-                    continue
-                flow = str(endpoint.get("flow", ""))
-                endpoint_hash = str(endpoint.get("endpointIdHash", "")).strip()
-                friendly_name = str(endpoint.get("friendlyName", "")).strip()[:160]
-                if flow not in grouped or not re.fullmatch(r"[0-9a-fA-F]{8,128}", endpoint_hash):
-                    continue
-                if not friendly_name:
-                    friendly_name = "Microphone" if flow == "capture" else "Playback device"
-                grouped[flow].append({
-                    "endpointIdHash": endpoint_hash,
-                    "friendlyName": friendly_name,
-                    "isDefault": bool(endpoint.get("isDefault")),
-                    "defaultRoles": [
-                        str(role) for role in endpoint.get("defaultRoles", [])[:4]
-                        if str(role) in {"console", "communications", "multimedia"}
-                    ] if isinstance(endpoint.get("defaultRoles"), list) else [],
-                })
+        shell_available = shell_ipc_available()
+        shell_inventory_available = False
+        shell_inventory_present = False
+        reason = ""
+
+        if shell_available:
+            try:
+                response = await asyncio.to_thread(
+                    call_shell_ipc, "audioEndpointInventory", {}, timeout_seconds=2.0
+                )
+            except Exception as exc:
+                reason = "shellIpcRequestFailed"
+                logger.debug(
+                    "Meeting audio endpoint inventory request failed; trying redacted "
+                    f"PyCAW capture fallback ({type(exc).__name__})"
+                )
+            else:
+                payload = response.get("payload") if isinstance(response, dict) else None
+                endpoints = payload.get("endpoints") if isinstance(payload, dict) else None
+                grouped = _group_meeting_audio_endpoints(endpoints)
+                shell_inventory_present = bool(grouped["capture"] or grouped["render"])
+                shell_inventory_available = bool(
+                    isinstance(response, dict)
+                    and response.get("success")
+                    and isinstance(payload, dict)
+                    and payload.get("available")
+                )
+                if not shell_inventory_available:
+                    reason = _safe_meeting_audio_inventory_reason(
+                        response.get("errorCode") if isinstance(response, dict) else None,
+                        default="shellInventoryUnavailable",
+                    )
+                elif not grouped["capture"]:
+                    reason = "captureInventoryEmpty"
+        else:
+            reason = "shellIpcUnavailable"
+
+        fallback_used = False
+        if shell_available and not grouped["capture"]:
+            try:
+                fallback_endpoints = await asyncio.to_thread(
+                    collect_native_capture_endpoint_inventory
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Redacted PyCAW meeting capture inventory fallback failed "
+                    f"({type(exc).__name__})"
+                )
+            else:
+                fallback_grouped = _group_meeting_audio_endpoints(fallback_endpoints)
+                if fallback_grouped["capture"]:
+                    grouped["capture"] = fallback_grouped["capture"]
+                    fallback_used = True
+
+        if fallback_used:
+            source = (
+                "rust-wasapi+pycaw-fallback"
+                if shell_inventory_available or shell_inventory_present
+                else "pycaw-fallback"
+            )
+        elif shell_inventory_available or shell_inventory_present:
+            source = "rust-wasapi"
+        else:
+            source = "unavailable"
+
+        missing_capture = not grouped["capture"]
+        missing_render = not grouped["render"]
+        if not reason:
+            if missing_capture and missing_render:
+                reason = "endpointInventoryEmpty"
+            elif missing_capture:
+                reason = "captureInventoryEmpty"
+            elif missing_render:
+                reason = "renderInventoryEmpty"
+
         return web.json_response({
             "apiVersion": REST_API_VERSION,
-            "available": bool(response.get("success") and isinstance(payload, dict) and payload.get("available")),
+            "available": bool(shell_available and (grouped["capture"] or grouped["render"])),
             "capture": grouped["capture"],
             "render": grouped["render"],
-            "reason": "" if response.get("success") else str(response.get("errorCode") or "inventoryUnavailable"),
+            "source": source,
+            "partial": bool(
+                fallback_used
+                or missing_capture
+                or missing_render
+                or not shell_inventory_available
+            ),
+            "reason": reason,
         })
 
     async def meeting_device_test(request: web.Request):
@@ -14562,13 +14671,19 @@ def create_app(controller: ScriberWebController) -> web.Application:
             if not isinstance(response, dict):
                 raise RuntimeError("Native microphone capture returned an invalid response.")
             if not response.get("success"):
+                error_code = str(response.get("errorCode") or "")
+                if error_code == "transportError":
+                    message = (
+                        "Scriber's microphone service was temporarily busy. "
+                        "Wait a moment and try the sample again."
+                    )
+                else:
+                    message = str(
+                        response.get("fallbackReason")
+                        or "The selected microphone could not start."
+                    )[:240]
                 return web.json_response(
-                    {
-                        "message": str(
-                            response.get("fallbackReason")
-                            or "The selected microphone could not start."
-                        )[:240]
-                    },
+                    {"message": message},
                     status=503,
                 )
             frame_pipe = str(payload.get("framePipe") or "")

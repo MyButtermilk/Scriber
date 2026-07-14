@@ -25,8 +25,8 @@ jobs:
   build-windows:
     runs-on: windows-latest
     env:
-      SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG: ffmpeg-profile-b-n7.0-v3
-      SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME: scriber-ffmpeg-profile-b-n7.0-v3-Windows.zip
+      SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG: ffmpeg-profile-b-n7.0-v4
+      SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME: scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip
       SCRIBER_PYTHON_VENV_ARTIFACT_TAG: release-cache-python-venv-v1
       SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG: release-cache-python-wheelhouse-v2
       SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG: release-cache-backend-sidecar-v2
@@ -410,9 +410,9 @@ jobs:
             build/ffmpeg-profile-b-msys2/ffmpeg-profile-b-fixtures.json
             build/ffmpeg-profile-b-msys2/media-preparation-smoke-profile-b.json
             build/ffmpeg-profile-b-msys2/profile-b-msys2-build-report.json
-          key: scriber-ffmpeg-profile-b-msys2-n7.0-v3-${{ runner.os }}
+          key: scriber-ffmpeg-profile-b-msys2-n7.0-v4-${{ runner.os }}
           restore-keys: |
-            scriber-ffmpeg-profile-b-msys2-n7.0-v3-${{ runner.os }}
+            scriber-ffmpeg-profile-b-msys2-n7.0-v4-${{ runner.os }}
             scriber-ffmpeg-profile-b-msys2-n7.0-${{ runner.os }}-
 
       - name: Restore FFmpeg Profile B release artifact
@@ -870,7 +870,7 @@ jobs:
             build/ffmpeg-profile-b-msys2/ffmpeg-profile-b-fixtures.json
             build/ffmpeg-profile-b-msys2/media-preparation-smoke-profile-b.json
             build/ffmpeg-profile-b-msys2/profile-b-msys2-build-report.json
-          key: scriber-ffmpeg-profile-b-msys2-n7.0-v3-${{ runner.os }}
+          key: scriber-ffmpeg-profile-b-msys2-n7.0-v4-${{ runner.os }}
 
       - name: Build Windows installer
         shell: pwsh

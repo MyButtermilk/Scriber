@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-07-13
+Last verified: 2026-07-14
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -217,6 +217,19 @@ Packaging and scripts:
   private shell IPC command `nativeDeviceEventsStatus`. Keep this status
   redacted: event counters, mode, COM/registration state, post results, hashes,
   and age/timing values are allowed; raw IMMDevice endpoint IDs are not.
+- Private shell IPC is a bounded multi-instance transport. Python uses
+  OVERLAPPED named-pipe I/O with `CancelIoEx` followed by completion draining;
+  never free an OVERLAPPED request or its buffers while cancellation is still
+  pending. Narrow Python domain locks preserve ordering for audio, overlay,
+  injection, and Outlook mutations without serializing unrelated commands.
+  Rust owner-level mutation lanes remain authoritative for audio lifecycle and
+  overlay state, including calls that bypass IPC such as the global hotkey. Do
+  not restore a single process-wide transport lock or a single-instance server.
+- Shell IPC response delivery must remain bounded. Do not add an unbounded
+  `FlushFileBuffers`; if delivery of a successful capture, prewarm, or Meeting
+  audio start cannot be confirmed, Rust must roll that start back before the
+  pipe instance is reclaimed. Delivery is confirmed only by a request-ID- and
+  API-version-bound `responseAck`; a client disconnect is not an acknowledgement.
 - Private shell IPC routes `audioCaptureStart`, `audioCaptureStop`,
   `audioPrewarmStart`, and `audioPrewarmStop` through an allowlisted
   `scriber-audio-sidecar --stdio` handshake. Normal WASAPI capture/prewarm is
@@ -313,7 +326,11 @@ Packaging and scripts:
   adopts non-empty prewarm blocks, do not stop the idle `PrewarmSession` in the
   parent `captureStart` handler. Transfer that session into the capture writer,
   write the adopted prebuffer, start the replacement WASAPI `IAudioClient`, and
-  stop prewarm only after `IAudioClient.Start()` succeeds. Early failures must
+  stop prewarm only after `IAudioClient.Start()` succeeds. Python must likewise
+  keep adoption provisional until its frame reader has successfully processed
+  the first non-prebuffer live frame. Prebuffer frames remain durable and are
+  delivered downstream, but they must not fire `on_ready` or commit the prewarm
+  handoff by themselves. Early failures must
   stop the deferred session with explicit reasons such as `captureStartFailed`
   or `captureWriterFinishedBeforePrewarmHandoff`. This keeps
   `SCRIBER_MIC_ALWAYS_ON=1` optimized for minimum hotkey latency and prevents a
@@ -325,13 +342,20 @@ Packaging and scripts:
   microphone privacy indicator matches the active device. For selected or
   favorite microphones, the backend should prefer the private Tauri
   `audioEndpointInventory` shell IPC response for native endpoint inventory and
-  use Python/PyCAW inventory only as fallback. Active capture, prewarm, and
+  use Python/PyCAW inventory only as fallback. That fallback must keep only
+  active capture endpoints; PyCAW may omit flow metadata and enumerate stale
+  render endpoints, so infer the local MMDevice flow from its private ID before
+  hashing and never expose or return that raw ID. Active capture, prewarm, and
   passive Rust probe selection should all use the same Rust/Tauri endpoint hash
   when available. Non-default Rust capture without a native endpoint hash must
   fail before first frame; it must not silently use the Windows default endpoint
   or attach default-device metadata to a resolved favorite.
 - The Rust audio frame-pipe protocol is length-prefixed and versioned. Keep the
   Rust and Python header fixtures in sync when changing it.
+- Frame-pipe client connection waits must have a hard deadline. Live and
+  synthetic capture pipes remain nonblocking after connection so a stalled
+  Python reader cannot block the audio writer; Meeting relay output pipes may
+  switch to blocking mode only after their bounded connection succeeds.
 - Rust frame-pipe PCM is read into Python for downstream Pipecat/provider
   processing. If capture fails before the first frame, the recording fails
   visibly; do not reintroduce a Python capture fallback.
@@ -477,7 +501,9 @@ Packaging and scripts:
   the trusted `Buttermilk03/parakeet-primeline-onnx` repo and its ready
   `encoder-model-int8.onnx` / `decoder_joint-model-int8.onnx` files.
 - FFmpeg Profile B is the standard Windows bundled media-tool path. Gyan
-  Essentials is explicit fallback only.
+  Essentials is explicit fallback only. Profile B must include both the WAV
+  demuxer and WAV muxer: local ONNX ASR and the optional Sherpa speaker
+  post-process normalize WebM/other media into mono 16 kHz PCM WAV.
 - Keep ffmpeg and ffprobe bundled in the standard installer. `-SkipBundledFfprobe`
   is an experiment, not the release default.
 - YouTube transcription prefers manual subtitles and then automatic captions by
@@ -585,7 +611,9 @@ Packaging and scripts:
   shared across File, YouTube audio, Meeting finalization, and Meeting file
   imports. Align Sherpa turns to provider word timestamps when present and skip
   it only when the active response parser produced real native speaker
-  intervals. The model/license component is an explicit post-install download
+  intervals. This is optional post-processing: media/model/worker failures must
+  preserve the already completed provider transcript and must not mark the File
+  or YouTube job failed. The model/license component is an explicit post-install download
   under `SCRIBER_DATA_DIR`; do not add PyTorch, Torchaudio, TorchCodec,
   Lightning, or Pyannote's Python package to the base sidecar.
 - Provider timing/diarization capabilities are executable contracts, not
@@ -910,7 +938,7 @@ Already implemented and should not be regressed:
   `SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER=1` is explicitly set. Signed `v*`
   releases must always upload the installer executable and sibling `.sig`.
 - FFmpeg Profile B release builds restore from Actions cache first, then from
-  the internal reusable GitHub release artifact `ffmpeg-profile-b-n7.0-v3`, and
+  the internal reusable GitHub release artifact `ffmpeg-profile-b-n7.0-v4`, and
   rebuild through MSYS2 only when restored Profile B tools are absent or fail
   validation.
 - Profile B ffmpeg media tools, about `5.11 MiB` installed. Meeting

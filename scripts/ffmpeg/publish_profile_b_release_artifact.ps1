@@ -94,7 +94,7 @@ try {
             "--repo",
             $Repo,
             "--title",
-            "FFmpeg Profile B n7.0-v3",
+            "FFmpeg Profile B n7.0-v4",
             "--notes",
             $notes,
             "--prerelease",

@@ -46,6 +46,45 @@ except ImportError as exc:  # pragma: no cover - defensive fallback
     ) from exc
 
 
+async def _run_bounded_blocking_transition(func, /, *args, **kwargs):
+    """Run a bounded blocking ownership transition without abandoning it.
+
+    Cancelling ``asyncio.to_thread`` only cancels the awaiter; the worker keeps
+    running and may acquire or release a native audio resource after the async
+    caller has already cleaned up.  Audio ownership transitions are bounded by
+    the native IPC/device timeouts, so defer cancellation until the worker has
+    reached a definite result.  Callers can then reconcile the resulting state
+    before propagating cancellation.
+    """
+
+    operation = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    cancellation = None
+    while True:
+        try:
+            result = await asyncio.shield(operation)
+            break
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+            if operation.done():
+                break
+
+    if cancellation is not None:
+        # Observe a worker exception so it cannot become an unhandled task
+        # warning.  Cancellation remains authoritative; the caller's cleanup
+        # path reconciles any resource state recorded by the worker closure.
+        try:
+            operation.result()
+        except BaseException as exc:
+            if not isinstance(exc, asyncio.CancelledError):
+                logger.debug(
+                    "Bounded audio transition failed while cancellation was pending: "
+                    f"{exc}"
+                )
+        raise cancellation
+
+    return result
+
+
 def _select_best_mono_channel(
     indata: np.ndarray,
     previous_channel: int | None = None,
@@ -276,6 +315,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.sidecar_bytes_written = None
         self.sidecar_writer_error = None
         self.sidecar_stop_reason = ""
+        self.sidecar_stop_confirmed = None
         self.sidecar_start_count = 0
         self.callback_count = 0
         self.dropped_frame_count = 0
@@ -310,11 +350,14 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self._stream = _RustPrototypeStreamHandle()
         self._frame_pipe = ""
         self._frame_pipe_hash = None
+        self._pending_stop_stream_id = ""
         self._closed = False
         self._callback = None
         self._reader_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._first_frame_event = threading.Event()
+        self._live_capture_ready_event = threading.Event()
+        self._live_capture_ready = False
         self._sequence_guard = AudioFrameSequenceGuard()
         self._reader_started_at = 0.0
         self._last_callback_at = 0.0
@@ -332,6 +375,12 @@ class RustPrototypeFrameSource(AudioFrameSource):
 
     def open(self, callback):
         self._callback = callback
+        if self._pending_stop_stream_id:
+            if self._request_sidecar_stop(
+                self._pending_stop_stream_id,
+                timeout_seconds=2.0,
+            ):
+                self._pending_stop_stream_id = ""
         selection = _rust_audio_device_selection_payload(
             self.device,
             sample_rate=self.sample_rate,
@@ -369,6 +418,10 @@ class RustPrototypeFrameSource(AudioFrameSource):
             raise RuntimeError(f"Rust audio capture start failed: {fallback_reason}")
 
         self._last_error = ""
+        # A successful Rust start is serialized with, and drains, any capture
+        # left registered by an earlier timed-out stop.
+        self._pending_stop_stream_id = ""
+        self.sidecar_stop_confirmed = None
         self.stream_id = str(response_payload.get("streamId") or "")
         self._frame_pipe = str(response_payload.get("framePipe") or "")
         self._frame_pipe_hash = _hash_private_hint(self._frame_pipe)
@@ -409,25 +462,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
                 raise RuntimeError("Rust audio capture did not return a frame pipe")
         except Exception:
             if self.stream_id:
-                try:
-                    stop_response = self._shell_call(
-                        "audioCaptureStop",
-                        {"streamId": self.stream_id},
-                        timeout_seconds=0.75,
-                    )
-                    stop_payload = (
-                        stop_response.get("payload")
-                        if isinstance(stop_response, dict)
-                        else None
-                    )
-                    if isinstance(stop_payload, dict):
-                        self._record_sidecar_stop(stop_payload)
-                except Exception as stop_exc:
-                    self._last_error = str(stop_exc)
-            self.stream_id = ""
-            self._frame_pipe = ""
-            self._frame_pipe_hash = None
-            self.sidecar_pid = None
+                if self._request_sidecar_stop(self.stream_id, timeout_seconds=0.75):
+                    self._clear_capture_identity()
             raise
         return self
 
@@ -442,6 +478,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
             self.open(self._callback)
         self._stop_event.clear()
         self._first_frame_event.clear()
+        self._live_capture_ready_event.clear()
+        self._live_capture_ready = False
         self._sequence_guard = AudioFrameSequenceGuard()
         self._reader_started_at = time.monotonic()
         self.frame_pipe_reader_end_reason = "running"
@@ -453,39 +491,88 @@ class RustPrototypeFrameSource(AudioFrameSource):
             daemon=True,
         )
         self._reader_thread.start()
-        if not self._first_frame_event.wait(self._first_frame_timeout_seconds):
-            self.fallback_reason = "rustFirstFrameTimeout"
+        # Adopted PREBUFFER frames intentionally arrive before the replacement
+        # WASAPI IAudioClient has started. They are durable audio and must still
+        # reach the callback, but they are not proof that the new live capture
+        # owns the endpoint. Only the first non-PREBUFFER frame may release the
+        # caller to commit prewarm adoption and publish on_ready.
+        if not self._live_capture_ready_event.wait(self._first_frame_timeout_seconds):
+            self.fallback_reason = "rustFirstLiveFrameTimeout"
             self.stop(close=True)
-            raise RuntimeError("Rust audio capture did not deliver a first frame in time")
-        if self._last_error and self.callback_count <= 0:
-            error = self._last_error
+            raise RuntimeError("Rust audio capture did not deliver a first live frame in time")
+        if not self._live_capture_ready:
+            error = self._last_error or "frame pipe ended before the first live frame"
             self.stop(close=True)
-            raise RuntimeError(f"Rust audio capture failed before first frame: {error}")
+            raise RuntimeError(
+                f"Rust audio capture failed before first frame became live-ready: {error}"
+            )
 
     def stop(self, *, close: bool) -> None:
         self._stop_event.set()
-        if self.stream_id:
-            try:
-                response = self._shell_call(
-                    "audioCaptureStop",
-                    {"streamId": self.stream_id},
-                    timeout_seconds=0.75,
-                )
-                response_payload = response.get("payload") if isinstance(response, dict) else None
-                if isinstance(response_payload, dict):
-                    self._record_sidecar_stop(response_payload)
-            except Exception as exc:
-                self._last_error = str(exc)
+        stop_stream_id = self.stream_id or self._pending_stop_stream_id
+        stop_confirmed = not bool(stop_stream_id)
+        if stop_stream_id:
+            stop_confirmed = self._request_sidecar_stop(
+                stop_stream_id,
+                timeout_seconds=0.75,
+            )
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=0.5)
+        if stop_stream_id and not stop_confirmed:
+            # A short response timeout can occur while another command owns the
+            # audio IPC lane. Once the reader is quiescent, make one longer
+            # bounded reconciliation attempt before retaining deferred owner
+            # identity for a future open/start transition.
+            stop_confirmed = self._request_sidecar_stop(
+                stop_stream_id,
+                timeout_seconds=2.0,
+            )
         self._stream.stop()
+        if stop_confirmed:
+            self._pending_stop_stream_id = ""
+        elif stop_stream_id:
+            self._pending_stop_stream_id = stop_stream_id
+        self._clear_capture_identity()
+        if close:
+            self._stream.close()
+            self._closed = True
+
+    def _request_sidecar_stop(self, stream_id: str, *, timeout_seconds: float) -> bool:
+        try:
+            response = self._shell_call(
+                "audioCaptureStop",
+                {"streamId": stream_id},
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            self._last_error = str(exc)
+            self.sidecar_stop_confirmed = False
+            return False
+        if not isinstance(response, dict) or not bool(response.get("success")):
+            if isinstance(response, dict):
+                self._last_error = str(
+                    response.get("fallbackReason")
+                    or response.get("errorCode")
+                    or "audioCaptureStopFailed"
+                )
+            else:
+                self._last_error = "audioCaptureStopInvalidResponse"
+            self.sidecar_stop_confirmed = False
+            return False
+        response_payload = response.get("payload")
+        if not isinstance(response_payload, dict):
+            self._last_error = "audioCaptureStopInvalidPayload"
+            self.sidecar_stop_confirmed = False
+            return False
+        self._record_sidecar_stop(response_payload)
+        self.sidecar_stop_confirmed = True
+        return True
+
+    def _clear_capture_identity(self) -> None:
         self.stream_id = ""
         self._frame_pipe = ""
         self._frame_pipe_hash = None
         self.sidecar_pid = None
-        if close:
-            self._stream.close()
-            self._closed = True
 
     def _record_sidecar_stop(self, payload: dict) -> None:
         self.sidecar_exit_status = payload.get("exitStatus")
@@ -517,6 +604,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "requestedPrewarmIdHash": _hash_private_hint(self.requested_prewarm_id),
             "adoptedPrewarm": self._redacted_adopted_prewarm(),
             "streamIdHash": _hash_private_hint(self.stream_id),
+            "pendingStopStreamIdHash": _hash_private_hint(self._pending_stop_stream_id),
+            "sidecarStopConfirmed": self.sidecar_stop_confirmed,
             "framePipeHash": self._frame_pipe_hash,
             "nativeEndpointIdHash": self.native_endpoint_id_hash,
             "endpointSelection": self.endpoint_selection,
@@ -552,6 +641,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "framePipeLiveAudioFramesRead": self.frame_pipe_live_audio_frames_read,
             "framePipePrebufferAfterLiveCount": self.frame_pipe_prebuffer_after_live_count,
             "framePipeFirstLiveSequence": self.frame_pipe_first_live_sequence,
+            "liveCaptureReady": self._live_capture_ready,
             "framePipeReaderEndReason": self.frame_pipe_reader_end_reason,
             "framePipeFirstFrameReadMs": self.frame_pipe_first_frame_read_ms,
             "midSessionFailureReason": self.mid_session_failure_reason,
@@ -621,6 +711,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
                     samples = np.frombuffer(payload, dtype="<i2")
                     audio = samples.reshape((header.frame_count, header.channels))
                     callback = self._callback
+                    callback_succeeded = False
                     if callable(callback):
                         try:
                             callback(
@@ -632,6 +723,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
                                 },
                                 None,
                             )
+                            callback_succeeded = True
                         except Exception:
                             self.dropped_frame_count += 1
                             raise
@@ -640,8 +732,12 @@ class RustPrototypeFrameSource(AudioFrameSource):
                     self.callback_count += 1
                     self._last_callback_at = time.monotonic()
                     self._first_frame_event.set()
+                    if not is_prebuffer and callback_succeeded:
+                        self._live_capture_ready = True
+                        self._live_capture_ready_event.set()
                     if header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM:
                         self.frame_pipe_reader_end_reason = "endOfStream"
+                        self._live_capture_ready_event.set()
                         break
                 if self.frame_pipe_reader_end_reason == "running":
                     self.frame_pipe_reader_end_reason = "stopRequested"
@@ -651,14 +747,15 @@ class RustPrototypeFrameSource(AudioFrameSource):
             else:
                 self.frame_pipe_reader_end_reason = "pipeClosed"
                 self._last_error = str(exc)
-                if self.callback_count <= 0 and not self.fallback_reason:
-                    self.fallback_reason = "rustFramePipeClosedBeforeFirstFrame"
-                if self.callback_count > 0:
+                if not self._live_capture_ready and not self.fallback_reason:
+                    self.fallback_reason = "rustFramePipeClosedBeforeFirstLiveFrame"
+                if self._live_capture_ready:
                     self.mid_session_failure_reason = "pipeClosed"
                     logger.warning(
                         f"Rust audio frame pipe stopped after {self.callback_count} frame(s): {exc}"
                     )
             self._first_frame_event.set()
+            self._live_capture_ready_event.set()
         except AudioFrameProtocolError as exc:
             message = str(exc)
             if "sequence out of order" in message:
@@ -676,7 +773,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
             self.frame_pipe_reader_end_reason = "protocolError"
             self._last_error = message
             self._first_frame_event.set()
-            if self.callback_count > 0:
+            self._live_capture_ready_event.set()
+            if self._live_capture_ready:
                 self.mid_session_failure_reason = self.fallback_reason or "protocolError"
                 logger.warning(
                     f"Rust audio frame pipe stopped after {self.callback_count} frame(s): {exc}"
@@ -687,10 +785,11 @@ class RustPrototypeFrameSource(AudioFrameSource):
             else:
                 self.frame_pipe_reader_end_reason = type(exc).__name__
                 self._last_error = str(exc)
-                if self.callback_count <= 0 and not self.fallback_reason:
+                if not self._live_capture_ready and not self.fallback_reason:
                     self.fallback_reason = "rustFramePipeReadError"
             self._first_frame_event.set()
-            if self.callback_count > 0 and not self._stop_event.is_set():
+            self._live_capture_ready_event.set()
+            if self._live_capture_ready and not self._stop_event.is_set():
                 self.mid_session_failure_reason = self.frame_pipe_reader_end_reason
                 logger.warning(
                     f"Rust audio frame pipe stopped after {self.callback_count} frame(s): {exc}"
@@ -1004,11 +1103,9 @@ class MicrophoneInput(BaseInputTransport):
             reason = str(getattr(source, "fallback_reason", "") or type(exc).__name__)
             self._audio_engine_fallback_reason = f"rustCaptureFailed:{reason}"
             logger.error(f"Rust audio capture failed; no Python fallback is available ({exc})")
-            try:
-                if source is not None:
-                    source.stop(close=True)
-            except Exception:
-                pass
+            # ``MicrophoneInput.start`` owns failed-start reconciliation.  Keep
+            # the cleanup at that async boundary so native stop and prewarm
+            # rollback happen once, in order, and off the event loop.
             raise
 
     def _sync_frame_source_state(self) -> None:
@@ -1098,12 +1195,30 @@ class MicrophoneInput(BaseInputTransport):
                     and getattr(self.prewarm_manager, "engine", "") == "rust-wasapi"
                 ):
                     try:
-                        adopted = self.prewarm_manager.attach_active_capture(
-                            None,
-                            sample_rate=self._target_sample_rate,
-                            target_channels=self._target_channels,
-                            block_size=self.block_size,
-                            device=self.device,
+                        def attach_prewarm() -> dict | None:
+                            attached = self.prewarm_manager.attach_active_capture(
+                                None,
+                                sample_rate=self._target_sample_rate,
+                                target_channels=self._target_channels,
+                                block_size=self.block_size,
+                                device=self.device,
+                            )
+                            prewarm_id = str(
+                                (attached or {}).get("prewarmId")
+                                or (attached or {}).get("prewarm_id")
+                                or ""
+                            )
+                            # Record ownership in the same blocking transition.
+                            # If async cancellation arrives while attach is in
+                            # flight, the cleanup path therefore knows exactly
+                            # which adoption must be rolled back.
+                            if prewarm_id:
+                                self._rust_prewarm_adoption = attached
+                                self._rust_prewarm_id = prewarm_id
+                            return attached
+
+                        adopted = await _run_bounded_blocking_transition(
+                            attach_prewarm,
                         )
                     except Exception as exc:
                         logger.debug(f"Could not attach Rust prewarm session: {exc}")
@@ -1126,14 +1241,40 @@ class MicrophoneInput(BaseInputTransport):
 
                 if not self._rust_prewarm_id:
                     try:
-                        self.prewarm_manager.pause_for_active_capture()
+                        await _run_bounded_blocking_transition(
+                            self.prewarm_manager.pause_for_active_capture
+                        )
                     except Exception as exc:
                         logger.debug(f"Could not pause idle mic prewarm before Rust capture: {exc}")
-            # Device enumeration/open is guarded against concurrent PortAudio refresh.
-            with get_device_guard_lock():
-                self._open_and_start_frame_source()
-                self._stream_started_at = time.monotonic()
-                self._claim_active_stream()
+
+            # Native endpoint resolution and shell/audio-sidecar startup are
+            # bounded blocking operations. Keep them off aiohttp/Pipecat's event
+            # loop so a slow Windows device or IPC response cannot make /health
+            # fail and cause the desktop hotkey to misreport a live backend as
+            # unavailable.
+            def open_guarded() -> None:
+                with get_device_guard_lock():
+                    self._open_and_start_frame_source()
+                    self._stream_started_at = time.monotonic()
+                    self._claim_active_stream()
+
+            await _run_bounded_blocking_transition(open_guarded)
+            if self._rust_prewarm_id and self.prewarm_manager is not None:
+                commit_adoption = getattr(
+                    self.prewarm_manager,
+                    "commit_active_capture",
+                    None,
+                )
+                if callable(commit_adoption):
+                    def commit_prewarm() -> None:
+                        committed = commit_adoption(self._rust_prewarm_id)
+                        if not committed:
+                            raise RuntimeError(
+                                "Rust mic prewarm adoption could not be committed "
+                                "after native capture started"
+                            )
+
+                    await _run_bounded_blocking_transition(commit_prewarm)
             device_index = getattr(self._frame_source, "device_index", None)
             logger.info(f"Microphone stream started (device={'default' if device_index is None else device_index})")
             # Signal that microphone is ready and capturing audio
@@ -1142,11 +1283,48 @@ class MicrophoneInput(BaseInputTransport):
                     self.on_ready()
                 except Exception as e:
                     logger.warning(f"on_ready callback error: {e}")
+        except asyncio.CancelledError:
+            logger.debug("Microphone start cancelled; reconciling native audio ownership")
+            try:
+                await self.stop(frame=EndFrame(), close_stream=True)
+            except Exception as cleanup_error:
+                logger.debug(f"Microphone cancellation cleanup failed: {cleanup_error}")
+            finally:
+                await self._rollback_prewarm_adoption_after_failed_start()
+            raise
         except Exception as e:
             logger.error(f"Microphone error: {e}")
-            await self.stop(frame=EndFrame())
+            try:
+                await self.stop(frame=EndFrame(), close_stream=True)
+            finally:
+                await self._rollback_prewarm_adoption_after_failed_start()
             # Re-raise to notify the pipeline that microphone initialization failed
             raise RuntimeError(f"Microphone initialization failed: {e}") from e
+
+    async def _rollback_prewarm_adoption_after_failed_start(self) -> None:
+        if not self._rust_prewarm_id or self.prewarm_manager is None:
+            return
+        rollback_adoption = getattr(
+            self.prewarm_manager,
+            "rollback_active_capture",
+            None,
+        )
+        if not callable(rollback_adoption):
+            return
+        try:
+            await _run_bounded_blocking_transition(
+                rollback_adoption,
+                self._rust_prewarm_id,
+            )
+        except asyncio.CancelledError:
+            # The transition itself has completed before the helper propagates
+            # cancellation.  Preserve the caller's cancellation semantics.
+            raise
+        except Exception as rollback_error:
+            logger.debug(
+                "Rust mic prewarm adoption rollback failed: "
+                f"{rollback_error}"
+            )
 
     def _audio_callback(self, indata, frames, time_info, status):
         # Serialized via reentrant lock: the prewarm path can drive this callback
@@ -1630,19 +1808,10 @@ class MicrophoneInput(BaseInputTransport):
         except asyncio.CancelledError:
             # Clean up audio stream on cancellation
             self._running = False
-            with get_device_guard_lock():
-                if self.stream:
-                    try:
-                        if self._source_owns_stream():
-                            self._frame_source.stop(close=True)
-                            self._sync_frame_source_state()
-                        else:
-                            self.stream.stop()
-                            self.stream.close()
-                            self.stream = None
-                    except Exception:
-                        pass
-                self._release_active_stream()
+            await _run_bounded_blocking_transition(
+                self._stop_capture_source_blocking,
+                close_stream=True,
+            )
             raise  # Re-raise to properly complete cancellation
 
     def _notify_last_audio_chunk_sent(self) -> None:
@@ -1660,6 +1829,39 @@ class MicrophoneInput(BaseInputTransport):
         await self.stop_capture_for_finalization(close_stream=close_stream)
         await super().stop(frame)
 
+    def _stop_capture_source_blocking(self, *, close_stream: bool) -> None:
+        """Synchronously release native capture while holding the device guard.
+
+        Callers from async code must run this through
+        ``_run_bounded_blocking_transition`` so a slow native stop or device
+        lock never stalls the backend event loop and cannot be abandoned by
+        task cancellation.
+        """
+
+        with get_device_guard_lock():
+            source = self._frame_source
+            source_stream = source.stream if source is not None else None
+            source_owns_partial_open = bool(
+                source is not None
+                and (self.stream is None or source_stream is self.stream)
+                and (source_stream is not None or self.stream is not None)
+            )
+            if source_owns_partial_open:
+                try:
+                    source.stop(close=close_stream)
+                    self._sync_frame_source_state()
+                except Exception:
+                    pass
+            elif self.stream:
+                try:
+                    self.stream.stop()
+                    if close_stream:
+                        self.stream.close()
+                        self.stream = None
+                except Exception:
+                    pass
+            self._release_active_stream()
+
     async def stop_capture_for_finalization(self, *, close_stream: bool | None = None):
         """Stop the physical capture source while leaving downstream frames alive.
 
@@ -1676,20 +1878,10 @@ class MicrophoneInput(BaseInputTransport):
         # With keep_alive: pause stream (fast restart via stream.start())
         # Without keep_alive: close stream entirely
         should_close_stream = (not self.keep_alive) if close_stream is None else bool(close_stream)
-        with get_device_guard_lock():
-            if self.stream:
-                try:
-                    if self._source_owns_stream():
-                        self._frame_source.stop(close=should_close_stream)
-                        self._sync_frame_source_state()
-                    else:
-                        self.stream.stop()  # Stops callbacks, saves CPU, prevents overflow
-                        if should_close_stream:
-                            self.stream.close()
-                            self.stream = None
-                except Exception:
-                    pass
-            self._release_active_stream()
+        await _run_bounded_blocking_transition(
+            self._stop_capture_source_blocking,
+            close_stream=should_close_stream,
+        )
 
         # Wait for consumer task with timeout
         if self._consumer_task:

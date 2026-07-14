@@ -208,6 +208,7 @@ pub struct BackendStatus {
     base_url: String,
     running: bool,
     ready: bool,
+    starting: bool,
     managed: bool,
     pid: Option<u32>,
     message: String,
@@ -2539,6 +2540,7 @@ fn status_from_state(state: &BackendState, ready: bool) -> BackendStatus {
         base_url: state.base_url.clone(),
         running: ready || state.child.is_some(),
         ready,
+        starting: !ready && state.child.is_some() && state.started_at.is_some(),
         managed: state.child.is_some(),
         pid: state.child.as_ref().map(Child::id),
         message: state.message.clone(),
@@ -2620,33 +2622,42 @@ fn terminate_managed_child(state: &mut BackendState) {
                 false
             }
         };
-        if graceful_requested && wait_for_child_exit(&mut child, BACKEND_GRACEFUL_SHUTDOWN_TIMEOUT)
-        {
+        let exited_gracefully = graceful_requested
+            && wait_for_child_exit(&mut child, BACKEND_GRACEFUL_SHUTDOWN_TIMEOUT);
+        if exited_gracefully {
             write_shell_log(&format!("managed backend exited gracefully pid={pid}"));
-            state.job = None;
-            state.started_at = None;
-            state.unhealthy_since = None;
-            state.launch_kind = "none".to_string();
-            return;
-        }
-        write_shell_log(&format!("terminating managed backend pid={pid}"));
-        if let Err(err) = child.kill() {
-            write_shell_log(&format!(
-                "managed backend primary kill failed pid={pid} error={err}"
-            ));
-            // Closing the Windows job handle is a second kill mechanism.
-            state.job = None;
-        }
-        if !wait_for_child_exit(&mut child, BACKEND_TERMINATE_TIMEOUT) {
-            state.job = None;
-            let _ = child.kill();
-            if !wait_for_child_exit(&mut child, Duration::from_millis(500)) {
+        } else {
+            write_shell_log(&format!("terminating managed backend pid={pid}"));
+            if let Err(err) = child.kill() {
                 write_shell_log(&format!(
-                    "managed backend did not exit before termination deadline pid={}",
-                    child.id()
+                    "managed backend primary kill failed pid={pid} error={err}"
                 ));
+                // Closing the Windows job handle is a second kill mechanism.
+                state.job = None;
+            }
+            if !wait_for_child_exit(&mut child, BACKEND_TERMINATE_TIMEOUT) {
+                state.job = None;
+                let _ = child.kill();
+                if !wait_for_child_exit(&mut child, Duration::from_millis(500)) {
+                    write_shell_log(&format!(
+                        "managed backend did not exit before termination deadline pid={}",
+                        child.id()
+                    ));
+                }
             }
         }
+    }
+    // The initial drain prevents active audio from outliving the backend. A start already
+    // accepted before that drain can be waiting on its lifecycle lane, and a start from the
+    // shutdown window can complete afterward. Drain once more only after the managed process has
+    // exited or exhausted the kill path. The lifecycle epoch rejects the old generation while a
+    // genuinely new generation remains free to start after this barrier.
+    let stopped =
+        audio_sidecar_client::shutdown_all_audio_sidecars("managedBackendReplacementFinal");
+    if stopped > 0 {
+        write_shell_log(&format!(
+            "stopped {stopped} audio sidecar(s) after managed backend replacement"
+        ));
     }
     state.job = None;
     state.started_at = None;
@@ -3213,23 +3224,73 @@ fn handle_global_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event_stat
 
     let app_handle = app.clone();
     std::thread::spawn(move || {
+        let recording_active = tray_status_for_app(&app_handle).recording_active;
+        let show_initializing_overlay =
+            should_show_initializing_overlay_for_hotkey(path, recording_active);
+        if show_initializing_overlay {
+            if let Err(err) = native_overlay::handle_shell_command(
+                "overlayShow",
+                &json!({ "mode": "initializing" }),
+            ) {
+                write_shell_log(&format!(
+                    "global hotkey native overlay preview failed: {err}"
+                ));
+            }
+        }
+
         let Some(manager) = app_handle.try_state::<BackendManager>() else {
             write_shell_log("global hotkey ignored because backend manager is unavailable");
+            if show_initializing_overlay {
+                let _ = native_overlay::handle_shell_command("overlayHide", &json!({}));
+            }
             return;
         };
-        let status = manager.ensure_started();
-        if !status.ready {
+        let mut status = manager.ensure_started();
+        if should_wait_for_hotkey_backend(status.ready, status.starting) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while should_wait_for_hotkey_backend(status.ready, status.starting)
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(100));
+                status = manager.ensure_started();
+            }
+        }
+        if !status.ready && !status.running {
             write_shell_log(&format!(
                 "global hotkey ignored because backend is not ready: {}",
                 status.message
             ));
+            if show_initializing_overlay {
+                let _ = native_overlay::handle_shell_command("overlayHide", &json!({}));
+            }
             return;
+        }
+        if !status.ready {
+            write_shell_log(&format!(
+                "global hotkey dispatch continuing through transient backend health miss: {}",
+                status.message
+            ));
         }
         let access = manager.access();
         if let Err(err) = post_backend_path(&access, path) {
             write_shell_log(&format!("global hotkey action failed path={path}: {err}"));
+            if show_initializing_overlay {
+                let _ = native_overlay::handle_shell_command("overlayHide", &json!({}));
+            }
         }
     });
+}
+
+fn should_show_initializing_overlay_for_hotkey(path: &str, recording_active: bool) -> bool {
+    !recording_active
+        && matches!(
+            path,
+            "/api/live-mic/start" | "/api/live-mic/toggle" | "/api/live-mic/toggle-post-processing"
+        )
+}
+
+fn should_wait_for_hotkey_backend(ready: bool, starting: bool) -> bool {
+    !ready && starting
 }
 
 fn start_backend_supervisor(app: AppHandle) {
@@ -4035,13 +4096,13 @@ mod tests {
         recent_transcript_label, recent_transcripts_from_value, request_backend_shutdown,
         resolve_session_token, sanitize_menu_label, shell_ipc, shell_ipc_env_pairs,
         shortcut_id_for_hotkey, should_hide_window_instead_of_closing,
-        should_refresh_hotkey_after_backend_ready, should_show_window_for_tray_click,
-        split_http_response, tray_icon_image, wait_for_child_exit, BackendAccess,
-        DesktopHotkeyState, NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry,
-        ShellMenuSmokeAction, TrayIconKind, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
-        BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE,
-        MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
-        MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        should_refresh_hotkey_after_backend_ready, should_show_initializing_overlay_for_hotkey,
+        should_show_window_for_tray_click, should_wait_for_hotkey_backend, split_http_response,
+        tray_icon_image, wait_for_child_exit, BackendAccess, DesktopHotkeyState,
+        NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry, ShellMenuSmokeAction,
+        TrayIconKind, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV,
+        DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
+        MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
         SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
         TRAY_RECENT_TRANSCRIPT_LIMIT,
@@ -4671,6 +4732,38 @@ mod tests {
             ),
             Some("/api/live-mic/start")
         );
+    }
+
+    #[test]
+    fn live_hotkey_previews_overlay_only_when_starting_capture() {
+        assert!(should_show_initializing_overlay_for_hotkey(
+            "/api/live-mic/start",
+            false
+        ));
+        assert!(should_show_initializing_overlay_for_hotkey(
+            "/api/live-mic/toggle",
+            false
+        ));
+        assert!(should_show_initializing_overlay_for_hotkey(
+            "/api/live-mic/toggle-post-processing",
+            false
+        ));
+        assert!(!should_show_initializing_overlay_for_hotkey(
+            "/api/live-mic/toggle",
+            true
+        ));
+        assert!(!should_show_initializing_overlay_for_hotkey(
+            "/api/meetings/hotkey",
+            false
+        ));
+    }
+
+    #[test]
+    fn live_hotkey_waits_only_for_a_cold_backend_start() {
+        assert!(should_wait_for_hotkey_backend(false, true));
+        assert!(!should_wait_for_hotkey_backend(false, false));
+        assert!(!should_wait_for_hotkey_backend(true, false));
+        assert!(!should_wait_for_hotkey_backend(true, true));
     }
 
     #[test]

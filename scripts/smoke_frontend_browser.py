@@ -926,7 +926,12 @@ class FrontendSmokeBackend:
     async def meeting_audio_devices(self, request: web.Request) -> web.Response:
         return web.json_response({
             "apiVersion": "1", "available": True, "reason": "",
-            "capture": [{"endpointIdHash": "a" * 32, "friendlyName": "USB Smoke Microphone", "isDefault": True, "defaultRoles": ["console"]}],
+            "source": "rust-wasapi", "partial": False,
+            "capture": [
+                {"endpointIdHash": "a" * 32, "friendlyName": "USB Smoke Microphone", "isDefault": True, "defaultRoles": ["console"]},
+                {"endpointIdHash": "c" * 32, "friendlyName": "Conference Camera Microphone", "isDefault": False, "defaultRoles": []},
+                {"endpointIdHash": "d" * 32, "friendlyName": "Laptop Microphone Array", "isDefault": False, "defaultRoles": []},
+            ],
             "render": [{"endpointIdHash": "b" * 32, "friendlyName": "Smoke Speakers", "isDefault": True, "defaultRoles": ["console"]}],
         })
 
@@ -2184,6 +2189,9 @@ async def exercise_meeting_end_to_end(
   const microphone = document.querySelector('#meeting-microphone');
   const render = document.querySelector('#meeting-render');
   if (!title || !microphone || !render) return { ok: false, reason: 'missing start controls' };
+  if (microphone.options.length !== 4) {
+    return { ok: false, reason: `expected Windows default plus 3 microphones, got ${microphone.options.length}` };
+  }
   const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
   valueSetter.call(title, 'Browser smoke product sync');
   title.dispatchEvent(new Event('input', { bubbles: true }));

@@ -1429,7 +1429,7 @@ function Test-ScriberFfmpegCapabilities {
     }
 
     $muxers = Invoke-MediaToolText -Path $Path -Arguments @("-hide_banner", "-v", "error", "-muxers") -Label "ffmpeg muxer list"
-    foreach ($muxer in @("flac", "matroska", "ogg", "webm", "mp3", "s16le")) {
+    foreach ($muxer in @("flac", "matroska", "ogg", "webm", "mp3", "s16le", "wav")) {
         Assert-MediaToolOutputContains -Output $muxers -Needle $muxer -Label "muxer"
     }
 

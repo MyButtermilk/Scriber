@@ -558,13 +558,13 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "release-artifacts\\release-artifact-summary.json" in workflow
     assert "restore_profile_b_release_artifact.ps1" in workflow
     assert "publish_profile_b_release_artifact.ps1" in workflow
-    assert "ffmpeg-profile-b-n7.0-v3" in workflow
+    assert "ffmpeg-profile-b-n7.0-v4" in workflow
     assert 'Name = "FFmpeg Profile B"' in workflow
     assert "$ffmpegProfileBArtifactRestored" in workflow
     assert "mode = \"release-artifact\"" in workflow
     assert "ffmpeg-profile-b-resolve.outputs.usable != 'true'" in workflow
     assert "Restored Profile B media tools were not usable" in workflow
-    assert "scriber-ffmpeg-profile-b-msys2-n7.0-v3-" in workflow
+    assert "scriber-ffmpeg-profile-b-msys2-n7.0-v4-" in workflow
     assert "Restore backend sidecar cache" in workflow
     assert "Report release cache hits" in workflow
     assert "Export Rust build release artifact" in workflow
@@ -602,7 +602,7 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert 'Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/icons" -Filter "*"' in script
     assert '"scripts/check_backend_runtime_imports.py"' in script
     assert 'Add-FileGlobEntries -Entries $backendEntries -Root "pyloudnorm" -Filter "*.py"' in script
-    assert 'constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v3' in script
+    assert 'constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v4' in script
     assert 'constant`tbackend-sidecar-flags`tBundleMediaTools;UseProfileB;ValidateSlim' in script
     backend_block = script.split("$backendEntries = New-EntryList", 1)[1]
     assert "Frontend/src-tauri/Cargo.toml" not in backend_block

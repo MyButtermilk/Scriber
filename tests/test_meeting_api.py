@@ -334,6 +334,148 @@ def _route_handler(app, method, canonical):
 
 
 @pytest.mark.asyncio
+async def test_meeting_audio_devices_falls_back_to_three_redacted_pycaw_captures(
+    monkeypatch,
+):
+    app = web_api.create_app(SimpleNamespace())
+    handler = _route_handler(app, "GET", "/api/meetings/audio-devices")
+    raw_ids = [f"private-native-endpoint-{index}" for index in range(3)]
+    fallback = [
+        {
+            "endpointId": raw_id,
+            "endpointIdHash": hashlib.sha256(raw_id.encode()).hexdigest()[:16],
+            "friendlyName": label,
+            "flow": "capture",
+            "isDefault": index == 1,
+        }
+        for index, (raw_id, label) in enumerate(
+            zip(raw_ids, ("Jabra Engage 75", "Insta360 Link", "Realtek Array"))
+        )
+    ]
+
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+    monkeypatch.setattr(
+        web_api,
+        "call_shell_ipc",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("private pipe path")),
+    )
+    monkeypatch.setattr(
+        web_api,
+        "collect_native_capture_endpoint_inventory",
+        lambda: fallback,
+    )
+
+    response = await handler(_DirectRequest(app))
+    payload = json.loads(response.body)
+
+    assert response.status == 200
+    assert payload["available"] is True
+    assert payload["source"] == "pycaw-fallback"
+    assert payload["partial"] is True
+    assert payload["reason"] == "shellIpcRequestFailed"
+    assert payload["render"] == []
+    assert [entry["friendlyName"] for entry in payload["capture"]] == [
+        "Jabra Engage 75",
+        "Insta360 Link",
+        "Realtek Array",
+    ]
+    serialized = json.dumps(payload)
+    assert all(raw_id not in serialized for raw_id in raw_ids)
+    assert "private pipe path" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_meeting_audio_devices_does_not_offer_native_selection_without_shell_ipc(
+    monkeypatch,
+):
+    app = web_api.create_app(SimpleNamespace())
+    handler = _route_handler(app, "GET", "/api/meetings/audio-devices")
+    fallback_called = False
+
+    def fallback_inventory():
+        nonlocal fallback_called
+        fallback_called = True
+        return []
+
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: False)
+    monkeypatch.setattr(
+        web_api,
+        "collect_native_capture_endpoint_inventory",
+        fallback_inventory,
+    )
+
+    response = await handler(_DirectRequest(app))
+    payload = json.loads(response.body)
+
+    assert response.status == 200
+    assert payload == {
+        "apiVersion": web_api.REST_API_VERSION,
+        "available": False,
+        "capture": [],
+        "render": [],
+        "source": "unavailable",
+        "partial": True,
+        "reason": "shellIpcUnavailable",
+    }
+    assert fallback_called is False
+
+
+@pytest.mark.asyncio
+async def test_meeting_audio_devices_fills_empty_rust_capture_and_keeps_render(
+    monkeypatch,
+):
+    app = web_api.create_app(SimpleNamespace())
+    handler = _route_handler(app, "GET", "/api/meetings/audio-devices")
+    microphone_hash = "a" * 16
+    render_hash = "b" * 16
+
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+    monkeypatch.setattr(
+        web_api,
+        "call_shell_ipc",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "payload": {
+                "available": True,
+                "endpoints": [
+                    {
+                        "endpointIdHash": render_hash,
+                        "friendlyName": "Desk Speakers",
+                        "flow": "render",
+                        "isDefault": True,
+                        "defaultRoles": ["console"],
+                    }
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        web_api,
+        "collect_native_capture_endpoint_inventory",
+        lambda: [
+            {
+                "endpointIdHash": microphone_hash,
+                "friendlyName": "Fallback microphone",
+                "flow": "capture",
+                "isDefault": True,
+            }
+        ],
+    )
+
+    response = await handler(_DirectRequest(app))
+    payload = json.loads(response.body)
+
+    assert payload["available"] is True
+    assert payload["source"] == "rust-wasapi+pycaw-fallback"
+    assert payload["partial"] is True
+    assert payload["reason"] == "captureInventoryEmpty"
+    assert [entry["endpointIdHash"] for entry in payload["capture"]] == [
+        microphone_hash
+    ]
+    assert [entry["endpointIdHash"] for entry in payload["render"]] == [render_hash]
+
+
+@pytest.mark.asyncio
 async def test_meeting_detail_exposes_the_immutable_final_route_snapshot():
     class Store:
         @staticmethod
@@ -2706,6 +2848,9 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
         assert devices.status == 200
         device_payload = await devices.json()
         assert device_payload["available"] is True
+        assert device_payload["source"] == "rust-wasapi"
+        assert device_payload["partial"] is False
+        assert device_payload["reason"] == ""
         assert device_payload["capture"] == [{
             "endpointIdHash": "a" * 32, "friendlyName": "USB Mic",
             "isDefault": True, "defaultRoles": ["console"],
@@ -3172,6 +3317,54 @@ async def test_voice_enrollment_api_gates_opt_in_model_and_active_audio(monkeypa
     assert response.status == 409
     assert "Stop Live Mic" in json.loads(response.body)["message"]
     assert controller._voice_enrollment_active is False
+
+
+@pytest.mark.asyncio
+async def test_voice_enrollment_transport_failure_is_actionable_and_redacted(monkeypatch):
+    controller = _EnrollmentController()
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/speaker-profiles/enroll")
+    claim = object()
+    released = []
+
+    async def claim_audio(_controller, **_kwargs):
+        return claim
+
+    async def release_audio(_controller, released_claim):
+        released.append(released_claim)
+        return True
+
+    def shell_call(command, _payload, **_kwargs):
+        assert command == "audioCaptureStart"
+        return {
+            "success": False,
+            "errorCode": "transportError",
+            "fallbackReason": "RuntimeError: OSError: [Errno 121] WaitNamedPipeW failed",
+            "payload": {},
+        }
+
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    monkeypatch.setattr(web_api, "_claim_persistent_audio", claim_audio)
+    monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+
+    response = await handler(
+        _DirectRequest(app, payload={"displayName": "Alice"})
+    )
+    payload = json.loads(response.body)
+
+    assert response.status == 503
+    assert payload == {
+        "message": (
+            "Scriber's microphone service was temporarily busy. "
+            "Wait a moment and try the sample again."
+        )
+    }
+    assert "WaitNamedPipe" not in json.dumps(payload)
+    assert released == [claim]
+    assert controller._voice_enrollment_active is False
+    assert controller.prewarm_paused is False
 
 
 @pytest.mark.asyncio

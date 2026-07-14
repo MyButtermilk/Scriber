@@ -810,13 +810,16 @@ misses for frontend dependencies, Rust build outputs, and backend sidecar
 scratch caches.
 
 The reusable FFmpeg Profile B artifact is published to the internal prerelease
-tag `ffmpeg-profile-b-n7.0-v3` as
-`scriber-ffmpeg-profile-b-n7.0-v3-Windows.zip`. That asset is not an app
+tag `ffmpeg-profile-b-n7.0-v4` as
+`scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip`. That asset is not an app
 release. It is only a fallback source for future release builds when GitHub
 Actions cache scope isolation prevents a new tag from seeing a previously saved
 cache. Every restored copy is still validated with the Profile B manifest and
 media-preparation smoke before it can be bundled. Refresh it only through the
 manual release-cache refresh workflow path after real Profile B input changes.
+The v4 gate explicitly requires the WAV muxer and proves WebM/Opus to mono
+16 kHz PCM WAV conversion for local ASR and speaker separation; an older v3
+binary must be rejected rather than silently reused.
 
 ## Signing And Updater Status
 

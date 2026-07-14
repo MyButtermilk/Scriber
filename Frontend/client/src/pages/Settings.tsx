@@ -1294,11 +1294,10 @@ export default function Settings() {
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
       toast({ title: `${result.profile.displayName} is ready`, description: "Scriber can match this voice in future meetings." });
     },
-    onError: (error) => {
+    onError: () => {
       setVoiceEnrollmentStartedAt(null);
       setVoiceEnrollmentProgress(0);
       setVoiceEnrollmentStage("error");
-      toast({ title: "Voice sample could not be saved", description: error.message, variant: "destructive" });
     },
   });
   const mergeProfilesMutation = useMutation({

@@ -1360,6 +1360,30 @@ def test_meeting_workspace_reconciles_after_backend_websocket_restart() -> None:
     assert "invalidateMeetings(selectedId || undefined);" in source
 
 
+def test_meeting_audio_device_picker_refreshes_and_explains_inventory_fallbacks() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'if (message.type === "microphones_updated")' in source
+    assert (
+        'queryClient.invalidateQueries({ queryKey: ["/api/meetings/audio-devices"], exact: true })'
+        in source
+    )
+    assert "const audioDeviceInitialLoading = audioDevicesQuery.isPending;" in source
+    assert "disabled={microphoneSelectDisabled}" in source
+    assert "disabled={renderSelectDisabled}" in source
+    assert 'role="status" aria-live="polite"' in source
+    assert "Looking for microphones and speakers…" in source
+    assert "The device list could not be loaded." in source
+    assert "Individual device selection is unavailable." in source
+    assert "Windows default microphone (automatic)" in source
+    assert "Windows default speakers (automatic)" in source
+    assert "const microphoneCountLabel" in source
+    assert "const speakerCountLabel" in source
+    assert "endpoint.endpointIdHash === current" in source
+
+
 def test_meeting_workspace_scopes_drafts_playback_and_imports_to_durable_state() -> None:
     meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
         encoding="utf-8"

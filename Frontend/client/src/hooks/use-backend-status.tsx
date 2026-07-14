@@ -26,6 +26,7 @@ interface TauriBackendStatus {
     baseUrl: string;
     running: boolean;
     ready: boolean;
+    starting: boolean;
     managed: boolean;
     pid: number | null;
     message: string;
@@ -62,6 +63,10 @@ function withDeadline<T>(promise: Promise<T>, timeoutMs: number, label: string):
 function isManagedBackendStarting(status: TauriBackendStatus): boolean {
     if (!status.managed || !status.running || status.ready) {
         return false;
+    }
+
+    if (status.starting) {
+        return true;
     }
 
     const message = status.message.toLowerCase();

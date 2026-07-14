@@ -576,6 +576,29 @@ def _native_device_flow(device: Any, audio_utilities: Any | None = None) -> str:
     return "unknown"
 
 
+def _native_endpoint_flow_from_id(endpoint_id: str) -> str:
+    """Infer the Windows MMDevice flow without exposing the private endpoint ID."""
+
+    normalized = str(endpoint_id or "").lower()
+    if "{0.0.1." in normalized:
+        return "capture"
+    if "{0.0.0." in normalized:
+        return "render"
+    return "unknown"
+
+
+def _native_device_is_active(device: Any) -> bool:
+    """Treat missing state as legacy-compatible, but reject known inactive endpoints."""
+
+    value = _read_object_field(device, "state", "State", "deviceState", "DeviceState")
+    if value is None:
+        return True
+    normalized = str(value).strip().lower()
+    return normalized in {"1", "active", "audiodevicestate.active"} or normalized.endswith(
+        ".active"
+    )
+
+
 def collect_native_capture_endpoint_inventory(audio_utilities: Any | None = None) -> list[dict[str, Any]]:
     """Best-effort native capture endpoint inventory for private diagnostics.
 
@@ -628,10 +651,12 @@ def collect_native_capture_endpoint_inventory(audio_utilities: Any | None = None
         endpoint_id = _native_device_id(device)
         endpoint_hash = hash_native_endpoint_id(endpoint_id)
         friendly_name = _native_device_friendly_name(device)
-        if not endpoint_hash or not friendly_name:
+        if not endpoint_hash or not friendly_name or not _native_device_is_active(device):
             continue
         flow = _native_device_flow(device, audio_utilities)
-        if flow == "render":
+        if flow == "unknown":
+            flow = _native_endpoint_flow_from_id(endpoint_id)
+        if flow != "capture":
             continue
         inventory.append(
             {

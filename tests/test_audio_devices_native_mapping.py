@@ -139,6 +139,87 @@ def test_collect_native_capture_endpoint_inventory_is_redacted_and_filters_rende
     assert render_id not in str(inventory)
 
 
+def test_collect_native_capture_endpoint_inventory_returns_three_redacted_microphones():
+    class _Device:
+        def __init__(self, device_id: str, friendly_name: str, flow: str):
+            self.DeviceID = device_id
+            self.FriendlyName = friendly_name
+            self.flow = flow
+
+    raw_capture_ids = [
+        rf"SWD\MMDEVAPI\{{0.0.1.00000000}}.{{private-capture-{index}}}"
+        for index in range(3)
+    ]
+    captures = [
+        _Device(raw_capture_ids[0], "Jabra Engage 75", "capture"),
+        _Device(raw_capture_ids[1], "Insta360 Link", "capture"),
+        _Device(raw_capture_ids[2], "Realtek Microphone Array", "capture"),
+    ]
+    raw_render_id = r"SWD\MMDEVAPI\{0.0.0.00000000}.{private-render}"
+    render = _Device(raw_render_id, "Desk Speakers", "render")
+    audio_utilities = types.SimpleNamespace(
+        GetAllDevices=lambda: [*captures, render],
+        GetMicrophone=lambda: captures[1],
+    )
+
+    inventory = collect_native_capture_endpoint_inventory(audio_utilities)
+
+    assert [entry["friendlyName"] for entry in inventory] == [
+        "Jabra Engage 75",
+        "Insta360 Link",
+        "Realtek Microphone Array",
+    ]
+    assert [entry["endpointIdHash"] for entry in inventory] == [
+        hash_native_endpoint_id(endpoint_id) for endpoint_id in raw_capture_ids
+    ]
+    assert [entry["isDefault"] for entry in inventory] == [False, True, False]
+    serialized = str(inventory)
+    assert all(endpoint_id not in serialized for endpoint_id in raw_capture_ids)
+    assert raw_render_id not in serialized
+
+
+def test_collect_native_capture_endpoint_inventory_infers_flow_and_filters_inactive_devices():
+    class _Device:
+        def __init__(self, device_id: str, friendly_name: str, state: str):
+            self.DeviceID = device_id
+            self.FriendlyName = friendly_name
+            self.state = state
+
+    active_capture = _Device(
+        r"SWD\MMDEVAPI\{0.0.1.00000000}.{active-capture}",
+        "Conference microphone",
+        "AudioDeviceState.Active",
+    )
+    inactive_capture = _Device(
+        r"SWD\MMDEVAPI\{0.0.1.00000000}.{inactive-capture}",
+        "Old conference microphone",
+        "AudioDeviceState.NotPresent",
+    )
+    active_render = _Device(
+        r"SWD\MMDEVAPI\{0.0.0.00000000}.{active-render}",
+        "Conference speakers",
+        "AudioDeviceState.Active",
+    )
+    audio_utilities = types.SimpleNamespace(
+        GetAllDevices=lambda: [active_capture, inactive_capture, active_render],
+        GetMicrophone=lambda: active_capture,
+    )
+
+    inventory = collect_native_capture_endpoint_inventory(audio_utilities)
+
+    assert inventory == [
+        {
+            "endpointIdHash": hash_native_endpoint_id(active_capture.DeviceID),
+            "friendlyName": "Conference microphone",
+            "flow": "capture",
+            "isDefault": True,
+        }
+    ]
+    serialized = str(inventory)
+    assert inactive_capture.DeviceID not in serialized
+    assert active_render.DeviceID not in serialized
+
+
 def test_collect_native_capture_endpoint_inventory_suppresses_pycaw_property_noise():
     class _Device:
         DeviceID = "capture-id"

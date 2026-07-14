@@ -42,6 +42,7 @@ def test_profile_b_fixture_smoke_covers_documented_matrix() -> None:
     assert "mp3_transcode_args" in script
     assert "mp3_encode_pcm_pipe_args" in script
     assert "pcm_pipe_decode_args" in script
+    assert "wav_pcm_transcode_args" in script
     assert "ffprobe_duration_args" in script
     assert "meeting_opus_playback_args" in script
     assert '"meeting_playback_microphone"' in script
@@ -107,6 +108,9 @@ def test_profile_b_fixture_smoke_writes_artifact(tmp_path: Path) -> None:
     assert checks["yt_dlp_merged_mp4_to_webm_opus"]["ok"] is True
     assert checks["azure_mai_webm_opus_to_mp3"]["output"]["suffix"] == ".mp3"
     assert checks["webm_opus_to_pcm_pipe"]["stdoutBytes"] > 0
+    assert checks["local_diarization_webm_to_wav_pcm"]["sampleRate"] == 16_000
+    assert checks["local_diarization_webm_to_wav_pcm"]["channels"] == 1
+    assert checks["local_diarization_webm_to_wav_pcm"]["sampleWidthBytes"] == 2
     assert checks["raw_pcm_pipe_to_mp3"]["stdoutBytes"] > 0
     assert checks["meeting_multitrack_flac"]["trackCount"] == 3
     assert checks["meeting_lossless_work_track"]["streamCopy"] is True
