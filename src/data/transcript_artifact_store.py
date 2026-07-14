@@ -69,6 +69,9 @@ TERMINAL_ATTEMPT_STATES = frozenset(
     }
 )
 
+CANONICAL_SEGMENTS_FTS_SCHEMA_VERSION = 2
+CANONICAL_SEGMENTS_FTS_SCHEMA_KEY = "canonical_segments_fts_schema_version"
+
 
 ALLOWED_ATTEMPT_TRANSITIONS: dict[AttemptState, frozenset[AttemptState]] = {
     AttemptState.QUEUED: frozenset(
@@ -840,6 +843,12 @@ class TranscriptArtifactStore:
             )
             """,
             """
+            CREATE TABLE IF NOT EXISTS transcript_artifact_store_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """,
+            """
             CREATE VIRTUAL TABLE IF NOT EXISTS canonical_transcript_segments_fts USING fts5(
                 artifact_id UNINDEXED,
                 segment_id UNINDEXED,
@@ -853,7 +862,7 @@ class TranscriptArtifactStore:
             AFTER DELETE ON canonical_transcript_segments
             BEGIN
                 DELETE FROM canonical_transcript_segments_fts
-                WHERE artifact_id = OLD.artifact_id AND segment_id = OLD.segment_id;
+                WHERE rowid = OLD.rowid;
             END
             """,
             """
@@ -894,6 +903,44 @@ class TranscriptArtifactStore:
                 conn.execute("BEGIN IMMEDIATE")
                 for statement in statements:
                     conn.execute(statement)
+                version_row = conn.execute(
+                    "SELECT value FROM transcript_artifact_store_metadata WHERE key=?",
+                    (CANONICAL_SEGMENTS_FTS_SCHEMA_KEY,),
+                ).fetchone()
+                version = (
+                    int(version_row[0])
+                    if version_row and str(version_row[0]).isdigit()
+                    else 0
+                )
+                if version != CANONICAL_SEGMENTS_FTS_SCHEMA_VERSION:
+                    conn.execute("DROP TRIGGER IF EXISTS trg_canonical_segment_fts_delete")
+                    conn.execute("DROP TABLE IF EXISTS canonical_transcript_segments_fts")
+                    conn.execute(
+                        """CREATE VIRTUAL TABLE canonical_transcript_segments_fts USING fts5(
+                               artifact_id UNINDEXED, segment_id UNINDEXED, text,
+                               speaker_label, source_track
+                           )"""
+                    )
+                    conn.execute(
+                        """INSERT INTO canonical_transcript_segments_fts
+                               (rowid,artifact_id,segment_id,text,speaker_label,source_track)
+                           SELECT rowid,artifact_id,segment_id,text,speaker_label,source_track
+                           FROM canonical_transcript_segments"""
+                    )
+                    conn.execute(
+                        """CREATE TRIGGER trg_canonical_segment_fts_delete
+                           AFTER DELETE ON canonical_transcript_segments BEGIN
+                             DELETE FROM canonical_transcript_segments_fts WHERE rowid=OLD.rowid;
+                           END"""
+                    )
+                    conn.execute(
+                        """INSERT INTO transcript_artifact_store_metadata(key,value) VALUES (?,?)
+                           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+                        (
+                            CANONICAL_SEGMENTS_FTS_SCHEMA_KEY,
+                            str(CANONICAL_SEGMENTS_FTS_SCHEMA_VERSION),
+                        ),
+                    )
                 segment_count = int(
                     conn.execute(
                         "SELECT COUNT(*) FROM canonical_transcript_segments"
@@ -909,8 +956,8 @@ class TranscriptArtifactStore:
                     SELECT 1
                     FROM canonical_transcript_segments s
                     LEFT JOIN canonical_transcript_segments_fts f
-                      ON f.artifact_id = s.artifact_id AND f.segment_id = s.segment_id
-                    WHERE f.segment_id IS NULL
+                      ON f.rowid = s.rowid
+                    WHERE f.rowid IS NULL
                     LIMIT 1
                     """
                 ).fetchone()
@@ -919,8 +966,8 @@ class TranscriptArtifactStore:
                     SELECT 1
                     FROM canonical_transcript_segments_fts f
                     LEFT JOIN canonical_transcript_segments s
-                      ON s.artifact_id = f.artifact_id AND s.segment_id = f.segment_id
-                    WHERE s.segment_id IS NULL
+                      ON s.rowid = f.rowid
+                    WHERE s.rowid IS NULL
                     LIMIT 1
                     """
                 ).fetchone()
@@ -933,8 +980,8 @@ class TranscriptArtifactStore:
                     conn.execute(
                         """
                         INSERT INTO canonical_transcript_segments_fts
-                            (artifact_id, segment_id, text, speaker_label, source_track)
-                        SELECT artifact_id, segment_id, text, speaker_label, source_track
+                            (rowid, artifact_id, segment_id, text, speaker_label, source_track)
+                        SELECT rowid, artifact_id, segment_id, text, speaker_label, source_track
                         FROM canonical_transcript_segments
                         """
                     )
@@ -2624,22 +2671,14 @@ class TranscriptArtifactStore:
                     for item in stable_segments
                 ],
             )
-            conn.executemany(
+            conn.execute(
                 """
                 INSERT INTO canonical_transcript_segments_fts
-                    (artifact_id, segment_id, text, speaker_label, source_track)
-                VALUES (?, ?, ?, ?, ?)
+                    (rowid, artifact_id, segment_id, text, speaker_label, source_track)
+                SELECT rowid, artifact_id, segment_id, text, speaker_label, source_track
+                FROM canonical_transcript_segments WHERE artifact_id = ?
                 """,
-                [
-                    (
-                        item.artifact_id,
-                        item.segment_id,
-                        item.text,
-                        item.speaker_label,
-                        item.source_track,
-                    )
-                    for item in stable_segments
-                ],
+                (artifact_id,),
             )
             conn.executemany(
                 """

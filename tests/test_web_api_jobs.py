@@ -3,7 +3,7 @@ import threading
 import time
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
@@ -12,7 +12,7 @@ from src.config import Config
 from src.data.job_store import JobStatus, JobStore
 from src.pipeline import direct_file_workflow_timeout_seconds
 from src.web_api import ScriberWebController, TranscriptRecord
-from src.youtube_download import YouTubeCaptionCue, YouTubeTranscript
+from src.youtube_download import YouTubeCaptionCue, YouTubeDownloadError, YouTubeTranscript
 
 
 @pytest.mark.asyncio
@@ -1025,6 +1025,111 @@ async def test_retry_discards_partial_output_from_failed_attempt(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_retry_cas_loss_reconciles_terminal_job_without_scheduling(monkeypatch, tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    rec = TranscriptRecord(
+        id="retry-canceled-race",
+        title="Retry canceled race",
+        date="Today",
+        duration="00:01",
+        status="processing",
+        type="file",
+        language="auto",
+        content="partial provider output",
+        step="Transcribing...",
+    )
+    job = store.enqueue(
+        transcript_id=rec.id,
+        job_type=web_api.JobType.FILE,
+        payload={"path": str(tmp_path / "sample.wav")},
+    )
+    assert store.mark_running(job.id)
+    ctl._remember_job_id(rec.id, job.id)
+    original_set_retry = store.set_retry
+
+    def cancel_before_retry(job_id, *, retry_at, last_error=""):
+        assert store.mark_canceled(job_id, last_error="user canceled")
+        return original_set_retry(
+            job_id, retry_at=retry_at, last_error=last_error
+        )
+
+    monkeypatch.setattr(store, "set_retry", cancel_before_retry)
+    with patch.object(ctl, "_schedule_retry_scan") as schedule_scan:
+        scheduled = await ctl._schedule_retry_if_allowed(
+            rec, TimeoutError("provider timeout")
+        )
+
+    assert scheduled is True
+    assert rec.status == "stopped"
+    assert rec.step == "user canceled"
+    assert rec.content_text() == "partial provider output"
+    persisted_job = store.get(job.id)
+    assert persisted_job is not None
+    assert persisted_job.status == JobStatus.CANCELED
+    schedule_scan.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_file_runner_retry_cas_loss_keeps_canceled_state(monkeypatch, tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    source = tmp_path / "external.wav"
+    source.write_bytes(b"RIFF....WAVEfmt ")
+    rec = TranscriptRecord(
+        id="file-runner-retry-canceled-race",
+        title="File retry canceled race",
+        date="Today",
+        duration="00:01",
+        status="processing",
+        type="file",
+        language="auto",
+        source_url=str(source),
+    )
+    job = store.enqueue(
+        transcript_id=rec.id,
+        job_type=web_api.JobType.FILE,
+        payload={"path": str(source)},
+    )
+    ctl._remember_job_id(rec.id, job.id)
+    original_set_retry = store.set_retry
+
+    def cancel_before_retry(job_id, *, retry_at, last_error=""):
+        assert store.mark_canceled(job_id, last_error="user canceled")
+        return original_set_retry(
+            job_id, retry_at=retry_at, last_error=last_error
+        )
+
+    monkeypatch.setattr(store, "set_retry", cancel_before_retry)
+    with (
+        patch.object(ctl, "_select_available_provider", return_value="soniox"),
+        patch("src.web_api._validate_provider_ready", return_value=None),
+        patch.object(
+            ctl,
+            "_transcribe_file_to_canonical_artifact",
+            new=AsyncMock(side_effect=TimeoutError("provider timeout")),
+        ),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_schedule_retry_scan") as schedule_scan,
+    ):
+        ctl._schedule_file_job(rec, source)
+        task = ctl._running_tasks[rec.id]
+        await task
+
+    persisted_job = store.get(job.id)
+    assert persisted_job is not None
+    assert persisted_job.status == JobStatus.CANCELED
+    assert rec.status == "stopped"
+    assert rec.step == "user canceled"
+    assert "Timeout" not in rec.content_text()
+    assert source.exists()
+    # Task-registry cleanup performs its normal immediate pending-job scan, but
+    # the lost retry CAS must not schedule the provider backoff delay.
+    assert schedule_scan.call_args_list == [call(0.0)]
+
+
+@pytest.mark.asyncio
 async def test_transcript_persistence_failure_is_retryable_without_penalizing_provider(tmp_path):
     store = JobStore(db_path=tmp_path / "jobs.db")
     ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
@@ -1922,3 +2027,282 @@ async def test_youtube_duration_limit_is_checked_after_real_audio_download(
     pipeline_mock.assert_not_called()
     assert rec.status == "failed"
     assert "up to 10 minutes" in rec.content
+
+
+@pytest.mark.asyncio
+async def test_transcript_artifact_phases_run_off_event_loop_and_commit_is_observed(
+    monkeypatch, tmp_path
+):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    rec = _completed_record(transcript_type="file", tmp_path=tmp_path)
+    loop_thread = threading.get_ident()
+    phase_threads: dict[str, int] = {}
+    attempt = SimpleNamespace(id="attempt-off-loop")
+
+    def begin(_rec, _route):
+        phase_threads["begin"] = threading.get_ident()
+        return attempt, "owner", None
+
+    def stage(**_kwargs):
+        phase_threads["stage"] = threading.get_ident()
+        return attempt
+
+    def commit(_rec, **_kwargs):
+        phase_threads["commit"] = threading.get_ident()
+        # Approximate a large canonical projection while the loop must remain live.
+        payload = [{"text": f"segment-{index}", "startMs": index * 10} for index in range(5_000)]
+        assert len(web_api.json.dumps(payload)) > 100_000
+        time.sleep(0.05)
+        return "[0:00] Durable transcript"
+
+    monkeypatch.setattr(ctl, "_begin_transcript_artifact", begin)
+    monkeypatch.setattr(ctl, "_persist_provider_stage_before_local_diarization", stage)
+    monkeypatch.setattr(ctl, "_commit_transcript_artifact", commit)
+
+    await ctl._begin_transcript_artifact_async(rec, SimpleNamespace())
+    await ctl._persist_provider_stage_before_local_diarization_async()
+    heartbeat_ticks = 0
+    stop = asyncio.Event()
+
+    async def heartbeat():
+        nonlocal heartbeat_ticks
+        while not stop.is_set():
+            heartbeat_ticks += 1
+            await asyncio.sleep(0.002)
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+    try:
+        rendered = await ctl._commit_transcript_artifact_async(rec)
+    finally:
+        stop.set()
+        await heartbeat_task
+
+    assert rendered == "[0:00] Durable transcript"
+    assert rec.content == rendered
+    assert set(phase_threads) == {"begin", "stage", "commit"}
+    assert all(thread_id != loop_thread for thread_id in phase_threads.values())
+    assert heartbeat_ticks >= 5
+
+
+@pytest.mark.asyncio
+async def test_transcript_artifact_commit_cancellation_waits_for_durable_worker(
+    monkeypatch, tmp_path
+):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    rec = _completed_record(transcript_type="file", tmp_path=tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def commit(_rec, **_kwargs):
+        started.set()
+        assert release.wait(timeout=2.0)
+        finished.set()
+        return "[0:00] Committed before cancellation completed"
+
+    monkeypatch.setattr(ctl, "_commit_transcript_artifact", commit)
+    task = asyncio.create_task(ctl._commit_transcript_artifact_async(rec))
+    assert await asyncio.to_thread(started.wait, 1.0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+
+    assert await task == "[0:00] Committed before cancellation completed"
+    assert finished.is_set()
+    assert rec.content == "[0:00] Committed before cancellation completed"
+
+
+@pytest.mark.asyncio
+async def test_thread_cancellation_barrier_survives_repeated_cancel_requests():
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def durable_mutation():
+        started.set()
+        assert release.wait(timeout=2.0)
+        finished.set()
+
+    task = asyncio.create_task(
+        web_api._to_thread_cancellation_barrier(durable_mutation)
+    )
+    assert await asyncio.to_thread(started.wait, 1.0)
+    try:
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0.01)
+        assert not task.done()
+    finally:
+        release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert finished.is_set()
+
+
+@pytest.mark.asyncio
+async def test_youtube_download_failures_do_not_open_stt_provider_breaker(monkeypatch, tmp_path):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._downloads_dir = tmp_path / "downloads"
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+
+    with (
+        patch(
+            "src.web_api.download_youtube_audio",
+            new=AsyncMock(side_effect=YouTubeDownloadError("connection timed out")),
+        ),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        for index in range(3):
+            rec = _completed_record(transcript_type="youtube", tmp_path=tmp_path)
+            rec.id = f"youtube-download-failure-{index}"
+            await ctl._run_youtube_transcription(rec, provider="soniox")
+
+    snapshot = ctl._provider_breaker.snapshot("soniox")
+    assert snapshot.consecutive_failures == 0
+
+    with (
+        patch(
+            "src.web_api.download_youtube_audio",
+            new=AsyncMock(side_effect=TimeoutError("YouTube download timed out")),
+        ),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        timed_out = _completed_record(transcript_type="youtube", tmp_path=tmp_path)
+        timed_out.id = "youtube-download-timeout"
+        await ctl._run_youtube_transcription(timed_out, provider="soniox")
+
+    assert ctl._provider_breaker.snapshot("soniox").consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_youtube_provider_503_still_records_stt_provider_failure(monkeypatch, tmp_path):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._downloads_dir = tmp_path / "downloads"
+    audio_path = tmp_path / "audio.wav"
+    audio_path.write_bytes(b"RIFF....WAVEfmt ")
+    rec = _completed_record(transcript_type="youtube", tmp_path=tmp_path)
+    rec.id = "youtube-provider-503"
+
+    class FailingProviderPipeline:
+        last_structured_transcript_payload = None
+
+        async def transcribe_file_direct(self, _path):
+            raise RuntimeError("503 provider service unavailable")
+
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+    with (
+        patch("src.web_api.download_youtube_audio", new=AsyncMock(return_value=audio_path)),
+        patch("src.web_api.supports_direct_file_upload", return_value=True),
+        patch("src.web_api._create_scriber_pipeline", return_value=FailingProviderPipeline()),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        await ctl._run_youtube_transcription(rec, provider="soniox")
+
+    snapshot = ctl._provider_breaker.snapshot("soniox")
+    assert snapshot.consecutive_failures == 1
+
+
+@pytest.mark.asyncio
+async def test_youtube_scheduler_does_not_reclassify_handled_download_failure(
+    monkeypatch, tmp_path
+):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    rec = TranscriptRecord(
+        id="youtube-scheduler-download-failure",
+        title="Download failure",
+        date="Today",
+        duration="00:00",
+        status="processing",
+        type="youtube",
+        language="auto",
+        source_url="https://youtube.com/watch?v=test123",
+    )
+    job = store.enqueue(
+        transcript_id=rec.id,
+        job_type=web_api.JobType.YOUTUBE,
+        payload={"url": rec.source_url},
+    )
+    ctl._remember_job_id(rec.id, job.id)
+
+    async def handled_download_failure(record, *, provider):
+        record._youtube_stt_provider_used = provider
+        record.status = "failed"
+        record.step = "YouTube download failed"
+
+    with (
+        patch.object(ctl, "_select_available_provider", return_value="soniox"),
+        patch("src.web_api._validate_provider_ready", return_value=None),
+        patch.object(
+            ctl,
+            "_run_youtube_transcription",
+            new=AsyncMock(side_effect=handled_download_failure),
+        ),
+        patch.object(ctl, "_record_provider_failure") as provider_failure,
+    ):
+        ctl._schedule_youtube_job(rec)
+        task = ctl._running_tasks[rec.id]
+        await task
+
+    persisted = store.get(job.id)
+    assert persisted is not None
+    assert persisted.status == JobStatus.FAILED
+    provider_failure.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_file_scheduler_does_not_double_count_handled_provider_failure(
+    tmp_path,
+):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    file_path = tmp_path / "upload.wav"
+    file_path.write_bytes(b"RIFF....WAVEfmt ")
+    rec = TranscriptRecord(
+        id="file-scheduler-provider-failure",
+        title="Provider failure",
+        date="Today",
+        duration="00:00",
+        status="processing",
+        type="file",
+        language="auto",
+        source_url=str(file_path),
+    )
+    job = store.enqueue(
+        transcript_id=rec.id,
+        job_type=web_api.JobType.FILE,
+        payload={"path": str(file_path)},
+    )
+    ctl._remember_job_id(rec.id, job.id)
+
+    async def handled_provider_failure(record, _file_path, *, provider):
+        ctl._record_provider_failure(provider, "provider failed")
+        record.status = "failed"
+        record.step = "Provider failed"
+
+    with (
+        patch.object(ctl, "_select_available_provider", return_value="soniox"),
+        patch("src.web_api._validate_provider_ready", return_value=None),
+        patch.object(
+            ctl,
+            "_run_file_transcription",
+            new=AsyncMock(side_effect=handled_provider_failure),
+        ),
+        patch.object(
+            ctl, "_record_provider_failure", wraps=ctl._record_provider_failure
+        ) as provider_failure,
+    ):
+        ctl._schedule_file_job(rec, file_path)
+        task = ctl._running_tasks[rec.id]
+        await task
+
+    persisted = store.get(job.id)
+    assert persisted is not None
+    assert persisted.status == JobStatus.FAILED
+    provider_failure.assert_called_once_with("soniox", "provider failed")

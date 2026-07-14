@@ -4,7 +4,7 @@ import hashlib
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Event, current_thread
 
 import pytest
 
@@ -110,6 +110,72 @@ def test_existing_meetings_migrate_to_live_and_final_mode(monkeypatch, tmp_path)
     database._close_all_connections()
 
 
+def test_meeting_segment_fts_migration_restores_rowid_parity_and_scoped_search(
+    store: MeetingStore,
+):
+    meeting_id = store.create(create_request())["id"]
+    segment = store.add_segments(meeting_id, [{
+        "revision": "live", "source": "microphone", "sequence": 0,
+        "startMs": 10, "endMs": 1010, "text": "migration needle",
+    }])[0]
+    conn = database._get_connection()
+    conn.executescript(
+        """
+        DROP TRIGGER meeting_segments_fts_insert;
+        DROP TRIGGER meeting_segments_fts_update;
+        DROP TRIGGER meeting_segments_fts_delete;
+        DROP TABLE meeting_segments_fts;
+        CREATE VIRTUAL TABLE meeting_segments_fts USING fts5(
+            meeting_id UNINDEXED, segment_id UNINDEXED, revision UNINDEXED,
+            text, speaker_label, tokenize='unicode61'
+        );
+        INSERT INTO meeting_segments_fts(
+            rowid,meeting_id,segment_id,revision,text,speaker_label
+        ) SELECT rowid+100,meeting_id,id,revision,text,speaker_label FROM meeting_segments;
+        """
+    )
+    conn.execute(
+        "UPDATE meeting_store_metadata SET value='1' WHERE key='meeting_segments_fts_schema_version'"
+    )
+    conn.commit()
+
+    MeetingStore().initialize()
+
+    base_rowid = conn.execute(
+        "SELECT rowid FROM meeting_segments WHERE id=?", (segment["id"],)
+    ).fetchone()[0]
+    fts_rowid = conn.execute(
+        "SELECT rowid FROM meeting_segments_fts WHERE segment_id=?", (segment["id"],)
+    ).fetchone()[0]
+    schema_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='meeting_segments_fts'"
+    ).fetchone()[0]
+    trigger_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='meeting_segments_fts_delete'"
+    ).fetchone()[0]
+    plan = conn.execute(
+        """EXPLAIN QUERY PLAN SELECT 1 FROM meeting_segments s
+           LEFT JOIN meeting_segments_fts f ON f.rowid=s.rowid
+           WHERE f.rowid IS NULL LIMIT 1"""
+    ).fetchall()
+
+    assert fts_rowid == base_rowid
+    assert "meeting_id, segment_id UNINDEXED, revision" in schema_sql
+    assert "rowid=old.rowid" in trigger_sql.lower().replace(" ", "")
+    assert any("VIRTUAL TABLE INDEX 0:=" in row[3] for row in plan)
+    assert [item["id"] for item in store.search_segments(meeting_id, "needle")] == [segment["id"]]
+
+    conn.execute("UPDATE meeting_segments SET text='updated token' WHERE id=?", (segment["id"],))
+    conn.commit()
+    assert store.search_segments(meeting_id, "needle") == []
+    assert [item["id"] for item in store.search_segments(meeting_id, "updated")] == [segment["id"]]
+    conn.execute("DELETE FROM meeting_segments WHERE id=?", (segment["id"],))
+    conn.commit()
+    assert conn.execute(
+        "SELECT 1 FROM meeting_segments_fts WHERE rowid=?", (base_rowid,)
+    ).fetchone() is None
+
+
 def test_enforces_one_open_meeting_and_state_transitions(store: MeetingStore):
     meeting = store.create(create_request())
     assert meeting["state"] == "starting"
@@ -130,7 +196,7 @@ def test_enforces_one_open_meeting_and_state_transitions(store: MeetingStore):
     assert store.create(create_request(title="Next call"))["state"] == "starting"
 
 
-def test_detail_validates_meeting_once_and_reuses_one_connection(
+def test_detail_validates_meeting_inside_its_read_snapshot(
     store: MeetingStore, monkeypatch: pytest.MonkeyPatch
 ):
     meeting = store.create(create_request())
@@ -151,7 +217,66 @@ def test_detail_validates_meeting_once_and_reuses_one_connection(
     assert detail["audioGaps"] == []
     assert detail["audioAssets"] == []
     assert detail["transcriptCheckpoints"] == []
-    assert get_calls == 1
+    assert get_calls == 0
+
+
+def test_detail_children_share_one_read_snapshot(store: MeetingStore, monkeypatch):
+    meeting = store.create(create_request(title="old title"))
+    meeting_id = meeting["id"]
+    segment = store.add_segments(meeting_id, [{
+        "revision": "live", "source": "microphone", "sequence": 0,
+        "startMs": 0, "endMs": 1000, "text": "old segment",
+    }])[0]
+    selected = Event()
+    release = Event()
+    original_get_connection = database._get_connection
+
+    class PausingCursor:
+        def __init__(self, cursor):
+            self._cursor = cursor
+
+        def fetchone(self):
+            row = self._cursor.fetchone()
+            selected.set()
+            assert release.wait(timeout=3)
+            return row
+
+        def __getattr__(self, name):
+            return getattr(self._cursor, name)
+
+    class PausingConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def execute(self, sql, params=()):
+            cursor = self._connection.execute(sql, params)
+            if sql.strip().startswith("SELECT * FROM meetings WHERE id"):
+                return PausingCursor(cursor)
+            return cursor
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    def get_connection():
+        connection = original_get_connection()
+        if current_thread().name.startswith("meeting-detail"):
+            return PausingConnection(connection)
+        return connection
+
+    monkeypatch.setattr(database, "_get_connection", get_connection)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="meeting-detail") as executor:
+        future = executor.submit(store.detail, meeting_id, revision="live")
+        assert selected.wait(timeout=3)
+        with sqlite3.connect(database._DB_PATH) as writer:
+            writer.execute("PRAGMA journal_mode=WAL")
+            writer.execute("UPDATE meetings SET title='new title' WHERE id=?", (meeting_id,))
+            writer.execute("UPDATE meeting_segments SET text='new segment' WHERE id=?", (segment["id"],))
+            writer.commit()
+        release.set()
+        detail = future.result(timeout=3)
+
+    assert detail["title"] == "old title"
+    assert detail["segments"][0]["text"] == "old segment"
 
 
 def test_state_transition_compare_and_swap_blocks_retry_discard_race(

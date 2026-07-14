@@ -62,6 +62,35 @@ _ATTEMPT_LEASE_HEARTBEAT_SECONDS = 300.0
 _ATTEMPT_LEASE_RETRY_DELAYS_SECONDS = (0.0, 0.5, 2.0)
 
 
+async def _await_thread_result(
+    function: Callable[..., Any], *args: Any, **kwargs: Any
+) -> tuple[Any, asyncio.CancelledError | None]:
+    """Observe a started SQLite/canonicalization worker before unwinding."""
+    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    pending_cancel: asyncio.CancelledError | None = None
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError as exc:
+            pending_cancel = exc
+    try:
+        result = worker.result()
+    except BaseException:
+        if pending_cancel is not None:
+            raise pending_cancel
+        raise
+    return result, pending_cancel
+
+
+async def _durable_thread_call(
+    function: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
+    result, pending_cancel = await _await_thread_result(function, *args, **kwargs)
+    if pending_cancel is not None:
+        raise pending_cancel
+    return result
+
+
 @dataclass(frozen=True)
 class PreparedMeetingTrack:
     path: Path
@@ -205,6 +234,20 @@ class MeetingFinalizer:
                 lease_owner=owner,
             )
         return attempt, owner, None, route.execution_route()
+
+    async def _begin_artifact_attempt_async(
+        self, meeting: dict[str, Any]
+    ) -> tuple[AttemptRecord, str, Any | None, dict[str, Any]]:
+        result, pending_cancel = await _await_thread_result(
+            self._begin_artifact_attempt, meeting
+        )
+        if pending_cancel is not None:
+            attempt, owner, _recovery, _route = result
+            # Let run()'s finally block release the lease after the worker has
+            # definitely finished owning its SQLite connection.
+            self._active_attempt_lease = (attempt.id, owner)
+            raise pending_cancel
+        return result
 
     async def _attempt_lease_heartbeat(self, attempt_id: str, owner: str) -> None:
         """Keep a long-running provider attempt owned without changing its CAS version."""
@@ -372,6 +415,14 @@ class MeetingFinalizer:
             raise RuntimeError("Meeting canonical artifact commit produced no artifact.")
         return artifact.segments
 
+    async def _commit_artifact_async(self, **kwargs: Any) -> tuple[CanonicalSegment, ...]:
+        result, pending_cancel = await _await_thread_result(
+            self._commit_artifact, **kwargs
+        )
+        if pending_cancel is not None:
+            logger.debug("Cancellation arrived after Meeting canonical commit; completing finalization")
+        return result
+
     async def run(self, meeting_id: str, progress: ProgressCallback) -> dict[str, Any]:
         self._active_attempt_lease: tuple[str, str] | None = None
         try:
@@ -383,14 +434,17 @@ class MeetingFinalizer:
             if lease is not None:
                 attempt_id, owner = lease
                 try:
-                    current = self.artifact_store.require_attempt(attempt_id)
+                    current = await _durable_thread_call(
+                        self.artifact_store.require_attempt, attempt_id
+                    )
                     if current.lease_owner == owner and current.state not in {
                         AttemptState.COMPLETED,
                         AttemptState.SUPERSEDED,
                         AttemptState.FAILED,
                         AttemptState.CANCELED,
                     }:
-                        self.artifact_store.release_attempt_lease(
+                        await _durable_thread_call(
+                            self.artifact_store.release_attempt_lease,
                             attempt_id,
                             owner=owner,
                             expected_version=current.state_version,
@@ -421,16 +475,22 @@ class MeetingFinalizer:
 
         await progress("Creating canonical transcript", 0.2)
         await asyncio.to_thread(self._ensure_transcript_parent, meeting)
-        attempt, owner, recovery, execution_route = self._begin_artifact_attempt(meeting)
+        attempt, owner, recovery, execution_route = await self._begin_artifact_attempt_async(meeting)
         await self._start_attempt_lease_heartbeat(attempt.id, owner)
         recovered_stage = getattr(recovery, "stage_result", None)
         track_results = list(getattr(recovery, "track_results", ()))
         if not track_results:
-            track_results = list(self.artifact_store.list_track_stage_results(attempt.id))
+            track_results = list(
+                await _durable_thread_call(
+                    self.artifact_store.list_track_stage_results, attempt.id
+                )
+            )
         track_derivations = list(getattr(recovery, "track_derivations", ()))
         if not track_derivations:
             track_derivations = list(
-                self.artifact_store.list_track_derivations(attempt.id)
+                await _durable_thread_call(
+                    self.artifact_store.list_track_derivations, attempt.id
+                )
             )
         canonical_units: list[StageUnit] = []
         transcription_tracks = {
@@ -452,7 +512,8 @@ class MeetingFinalizer:
         )
         if audio_identity_changed:
             await self._stop_attempt_lease_heartbeat()
-            self.artifact_store.transition_attempt(
+            await _durable_thread_call(
+                self.artifact_store.transition_attempt,
                 attempt.id,
                 expected_state=attempt.state,
                 expected_version=attempt.state_version,
@@ -464,18 +525,22 @@ class MeetingFinalizer:
                 ),
             )
             self._active_attempt_lease = None
-            attempt, owner, recovery, execution_route = self._begin_artifact_attempt(meeting)
+            attempt, owner, recovery, execution_route = await self._begin_artifact_attempt_async(meeting)
             await self._start_attempt_lease_heartbeat(attempt.id, owner)
             recovered_stage = getattr(recovery, "stage_result", None)
             track_results = list(getattr(recovery, "track_results", ()))
             if not track_results:
                 track_results = list(
-                    self.artifact_store.list_track_stage_results(attempt.id)
+                    await _durable_thread_call(
+                        self.artifact_store.list_track_stage_results, attempt.id
+                    )
                 )
             track_derivations = list(getattr(recovery, "track_derivations", ()))
             if not track_derivations:
                 track_derivations = list(
-                    self.artifact_store.list_track_derivations(attempt.id)
+                    await _durable_thread_call(
+                        self.artifact_store.list_track_derivations, attempt.id
+                    )
                 )
         empty_sources: list[str] = []
         if recovered_stage is not None:
@@ -583,7 +648,8 @@ class MeetingFinalizer:
                             "The final transcription provider returned unusable empty "
                             f"{source} transcript segments."
                         )
-                    track_result = self.artifact_store.persist_track_stage_result(
+                    track_result = await _durable_thread_call(
+                        self.artifact_store.persist_track_stage_result,
                         attempt.id,
                         source_track=source,
                         expected_version=attempt.state_version,
@@ -652,7 +718,8 @@ class MeetingFinalizer:
                                 fallback_segments, source_track=source
                             )
                         )
-                        derivation = self.artifact_store.persist_track_derivation(
+                        derivation = await _durable_thread_call(
+                            self.artifact_store.persist_track_derivation,
                             attempt.id,
                             parent_stage_result_id=track_result.id,
                             source_track=source,
@@ -718,7 +785,7 @@ class MeetingFinalizer:
             )
             for item in echo_candidates
         ]
-        artifact_segments = self._commit_artifact(
+        artifact_segments = await self._commit_artifact_async(
             attempt=attempt,
             owner=owner,
             units=canonical_units,
@@ -821,7 +888,7 @@ class MeetingFinalizer:
     ) -> None:
         """Remove redundant WAVs only after durable canonical ownership exists."""
         try:
-            head = self.artifact_store.get_head(meeting_id)
+            head = await _durable_thread_call(self.artifact_store.get_head, meeting_id)
             assets = {item["kind"]: item for item in self.store.audio_assets(meeting_id)}
             archive = assets.get("multitrack_flac")
             required = {"playback_system"} if "system" in tracks else set()

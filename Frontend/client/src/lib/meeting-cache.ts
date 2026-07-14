@@ -3,7 +3,9 @@ import type {
   MeetingActionItem,
   MeetingCapabilities,
   MeetingDetail,
+  MeetingNote,
   MeetingSegment,
+  MeetingSpeakerAssignmentsResponse,
   MeetingState,
   MeetingSummary,
   MeetingsResponse,
@@ -156,6 +158,116 @@ export function applyMeetingActionItem(
       : [...current.actionItems, item];
     return { ...current, actionItems };
   });
+}
+
+/** Apply a returned or websocket note without refetching the complete transcript. */
+export function applyMeetingNoteEvent(
+  queryClient: QueryClient,
+  meetingId: string,
+  note: MeetingNote,
+): void {
+  if (note.meetingId !== meetingId) return;
+  queryClient.setQueryData<MeetingDetail>(["/api/meetings", meetingId], (current) => {
+    if (!current) return current;
+    const index = current.notes.findIndex((item) => item.id === note.id);
+    const notes = index >= 0
+      ? current.notes.map((item, itemIndex) => itemIndex === index ? note : item)
+      : [...current.notes, note];
+    return { ...current, notes };
+  });
+}
+
+/** Keep the transcript and assignment card in sync after an inline speaker rename. */
+export function applyMeetingSpeakerName(
+  queryClient: QueryClient,
+  meetingId: string,
+  speakerId: string,
+  displayName: string,
+): void {
+  queryClient.setQueryData<MeetingDetail>(["/api/meetings", meetingId], (current) => current ? {
+    ...current,
+    speakers: current.speakers.map((speaker) => speaker.id === speakerId ? {
+      ...speaker,
+      displayName,
+    } : speaker),
+    segments: current.segments.map((segment) => segment.speakerId === speakerId ? {
+      ...segment,
+      speakerLabel: displayName,
+    } : segment),
+  } : current);
+  queryClient.setQueryData<MeetingSpeakerAssignmentsResponse>(
+    ["/api/meetings", meetingId, "speaker-assignments"],
+    (current) => current ? {
+      ...current,
+      items: current.items.map((item) => item.speakerId === speakerId ? {
+        ...item,
+        currentDisplayName: displayName,
+        // The backend treats a manual rename as a new identity decision: it
+        // clears the confirmed Outlook participant link and renames a linked
+        // Voice Library profile. Cached suggestions were derived from the old
+        // identity, so none of them are safe to keep for this speaker.
+        confirmedAttendee: null,
+        participantLinkSource: "",
+        profileMatch: item.profileMatch ? {
+          ...item.profileMatch,
+          displayName,
+        } : null,
+        suggestions: [],
+      } : item),
+    } : current,
+  );
+}
+
+/** A split invalidates the local match, but preserves unrelated paid suggestions. */
+export function applyMeetingSpeakerProfileSplit(
+  queryClient: QueryClient,
+  meetingId: string,
+  speakerId: string,
+): void {
+  queryClient.setQueryData<MeetingSpeakerAssignmentsResponse>(
+    ["/api/meetings", meetingId, "speaker-assignments"],
+    (current) => current ? {
+      ...current,
+      items: current.items.map((item) => item.speakerId === speakerId ? {
+        ...item,
+        profileMatch: null,
+      } : item),
+    } : current,
+  );
+}
+
+/** Refresh only the two collection shapes; child queries are intentionally excluded. */
+export async function refreshMeetingCollections(queryClient: QueryClient): Promise<void> {
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: MEETING_LIST_QUERY_KEY, exact: true }),
+    queryClient.invalidateQueries({ queryKey: MEETING_HISTORY_QUERY_KEY, exact: true }),
+  ]);
+}
+
+/** Refresh exactly one Meeting detail and never its deliveries/assignment/email children. */
+export async function refreshMeetingDetail(queryClient: QueryClient, meetingId: string): Promise<void> {
+  if (!meetingId) return;
+  await queryClient.invalidateQueries({ queryKey: ["/api/meetings", meetingId], exact: true });
+}
+
+export async function refreshMeetingCapabilities(queryClient: QueryClient): Promise<void> {
+  await queryClient.invalidateQueries({ queryKey: ["/api/meetings/capabilities"], exact: true });
+}
+
+export async function refreshActiveMeeting(queryClient: QueryClient): Promise<void> {
+  await queryClient.invalidateQueries({ queryKey: MEETING_LIST_QUERY_KEY, exact: true });
+}
+
+export function isMeetingWebSocketReconnect(
+  hasConnected: boolean,
+  wasConnected: boolean,
+  isConnected: boolean,
+): boolean {
+  return isConnected && hasConnected && !wasConnected;
+}
+
+export function isNewMeetingSetupEnabled(selectedId: string): boolean {
+  return !selectedId;
 }
 
 export function applyMeetingTranscriptEditedEvent(

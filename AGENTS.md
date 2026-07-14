@@ -308,6 +308,17 @@ Packaging and scripts:
 - Meeting segments treat `startMs`, `endMs`, and `durationMs` as one contract.
   `durationMs` must equal `endMs - startMs` in REST and `meeting_segment`
   events; transcript and citation controls must preserve timestamp seeking.
+- Canonical File/YouTube/Meeting artifact begin, provider-stage, and commit/FTS
+  phases must stay off the aiohttp event loop. Once a SQLite worker mutation has
+  started, cancellation must observe it through its durable boundary; mutate
+  the shared `TranscriptRecord` only after returning to the event-loop thread.
+- Meeting and canonical transcript FTS5 projections use base-table `rowid` as
+  their FTS `rowid`. Keep schema-versioned atomic rebuilds, rowid-based trigger
+  deletes/parity checks, Meeting-scoped MATCH expressions, and the explicit
+  single-snapshot transaction in `MeetingStore.detail`.
+- Durable File/YouTube job claims and terminal transitions are SQL CAS updates.
+  Preserve idempotent `queued/running/completed -> completed` reconciliation,
+  but never allow a late completion to overwrite `canceled` or `failed`.
 - Meeting exports must use `src/meeting_export.py` as the shared template
   boundary. Email headers must remain single-line and participant addresses
   validated/deduplicated; body-only drafts must not claim an attachment exists.

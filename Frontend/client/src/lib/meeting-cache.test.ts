@@ -1,15 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { QueryClient, type InfiniteData } from "@tanstack/react-query";
+import { QueryClient, QueryObserver, type InfiniteData } from "@tanstack/react-query";
 
-import { REST_API_VERSION, type MeetingActionItem, type MeetingState, type MeetingSummary, type MeetingsResponse } from "./api-types";
+import { REST_API_VERSION, type MeetingActionItem, type MeetingDetail, type MeetingNote, type MeetingSpeakerAssignmentsResponse, type MeetingState, type MeetingSummary, type MeetingsResponse } from "./api-types";
 import {
   ACTIVE_MEETING_QUERY_PATH,
   applyMeetingActionItem,
+  applyMeetingNoteEvent,
+  applyMeetingSpeakerName,
   applyMeetingSummaryEvent,
+  isMeetingWebSocketReconnect,
+  isNewMeetingSetupEnabled,
   MEETING_HISTORY_QUERY_KEY,
   MEETING_LIST_QUERY_KEY,
+  refreshMeetingCollections,
+  refreshMeetingDetail,
 } from "./meeting-cache";
 
 test("global active Meeting bootstrap never downloads the full Meeting library", () => {
@@ -129,4 +135,158 @@ test("action-item responses update only their target Meeting cache", () => {
     client.getQueryData<{ actionItems: MeetingActionItem[] }>(["/api/meetings", "a"])?.actionItems[0].text,
     "Updated A",
   );
+});
+
+test("note events patch only the detail and preserve ephemeral speaker suggestions", () => {
+  const client = new QueryClient();
+  const note: MeetingNote = {
+    id: "workspace",
+    meetingId: "a",
+    body: "Updated note",
+    atMs: null,
+    createdAt: "2026-07-15T08:00:00Z",
+    updatedAt: "2026-07-15T08:01:00Z",
+  };
+  client.setQueryData(["/api/meetings", "a"], {
+    ...meeting("a"),
+    apiVersion: REST_API_VERSION,
+    notes: [],
+    segments: [],
+    speakers: [],
+    actionItems: [],
+    outputs: [],
+    outputVersions: [],
+    audioGaps: [],
+    audioAssets: [],
+    transcriptCheckpoints: [],
+  } satisfies MeetingDetail);
+  const assignments = {
+    apiVersion: REST_API_VERSION,
+    calendarEvent: null,
+    requiresConfirmation: true,
+    llmSuggestionAvailable: false,
+    llmRequested: true,
+    items: [{
+      speakerId: "speaker-1",
+      speakerLabel: "Speaker 1",
+      currentDisplayName: "Speaker 1",
+      profileMatch: null,
+      confirmedAttendee: null,
+      suggestions: [{
+        attendee: { participantId: "participant-1", name: "Alex", address: "alex@example.com" },
+        source: "llm" as const,
+        confidence: 0.8,
+        reason: "Transcript context",
+      }],
+    }],
+  } satisfies MeetingSpeakerAssignmentsResponse;
+  client.setQueryData(["/api/meetings", "a", "speaker-assignments"], assignments);
+
+  applyMeetingNoteEvent(client, "a", note);
+
+  assert.equal(client.getQueryData<MeetingDetail>(["/api/meetings", "a"])?.notes[0].body, "Updated note");
+  assert.deepEqual(
+    client.getQueryData<MeetingSpeakerAssignmentsResponse>(["/api/meetings", "a", "speaker-assignments"]),
+    assignments,
+  );
+});
+
+test("manual speaker rename clears only the target's stale participant identity", () => {
+  const client = new QueryClient();
+  const attendee = {
+    participantId: "participant-1",
+    name: "Alex",
+    address: "alex@example.com",
+  };
+  const target = {
+    speakerId: "speaker-1",
+    speakerLabel: "Speaker 1",
+    currentDisplayName: "Alex",
+    profileMatch: { profileId: "profile-1", displayName: "Alex", confidence: 0.9 },
+    confirmedAttendee: attendee,
+    participantLinkSource: "voice_profile",
+    suggestions: [{
+      attendee,
+      source: "llm" as const,
+      confidence: 0.8,
+      reason: "Old identity context",
+    }],
+  };
+  const untouched = {
+    speakerId: "speaker-2",
+    speakerLabel: "Speaker 2",
+    currentDisplayName: "Taylor",
+    profileMatch: null,
+    confirmedAttendee: null,
+    participantLinkSource: "",
+    suggestions: [],
+  };
+  const assignments = {
+    apiVersion: REST_API_VERSION,
+    calendarEvent: null,
+    requiresConfirmation: true,
+    llmSuggestionAvailable: false,
+    items: [target, untouched],
+  } satisfies MeetingSpeakerAssignmentsResponse;
+  client.setQueryData(["/api/meetings", "a", "speaker-assignments"], assignments);
+
+  applyMeetingSpeakerName(client, "a", "speaker-1", "Alexander");
+
+  const updated = client.getQueryData<MeetingSpeakerAssignmentsResponse>(
+    ["/api/meetings", "a", "speaker-assignments"],
+  );
+  assert.equal(updated?.items[0].currentDisplayName, "Alexander");
+  assert.equal(updated?.items[0].confirmedAttendee, null);
+  assert.equal(updated?.items[0].participantLinkSource, "");
+  assert.equal(updated?.items[0].profileMatch?.displayName, "Alexander");
+  assert.deepEqual(updated?.items[0].suggestions, []);
+  assert.deepEqual(updated?.items[1], untouched);
+});
+
+test("targeted refreshes never refetch Meeting child queries", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  const keys = [
+    MEETING_LIST_QUERY_KEY,
+    MEETING_HISTORY_QUERY_KEY,
+    ["/api/meetings", "a"] as const,
+    ["/api/meetings", "a", "deliveries"] as const,
+    ["/api/meetings", "a", "speaker-assignments"] as const,
+    ["/api/meetings", "a", "email-preview"] as const,
+  ];
+  const calls = new Map(keys.map((key) => [JSON.stringify(key), 0]));
+  const observers = keys.map((queryKey) => {
+    client.setQueryData(queryKey, {});
+    const observer = new QueryObserver(client, {
+      queryKey,
+      queryFn: async () => {
+        const key = JSON.stringify(queryKey);
+        calls.set(key, (calls.get(key) ?? 0) + 1);
+        return {};
+      },
+      staleTime: Infinity,
+    });
+    observer.subscribe(() => {});
+    return observer;
+  });
+
+  await refreshMeetingDetail(client, "a");
+  assert.equal(calls.get(JSON.stringify(["/api/meetings", "a"])), 1);
+  assert.equal(calls.get(JSON.stringify(["/api/meetings", "a", "deliveries"])), 0);
+  assert.equal(calls.get(JSON.stringify(["/api/meetings", "a", "speaker-assignments"])), 0);
+  assert.equal(calls.get(JSON.stringify(["/api/meetings", "a", "email-preview"])), 0);
+
+  await refreshMeetingCollections(client);
+  assert.equal(calls.get(JSON.stringify(MEETING_LIST_QUERY_KEY)), 1);
+  assert.equal(calls.get(JSON.stringify(MEETING_HISTORY_QUERY_KEY)), 1);
+  assert.equal(calls.get(JSON.stringify(["/api/meetings", "a"])), 1);
+  observers.forEach((observer) => observer.destroy());
+});
+
+test("reconnect and workspace policies distinguish first connect from recovery", () => {
+  assert.equal(isMeetingWebSocketReconnect(false, false, true), false);
+  assert.equal(isMeetingWebSocketReconnect(true, true, false), false);
+  assert.equal(isMeetingWebSocketReconnect(true, false, true), true);
+  assert.equal(isMeetingWebSocketReconnect(true, true, true), false);
+  assert.equal(isNewMeetingSetupEnabled(""), true);
+  assert.equal(isNewMeetingSetupEnabled("meeting-1"), false);
 });

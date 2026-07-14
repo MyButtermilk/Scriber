@@ -101,6 +101,14 @@ Backend/WebSocket:
 - Provider response bodies, shell/sidecar protocol lines, Tauri backend JSON,
   FFmpeg diagnostics, settings fields, and support-bundle inputs have explicit
   memory bounds.
+- File, YouTube, and Meeting artifact begin/stage/commit phases run as coarse
+  worker-thread transactions instead of blocking the aiohttp event loop. A
+  started SQLite mutation is always observed through its durable boundary on
+  cancellation; mutable transcript projection returns to the event-loop thread.
+- YouTube circuit-breaker accounting is phase-aware: only failures during the
+  actual STT provider call affect provider health. Download, media preparation,
+  local diarization, and persistence failures do not poison an otherwise
+  healthy provider circuit.
 
 Data and frontend:
 
@@ -115,6 +123,12 @@ Data and frontend:
   status cache. Because the new `lastSyncAt` forms the daily-event query key,
   this avoids a redundant credential-backed status request and an old-key
   event refetch while still loading the refreshed event list once.
+- Meeting WebSocket events patch exact React Query entries instead of broadly
+  invalidating the `/api/meetings` prefix. Import progress is monotonic and
+  polling runs only while the WebSocket is disconnected; a real reconnect
+  refreshes only the affected collection/detail/capability/import keys. Hidden
+  New-Meeting device, Outlook, detection, and speaker-model queries stay
+  disabled while a historical Meeting is open.
 - Frontend history pages use infinite loading and scroll-container virtualization.
 - Local REST queries and desktop invokes use cancellation, single-flight guards,
   and operation-appropriate deadlines so wedged workers do not leave permanent
@@ -137,6 +151,14 @@ I/O:
 - Export rendering and cleanup paths are moved off async request hot paths where
   practical.
 - Job and latency stores reuse SQLite connections more efficiently.
+- Meeting and canonical-transcript FTS5 rows are coupled to their base rows by
+  SQLite `rowid`, with versioned atomic migrations and rowid-based integrity
+  checks/triggers. In the 8,000-segment regression fixture the Meeting FTS
+  delete path fell from about `11.448 s` to `95.28 ms` (roughly 120x).
+- A Meeting detail response pins all constituent reads to one WAL snapshot, so
+  concurrent finalization cannot mix an older Meeting row with newer segments.
+  Durable File/YouTube jobs claim and transition by SQL compare-and-swap; a
+  late completion cannot overwrite cancellation or failure.
 - Settings persistence is debounced and flushed on shutdown.
 - Buffered live async audio stays in spooled files and streams through encoders
   and provider uploads rather than creating recording-sized heap copies.

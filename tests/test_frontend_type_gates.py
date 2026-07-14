@@ -1514,9 +1514,17 @@ def test_meeting_workspace_reconciles_after_backend_websocket_restart() -> None:
 
     assert "const meetingWsHasConnectedRef = useRef(false);" in source
     assert "const meetingWsWasConnectedRef = useRef(false);" in source
-    assert "const { isConnected } = useSharedWebSocket(handleWsMessage);" in source
-    assert "isConnected && meetingWsHasConnectedRef.current && !meetingWsWasConnectedRef.current" in source
-    assert "invalidateMeetings(selectedId || undefined);" in source
+    assert "const { isConnected: meetingWsConnected } = useWebSocketContext();" in source
+    assert "isMeetingWebSocketReconnect(" in source
+    assert "meetingWsConnected," in source
+    assert (
+        "queryClient.invalidateQueries({ queryKey: MEETING_HISTORY_QUERY_KEY, exact: true })"
+        in source
+    )
+    assert "void refreshMeetingCapabilities(queryClient);" in source
+    assert "if (selectedId) void refreshMeetingDetail(queryClient, selectedId);" in source
+    assert "invalidateMeetingImports();" in source
+    assert "invalidateMeetings(" not in source
 
 
 def test_meeting_audio_device_picker_refreshes_and_explains_inventory_fallbacks() -> None:

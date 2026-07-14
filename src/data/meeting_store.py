@@ -33,6 +33,8 @@ ALIGNMENT_QUALITIES = frozenset({"exact_word", "provider_segment", "estimated"})
 AUDIO_ASSET_TRACK_MANIFEST_VERSION = 2
 AUDIO_ASSET_TRACK_SOURCES = frozenset({"microphone", "mic_clean", "system", "mixed"})
 TRANSCRIPT_CHECKPOINT_SCHEMA_VERSION = 3
+MEETING_SEGMENTS_FTS_SCHEMA_VERSION = 2
+MEETING_SEGMENTS_FTS_SCHEMA_KEY = "meeting_segments_fts_schema_version"
 # A compact base every 10 minutes keeps work bounded. Delta checkpoints carry
 # an additional previous-base tail, so one corrupt base row cannot invalidate
 # the rest of a long meeting's recovery interval.
@@ -179,6 +181,84 @@ class MeetingCreate:
 
 class MeetingStore:
     """Normalized meeting persistence backed by Scriber's shared SQLite DB."""
+
+    @staticmethod
+    def _ensure_meeting_segments_fts(conn: sqlite3.Connection) -> None:
+        """Migrate and repair the segment FTS index without identifier scans."""
+        version_row = conn.execute(
+            "SELECT value FROM meeting_store_metadata WHERE key=?",
+            (MEETING_SEGMENTS_FTS_SCHEMA_KEY,),
+        ).fetchone()
+        version = int(version_row[0]) if version_row and str(version_row[0]).isdigit() else 0
+        if version != MEETING_SEGMENTS_FTS_SCHEMA_VERSION:
+            for trigger in (
+                "meeting_segments_fts_insert",
+                "meeting_segments_fts_update",
+                "meeting_segments_fts_delete",
+            ):
+                conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            conn.execute("DROP TABLE IF EXISTS meeting_segments_fts")
+            conn.execute(
+                """CREATE VIRTUAL TABLE meeting_segments_fts USING fts5(
+                       meeting_id, segment_id UNINDEXED, revision,
+                       text, speaker_label, tokenize='unicode61'
+                   )"""
+            )
+            conn.execute(
+                """INSERT INTO meeting_segments_fts
+                       (rowid,meeting_id,segment_id,revision,text,speaker_label)
+                   SELECT rowid,meeting_id,id,revision,text,speaker_label
+                   FROM meeting_segments"""
+            )
+            conn.execute(
+                """CREATE TRIGGER meeting_segments_fts_insert
+                   AFTER INSERT ON meeting_segments BEGIN
+                     INSERT INTO meeting_segments_fts
+                       (rowid,meeting_id,segment_id,revision,text,speaker_label)
+                     VALUES (new.rowid,new.meeting_id,new.id,new.revision,new.text,new.speaker_label);
+                   END"""
+            )
+            conn.execute(
+                """CREATE TRIGGER meeting_segments_fts_update
+                   AFTER UPDATE OF id,meeting_id,revision,text,speaker_label ON meeting_segments BEGIN
+                     DELETE FROM meeting_segments_fts WHERE rowid=old.rowid;
+                     INSERT INTO meeting_segments_fts
+                       (rowid,meeting_id,segment_id,revision,text,speaker_label)
+                     VALUES (new.rowid,new.meeting_id,new.id,new.revision,new.text,new.speaker_label);
+                   END"""
+            )
+            conn.execute(
+                """CREATE TRIGGER meeting_segments_fts_delete
+                   AFTER DELETE ON meeting_segments BEGIN
+                     DELETE FROM meeting_segments_fts WHERE rowid=old.rowid;
+                   END"""
+            )
+            conn.execute(
+                """INSERT INTO meeting_store_metadata(key,value) VALUES (?,?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+                (MEETING_SEGMENTS_FTS_SCHEMA_KEY, str(MEETING_SEGMENTS_FTS_SCHEMA_VERSION)),
+            )
+
+        segment_count = int(conn.execute("SELECT COUNT(*) FROM meeting_segments").fetchone()[0])
+        fts_count = int(conn.execute("SELECT COUNT(*) FROM meeting_segments_fts").fetchone()[0])
+        missing = conn.execute(
+            """SELECT 1 FROM meeting_segments s
+               LEFT JOIN meeting_segments_fts f ON f.rowid=s.rowid
+               WHERE f.rowid IS NULL LIMIT 1"""
+        ).fetchone()
+        orphaned = conn.execute(
+            """SELECT 1 FROM meeting_segments_fts f
+               LEFT JOIN meeting_segments s ON s.rowid=f.rowid
+               WHERE s.rowid IS NULL LIMIT 1"""
+        ).fetchone()
+        if segment_count != fts_count or missing is not None or orphaned is not None:
+            conn.execute("DELETE FROM meeting_segments_fts")
+            conn.execute(
+                """INSERT INTO meeting_segments_fts
+                       (rowid,meeting_id,segment_id,revision,text,speaker_label)
+                   SELECT rowid,meeting_id,id,revision,text,speaker_label
+                   FROM meeting_segments"""
+            )
 
     def initialize(self, *, speaker_library_enabled: bool = True) -> None:
         with db._get_connection() as conn:  # shared WAL connection lifecycle
@@ -460,8 +540,12 @@ class MeetingStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS meeting_store_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
                 CREATE VIRTUAL TABLE IF NOT EXISTS meeting_segments_fts USING fts5(
-                    meeting_id UNINDEXED, segment_id UNINDEXED, revision UNINDEXED,
+                    meeting_id, segment_id UNINDEXED, revision,
                     text, speaker_label, tokenize='unicode61'
                 );
                 CREATE VIRTUAL TABLE IF NOT EXISTS meeting_outputs_fts USING fts5(
@@ -469,16 +553,17 @@ class MeetingStore:
                     payload, tokenize='unicode61'
                 );
                 CREATE TRIGGER IF NOT EXISTS meeting_segments_fts_insert AFTER INSERT ON meeting_segments BEGIN
-                    INSERT INTO meeting_segments_fts(meeting_id,segment_id,revision,text,speaker_label)
-                    VALUES (new.meeting_id,new.id,new.revision,new.text,new.speaker_label);
+                    INSERT INTO meeting_segments_fts(rowid,meeting_id,segment_id,revision,text,speaker_label)
+                    VALUES (new.rowid,new.meeting_id,new.id,new.revision,new.text,new.speaker_label);
                 END;
-                CREATE TRIGGER IF NOT EXISTS meeting_segments_fts_update AFTER UPDATE ON meeting_segments BEGIN
-                    DELETE FROM meeting_segments_fts WHERE segment_id=old.id;
-                    INSERT INTO meeting_segments_fts(meeting_id,segment_id,revision,text,speaker_label)
-                    VALUES (new.meeting_id,new.id,new.revision,new.text,new.speaker_label);
+                CREATE TRIGGER IF NOT EXISTS meeting_segments_fts_update
+                AFTER UPDATE OF id,meeting_id,revision,text,speaker_label ON meeting_segments BEGIN
+                    DELETE FROM meeting_segments_fts WHERE rowid=old.rowid;
+                    INSERT INTO meeting_segments_fts(rowid,meeting_id,segment_id,revision,text,speaker_label)
+                    VALUES (new.rowid,new.meeting_id,new.id,new.revision,new.text,new.speaker_label);
                 END;
                 CREATE TRIGGER IF NOT EXISTS meeting_segments_fts_delete AFTER DELETE ON meeting_segments BEGIN
-                    DELETE FROM meeting_segments_fts WHERE segment_id=old.id;
+                    DELETE FROM meeting_segments_fts WHERE rowid=old.rowid;
                 END;
                 CREATE TRIGGER IF NOT EXISTS meeting_outputs_fts_insert AFTER INSERT ON meeting_outputs BEGIN
                     INSERT INTO meeting_outputs_fts(meeting_id,output_id,kind,payload)
@@ -661,13 +746,15 @@ class MeetingStore:
                 conn.execute("ALTER TABLE meeting_deliveries ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''")
             if "next_attempt_at" not in delivery_columns:
                 conn.execute("ALTER TABLE meeting_deliveries ADD COLUMN next_attempt_at TEXT NOT NULL DEFAULT ''")
-            conn.execute(
-                """INSERT INTO meeting_segments_fts(meeting_id,segment_id,revision,text,speaker_label)
-                   SELECT s.meeting_id,s.id,s.revision,s.text,s.speaker_label FROM meeting_segments s
-                   WHERE NOT EXISTS (
-                     SELECT 1 FROM meeting_segments_fts f WHERE f.segment_id=s.id
-                   )"""
-            )
+            conn.execute("SAVEPOINT migrate_meeting_segments_fts")
+            try:
+                self._ensure_meeting_segments_fts(conn)
+            except Exception:
+                conn.execute("ROLLBACK TO migrate_meeting_segments_fts")
+                conn.execute("RELEASE migrate_meeting_segments_fts")
+                raise
+            else:
+                conn.execute("RELEASE migrate_meeting_segments_fts")
             conn.execute(
                 """INSERT INTO meeting_outputs_fts(meeting_id,output_id,kind,payload)
                    SELECT o.meeting_id,o.id,o.kind,o.payload_json FROM meeting_outputs o
@@ -3870,12 +3957,16 @@ class MeetingStore:
             (meeting_id,),
         ).fetchone() else "live"
         expression = " OR ".join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms[:16])
+        scoped_expression = (
+            f'meeting_id:"{meeting_id.replace(chr(34), chr(34) * 2)}" AND '
+            f'revision:"{revision}" AND ({expression})'
+        )
         hits = conn.execute(
             """SELECT s.start_ms,s.end_ms FROM meeting_segments_fts f
-               JOIN meeting_segments s ON s.id=f.segment_id AND s.meeting_id=f.meeting_id
+               JOIN meeting_segments s ON s.rowid=f.rowid
                WHERE meeting_segments_fts MATCH ? AND f.meeting_id=? AND f.revision=?
                ORDER BY bm25(meeting_segments_fts),s.start_ms LIMIT ?""",
-            (expression, meeting_id, revision, max(1, min(20, limit))),
+            (scoped_expression, meeting_id, revision, max(1, min(20, limit))),
         ).fetchall()
         if not hits:
             return []
@@ -3894,31 +3985,71 @@ class MeetingStore:
         return [self._segment(row) for row in rows]
 
     def detail(self, meeting_id: str, *, revision: str = "canonical") -> dict[str, Any]:
-        meeting = self.get(meeting_id)
         conn = db._get_connection()
-        rows = conn.execute(
-            """SELECT * FROM meeting_segments WHERE meeting_id = ? AND revision = ?
-               ORDER BY start_ms, sequence""",
-            (meeting_id, revision),
-        ).fetchall()
-        if not rows and revision == "canonical":
+        try:
+            # A detail response is one logical document.  Pin every constituent
+            # query to the same WAL read snapshot, then release SQLite before
+            # doing JSON decoding and response assembly.
+            conn.execute("BEGIN")
+            meeting_row = conn.execute(
+                "SELECT * FROM meetings WHERE id = ?", (meeting_id,)
+            ).fetchone()
+            if meeting_row is None:
+                raise MeetingNotFound(meeting_id)
             rows = conn.execute(
-                """SELECT * FROM meeting_segments WHERE meeting_id = ? AND revision = 'live'
+                """SELECT * FROM meeting_segments WHERE meeting_id = ? AND revision = ?
                    ORDER BY start_ms, sequence""",
+                (meeting_id, revision),
+            ).fetchall()
+            if not rows and revision == "canonical":
+                rows = conn.execute(
+                    """SELECT * FROM meeting_segments WHERE meeting_id = ? AND revision = 'live'
+                       ORDER BY start_ms, sequence""",
+                    (meeting_id,),
+                ).fetchall()
+            outputs = conn.execute(
+                "SELECT * FROM meeting_outputs WHERE meeting_id = ? ORDER BY created_at",
                 (meeting_id,),
             ).fetchall()
-        outputs = conn.execute(
-            "SELECT * FROM meeting_outputs WHERE meeting_id = ? ORDER BY created_at", (meeting_id,)
-        ).fetchall()
-        output_versions = conn.execute(
-            """SELECT * FROM meeting_output_versions WHERE meeting_id=?
-               ORDER BY kind,schema_version,version""",
-            (meeting_id,),
-        ).fetchall()
+            output_versions = conn.execute(
+                """SELECT * FROM meeting_output_versions WHERE meeting_id=?
+                   ORDER BY kind,schema_version,version""",
+                (meeting_id,),
+            ).fetchall()
+            speaker_rows = conn.execute(
+                "SELECT * FROM meeting_speakers WHERE meeting_id=? ORDER BY created_at,id",
+                (meeting_id,),
+            ).fetchall()
+            note_rows = conn.execute(
+                "SELECT * FROM meeting_notes WHERE meeting_id=? ORDER BY created_at,id",
+                (meeting_id,),
+            ).fetchall()
+            action_item_rows = conn.execute(
+                "SELECT * FROM meeting_action_items WHERE meeting_id=? ORDER BY created_at,id",
+                (meeting_id,),
+            ).fetchall()
+            audio_gap_rows = conn.execute(
+                "SELECT * FROM meeting_audio_gaps WHERE meeting_id=? ORDER BY started_at_ms,id",
+                (meeting_id,),
+            ).fetchall()
+            audio_asset_rows = conn.execute(
+                "SELECT * FROM meeting_audio_assets WHERE meeting_id=? ORDER BY created_at,kind",
+                (meeting_id,),
+            ).fetchall()
+            checkpoint_rows = conn.execute(
+                """SELECT id,meeting_id,sequence,cutoff_ms,segment_count,sources_json,
+                          frontiers_json,commit_ordinal,snapshot_sha256,created_at,updated_at
+                   FROM meeting_transcript_checkpoints WHERE meeting_id=? ORDER BY sequence""",
+                (meeting_id,),
+            ).fetchall()
+            conn.commit()
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+
+        meeting = self._meeting(meeting_row)
         meeting["segments"] = [self._segment(row) for row in rows]
-        speaker_rows = conn.execute(
-            "SELECT * FROM meeting_speakers WHERE meeting_id=? ORDER BY created_at,id", (meeting_id,)
-        ).fetchall()
         meeting["speakers"] = [
             {"id": row["id"], "meetingId": row["meeting_id"], "label": row["label"],
              "displayName": row["display_name"], "sourceHint": row["source_hint"],
@@ -3931,11 +4062,28 @@ class MeetingStore:
              "createdAt": row["created_at"], "updatedAt": row["updated_at"]}
             for row in speaker_rows
         ]
-        meeting["notes"] = self._notes_conn(conn, meeting_id)
-        meeting["actionItems"] = self._action_items_conn(conn, meeting_id)
-        meeting["audioGaps"] = self._audio_gaps_conn(conn, meeting_id)
-        meeting["audioAssets"] = self._audio_assets_conn(conn, meeting_id)
-        meeting["transcriptCheckpoints"] = self._transcript_checkpoints_conn(conn, meeting_id)
+        meeting["notes"] = [
+            {"id": row["id"], "meetingId": row["meeting_id"], "body": row["body"],
+             "atMs": row["at_ms"], "createdAt": row["created_at"], "updatedAt": row["updated_at"]}
+            for row in note_rows
+        ]
+        meeting["actionItems"] = [
+            {"id": row["id"], "meetingId": row["meeting_id"], "text": row["text"],
+             "owner": row["owner"], "dueDate": row["due_date"], "status": row["status"],
+             "segmentIds": _loads(row["segment_ids_json"], []),
+             "userModified": bool(row["user_modified"]),
+             "provenance": str(row["provenance"] or "automatic"),
+             "createdAt": row["created_at"], "updatedAt": row["updated_at"]}
+            for row in action_item_rows
+        ]
+        meeting["audioGaps"] = [
+            {"id": row["id"], "meetingId": row["meeting_id"], "source": row["source"],
+             "startedAtMs": row["started_at_ms"], "endedAtMs": row["ended_at_ms"],
+             "reason": row["reason"], "createdAt": row["created_at"]}
+            for row in audio_gap_rows
+        ]
+        meeting["audioAssets"] = [self._audio_asset_from_row(row) for row in audio_asset_rows]
+        meeting["transcriptCheckpoints"] = [self._checkpoint_dict(row) for row in checkpoint_rows]
         meeting["outputs"] = [
             {
                 "id": row["id"], "kind": row["kind"], "schemaVersion": row["schema_version"],

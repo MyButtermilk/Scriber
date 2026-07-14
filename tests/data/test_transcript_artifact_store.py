@@ -659,6 +659,60 @@ def test_canonical_commit_updates_head_attempt_and_legacy_projection_atomically(
     assert matches[0].start_ms == 1500
 
 
+def test_canonical_fts_migration_restores_rowid_parity_and_indexed_integrity_lookup(
+    artifact_store,
+):
+    attempt = _ready_commit(artifact_store)
+    result = artifact_store.commit_canonical_artifact(
+        attempt.id,
+        expected_attempt_version=attempt.state_version,
+        expected_head_generation=0,
+        segments=_segments(),
+    )
+    conn = artifact_store._connect()
+    conn.executescript(
+        """
+        DROP TRIGGER trg_canonical_segment_fts_delete;
+        DROP TABLE canonical_transcript_segments_fts;
+        CREATE VIRTUAL TABLE canonical_transcript_segments_fts USING fts5(
+            artifact_id UNINDEXED, segment_id UNINDEXED, text, speaker_label, source_track
+        );
+        INSERT INTO canonical_transcript_segments_fts(
+            rowid,artifact_id,segment_id,text,speaker_label,source_track
+        ) SELECT rowid+100,artifact_id,segment_id,text,speaker_label,source_track
+          FROM canonical_transcript_segments;
+        """
+    )
+    conn.execute(
+        """UPDATE transcript_artifact_store_metadata SET value='1'
+           WHERE key='canonical_segments_fts_schema_version'"""
+    )
+    conn.commit()
+
+    migrated = TranscriptArtifactStore(artifact_store._db_path)
+    try:
+        parity = migrated._connect().execute(
+            """SELECT COUNT(*) FROM canonical_transcript_segments s
+               JOIN canonical_transcript_segments_fts f ON f.rowid=s.rowid"""
+        ).fetchone()[0]
+        plan = migrated._connect().execute(
+            """EXPLAIN QUERY PLAN SELECT 1 FROM canonical_transcript_segments s
+               LEFT JOIN canonical_transcript_segments_fts f ON f.rowid=s.rowid
+               WHERE f.rowid IS NULL LIMIT 1"""
+        ).fetchall()
+        trigger_sql = migrated._connect().execute(
+            "SELECT sql FROM sqlite_master WHERE name='trg_canonical_segment_fts_delete'"
+        ).fetchone()[0]
+        matches = migrated.search_canonical_segments("transcript-1", "nächster")
+    finally:
+        migrated.close()
+
+    assert parity == len(result.artifact.segments)
+    assert "rowid=OLD.rowid" in trigger_sql.replace(" ", "")
+    assert any("VIRTUAL TABLE INDEX 0:=" in row[3] for row in plan)
+    assert len(matches) == 1
+
+
 def test_canonical_commit_retry_is_idempotent(artifact_store):
     attempt = _ready_commit(artifact_store)
     first = artifact_store.commit_canonical_artifact(

@@ -74,7 +74,7 @@ from src.core.ws_contracts import (
     validate_event_payload,
     version_event_payload,
 )
-from src.data.job_store import JobRecord, JobStore, JobType
+from src.data.job_store import JobRecord, JobStatus, JobStore, JobType
 from src.data.latency_metrics_store import LatencyMetricsStore
 from src.data.audio_admission_store import (
     AudioAdmissionClaim,
@@ -1474,14 +1474,25 @@ async def _to_thread_cancellation_barrier(
     mutation boundary before cleanup continues.
     """
     worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-    try:
-        return await asyncio.shield(worker)
-    except asyncio.CancelledError:
+    pending_cancel: asyncio.CancelledError | None = None
+    while not worker.done():
         try:
             await asyncio.shield(worker)
-        except Exception:
+        except asyncio.CancelledError as exc:
+            # Shutdown and explicit user cancellation can race and call
+            # ``Task.cancel`` more than once.  Keep observing the non-cancelable
+            # thread worker until its durable boundary has really completed.
+            pending_cancel = exc
+    try:
+        result = worker.result()
+    except BaseException:
+        if pending_cancel is not None:
             logger.exception("Durable thread mutation failed while its caller was canceling")
+            raise pending_cancel
         raise
+    if pending_cancel is not None:
+        raise pending_cancel
+    return result
 
 
 async def _await_with_delayed_cancellation(
@@ -4227,11 +4238,8 @@ class ScriberWebController:
         delay_seconds = self._retry_delay_seconds(attempts)
         retry_at = (datetime.now() + timedelta(seconds=delay_seconds)).isoformat()
         retry_label = int(round(delay_seconds))
-        rec.status = "processing"
-        rec.step = f"Retrying in {retry_label}s ({attempts}/{self._job_max_attempts})"
-        rec.updated_at = datetime.now().isoformat()
         try:
-            await asyncio.to_thread(
+            updated = await asyncio.to_thread(
                 self._job_store.set_retry,
                 job_id,
                 retry_at=retry_at,
@@ -4240,6 +4248,44 @@ class ScriberWebController:
         except Exception as exc:  # pragma: no cover - best effort persistence
             logger.warning(f"Failed to persist retry state for transcript {rec.id}: {exc}")
             return False
+        if not updated:
+            logger.info(
+                "Skipping retry for transcript {} because its persisted job is no longer running",
+                rec.id,
+            )
+            try:
+                current = await asyncio.to_thread(self._job_store.get, job_id)
+            except Exception as exc:
+                logger.warning(
+                    "Could not reconcile terminal job state after retry CAS loss for {}: {}",
+                    rec.id,
+                    exc,
+                )
+                return False
+            if current is not None and current.status in {
+                JobStatus.CANCELED,
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+            }:
+                rec.updated_at = datetime.now().isoformat()
+                if current.status == JobStatus.CANCELED:
+                    rec.status = "stopped"
+                    rec.step = current.last_error or "Stopped by user"
+                elif current.status == JobStatus.COMPLETED:
+                    rec.status = "completed"
+                    rec.step = "Completed"
+                else:
+                    rec.status = "failed"
+                    rec.step = current.last_error or "Transcription failed"
+                # ``True`` means the exception is fully handled: either a retry
+                # was scheduled or another terminal lifecycle writer won.  All
+                # callers already return without projecting a competing failure
+                # when this method returns true.
+                return True
+            return False
+        rec.status = "processing"
+        rec.step = f"Retrying in {retry_label}s ({attempts}/{self._job_max_attempts})"
+        rec.updated_at = datetime.now().isoformat()
         rec.reset_transcription_attempt()
         rec._persistence_failed = persistence_retry
         self._schedule_retry_scan(delay_seconds)
@@ -4342,17 +4388,12 @@ class ScriberWebController:
                 used_provider = rec._youtube_stt_provider_used
                 if used_provider and rec.status == "completed":
                     self._record_provider_success(used_provider)
-                elif used_provider and rec.status == "failed":
-                    self._record_provider_failure(used_provider, rec.step)
             except asyncio.CancelledError:
                 if not self._shutting_down:
                     await self._finalize_canceled_background_job(rec)
                 raise
             except Exception as exc:
                 logger.exception("YouTube background job failed outside the transcription runner")
-                used_provider = rec._youtube_stt_provider_used or provider or ""
-                if used_provider and not isinstance(exc, TranscriptPersistenceError):
-                    self._record_provider_failure(used_provider, exc)
                 if not await self._schedule_retry_if_allowed(rec, exc):
                     rec.status = "failed"
                     rec.step = "Failed"
@@ -4398,8 +4439,6 @@ class ScriberWebController:
                 await self._run_file_transcription(rec, file_path, provider=provider)
                 if rec.status == "completed":
                     self._record_provider_success(provider)
-                elif rec.status == "failed":
-                    self._record_provider_failure(provider, rec.step)
             except asyncio.CancelledError:
                 if not self._shutting_down:
                     await self._finalize_canceled_background_job(rec)
@@ -6159,6 +6198,26 @@ class ScriberWebController:
             )
         return attempt, owner, None
 
+    async def _begin_transcript_artifact_async(
+        self,
+        rec: TranscriptRecord,
+        route: FrozenTranscriptionRoute,
+    ) -> tuple[AttemptRecord, str, RecoveryBundle | None]:
+        """Run the complete attempt-claim transaction outside the aiohttp loop."""
+        result, pending_cancel = await _await_with_delayed_cancellation(
+            asyncio.to_thread(self._begin_transcript_artifact, rec, route)
+        )
+        if pending_cancel is not None:
+            attempt, owner, _recovery = result
+            await _to_thread_cancellation_barrier(
+                self._terminate_artifact_attempt_before_result,
+                attempt,
+                owner=owner,
+                canceled=True,
+            )
+            raise pending_cancel
+        return result
+
     async def _ensure_artifact_transcript_row(self, rec: TranscriptRecord) -> None:
         """Persist the FK parent before an artifact attempt can be scheduled."""
         last_error: Exception | None = None
@@ -6232,6 +6291,20 @@ class ScriberWebController:
                 AttemptState.SOURCE_READY,
                 AttemptState.TRANSCRIBING,
             }:
+                if current.state not in {
+                    AttemptState.COMPLETED,
+                    AttemptState.SUPERSEDED,
+                    AttemptState.FAILED,
+                    AttemptState.CANCELED,
+                } and current.lease_owner == owner:
+                    # Provider evidence is durable and recoverable. Do not mark
+                    # it canceled, but do release ownership immediately instead
+                    # of forcing recovery to wait for lease expiry.
+                    self._transcript_artifacts.release_attempt_lease(
+                        current.id,
+                        owner=owner,
+                        expected_version=current.state_version,
+                    )
                 return
             self._transcript_artifacts.transition_attempt(
                 current.id,
@@ -6248,6 +6321,20 @@ class ScriberWebController:
             )
         except Exception as exc:
             logger.debug("Could not finalize pre-result transcript attempt: {}", exc)
+
+    async def _terminate_artifact_attempt_before_result_async(
+        self,
+        attempt: AttemptRecord,
+        *,
+        owner: str,
+        canceled: bool,
+    ) -> None:
+        await _to_thread_cancellation_barrier(
+            self._terminate_artifact_attempt_before_result,
+            attempt,
+            owner=owner,
+            canceled=canceled,
+        )
 
     def _commit_transcript_artifact(
         self,
@@ -6346,8 +6433,23 @@ class ScriberWebController:
             artifact = self._transcript_artifacts.get_artifact(result.head.artifact_id)
         if artifact is None:
             raise ArtifactConflict("Canonical commit produced no readable artifact.")
-        rendered = self._transcript_artifacts.render_legacy_content(artifact.segments)
+        return self._transcript_artifacts.render_legacy_content(artifact.segments)
+
+    async def _commit_transcript_artifact_async(
+        self,
+        rec: TranscriptRecord,
+        **kwargs: Any,
+    ) -> str:
+        """Observe a started canonical commit through its durable transaction boundary."""
+        rendered, pending_cancel = await _await_with_delayed_cancellation(
+            asyncio.to_thread(self._commit_transcript_artifact, rec, **kwargs)
+        )
+        # Keep mutable TranscriptRecord ownership on the event-loop thread.
         rec.replace_content(rendered)
+        if pending_cancel is not None:
+            # The canonical head is already committed. Completing projection is
+            # safer than reporting a canceled job whose transcript is durable.
+            logger.debug("Cancellation arrived after canonical transcript commit; completing job")
         return rendered
 
     def _persist_provider_stage_before_local_diarization(
@@ -6374,6 +6476,15 @@ class ScriberWebController:
             lease_owner=owner,
         )
         return persisted
+
+    async def _persist_provider_stage_before_local_diarization_async(
+        self,
+        **kwargs: Any,
+    ) -> AttemptRecord:
+        return await _to_thread_cancellation_barrier(
+            self._persist_provider_stage_before_local_diarization,
+            **kwargs,
+        )
 
     async def _register_transcript_source_asset(
         self,
@@ -6713,7 +6824,7 @@ class ScriberWebController:
                     language=rec.language,
                     automatic=captions.is_automatic,
                 )
-                attempt, owner, recovery = self._begin_transcript_artifact(rec, route)
+                attempt, owner, recovery = await self._begin_transcript_artifact_async(rec, route)
                 if recovery is None:
                     units, evidence = stage_units_from_captions(captions.cues)
                     transcript_text = captions.text
@@ -6721,7 +6832,7 @@ class ScriberWebController:
                     units = recovery.stage_result.units
                     evidence = recovery.stage_result.evidence
                     transcript_text = recovery.stage_result.transcript_text
-                content = self._commit_transcript_artifact(
+                content = await self._commit_transcript_artifact_async(
                     rec,
                     attempt=attempt,
                     owner=owner,
@@ -6772,9 +6883,9 @@ class ScriberWebController:
             diarization_requested=True,
             local_worker_manifest=local_manifest,
         )
-        attempt, owner, recovery = self._begin_transcript_artifact(rec, route)
+        attempt, owner, recovery = await self._begin_transcript_artifact_async(rec, route)
         if recovery is not None:
-            content = self._commit_transcript_artifact(
+            content = await self._commit_transcript_artifact_async(
                 rec,
                 attempt=attempt,
                 owner=owner,
@@ -6870,7 +6981,7 @@ class ScriberWebController:
             source_asset_id = await self._register_transcript_source_asset(
                 rec, Path(audio_path), asset_kind="youtube_audio"
             )
-            workflow_phase["value"] = "transcribing"
+            workflow_phase["value"] = "preparing"
             rec.step = "Preparing transcription..."
             rec.updated_at = datetime.now().isoformat()
             await self._broadcast_history_updated(record=rec, reason="progress")
@@ -6938,6 +7049,7 @@ class ScriberWebController:
                 env_key="SCRIBER_TIMEOUT_YOUTUBE_TRANSCRIBE_SEC",
             )
             if supports_direct_file_upload(provider):
+                workflow_phase["value"] = "provider"
                 await self._await_with_artifact_lease(
                     self._await_with_timeout(
                         pipeline.transcribe_file_direct(str(audio_path)),
@@ -6948,6 +7060,7 @@ class ScriberWebController:
                     owner=owner,
                 )
             else:
+                workflow_phase["value"] = "provider"
                 await self._await_with_artifact_lease(
                     self._await_with_timeout(
                         pipeline.transcribe_file(str(audio_path)),
@@ -6969,7 +7082,8 @@ class ScriberWebController:
                     else duration_label_to_ms(rec.duration)
                 ),
             )
-            attempt = self._persist_provider_stage_before_local_diarization(
+            workflow_phase["value"] = "postprocessing"
+            attempt = await self._persist_provider_stage_before_local_diarization_async(
                 attempt=attempt,
                 owner=owner,
                 transcript_text=provider_text,
@@ -6993,7 +7107,7 @@ class ScriberWebController:
                     "localDiarizationApplied": True,
                     "localSpeakerIntervals": len(units),
                 }
-            content = self._commit_transcript_artifact(
+            content = await self._commit_transcript_artifact_async(
                 rec,
                 attempt=attempt,
                 owner=owner,
@@ -7011,16 +7125,17 @@ class ScriberWebController:
                 source="audio",
             )
         except asyncio.CancelledError:
-            self._terminate_artifact_attempt_before_result(
+            await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=True
             )
             raise
         except (ValueError, ImportError) as exc:
             logger.warning("YouTube transcription rejected: {}", exc)
-            self._terminate_artifact_attempt_before_result(
+            await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=False
             )
-            self._record_provider_failure(provider, exc)
+            if workflow_phase["value"] == "provider":
+                self._record_provider_failure(provider, exc)
             if await self._schedule_retry_if_allowed(rec, exc):
                 return
             rec.status = "failed"
@@ -7040,10 +7155,11 @@ class ScriberWebController:
                 meta={"error": str(exc)},
             )
         except TimeoutError as exc:
-            self._terminate_artifact_attempt_before_result(
+            await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=False
             )
-            self._record_provider_failure(provider, exc)
+            if workflow_phase["value"] == "provider":
+                self._record_provider_failure(provider, exc)
             if await self._schedule_retry_if_allowed(rec, exc):
                 return
             rec.status = "failed"
@@ -7063,10 +7179,9 @@ class ScriberWebController:
                 meta={"error": str(exc)},
             )
         except YouTubeDownloadError as exc:
-            self._terminate_artifact_attempt_before_result(
+            await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=False
             )
-            self._record_provider_failure(provider, exc)
             if await self._schedule_retry_if_allowed(rec, exc):
                 return
             rec.status = "failed"
@@ -7087,7 +7202,7 @@ class ScriberWebController:
                 meta={"error": str(exc)},
             )
         except TranscriptPersistenceError as exc:
-            self._terminate_artifact_attempt_before_result(
+            await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=False
             )
             if await self._schedule_retry_if_allowed(rec, exc):
@@ -7109,10 +7224,11 @@ class ScriberWebController:
             )
         except Exception as exc:
             logger.exception("YouTube transcription failed")
-            self._terminate_artifact_attempt_before_result(
+            await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=False
             )
-            self._record_provider_failure(provider, exc)
+            if workflow_phase["value"] == "provider":
+                self._record_provider_failure(provider, exc)
             if await self._schedule_retry_if_allowed(rec, exc):
                 return
             rec.status = "failed"
@@ -7264,9 +7380,9 @@ class ScriberWebController:
         source_asset_id = await self._register_transcript_source_asset(
             rec, file_path, asset_kind="uploaded_audio"
         )
-        attempt, owner, recovery = self._begin_transcript_artifact(rec, route)
+        attempt, owner, recovery = await self._begin_transcript_artifact_async(rec, route)
         if recovery is not None:
-            return self._commit_transcript_artifact(
+            return await self._commit_transcript_artifact_async(
                 rec,
                 attempt=attempt,
                 owner=owner,
@@ -7325,12 +7441,12 @@ class ScriberWebController:
                 owner=owner,
             )
         except asyncio.CancelledError:
-            self._terminate_artifact_attempt_before_result(
+            await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=True
             )
             raise
         except Exception:
-            self._terminate_artifact_attempt_before_result(
+            await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=False
             )
             raise
@@ -7346,7 +7462,7 @@ class ScriberWebController:
                 else duration_label_to_ms(rec.duration)
             ),
         )
-        attempt = self._persist_provider_stage_before_local_diarization(
+        attempt = await self._persist_provider_stage_before_local_diarization_async(
             attempt=attempt,
             owner=owner,
             transcript_text=provider_text,
@@ -7370,7 +7486,7 @@ class ScriberWebController:
                 "localDiarizationApplied": True,
                 "localSpeakerIntervals": len(units),
             }
-        return self._commit_transcript_artifact(
+        return await self._commit_transcript_artifact_async(
             rec,
             attempt=attempt,
             owner=owner,

@@ -3,6 +3,7 @@ import sqlite3
 import weakref
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -40,6 +41,56 @@ def test_job_store_persists_and_transitions(tmp_path):
     completed = store.get(queued.id)
     assert completed is not None
     assert completed.status == JobStatus.COMPLETED
+
+
+def test_job_store_claim_is_atomic_across_workers(tmp_path):
+    db_path = tmp_path / "jobs.db"
+    first = JobStore(db_path=db_path)
+    second = JobStore(db_path=db_path)
+    job = first.enqueue(
+        transcript_id="tx-claim", job_type=JobType.FILE, payload={"path": "meeting.wav"}
+    )
+    barrier = Barrier(2)
+
+    def claim(store):
+        barrier.wait(timeout=3)
+        return store.mark_running(job.id)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(claim, (first, second)))
+
+    persisted = first.get(job.id)
+    assert sorted(results) == [False, True]
+    assert persisted is not None
+    assert persisted.status == JobStatus.RUNNING
+    assert persisted.attempts == 1
+    first.close()
+    second.close()
+
+
+def test_job_store_terminal_transitions_are_idempotent_but_not_overwritable(tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    job = store.enqueue(
+        transcript_id="tx-cancel", job_type=JobType.YOUTUBE, payload={"url": "https://example.com"}
+    )
+    assert store.mark_running(job.id)
+    assert store.mark_canceled(job.id, last_error="stopped")
+    assert store.mark_canceled(job.id, last_error="stopped")
+    assert store.mark_completed(job.id) is False
+    assert store.mark_failed(job.id, last_error="late failure") is False
+    assert store.set_retry(job.id, retry_at=datetime.now().isoformat()) is False
+    assert store.mark_running(job.id) is False
+    persisted = store.get(job.id)
+    assert persisted is not None
+    assert persisted.status == JobStatus.CANCELED
+    assert persisted.attempts == 1
+
+    direct = store.enqueue(
+        transcript_id="tx-direct", job_type=JobType.FILE, payload={"path": "direct.wav"}
+    )
+    assert store.mark_completed(direct.id) is True
+    assert store.mark_completed(direct.id) is True
+    assert store.get(direct.id).status == JobStatus.COMPLETED
 
 
 def test_job_store_reuses_thread_local_connection(tmp_path):

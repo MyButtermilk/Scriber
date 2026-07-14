@@ -114,9 +114,12 @@ Meetings:
    duplicate speech.
    After commit, the backend publishes only redacted checkpoint metadata and
    committed final segments over the versioned WebSocket contract. The frontend
-   patches its Meeting caches incrementally and performs a full detail
-   reconciliation on selection, reconnect, and terminal state transitions; it
-   does not poll the complete Meeting during steady live capture.
+   patches exact Meeting caches incrementally. Import progress is monotonic and
+   uses HTTP polling only while the shared WebSocket is disconnected. Selection,
+   reconnect, and terminal transitions reconcile only the affected collection,
+   capability, detail, or import keys; child caches and paid ephemeral speaker
+   suggestions are not discarded by a broad prefix invalidation. The complete
+   Meeting is not polled during steady live capture.
    Native Capture and the durable recorder start before optional live STT on initial
    start, resume, interrupted recovery, and default-device reconnect. Each
    Soniox live source in `live_final` then runs as a best-effort preview with an independent
@@ -571,6 +574,11 @@ second cloud call. A canonical commit is one `BEGIN IMMEDIATE` transaction: it
 checks the expected head generation, writes artifact/segments/inputs, advances
 the head by CAS, updates compatibility projections, and completes the attempt.
 A stale attempt becomes `superseded` and cannot replace a newer artifact.
+Artifact begin, provider-stage persistence, canonical commit/FTS projection,
+and Meeting track-stage persistence execute as coarse worker-thread phases so
+large transcripts do not block aiohttp. Cancellation observes every started
+SQLite phase through its actual durable boundary; after a successful commit,
+legacy `TranscriptRecord` projection is completed on the event-loop thread.
 
 Route snapshots never persist API keys, signed URLs, bearer material, or plain
 custom vocabulary. They persist only a normalized vocabulary digest and safe
@@ -655,6 +663,18 @@ use compare-and-swap on attempt id plus version. A second controller may renew
 or take over only an expired lease; a CAS loser exits as `superseded` and must
 never mark the winner's job failed. Analysis and canonical commit retain their
 distinct phases so recovery after a canonical transcript never repeats STT.
+The persistent File/YouTube job queue uses status-qualified SQL updates for
+claims and terminal transitions. Exactly one worker can claim a queued job, and
+a late completion cannot overwrite a canceled or failed row; direct
+`queued -> completed` reconciliation remains an intentional idempotent path.
+
+Meeting and canonical transcript FTS5 projections bind FTS `rowid` to the
+corresponding base-table `rowid`. Versioned migrations rebuild the index and
+its triggers atomically, while startup parity checks and delete/update triggers
+use rowid instead of scanning unindexed text identifiers. Meeting detail reads
+hold one explicit WAL read transaction until every constituent row set has
+been captured, then decode JSON and assemble the response after releasing the
+snapshot.
 
 Task creation uses reservation gates even within one process: reserve the
 meeting task slot synchronously, commit the corresponding durable state, then

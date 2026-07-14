@@ -337,10 +337,22 @@ class JobStore:
             JobStatus.RUNNING,
             updated_at=now,
             extra_sql=", attempts = attempts + 1, next_retry_at = '', last_error = ''",
+            expected_statuses=(JobStatus.QUEUED,),
         )
 
     def mark_completed(self, job_id: str) -> bool:
-        return self._update_status(job_id, JobStatus.COMPLETED, updated_at=_now_iso(), next_retry_at="", last_error="")
+        return self._update_status(
+            job_id,
+            JobStatus.COMPLETED,
+            updated_at=_now_iso(),
+            next_retry_at="",
+            last_error="",
+            # Some direct/import-style jobs complete without a separately
+            # persisted running phase.  Preserve that contract while still
+            # preventing a late worker callback from overwriting a terminal
+            # cancellation or failure.
+            expected_statuses=(JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.COMPLETED),
+        )
 
     def mark_canceled(self, job_id: str, *, last_error: str = "") -> bool:
         return self._update_status(
@@ -349,6 +361,7 @@ class JobStore:
             updated_at=_now_iso(),
             next_retry_at="",
             last_error=last_error,
+            expected_statuses=(JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.CANCELED),
         )
 
     def mark_failed(self, job_id: str, *, last_error: str) -> bool:
@@ -358,6 +371,7 @@ class JobStore:
             updated_at=_now_iso(),
             next_retry_at="",
             last_error=last_error,
+            expected_statuses=(JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.FAILED),
         )
 
     def set_retry(self, job_id: str, *, retry_at: str, last_error: str = "") -> bool:
@@ -368,6 +382,7 @@ class JobStore:
             updated_at=_now_iso(),
             next_retry_at=normalized_retry_at,
             last_error=last_error,
+            expected_statuses=(JobStatus.QUEUED, JobStatus.RUNNING),
         )
 
     def _update_status(
@@ -379,6 +394,7 @@ class JobStore:
         next_retry_at: str | None = None,
         last_error: str | None = None,
         extra_sql: str = "",
+        expected_statuses: tuple[JobStatus, ...] = (),
     ) -> bool:
         set_parts = ["status = ?", "updated_at = ?"]
         params: list[Any] = [status.value, updated_at]
@@ -390,6 +406,10 @@ class JobStore:
             params.append(last_error)
         sql = f"UPDATE jobs SET {', '.join(set_parts)}{extra_sql} WHERE id = ?"
         params.append(job_id)
+        if expected_statuses:
+            placeholders = ",".join("?" for _ in expected_statuses)
+            sql += f" AND status IN ({placeholders})"
+            params.extend(item.value for item in expected_statuses)
 
         with self._lock:
             with self._connect() as conn:

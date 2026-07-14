@@ -7,7 +7,12 @@ import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/Web
 import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { apiRequest } from "@/lib/queryClient";
-import { ACTIVE_MEETING_QUERY_PATH, applyMeetingSummaryEvent } from "@/lib/meeting-cache";
+import {
+  ACTIVE_MEETING_QUERY_PATH,
+  applyMeetingSummaryEvent,
+  isMeetingWebSocketReconnect,
+  refreshActiveMeeting,
+} from "@/lib/meeting-cache";
 import type { MeetingState, MeetingsResponse } from "@/lib/api-types";
 
 const VISIBLE_STATES = new Set<MeetingState>([
@@ -30,6 +35,8 @@ export function ActiveMeetingPill() {
   const queryClient = useQueryClient();
   const [now, setNow] = useState(() => Date.now());
   const lastFrameAtRef = useRef({ microphone: 0, system: 0 });
+  const wsHasConnectedRef = useRef(false);
+  const wsWasConnectedRef = useRef(false);
   const [liveIssue, setLiveIssue] = useState<"" | "reconnecting" | "degraded">("");
   const meetingsQuery = useQuery<MeetingsResponse>({
     queryKey: ["/api/meetings"],
@@ -68,7 +75,22 @@ export function ActiveMeetingPill() {
       setLiveIssue(message.status === "recovered" ? "" : message.status);
     }
   }, [meeting, queryClient]);
-  useSharedWebSocket(handleMessage);
+  const { isConnected } = useSharedWebSocket(handleMessage);
+
+  useEffect(() => {
+    if (isMeetingWebSocketReconnect(
+      wsHasConnectedRef.current,
+      wsWasConnectedRef.current,
+      isConnected,
+    )) {
+      // The websocket handshake intentionally has no Meeting snapshot. Re-read
+      // only the compact active-Meeting response after a genuine reconnect;
+      // the initial connection already has the query bootstrap above.
+      void refreshActiveMeeting(queryClient);
+    }
+    if (isConnected) wsHasConnectedRef.current = true;
+    wsWasConnectedRef.current = isConnected;
+  }, [isConnected, queryClient]);
 
   const controlMutation = useMutation({
     mutationFn: async (action: "pause" | "resume" | "stop") => {

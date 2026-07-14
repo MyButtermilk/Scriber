@@ -58,16 +58,31 @@ import {
   type MeetingPlaybackRequest,
   type MeetingPlaybackSource,
 } from "@/lib/meeting-playback";
-import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
+import { useSharedWebSocket, useWebSocketContext, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
 import {
   applyMeetingActionItem,
   applyMeetingCheckpointEvent,
+  applyMeetingNoteEvent,
   applyMeetingSegmentEvent,
+  applyMeetingSpeakerName,
+  applyMeetingSpeakerProfileSplit,
   applyMeetingSummaryEvent,
   applyMeetingTranscriptEditedEvent,
+  isMeetingWebSocketReconnect,
+  isNewMeetingSetupEnabled,
   MEETING_HISTORY_QUERY_KEY,
+  refreshMeetingCapabilities,
+  refreshMeetingCollections,
+  refreshMeetingDetail,
 } from "@/lib/meeting-cache";
+import {
+  applyMeetingImportProgressEvent,
+  MEETING_IMPORTS_QUERY_KEY,
+  mergeMeetingImportProgress,
+  type MeetingImportProgressView,
+  upsertMeetingImportJob,
+} from "@/lib/meeting-import-cache";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -102,6 +117,7 @@ import type {
   MeetingDeviceTestResponse,
   MeetingImportJob,
   MeetingImportsResponse,
+  MeetingNote,
   MeetingProviderProfile,
   MeetingProfilesResponse,
   MeetingSegment,
@@ -767,8 +783,10 @@ const MeetingWorkspaceTabs = memo(function MeetingWorkspaceTabs({
 
 export default function Meetings({ params }: { params?: { id?: string } }) {
   const selectedId = params?.id || "";
+  const newMeetingSetupEnabled = isNewMeetingSetupEnabled(selectedId);
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
+  const { isConnected: meetingWsConnected } = useWebSocketContext();
   const { toast } = useToast();
   const [title, setTitle] = useState("");
   const [selectedCalendarEventId, setSelectedCalendarEventId] = useState("");
@@ -802,7 +820,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     durationSeconds: number | null;
   } | null>(null);
   const [meetingImportId, setMeetingImportId] = useState("");
-  const [meetingImportProgress, setMeetingImportProgress] = useState({ stage: "Ready", percentage: 0 });
+  const [meetingImportProgress, setMeetingImportProgress] = useState<MeetingImportProgressView>({
+    importId: "",
+    phase: "created",
+    stage: "Ready",
+    percentage: 0,
+  });
   const [emailAttachment, setEmailAttachment] = useState<"" | "md" | "pdf" | "docx">("pdf");
   const [retryFinalProvider, setRetryFinalProvider] = useState("");
   const [microphoneEndpointHash, setMicrophoneEndpointHash] = useState("");
@@ -839,10 +862,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     staleTime: 10_000,
   });
   const meetingImportsQuery = useQuery<MeetingImportsResponse>({
-    queryKey: ["/api/meeting-imports"],
+    queryKey: MEETING_IMPORTS_QUERY_KEY,
     queryFn: ({ signal }) => fetchJson("/api/meeting-imports?limit=24", signal),
     staleTime: 5_000,
-    refetchInterval: meetingImportId ? 2_000 : false,
+    refetchInterval: meetingImportId && !meetingWsConnected ? 2_000 : false,
   });
   const capabilitiesQuery = useQuery<MeetingCapabilities>({
     queryKey: ["/api/meetings/capabilities"],
@@ -858,6 +881,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     queryKey: ["/api/meetings/audio-devices"],
     queryFn: ({ signal }) => fetchJson("/api/meetings/audio-devices", signal),
     staleTime: 10_000,
+    enabled: newMeetingSetupEnabled,
     refetchInterval: selectedId ? false : 15_000,
   });
   useEffect(() => {
@@ -874,12 +898,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     queryKey: ["/api/meetings/detection"],
     queryFn: ({ signal }) => fetchJson("/api/meetings/detection", signal),
     staleTime: 2_000,
+    enabled: newMeetingSetupEnabled,
     refetchInterval: selectedId ? false : 5_000,
   });
   const outlookQuery = useQuery<OutlookCalendarStatus>({
     queryKey: ["/api/calendar/outlook/status"],
     queryFn: ({ signal }) => fetchJson("/api/calendar/outlook/status", signal),
     staleTime: 15_000,
+    enabled: newMeetingSetupEnabled,
     refetchInterval: (query) => (
       query.state.data?.authorizationPending
         || (
@@ -906,7 +932,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       });
       return fetchJson(`/api/calendar/outlook/events?${query.toString()}`, signal);
     },
-    enabled: Boolean(outlookQuery.data?.connected && !outlookQuery.data.authorizationPending && outlookQuery.data.lastSyncAt),
+    enabled: Boolean(newMeetingSetupEnabled && outlookQuery.data?.connected && !outlookQuery.data.authorizationPending && outlookQuery.data.lastSyncAt),
     staleTime: 15_000,
   });
   const outlookSyncMutation = useMutation({
@@ -937,8 +963,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     queryKey: ["/api/meetings/speaker-model"],
     queryFn: ({ signal }) => fetchJson("/api/meetings/speaker-model", signal),
     staleTime: 30_000,
+    enabled: newMeetingSetupEnabled,
   });
   useEffect(() => {
+    if (!newMeetingSetupEnabled) return;
     if (
       outlookQuery.data
       && outlookQuery.data.credentialStatusAvailable !== false
@@ -989,7 +1017,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         selectedCalendarSubjectRef.current = selected.subject;
       }
     }
-  }, [outlookEventsQuery.data?.items, outlookQuery.data, outlookQuery.data?.nextEvent?.id, selectedCalendarEventId]);
+  }, [newMeetingSetupEnabled, outlookEventsQuery.data?.items, outlookQuery.data, outlookQuery.data?.nextEvent?.id, selectedCalendarEventId]);
   const detailQuery = useQuery<MeetingDetail>({
     queryKey: ["/api/meetings", selectedId],
     queryFn: ({ signal }) => fetchJson(`/api/meetings/${selectedId}`, signal),
@@ -1052,14 +1080,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     }
   }, [detail?.finalProvider, detail?.id, detail?.state]);
 
-  const invalidateMeetings = useCallback((meetingId?: string) => {
-    void queryClient.invalidateQueries({ queryKey: ["/api/meetings"] });
-    void queryClient.invalidateQueries({ queryKey: ["/api/meetings/capabilities"] });
-    if (meetingId) void queryClient.invalidateQueries({ queryKey: ["/api/meetings", meetingId] });
+  const refreshMeetingData = useCallback((meetingId?: string) => {
+    void refreshMeetingCollections(queryClient);
+    void refreshMeetingCapabilities(queryClient);
+    if (meetingId) void refreshMeetingDetail(queryClient, meetingId);
   }, [queryClient]);
 
   const invalidateMeetingImports = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: ["/api/meeting-imports"] });
+    void queryClient.invalidateQueries({ queryKey: MEETING_IMPORTS_QUERY_KEY, exact: true });
   }, [queryClient]);
 
   const handleWsMessage = useCallback((message: ScriberWebSocketMessage) => {
@@ -1111,19 +1139,23 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         [message.source]: { status: message.status, reconnectCount: message.reconnectCount },
       }));
     }
-    if (message.type === "meeting_note") invalidateMeetings(message.meetingId);
+    if (message.type === "meeting_note") {
+      applyMeetingNoteEvent(queryClient, message.meetingId, message.note);
+    }
     if (message.type === "meeting_import_progress") {
-      invalidateMeetingImports();
+      applyMeetingImportProgressEvent(queryClient, message);
       if (message.importId === meetingImportId) {
-        setMeetingImportProgress({
+        setMeetingImportProgress((current) => mergeMeetingImportProgress(current, {
+          importId: message.importId,
+          phase: message.phase,
           stage: message.status,
           percentage: Math.round(Math.max(0, Math.min(1, message.progress)) * 100),
-        });
+        }));
         if (message.meetingId) {
           meetingImportIdRef.current = "";
           setMeetingImportId("");
           setMeetingImportCandidate(null);
-          invalidateMeetings(message.meetingId);
+          refreshMeetingData(message.meetingId);
           setLocation(`/meetings/${message.meetingId}`);
           toast({ title: "Meeting created", description: "Scriber is preparing the transcript and speaker names." });
         } else if (message.phase === "failed" || message.phase === "canceled") {
@@ -1136,30 +1168,40 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         }
       }
     }
-  }, [invalidateMeetingImports, invalidateMeetings, meetingImportId, queryClient, selectedId, setLocation, toast]);
-  const { isConnected } = useSharedWebSocket(handleWsMessage);
+  }, [meetingImportId, queryClient, refreshMeetingData, selectedId, setLocation, toast]);
+  useSharedWebSocket(handleWsMessage);
 
   useEffect(() => {
-    if (isConnected && meetingWsHasConnectedRef.current && !meetingWsWasConnectedRef.current) {
-      invalidateMeetings(selectedId || undefined);
+    if (isMeetingWebSocketReconnect(
+      meetingWsHasConnectedRef.current,
+      meetingWsWasConnectedRef.current,
+      meetingWsConnected,
+    )) {
+      // ActiveMeetingPill owns the one exact active-Meeting refresh on a real
+      // reconnect. Refresh only this page's non-overlapping cache shapes here.
+      void queryClient.invalidateQueries({ queryKey: MEETING_HISTORY_QUERY_KEY, exact: true });
+      void refreshMeetingCapabilities(queryClient);
+      if (selectedId) void refreshMeetingDetail(queryClient, selectedId);
       invalidateMeetingImports();
     }
-    if (isConnected) meetingWsHasConnectedRef.current = true;
-    meetingWsWasConnectedRef.current = isConnected;
-  }, [invalidateMeetingImports, invalidateMeetings, isConnected, selectedId]);
+    if (meetingWsConnected) meetingWsHasConnectedRef.current = true;
+    meetingWsWasConnectedRef.current = meetingWsConnected;
+  }, [invalidateMeetingImports, meetingWsConnected, queryClient, selectedId]);
 
   useEffect(() => {
     const job = meetingImportsQuery.data?.items.find((item) => item.id === meetingImportId);
     if (!job) return;
-    setMeetingImportProgress({
+    setMeetingImportProgress((current) => mergeMeetingImportProgress(current, {
+      importId: job.id,
+      phase: job.state,
       stage: job.status || job.state,
       percentage: Math.round(Math.max(0, Math.min(1, job.progress)) * 100),
-    });
+    }));
     if (job.meetingId) {
       meetingImportIdRef.current = "";
       setMeetingImportId("");
       setMeetingImportCandidate(null);
-      invalidateMeetings(job.meetingId);
+      refreshMeetingData(job.meetingId);
       setLocation(`/meetings/${job.meetingId}`);
       toast({ title: "Meeting created", description: "Scriber is preparing the transcript and speaker names." });
     } else if (["failed", "canceled"].includes(job.state)) {
@@ -1168,7 +1210,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       setMeetingImportId("");
       if (job.state === "canceled") setMeetingImportCandidate(null);
     }
-  }, [invalidateMeetings, meetingImportId, meetingImportsQuery.data?.items, setLocation, toast]);
+  }, [meetingImportId, meetingImportsQuery.data?.items, refreshMeetingData, setLocation, toast]);
 
   const startMutation = useMutation({
     mutationFn: async () => {
@@ -1198,7 +1240,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       setCalendarSelectionNeedsReview(false);
       calendarSelectionInitializedRef.current = false;
       selectedCalendarSubjectRef.current = "";
-      invalidateMeetings(meeting.id);
+      applyMeetingSummaryEvent(queryClient, meeting);
       setLocation(`/meetings/${meeting.id}`);
     },
     onError: (error) => toast({ variant: "destructive", title: "Meeting could not start", description: error.message }),
@@ -1286,8 +1328,13 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       if (!createResponse.ok) throw new Error(created.message || `Meeting import could not be created (${createResponse.status})`);
       setMeetingImportId(created.id);
       meetingImportIdRef.current = created.id;
-      invalidateMeetingImports();
-      setMeetingImportProgress({ stage: "Uploading recording", percentage: 2 });
+      upsertMeetingImportJob(queryClient, created);
+      setMeetingImportProgress({
+        importId: created.id,
+        phase: "receiving",
+        stage: "Uploading recording",
+        percentage: 2,
+      });
       return new Promise<MeetingImportJob>((resolve, reject) => {
         const request = new XMLHttpRequest();
         request.open("PUT", apiUrl(created.uploadUrl || `/api/meeting-imports/${created.id}/content`));
@@ -1297,9 +1344,19 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         request.upload.onprogress = (event) => {
           if (!event.lengthComputable) return;
           const uploadProgress = Math.max(2, Math.min(85, Math.round((event.loaded / event.total) * 85)));
-          setMeetingImportProgress({ stage: "Uploading recording", percentage: uploadProgress });
+          setMeetingImportProgress((current) => mergeMeetingImportProgress(current, {
+            importId: created.id,
+            phase: "receiving",
+            stage: "Uploading recording",
+            percentage: uploadProgress,
+          }));
         };
-        request.upload.onload = () => setMeetingImportProgress({ stage: "Safely committing upload", percentage: 85 });
+        request.upload.onload = () => setMeetingImportProgress((current) => mergeMeetingImportProgress(current, {
+          importId: created.id,
+          phase: "receiving",
+          stage: "Safely committing upload",
+          percentage: 85,
+        }));
         request.onerror = () => reject(new Error("The meeting recording upload was interrupted."));
         request.ontimeout = () => reject(new Error("The meeting recording import timed out."));
         request.onabort = () => reject(new DOMException("Meeting import cancelled", "AbortError"));
@@ -1315,14 +1372,19 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
             reject(new Error(payload.message || `Meeting import failed (${request.status})`));
             return;
           }
-          setMeetingImportProgress({ stage: "Upload safely stored", percentage: 86 });
+          setMeetingImportProgress((current) => mergeMeetingImportProgress(current, {
+            importId: created.id,
+            phase: "received",
+            stage: "Upload safely stored",
+            percentage: 86,
+          }));
           resolve(payload);
         };
         request.send(file);
       });
     },
-    onSuccess: () => {
-      invalidateMeetingImports();
+    onSuccess: (job) => {
+      upsertMeetingImportJob(queryClient, job);
       toast({
         title: "Recording safely uploaded",
         description: "Scriber is preparing the transcript, speaker names, playback, and summary.",
@@ -1335,7 +1397,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         || (error instanceof DOMException && error.name === "AbortError")
       ) {
         invalidateMeetingImports();
-        setMeetingImportProgress({ stage: "Cancel requested", percentage: 0 });
+        setMeetingImportProgress((current) => mergeMeetingImportProgress(current, {
+          importId: importId || current.importId,
+          phase: "cancel_requested",
+          stage: "Cancel requested",
+          percentage: 0,
+        }));
         return;
       }
       meetingImportIdRef.current = "";
@@ -1363,6 +1430,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       return response.json() as Promise<MeetingImportJob>;
     },
     onSuccess: (job) => {
+      upsertMeetingImportJob(queryClient, job);
       if (
         meetingImportIdRef.current === job.id
         || (job.state === "canceled" && !meetingImportIdRef.current)
@@ -1372,7 +1440,6 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         setMeetingImportId("");
         setMeetingImportCandidate(null);
       }
-      invalidateMeetingImports();
       toast({ title: job.state === "canceled" ? "Meeting import canceled" : "Cancellation requested" });
     },
     onError: (error) => {
@@ -1387,7 +1454,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       const response = await apiRequest("POST", `/api/meetings/${id}/${action}`);
       return response.json() as Promise<MeetingSummary>;
     },
-    onSuccess: (meeting) => invalidateMeetings(meeting.id),
+    onSuccess: (meeting) => applyMeetingSummaryEvent(queryClient, meeting),
     onError: (error) => toast({ variant: "destructive", title: "Meeting control failed", description: error.message }),
   });
 
@@ -1399,7 +1466,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     onSuccess: (id) => {
       setMeetingPendingDelete(null);
       queryClient.removeQueries({ queryKey: ["/api/meetings", id] });
-      invalidateMeetings();
+      void refreshMeetingCollections(queryClient);
+      void refreshMeetingCapabilities(queryClient);
       if (selectedId === id) setLocation("/meetings");
       toast({ title: "Meeting deleted", description: "Transcript, generated outputs, and locally retained audio were removed." });
     },
@@ -1454,14 +1522,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const noteMutation = useMutation({
     mutationFn: async ({ id, body }: { id: string; body: string }) => {
       const response = await apiRequest("PUT", `/api/meetings/${id}/notes`, { id: "workspace", body });
-      return response.json();
+      return response.json() as Promise<MeetingNote>;
     },
     onSuccess: (_payload, variables) => {
       if (noteDraftRef.current.meetingId === variables.id) {
         lastSavedNote.current = variables.body;
         noteDraftRef.current.savedBody = variables.body;
       }
-      invalidateMeetings(variables.id);
+      applyMeetingNoteEvent(queryClient, variables.id, _payload);
     },
     onError: (error) => toast({ variant: "destructive", title: "Note was not saved", description: error.message }),
   });
@@ -1492,7 +1560,6 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     },
     onSuccess: (item, variables) => {
       applyMeetingActionItem(queryClient, variables.id, item);
-      invalidateMeetings(variables.id);
     },
     onError: (error) => toast({ variant: "destructive", title: "Action item was not saved", description: error.message }),
   });
@@ -1501,7 +1568,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       const response = await apiRequest("POST", `/api/meetings/${id}/analyze`);
       return response.json() as Promise<MeetingSummary>;
     },
-    onSuccess: (meeting) => invalidateMeetings(meeting.id),
+    onSuccess: (meeting) => applyMeetingSummaryEvent(queryClient, meeting),
     onError: (error) => toast({ variant: "destructive", title: "Analysis could not start", description: error.message }),
   });
   const segmentEditMutation = useMutation({
@@ -1561,8 +1628,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       );
       return response.json() as Promise<MeetingSummary>;
     },
-    onSuccess: (_payload, variables) => {
-      invalidateMeetings(variables.id);
+    onSuccess: (meeting, variables) => {
+      applyMeetingSummaryEvent(queryClient, meeting);
       invalidateMeetingImports();
       if (variables.action === "discard") setLocation("/meetings");
     },
@@ -1571,18 +1638,21 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const speakerMutation = useMutation({
     mutationFn: async ({ id, speakerId, displayName }: { id: string; speakerId: string; displayName: string }) => {
       const response = await apiRequest("PATCH", `/api/meetings/${id}/speakers/${speakerId}`, { displayName });
-      return response.json();
+      return response.json() as Promise<{ apiVersion: string; success: boolean }>;
     },
-    onSuccess: (_payload, variables) => invalidateMeetings(variables.id),
+    onSuccess: (_payload, variables) => {
+      applyMeetingSpeakerName(queryClient, variables.id, variables.speakerId, variables.displayName);
+    },
     onError: (error) => toast({ variant: "destructive", title: "Speaker name was not saved", description: error.message }),
   });
   const splitSpeakerMutation = useMutation({
     mutationFn: async ({ id, speakerId }: { id: string; speakerId: string }) => {
       const response = await apiRequest("POST", `/api/meetings/${id}/speakers/${speakerId}/split-profile`);
-      return response.json();
+      return response.json() as Promise<{ meetingId: string; speakerId: string; oldProfileId: string; newProfileId: string }>;
     },
     onSuccess: (_payload, variables) => {
-      invalidateMeetings(variables.id);
+      applyMeetingSpeakerProfileSplit(queryClient, variables.id, variables.speakerId);
+      void refreshMeetingDetail(queryClient, variables.id);
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
       toast({ title: "Speaker will be recognized separately" });
     },
@@ -1880,7 +1950,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               if (!file) return;
               const title = file.name.replace(/\.[^.]+$/, "");
               setMeetingImportCandidate({ file, title, durationSeconds: null });
-              setMeetingImportProgress({ stage: "Ready", percentage: 0 });
+              setMeetingImportProgress({
+                importId: "",
+                phase: "created",
+                stage: "Ready",
+                percentage: 0,
+              });
               const objectUrl = URL.createObjectURL(file);
               const probe = document.createElement("audio");
               probe.preload = "metadata";
@@ -2654,7 +2729,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               onClick={() => {
                 if (meetingImportBusy && meetingImportId) {
                   meetingImportCancelMutation.mutate(meetingImportId);
-                  setMeetingImportProgress({ stage: "Cancel requested", percentage: 0 });
+                  setMeetingImportProgress((current) => mergeMeetingImportProgress(current, {
+                    importId: meetingImportId || current.importId,
+                    phase: "cancel_requested",
+                    stage: "Cancel requested",
+                    percentage: 0,
+                  }));
                 } else setMeetingImportCandidate(null);
               }}
             >

@@ -30,6 +30,40 @@ class FakePipeline:
         self.on_transcription(self.source_text, True)
 
 
+@pytest.mark.asyncio
+async def test_meeting_artifact_begin_and_commit_run_off_event_loop(monkeypatch, tmp_path):
+    finalizer = MeetingFinalizer(
+        SimpleNamespace(),
+        tmp_path,
+        lambda **_kwargs: None,
+        lambda *_args, **_kwargs: None,
+        artifact_store=SimpleNamespace(),
+    )
+    loop_thread = threading.get_ident()
+    observed: dict[str, int] = {}
+    attempt = SimpleNamespace(id="meeting-attempt")
+
+    def begin(_meeting):
+        observed["begin"] = threading.get_ident()
+        return attempt, "owner", None, {"provider": "soniox"}
+
+    def commit(**_kwargs):
+        observed["commit"] = threading.get_ident()
+        # A slow durable boundary must not block the loop or outlive the await.
+        threading.Event().wait(0.05)
+        return ()
+
+    monkeypatch.setattr(finalizer, "_begin_artifact_attempt", begin)
+    monkeypatch.setattr(finalizer, "_commit_artifact", commit)
+
+    await finalizer._begin_artifact_attempt_async({"id": "meeting"})
+    heartbeat = asyncio.create_task(asyncio.sleep(0.005, result="tick"))
+    assert await finalizer._commit_artifact_async() == ()
+    assert await heartbeat == "tick"
+    assert observed["begin"] != loop_thread
+    assert observed["commit"] != loop_thread
+
+
 def test_provider_change_does_not_recover_an_attempt_frozen_to_old_route(tmp_path):
     class FakeArtifacts:
         def __init__(self):
