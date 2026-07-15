@@ -3385,7 +3385,10 @@ class ScriberPipeline:
                 )
             await self._cleanup_audio_input()
         else:
-            # Stop mic capture immediately so LED turns off while transcription finalizes.
+            # Hand active capture back to the app-level idle prewarm before
+            # closing this session. With MIC_ALWAYS_ON the native layer starts
+            # the replacement WASAPI client first, so the Windows privacy light
+            # remains continuous while transcription finalizes.
             await self._cleanup_audio_input()
             # Give non-segmented providers time to consume the final transport frames.
             await asyncio.sleep(0.15)

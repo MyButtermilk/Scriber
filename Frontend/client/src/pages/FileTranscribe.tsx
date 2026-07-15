@@ -19,6 +19,7 @@ import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
 import { PageIntro } from "@/components/page-intro";
 import { TranscriptionHistoryToolbar } from "@/components/transcription-history-toolbar";
+import { TranscriptSummaryRetryButton } from "@/components/transcript-summary-retry-button";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
 import {
@@ -58,7 +59,7 @@ function inferServerProcessingLabel(file: File, compressionThresholdBytes: numbe
 type FileHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";
 
 function fileHistoryStatus(item: TranscriptHistoryItem): FileHistoryStatus {
-  if (item.status === "processing") return "processing";
+  if (item.summaryStatus === "pending" || item.status === "processing") return "processing";
   if (item.status === "failed") return "failed";
   if (item.summaryStatus === "failed") return "summary_failed";
   if (item.status === "stopped") return "stopped";
@@ -73,6 +74,7 @@ interface FileCardProps {
   isCopying: boolean;
   onDelete: (e: React.MouseEvent, id: string) => void;
   onCopy: (e: React.MouseEvent, id: string) => void;
+  onSummaryRetryComplete: (id: string) => void;
   onNavigate: (id: string) => void;
   onHover?: (id: string) => void;
 }
@@ -84,6 +86,7 @@ const FileCard = memo(function FileCard({
   isCopying,
   onDelete,
   onCopy,
+  onSummaryRetryComplete,
   onNavigate,
   onHover,
 }: FileCardProps) {
@@ -139,15 +142,16 @@ const FileCard = memo(function FileCard({
               {historyStatus === 'processing' ? (
                 <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1">
                   <Loader2 className="w-3 h-3 animate-spin" />
-                  {item.step || "Processing"}
+                  {item.summaryStatus === "pending" ? "Summarizing…" : item.step || "Processing"}
                 </Badge>
               ) : historyStatus === 'failed' ? (
                 <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">Failed</Badge>
               ) : historyStatus === "summary_failed" ? (
-                <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px] flex items-center gap-1">
-                  <AlertCircle className="w-3 h-3" />
-                  Summary failed
-                </Badge>
+                <TranscriptSummaryRetryButton
+                  transcriptId={item.id}
+                  transcriptTitle={item.title}
+                  onComplete={onSummaryRetryComplete}
+                />
               ) : historyStatus === 'stopped' ? (
                 <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px]">Stopped</Badge>
               ) : (
@@ -192,18 +196,16 @@ const FileCard = memo(function FileCard({
                 {historyStatus === 'processing' ? (
                   <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1">
                     <Loader2 className="w-3 h-3 animate-spin" />
+                    {item.summaryStatus === "pending" ? "Summarizing…" : null}
                   </Badge>
                 ) : historyStatus === 'failed' ? (
                   <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">Failed</Badge>
                 ) : historyStatus === "summary_failed" ? (
-                  <Badge
-                    variant="outline"
-                    className="text-red-600 border-red-200 bg-red-50 text-[10px] flex items-center gap-1"
-                    title="Summary failed"
-                    aria-label="Summary failed"
-                  >
-                    <AlertCircle className="w-3 h-3" />
-                  </Badge>
+                  <TranscriptSummaryRetryButton
+                    transcriptId={item.id}
+                    transcriptTitle={item.title}
+                    onComplete={onSummaryRetryComplete}
+                  />
                 ) : historyStatus === 'stopped' ? (
                   <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px]">Stopped</Badge>
                 ) : (
@@ -509,6 +511,15 @@ export default function FileTranscribe() {
     setLocation(`/transcript/${id}`);
   }, [setLocation]);
 
+  const refreshAfterSummaryRetry = useCallback((id: string) => {
+    queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id], exact: true });
+    queryClient.invalidateQueries({
+      predicate: (query) =>
+        query.queryKey[0] === "/api/transcripts" &&
+        (query.queryKey[1] as { type?: string })?.type === "file",
+    });
+  }, [queryClient]);
+
   // Preload TranscriptDetail page and data on hover for instant navigation
   const preloadTranscript = useCallback((id: string) => {
     import("@/pages/TranscriptDetail");
@@ -728,6 +739,7 @@ export default function FileTranscribe() {
                 isCopying={copyingId === item.id}
                 onDelete={deleteTranscript}
                 onCopy={copyTranscript}
+                onSummaryRetryComplete={refreshAfterSummaryRetry}
                 onNavigate={navigateToTranscript}
                 onHover={preloadTranscript}
               />

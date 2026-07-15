@@ -477,10 +477,15 @@ Packaging and scripts:
   or `captureWriterFinishedBeforePrewarmHandoff`. This keeps
   `SCRIBER_MIC_ALWAYS_ON=1` optimized for minimum hotkey latency and prevents a
   visible Windows microphone privacy-indicator off/on blink between idle
-  prewarm and live capture. When the first explicit Live Mic start encounters
-  the lazily unloaded Pipecat runtime, first confirm a temporary Rust prewarm,
-  then import Pipecat off the aiohttp event loop; do not submit both to the same
-  executor concurrently because a one-worker executor can run the heavy import
+  prewarm and live capture. The reverse stop handoff is equally overlap-first:
+  a replacement prewarm must successfully call `IAudioClient.Start()` and
+  report ready before Tauri drains the active capture sidecar. A failed prewarm
+  start leaves capture running until normal cleanup; never close capture first
+  and reopen idle prewarm afterwards. When the first explicit Live Mic start
+  encounters the lazily unloaded Pipecat runtime, first confirm a temporary
+  Rust prewarm, then import Pipecat off the aiohttp event loop; do not submit
+  both to the same executor concurrently because a one-worker executor can run
+  the heavy import
   first. The prewarm retains up to six seconds of post-hotkey audio. This
   capture-first buffer is never started before provider validation and explicit
   user intent; construction failure/cancellation must retain it only under the

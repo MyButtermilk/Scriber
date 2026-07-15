@@ -585,10 +585,6 @@ fn call_active_meeting_sidecar(
 }
 
 fn start_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
-    // Idle prewarm follows active capture. If the previous bounded stop lost
-    // its response, starting prewarm is the next owner transition and must
-    // reconcile that still-registered capture before opening the endpoint.
-    drain_active_capture_sidecars("prewarmStartReplacedActiveCapture");
     let Some(program) = find_audio_sidecar_executable() else {
         return unavailable_result(
             "audioPrewarmUnavailable",
@@ -601,7 +597,27 @@ fn start_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
             None,
         );
     };
-    start_audio_sidecar_prewarm_at(&program, payload)
+    start_prewarm_then_reconcile_capture(
+        || start_audio_sidecar_prewarm_at(&program, payload),
+        drain_active_capture_sidecars,
+    )
+}
+
+fn start_prewarm_then_reconcile_capture(
+    start_prewarm: impl FnOnce() -> AudioSidecarCallResult,
+    drain_capture: impl FnOnce(&str) -> usize,
+) -> AudioSidecarCallResult {
+    // Keep the active WASAPI client alive until the replacement idle prewarm
+    // has opened the endpoint and reported ready. This overlap is what keeps
+    // the Windows microphone privacy indicator continuously lit when an
+    // always-on Live Mic session stops. A failed prewarm start deliberately
+    // leaves capture untouched; Python can then stop it normally and retry the
+    // prewarm after cleanup.
+    let result = start_prewarm();
+    if result.success {
+        drain_capture("prewarmReadyReplacedActiveCapture");
+    }
+    result
 }
 
 fn start_audio_sidecar_prewarm_at(program: &Path, payload: Value) -> AudioSidecarCallResult {
@@ -1800,7 +1816,11 @@ fn hide_child_console_window(_command: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, time::SystemTime};
+    use std::{
+        fs,
+        sync::{atomic::AtomicBool, Arc},
+        time::SystemTime,
+    };
 
     fn unique_test_dir(label: &str) -> PathBuf {
         let mut dir = env::temp_dir();
@@ -1947,6 +1967,64 @@ mod tests {
         assert!(!audio_lifecycle_start_command("captureStop"));
         assert!(!audio_lifecycle_start_command("prewarmStatus"));
         assert!(!audio_lifecycle_start_command("meetingCaptureStop"));
+    }
+
+    #[test]
+    fn successful_prewarm_becomes_ready_before_active_capture_is_stopped() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let start_events = Arc::clone(&events);
+        let drain_events = Arc::clone(&events);
+
+        let result = start_prewarm_then_reconcile_capture(
+            move || {
+                start_events.lock().unwrap().push("prewarm_ready");
+                AudioSidecarCallResult {
+                    success: true,
+                    error_code: None,
+                    fallback_reason: None,
+                    payload: json!({"prewarmId": "ready-prewarm"}),
+                    executable_available: true,
+                    executable_path_hash: None,
+                    pid: Some(42),
+                }
+            },
+            move |reason| {
+                assert_eq!(reason, "prewarmReadyReplacedActiveCapture");
+                drain_events.lock().unwrap().push("capture_stop");
+                1
+            },
+        );
+
+        assert!(result.success);
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            ["prewarm_ready", "capture_stop"]
+        );
+    }
+
+    #[test]
+    fn failed_prewarm_does_not_stop_still_usable_active_capture() {
+        let drain_called = Arc::new(AtomicBool::new(false));
+        let drain_called_from_transition = Arc::clone(&drain_called);
+
+        let result = start_prewarm_then_reconcile_capture(
+            || AudioSidecarCallResult {
+                success: false,
+                error_code: Some("audioPrewarmUnavailable".to_string()),
+                fallback_reason: Some("test".to_string()),
+                payload: json!({}),
+                executable_available: true,
+                executable_path_hash: None,
+                pid: None,
+            },
+            move |_| {
+                drain_called_from_transition.store(true, Ordering::SeqCst);
+                1
+            },
+        );
+
+        assert!(!result.success);
+        assert!(!drain_called.load(Ordering::SeqCst));
     }
 
     #[test]

@@ -3357,25 +3357,31 @@ fn run_wasapi_prewarm_worker_inner(
         let capture_client: IAudioCaptureClient = unsafe { client.GetService() }
             .map_err(|err| format!("IAudioCaptureClient service unavailable: {err}"))?;
 
-        ready_tx
-            .send(Ok(WasapiReady {
-                endpoint_id_hash,
-                endpoint_selection: selected.endpoint_selection,
-                mix_format: mix_format.clone(),
-            }))
-            .map_err(|err| format!("could not report WASAPI prewarm readiness: {err}"))?;
-        *ready_sent = true;
-
         unsafe { client.Start() }.map_err(|err| format!("WASAPI Start failed: {err}"))?;
-        let prewarm_result = pump_wasapi_prewarm(
-            request,
-            stop_rx,
-            &capture_client,
-            mix_format,
-            stats,
-            buffer,
-            microphone_channel_selection,
-        );
+        let prewarm_result = (|| -> Result<(), String> {
+            // Readiness means the replacement IAudioClient is already running,
+            // not merely initialized. The Tauri owner may stop the previous
+            // Live Mic capture as soon as it receives this message, so sending
+            // it before Start() creates a visible privacy-indicator gap.
+            ready_tx
+                .send(Ok(WasapiReady {
+                    endpoint_id_hash,
+                    endpoint_selection: selected.endpoint_selection,
+                    mix_format: mix_format.clone(),
+                }))
+                .map_err(|err| format!("could not report WASAPI prewarm readiness: {err}"))?;
+            *ready_sent = true;
+
+            pump_wasapi_prewarm(
+                request,
+                stop_rx,
+                &capture_client,
+                mix_format,
+                stats,
+                buffer,
+                microphone_channel_selection,
+            )
+        })();
         let stop_result = unsafe { client.Stop() };
         if let Err(err) = stop_result {
             if prewarm_result.is_ok() {

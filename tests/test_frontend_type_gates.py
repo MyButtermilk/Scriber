@@ -576,7 +576,9 @@ def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:
     assert "function youtubeHistoryStatus(item: TranscriptHistoryItem): YoutubeHistoryStatus" in source
     assert 'if (item.summaryStatus === "failed") return "summary_failed";' in source
     assert 'historyStatus === "summary_failed"' in source
-    assert "Summary failed" in source
+    assert "TranscriptSummaryRetryButton" in source
+    assert "onSummaryRetryComplete" in source
+    assert 'item.summaryStatus === "pending" ? "Summarizing…"' in source
     assert "text-red-600 border-red-200 bg-red-50" in source
     assert "const isProcessing = isVisiblyProcessing(item);" not in source
     assert "youtubePreferCaptions" in api_types
@@ -891,8 +893,32 @@ def test_file_upload_progress_uses_route_persistent_store_before_server_processi
     assert "function fileHistoryStatus(item: TranscriptHistoryItem): FileHistoryStatus" in page_source
     assert 'if (item.summaryStatus === "failed") return "summary_failed";' in page_source
     assert 'historyStatus === "summary_failed"' in page_source
-    assert "Summary failed" in page_source
+    assert "TranscriptSummaryRetryButton" in page_source
+    assert "onSummaryRetryComplete" in page_source
+    assert 'item.summaryStatus === "pending" || item.status === "processing"' in page_source
+    assert 'item.summaryStatus === "pending" ? "Summarizing…"' in page_source
     assert "text-red-600 border-red-200 bg-red-50" in page_source
+
+
+def test_failed_summary_history_action_is_accessible_and_retries_in_place() -> None:
+    component_source = (
+        REPO_ROOT
+        / "Frontend"
+        / "client"
+        / "src"
+        / "components"
+        / "transcript-summary-retry-button.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "event.stopPropagation();" in component_source
+    assert "`/api/transcripts/${transcriptId}/summarize`" in component_source
+    assert 'method: "POST"' in component_source
+    assert "15 * 60_000" in component_source
+    assert 'disabled={isRetrying}' in component_source
+    assert 'aria-busy={isRetrying}' in component_source
+    assert 'aria-live="polite"' in component_source
+    assert '"Retrying…" : "Retry summary"' in component_source
+    assert 'variant: "destructive"' in component_source
 
 
 def test_history_updates_are_invalidated_globally_for_background_jobs() -> None:

@@ -77,13 +77,13 @@ def test_summary_budget_gemini_includes_thinking_reserve(monkeypatch: pytest.Mon
     assert gemini_tokens > gpt_tokens
 
 
-def test_summary_budget_glm_openrouter_includes_reasoning_reserve(monkeypatch: pytest.MonkeyPatch):
+def test_summary_budget_openrouter_reasoning_models_include_reasoning_reserve(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_RESERVE_TOKENS", "2400")
 
     _, _, minimax_tokens = summarization._summary_budget_for_text(_words(300), "minimax/minimax-m3:nitro")
     _, _, glm_tokens = summarization._summary_budget_for_text(_words(300), "z-ai/glm-5.2:nitro")
 
-    assert minimax_tokens == 1600
+    assert minimax_tokens == 6144
     assert glm_tokens == 6144
 
 
@@ -450,7 +450,7 @@ async def test_summarize_openrouter_uses_gpt_oss_provider_route_before_default_f
 
 
 @pytest.mark.asyncio
-async def test_summarize_openrouter_retries_empty_length_response_with_larger_budget(
+async def test_summarize_openrouter_retries_empty_length_response_with_next_model_and_larger_budget(
     monkeypatch: pytest.MonkeyPatch,
 ):
     calls: list[dict[str, object]] = []
@@ -460,7 +460,7 @@ async def test_summarize_openrouter_retries_empty_length_response_with_larger_bu
         calls.append(payload)
         if len(calls) == 1:
             return {
-                "model": "z-ai/glm-5.2-20260616",
+                "model": "minimax/minimax-m3",
                 "choices": [
                     {
                         "finish_reason": "length",
@@ -489,13 +489,13 @@ async def test_summarize_openrouter_retries_empty_length_response_with_larger_bu
 
     monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
 
-    out = await summarization._summarize_openrouter("prompt", "z-ai/glm-5.2:nitro", 900)
+    out = await summarization._summarize_openrouter("prompt", "minimax/minimax-m3:nitro", 900)
 
     assert out == "glm summary"
-    assert calls[0]["models"] == ["z-ai/glm-5.2:nitro", "minimax/minimax-m3:nitro"]
+    assert calls[0]["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"]
     assert calls[0]["max_tokens"] == 900
     assert calls[0]["reasoning"] == {"exclude": True, "effort": "medium"}
-    assert calls[1]["models"] == ["z-ai/glm-5.2:nitro", "minimax/minimax-m3:nitro"]
+    assert calls[1]["model"] == "z-ai/glm-5.2:nitro"
     assert calls[1]["max_tokens"] == 1800
 
 

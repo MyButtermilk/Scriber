@@ -1,4 +1,4 @@
-import { AlertCircle, ArrowRight, Clock, PlayCircle, Youtube as YoutubeIcon, Loader2, CheckCircle2, ThumbsUp, Eye, Square, X } from "lucide-react";
+import { ArrowRight, Clock, PlayCircle, Youtube as YoutubeIcon, Loader2, CheckCircle2, ThumbsUp, Eye, Square, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -19,6 +19,7 @@ import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
 import { PageIntro } from "@/components/page-intro";
 import { TranscriptionHistoryToolbar } from "@/components/transcription-history-toolbar";
+import { TranscriptSummaryRetryButton } from "@/components/transcript-summary-retry-button";
 import { friendlyError, responseErrorMessage } from "@/lib/request-errors";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
 import {
@@ -111,6 +112,7 @@ interface YoutubeVideoCardProps {
   isCopying: boolean;
   onDelete: (e: React.MouseEvent, id: string) => void;
   onCopy: (e: React.MouseEvent, id: string) => void;
+  onSummaryRetryComplete: (id: string) => void;
   onNavigate: (id: string) => void;
   onHover?: (id: string) => void;
 }
@@ -122,6 +124,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
   isCopying,
   onDelete,
   onCopy,
+  onSummaryRetryComplete,
   onNavigate,
   onHover,
 }: YoutubeVideoCardProps) {
@@ -169,15 +172,17 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                 {historyStatus === "processing" ? (
                   <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1 shrink-0">
                     <Loader2 className="w-3 h-3 animate-spin" />
-                    {item.step || "Processing"}
+                    {item.summaryStatus === "pending" ? "Summarizing…" : item.step || "Processing"}
                   </Badge>
                 ) : historyStatus === "failed" ? (
                   <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px] shrink-0">Failed</Badge>
                 ) : historyStatus === "summary_failed" ? (
-                  <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px] flex items-center gap-1 shrink-0">
-                    <AlertCircle className="w-3 h-3" />
-                    Summary failed
-                  </Badge>
+                  <TranscriptSummaryRetryButton
+                    transcriptId={item.id}
+                    transcriptTitle={item.title}
+                    onComplete={onSummaryRetryComplete}
+                    className="shrink-0"
+                  />
                 ) : historyStatus === "stopped" ? (
                   <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px] shrink-0">Stopped</Badge>
                 ) : (
@@ -226,20 +231,16 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                 {historyStatus === "processing" ? (
                   <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50/90 text-[10px] flex items-center gap-1">
                     <Loader2 className="w-3 h-3 animate-spin" />
-                    Processing
+                    {item.summaryStatus === "pending" ? "Summarizing…" : "Processing"}
                   </Badge>
                 ) : historyStatus === "failed" ? (
                   <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50/90 text-[10px]">Failed</Badge>
                 ) : historyStatus === "summary_failed" ? (
-                  <Badge
-                    variant="outline"
-                    className="text-red-600 border-red-200 bg-red-50/90 text-[10px] flex items-center gap-1"
-                    title="Summary failed"
-                    aria-label="Summary failed"
-                  >
-                    <AlertCircle className="w-3 h-3" />
-                    Summary
-                  </Badge>
+                  <TranscriptSummaryRetryButton
+                    transcriptId={item.id}
+                    transcriptTitle={item.title}
+                    onComplete={onSummaryRetryComplete}
+                  />
                 ) : historyStatus === "stopped" ? (
                   <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50/90 text-[10px]">Stopped</Badge>
                 ) : (
@@ -606,6 +607,15 @@ export default function Youtube() {
     setLocation(`/transcript/${id}`);
   }, [setLocation]);
 
+  const refreshAfterSummaryRetry = useCallback((id: string) => {
+    queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id], exact: true });
+    queryClient.invalidateQueries({
+      predicate: (query) =>
+        query.queryKey[0] === "/api/transcripts" &&
+        (query.queryKey[1] as { type?: string })?.type === "youtube",
+    });
+  }, [queryClient]);
+
   // Preload TranscriptDetail page and data on hover for instant navigation
   const preloadTranscript = useCallback((id: string) => {
     import("@/pages/TranscriptDetail");
@@ -898,6 +908,7 @@ export default function Youtube() {
                   isCopying={copyingId === item.id}
                   onDelete={deleteTranscript}
                   onCopy={copyTranscript}
+                  onSummaryRetryComplete={refreshAfterSummaryRetry}
                   onNavigate={navigateToTranscript}
                   onHover={preloadTranscript}
                 />

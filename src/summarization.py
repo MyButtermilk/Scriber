@@ -206,7 +206,10 @@ def _same_openrouter_model(left: str, right: str) -> bool:
 
 
 def _is_openrouter_reasoning_model(model: str) -> bool:
-    raw = os.getenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_MODELS", "z-ai/glm-5.2").strip()
+    raw = os.getenv(
+        "SCRIBER_SUMMARY_OPENROUTER_REASONING_MODELS",
+        "minimax/minimax-m3,z-ai/glm-5.2",
+    ).strip()
     families = {_openrouter_model_family(item) for item in raw.split(",") if item.strip()}
     return _openrouter_model_family(model) in families
 
@@ -1017,16 +1020,32 @@ async def _summarize_openrouter(
             if _openrouter_should_retry_with_more_tokens(data) and attempt_max_tokens < retry_cap:
                 last_empty_detail = _openrouter_empty_response_detail(data)
                 next_max_tokens = _openrouter_next_output_budget(attempt_max_tokens, retry_cap, data)
-                key = (tuple(attempt_models), next_max_tokens)
+                # A length stop without any visible content usually means the
+                # selected model exhausted its budget on hidden reasoning. In
+                # that case, retry the next model candidate with the larger
+                # budget instead of routing straight back to the same model.
+                # Partial visible output still retries the same candidate set
+                # so the provider can regenerate one complete response.
+                retry_models = attempt_models
+                if not content:
+                    alternate_models = _openrouter_retry_candidates(
+                        attempt_models,
+                        used_model=used_model,
+                        allow_default_fallbacks=isinstance(models, str),
+                    )
+                    if alternate_models:
+                        retry_models = alternate_models
+                key = (tuple(retry_models), next_max_tokens)
                 if key not in seen_attempts:
                     logger.warning(
-                        "OpenRouter stopped due length from {} at max_tokens={}. Retrying with max_tokens={}. detail={}",
+                        "OpenRouter stopped due length from {} at max_tokens={}. Retrying with models={} and max_tokens={}. detail={}",
                         used_model,
                         attempt_max_tokens,
+                        retry_models,
                         next_max_tokens,
                         last_empty_detail,
                     )
-                    attempts.append(attempt_models)
+                    attempts.append(retry_models)
                     attempt_budgets.append(next_max_tokens)
                     seen_attempts.add(key)
                     attempt_index += 1
