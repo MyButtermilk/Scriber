@@ -391,8 +391,15 @@ bytes.
    included. Calendar names, speaker labels, and transcript excerpts are all
    wrapped as untrusted data rather than instructions, and every LLM proposal
    remains unconfirmed until the user accepts it. A confirmed link updates
-   Meeting-local speaker labels but does
-   not silently enroll or alter a reusable biometric profile.
+   Meeting-local speaker labels but does not silently enroll or alter a reusable
+   biometric profile. The same review surface is available without Outlook and
+   accepts a free person, team, room, or shared-microphone label. Such a label is
+   explicitly Meeting-local: it never renames a Voice Library profile, creates
+   an Outlook identity, or enters the export recipient list. If diarization
+   produced two durable profiles for one real person, the Meeting surface can
+   invoke the existing explicit Voice Library merge. The user chooses the
+   identity to keep, confirms the irreversible merge, and Meeting-local manual
+   labels remain intact while reusable profile evidence is combined.
 7. Outlook Calendar uses public desktop PKCE. Official builds embed the public
    Entra application ID in the Tauri shell, validate it as a canonical non-nil
    GUID, and forward it to the backend worker without logging it. The system
@@ -871,7 +878,10 @@ that release updater configuration is missing.
 
 `Frontend/src-tauri/src/lib.rs` owns desktop shell duties:
 
-- Start or attach to a backend after validating `/api/health`.
+- Start or attach to a backend after validating `/api/health`. Attaching to an
+  already-listening process additionally requires a successful token-protected
+  `/api/runtime` identity probe, so a stale Scriber worker with a different
+  shell session token cannot be mistaken for the current backend.
 - Choose a free loopback port when the default is occupied.
 - Pass `SCRIBER_SESSION_TOKEN` and `SCRIBER_DATA_DIR` to managed workers.
 - Enforce a Windows single-instance mutex plus an auto-reset restore event. A
@@ -882,9 +892,18 @@ that release updater configuration is missing.
   instead of destroying it. A tray action or second-instance signal can then
   reveal the same window; explicit Quit still drains backend/audio work before
   process exit.
-- Register global hotkey through Tauri.
-- Register the optional live post-processing hotkey through Tauri and dispatch
-  it to `/api/live-mic/toggle-post-processing`.
+- Register the three global shortcuts through Tauri after authenticated backend
+  readiness. Fresh defaults are `Ctrl+Shift+D` (Live Mic), `Ctrl+Shift+F`
+  (post-processing), and `Ctrl+Shift+M` (Meetings); existing `.env` and saved
+  Settings values win. Startup/authentication/primary registration failures
+  stay pending and retry. Optional conflicts keep successful shortcuts alive as
+  a stable degraded state until the next explicit refresh; all registration and
+  shortcut-capture mutations share one serialized lane.
+- Dispatch the optional live post-processing shortcut to
+  `/api/live-mic/toggle-post-processing`. The Meeting shortcut first reveals,
+  unminimizes, focuses, and navigates the main WebView to `/meetings`, then
+  dispatches the Meeting detection endpoint. A monotonic pending-navigation
+  handshake preserves route requests fired before the WebView listener exists.
 - Own Windows autostart through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - Own tray/menu shell actions: open/focus, restart backend, quit, and tray
   status/icon updates for recording and available desktop updates.

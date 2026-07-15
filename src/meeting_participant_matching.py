@@ -171,6 +171,12 @@ def build_assignment_context(
         profile_match = None
         suggestions: list[dict[str, Any]] = []
         confirmed = speaker.get("confirmedAttendee")
+        participant_link_source = str(speaker.get("participantLinkSource") or "")
+        confirmed_custom_name = (
+            str(speaker.get("displayName") or "").strip()
+            if participant_link_source == "custom_name"
+            else ""
+        )
         if isinstance(confirmed, dict):
             confirmed_address = str(confirmed.get("address") or "").casefold()
             confirmed = next(
@@ -215,7 +221,7 @@ def build_assignment_context(
             exact_people = people_by_name.get(
                 _name_key(profile_match["displayName"]), []
             )
-            if not confirmed and can_preselect and len(exact_people) == 1:
+            if not confirmed and not confirmed_custom_name and can_preselect and len(exact_people) == 1:
                 suggestions.append(
                     {
                         "attendee": exact_people[0],
@@ -226,7 +232,7 @@ def build_assignment_context(
                     }
                 )
 
-        if not confirmed and not suggestions and str(speaker.get("sourceHint") or "") == "microphone":
+        if not confirmed and not confirmed_custom_name and not suggestions and str(speaker.get("sourceHint") or "") == "microphone":
             account_people = [person for person in people if person["isCurrentUser"]]
             if len(account_people) == 1:
                 suggestions.append(
@@ -239,7 +245,7 @@ def build_assignment_context(
                     }
                 )
 
-        if not confirmed and not suggestions and llm_suggestions:
+        if not confirmed and not confirmed_custom_name and not suggestions and llm_suggestions:
             suggestions.extend(llm_suggestions.get(speaker_id, []))
         items.append(
             {
@@ -247,10 +253,18 @@ def build_assignment_context(
                 "speakerLabel": str(speaker.get("label") or ""),
                 "currentDisplayName": str(speaker.get("displayName") or ""),
                 "sourceHint": str(speaker.get("sourceHint") or ""),
+                "profileId": str(speaker.get("profileId") or "") or None,
+                "profileDisplayName": (
+                    str(profile.get("displayName") or "")[:200]
+                    if profile is not None
+                    else None
+                ),
+                "profileIsNamed": bool(profile.get("isNamed")) if profile is not None else False,
                 "profileMatch": profile_match,
                 "suggestions": suggestions,
                 "confirmedAttendee": confirmed if isinstance(confirmed, dict) else None,
-                "participantLinkSource": str(speaker.get("participantLinkSource") or ""),
+                "confirmedCustomName": confirmed_custom_name or None,
+                "participantLinkSource": participant_link_source,
             }
         )
     return {
@@ -258,7 +272,10 @@ def build_assignment_context(
         "items": items,
         "requiresConfirmation": True,
         "llmSuggestionAvailable": any(
-            not item["confirmedAttendee"] and not item["suggestions"] for item in items
+            not item["confirmedAttendee"]
+            and not item["confirmedCustomName"]
+            and not item["suggestions"]
+            for item in items
         ) and bool(people),
     }
 
@@ -269,7 +286,9 @@ def build_llm_prompt(
     unresolved = [
         item
         for item in context.get("items", [])
-        if not item.get("confirmedAttendee") and not item.get("suggestions")
+        if not item.get("confirmedAttendee")
+        and not item.get("confirmedCustomName")
+        and not item.get("suggestions")
     ]
     people = _eligible_people(context.get("calendarEvent"))
     speaker_keys = {

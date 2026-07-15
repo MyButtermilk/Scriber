@@ -241,10 +241,23 @@ Packaging and scripts:
   single-instance show actions must reveal that same WebView again; do not leave
   a headless tray process whose main window no longer exists. Explicit tray
   Quit and app exit still use the bounded graceful backend/audio cleanup path.
-- Rust registers both live-mic shortcuts. The normal hotkey must keep plain
-  live dictation output. The post-processing hotkey must dispatch only to the
-  dedicated live-mic post-processing endpoint and must not affect File or
-  YouTube jobs.
+- Rust registers both live-mic shortcuts and the Meeting shortcut after the
+  token-protected backend identity is ready. Fresh installs default to
+  `Ctrl+Shift+D` for Live Mic, `Ctrl+Shift+F` for post-processing, and
+  `Ctrl+Shift+M` for Meetings; persisted `.env`/Settings choices remain
+  authoritative. Startup, authentication, Settings-read, and primary-shortcut
+  failures remain retryable. An unavailable optional shortcut is a stable
+  degraded state: keep every successfully registered shortcut active and wait
+  for an explicit Settings refresh instead of tearing them all down on every
+  supervisor tick. Registration, shortcut capture, and resume must share one
+  serialized shell mutation lane. The normal hotkey
+  must keep plain live dictation output. The post-processing hotkey must
+  dispatch only to the dedicated live-mic post-processing endpoint and must
+  not affect File or YouTube jobs. The Meeting hotkey must reveal, unminimize,
+  focus, and navigate the existing main WebView to `/meetings` before its
+  backend detection event is dispatched. Queue navigation by monotonic id until
+  the WebView listener acknowledges it so an early startup hotkey cannot lose
+  the route change.
 - Python push-to-talk polling is replaceable lifecycle plumbing, not the owner
   of provider finalization. On key release it must schedule the controller's
   tracked background stop and shield that task from poller cancellation so
@@ -428,6 +441,14 @@ Packaging and scripts:
   Confirming one speaker must patch only that assignment in the client cache;
   it must not discard the remaining unconfirmed suggestions and force another
   provider request.
+- Post-Meeting speaker naming must also accept a meeting-local free-text label
+  for people, teams, rooms, or shared microphones. That label may update this
+  Meeting's segments, but must not rename a Voice Library profile, create an
+  Outlook identity, or become an email recipient. Meetings without calendar
+  context still expose this naming flow. The Meeting UI may invoke the same
+  explicit, permanent Voice Library merge used by Settings when two detected
+  speaker profiles are one person; require a confirmation dialog and preserve
+  manually assigned meeting-local labels while merging profile evidence.
 - Email/export recipients come exclusively from the Meeting's frozen calendar
   event, never from Voice matches, LLM output, or confirmed speaker mappings.
   Validate and deduplicate addresses and exclude the connected user (including

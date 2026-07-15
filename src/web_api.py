@@ -2055,7 +2055,7 @@ def _pipeline_stop_timeout_error(exc: BaseException) -> bool:
 
 
 def _normalize_hotkey_for_backend(display_hotkey: str) -> str:
-    # Frontend records like "Ctrl + Shift + S"; keyboard expects "ctrl+shift+s".
+    # Frontend records like "Ctrl + Shift + D"; keyboard expects "ctrl+shift+d".
     hotkey = (display_hotkey or "").strip()
     if not hotkey:
         return ""
@@ -2079,7 +2079,7 @@ def _normalize_hotkey_for_backend(display_hotkey: str) -> str:
 
 
 def _hotkey_to_display(hotkey: str) -> str:
-    # Backend stores like "ctrl+alt+s"; render like "Ctrl + Alt + S".
+    # Backend stores like "ctrl+shift+d"; render like "Ctrl + Shift + D".
     parts = [p.strip() for p in (hotkey or "").split("+") if p.strip()]
     out: list[str] = []
     for p in parts:
@@ -17456,12 +17456,37 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 {"message": "Speaker assignments require explicit confirmation."},
                 status=400,
             )
-        if "participantId" not in raw:
+        has_participant_id = "participantId" in raw
+        has_display_name = "displayName" in raw
+        if has_participant_id == has_display_name:
             return web.json_response(
-                {"message": "participantId is required (use null to remove an assignment)."},
+                {
+                    "message": (
+                        "Provide either participantId (use null to remove an assignment) "
+                        "or a meeting-only displayName."
+                    )
+                },
                 status=400,
             )
         try:
+            if has_display_name:
+                if not isinstance(raw.get("displayName"), str):
+                    return web.json_response(
+                        {"message": "displayName must be text."}, status=400
+                    )
+                assignment = await asyncio.to_thread(
+                    ctl._meeting_store.assign_speaker_display_name,
+                    meeting_id,
+                    speaker_id,
+                    raw["displayName"],
+                )
+                return web.json_response(
+                    {
+                        "apiVersion": REST_API_VERSION,
+                        "assignment": assignment,
+                        "requiresConfirmation": False,
+                    }
+                )
             detail = await asyncio.to_thread(ctl._meeting_store.detail, meeting_id)
             event = detail.get("captureMetadata", {}).get("calendarEvent")
             requested_participant_id = str(raw.get("participantId") or "").strip()

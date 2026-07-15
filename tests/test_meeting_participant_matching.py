@@ -100,6 +100,9 @@ def test_local_voice_and_account_suggestions_run_before_llm():
     by_id = {item["speakerId"]: item for item in context["items"]}
     assert by_id["known-speaker"]["suggestions"][0]["source"] == "voice_profile"
     assert by_id["known-speaker"]["suggestions"][0]["attendee"]["participantId"] == "marta-id"
+    assert by_id["known-speaker"]["profileId"] == "profile-marta"
+    assert by_id["known-speaker"]["profileDisplayName"] == "Márta Example"
+    assert by_id["known-speaker"]["profileIsNamed"] is True
     assert by_id["mic-speaker"]["suggestions"][0]["source"] == "account"
     assert by_id["mic-speaker"]["sourceHint"] == "microphone"
     assert by_id["unknown-speaker"]["suggestions"] == []
@@ -174,3 +177,24 @@ def test_confirmation_people_keep_declined_humans_but_never_resources():
     people = confirmation_people(event)
     assert "declined-id" in {person["participantId"] for person in people}
     assert "room-id" not in {person["participantId"] for person in people}
+
+
+def test_meeting_local_name_is_resolved_without_outlook_or_llm_suggestions():
+    detail = _detail()
+    detail["captureMetadata"]["calendarEvent"] = None
+    detail["speakers"] = [{
+        "id": "shared-room",
+        "label": "Speaker 1",
+        "displayName": "Berlin project room",
+        "sourceHint": "system",
+        "profileId": None,
+        "confidence": None,
+        "participantLinkSource": "custom_name",
+    }]
+
+    context = build_assignment_context(detail, [])
+
+    assert context["items"][0]["confirmedCustomName"] == "Berlin project room"
+    assert context["items"][0]["confirmedAttendee"] is None
+    assert context["items"][0]["suggestions"] == []
+    assert context["llmSuggestionAvailable"] is False

@@ -515,6 +515,73 @@ async def test_speaker_attendee_confirmation_rejects_unknown_opaque_id():
 
 
 @pytest.mark.asyncio
+async def test_speaker_assignment_accepts_meeting_local_free_name_without_calendar():
+    captured = {}
+
+    class Store:
+        @staticmethod
+        def assign_speaker_display_name(meeting_id, speaker_id, display_name):
+            captured.update(
+                meeting_id=meeting_id,
+                speaker_id=speaker_id,
+                display_name=display_name,
+            )
+            return {
+                "speakerId": speaker_id,
+                "displayName": "Project room",
+                "confirmedAttendee": None,
+                "customDisplayName": "Project room",
+                "source": "custom_name",
+                "confirmedAt": "2026-07-15T12:00:00Z",
+            }
+
+    app = web_api.create_app(SimpleNamespace(_meeting_store=Store()))
+    handler = _route_handler(
+        app, "PATCH", "/api/meetings/{id}/speakers/{speakerId}/attendee"
+    )
+    request = _DirectRequest(
+        app,
+        meeting_id="meeting-without-calendar",
+        payload={"displayName": "  Project   room  ", "confirmed": True},
+    )
+    request.match_info["speakerId"] = "speaker-1"
+
+    response = await handler(request)
+    payload = json.loads(response.body)
+
+    assert response.status == 200
+    assert captured == {
+        "meeting_id": "meeting-without-calendar",
+        "speaker_id": "speaker-1",
+        "display_name": "  Project   room  ",
+    }
+    assert payload["assignment"]["customDisplayName"] == "Project room"
+    assert payload["assignment"]["confirmedAttendee"] is None
+
+
+@pytest.mark.asyncio
+async def test_speaker_assignment_rejects_ambiguous_participant_and_free_name():
+    app = web_api.create_app(SimpleNamespace(_meeting_store=SimpleNamespace()))
+    handler = _route_handler(
+        app, "PATCH", "/api/meetings/{id}/speakers/{speakerId}/attendee"
+    )
+    request = _DirectRequest(
+        app,
+        meeting_id="meeting-1",
+        payload={
+            "participantId": "participant-1",
+            "displayName": "Another name",
+            "confirmed": True,
+        },
+    )
+    request.match_info["speakerId"] = "speaker-1"
+
+    response = await handler(request)
+
+    assert response.status == 400
+
+
+@pytest.mark.asyncio
 async def test_legacy_calendar_snapshot_gets_opaque_id_that_patch_can_confirm():
     captured = {}
     legacy_event = {

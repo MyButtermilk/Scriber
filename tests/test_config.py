@@ -1,4 +1,7 @@
+import json
 import os
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -6,6 +9,59 @@ import pytest
 
 import src.config as config_module
 from src.config import Config
+
+
+def _read_fresh_shortcut_config(tmp_path: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["SCRIBER_DATA_DIR"] = str(tmp_path)
+    env["SCRIBER_SKIP_LEGACY_DATA_MIGRATION"] = "1"
+    for key in (
+        "SCRIBER_HOTKEY",
+        "SCRIBER_POST_PROCESSING_HOTKEY",
+        "SCRIBER_MEETING_HOTKEY",
+    ):
+        env.pop(key, None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json; from src.config import Config; "
+                "print(json.dumps({'live': Config.HOTKEY, "
+                "'post': Config.POST_PROCESSING_HOTKEY, "
+                "'meeting': Config.MEETING_HOTKEY}))"
+            ),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(result.stdout.strip())
+
+
+def test_fresh_install_shortcut_defaults(tmp_path):
+    assert _read_fresh_shortcut_config(tmp_path) == {
+        "live": "ctrl+shift+d",
+        "post": "ctrl+shift+f",
+        "meeting": "ctrl+shift+m",
+    }
+
+
+def test_existing_dotenv_shortcuts_override_defaults(tmp_path):
+    (tmp_path / ".env").write_text(
+        "SCRIBER_HOTKEY=f8\n"
+        "SCRIBER_POST_PROCESSING_HOTKEY=ctrl+alt+p\n"
+        "SCRIBER_MEETING_HOTKEY=ctrl+alt+m\n",
+        encoding="utf-8",
+    )
+
+    assert _read_fresh_shortcut_config(tmp_path) == {
+        "live": "f8",
+        "post": "ctrl+alt+p",
+        "meeting": "ctrl+alt+m",
+    }
 
 
 def test_numeric_env_helpers_fall_back_and_clamp(monkeypatch):

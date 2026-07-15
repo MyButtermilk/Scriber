@@ -40,6 +40,9 @@ load_dotenv(env_path())
 _JSON_SETTINGS_PATH = settings_path()
 _SETTINGS_FILE_LOCK = threading.Lock()
 _MAX_JSON_SETTINGS_BYTES = 1024 * 1024
+DEFAULT_LIVE_MIC_HOTKEY = "ctrl+shift+d"
+DEFAULT_POST_PROCESSING_HOTKEY = "ctrl+shift+f"
+DEFAULT_MEETING_HOTKEY = "ctrl+shift+m"
 
 
 def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -160,7 +163,7 @@ class Config:
     MODULATE_API_KEY = os.getenv("MODULATE_API_KEY")
 
     # Application settings
-    HOTKEY = os.getenv("SCRIBER_HOTKEY", "ctrl+alt+s")
+    HOTKEY = os.getenv("SCRIBER_HOTKEY", DEFAULT_LIVE_MIC_HOTKEY)
     DEFAULT_STT_SERVICE = os.getenv("SCRIBER_DEFAULT_STT", "soniox")
     SONIOX_MODE = os.getenv("SCRIBER_SONIOX_MODE", "realtime").lower()  # realtime | async
     SONIOX_ASYNC_MODEL = _versioned_model_env(
@@ -377,14 +380,14 @@ ${output}"""
         in {"1", "true", "yes", "on"}
     )
     POST_PROCESSING_HOTKEY = (
-        _json_settings.get("postProcessingHotkey")
-        or os.getenv("SCRIBER_POST_PROCESSING_HOTKEY")
-        or "ctrl+shift+p"
+        os.getenv("SCRIBER_POST_PROCESSING_HOTKEY")
+        or _json_settings.get("postProcessingHotkey")
+        or DEFAULT_POST_PROCESSING_HOTKEY
     )
     MEETING_HOTKEY = (
-        _json_settings.get("meetingHotkey")
-        or os.getenv("SCRIBER_MEETING_HOTKEY")
-        or "ctrl+alt+m"
+        os.getenv("SCRIBER_MEETING_HOTKEY")
+        or _json_settings.get("meetingHotkey")
+        or DEFAULT_MEETING_HOTKEY
     )
     MEETING_FINAL_PROVIDER = (
         _json_settings.get("meetingFinalProvider")

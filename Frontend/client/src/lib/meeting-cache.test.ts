@@ -14,6 +14,7 @@ import {
   isNewMeetingSetupEnabled,
   MEETING_HISTORY_QUERY_KEY,
   MEETING_LIST_QUERY_KEY,
+  refreshAllMeetingSpeakerIdentityCaches,
   refreshMeetingCollections,
   refreshMeetingDetail,
 } from "./meeting-cache";
@@ -280,6 +281,36 @@ test("targeted refreshes never refetch Meeting child queries", async () => {
   assert.equal(calls.get(JSON.stringify(MEETING_HISTORY_QUERY_KEY)), 1);
   assert.equal(calls.get(JSON.stringify(["/api/meetings", "a"])), 1);
   observers.forEach((observer) => observer.destroy());
+});
+
+test("global speaker-profile merge invalidates every Meeting identity projection only", async () => {
+  const client = new QueryClient();
+  const invalidatedKeys = [
+    ["/api/meetings", "a"],
+    ["/api/meetings", "b"],
+    ["/api/meetings", "a", "speaker-assignments"],
+    ["/api/meetings", "b", "speaker-assignments"],
+    ["/api/meetings/speaker-profiles"],
+  ] as const;
+  const untouchedKeys = [
+    MEETING_LIST_QUERY_KEY,
+    MEETING_HISTORY_QUERY_KEY,
+    ["/api/meetings", "a", "email-preview"],
+    ["/api/meetings", "b", "deliveries"],
+    ["/api/transcripts", "history"],
+  ] as const;
+  [...invalidatedKeys, ...untouchedKeys].forEach((queryKey) => {
+    client.setQueryData(queryKey, {});
+  });
+
+  await refreshAllMeetingSpeakerIdentityCaches(client);
+
+  invalidatedKeys.forEach((queryKey) => {
+    assert.equal(client.getQueryState(queryKey)?.isInvalidated, true, JSON.stringify(queryKey));
+  });
+  untouchedKeys.forEach((queryKey) => {
+    assert.equal(client.getQueryState(queryKey)?.isInvalidated, false, JSON.stringify(queryKey));
+  });
 });
 
 test("reconnect and workspace policies distinguish first connect from recovery", () => {

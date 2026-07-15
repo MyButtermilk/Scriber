@@ -134,6 +134,20 @@ def test_email_template_uses_unique_valid_outlook_participants_without_false_att
     assert "The attached meeting document" not in template["body"]
 
 
+def test_email_like_custom_speaker_name_never_becomes_an_export_recipient():
+    detail = meeting_detail()
+    detail["captureMetadata"]["calendarEvent"] = None
+    detail["speakers"] = [{
+        "displayName": "not-a-recipient@example.net",
+        "participantLinkSource": "custom_name",
+        "confirmedAttendee": None,
+    }]
+    detail["segments"][0]["speakerLabel"] = "not-a-recipient@example.net"
+
+    assert meeting_email_recipients(detail) == []
+    assert build_meeting_email(detail)["recipients"] == []
+
+
 def test_eml_draft_is_rfc822_parseable_and_carries_selected_attachment():
     payload = build_eml_draft(
         meeting_detail(),

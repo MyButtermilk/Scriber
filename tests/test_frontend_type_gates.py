@@ -1274,6 +1274,12 @@ def test_settings_hotkey_recorder_uses_window_capture_listener() -> None:
     assert 'window.removeEventListener("keydown", handleWindowKeyDown, true)' in source
     assert 'event.key === "Escape"' in source
     assert 'aria-label="Hotkey capture area"' in source
+    assert 'useState("Ctrl + Shift + D")' in source
+    assert 'useState("Ctrl + Shift + F")' in source
+    assert 'useState("Ctrl + Shift + M")' in source
+    assert 'settings.hotkeyRaw || "Ctrl + Shift + D"' in source
+    assert 'settings.postProcessingHotkeyRaw || "Ctrl + Shift + F"' in source
+    assert 'settings.meetingHotkeyRaw || "Ctrl + Shift + M"' in source
     assert "onKeyDown={handleHotkeyRecord}" not in source
 
 
@@ -1489,8 +1495,13 @@ def test_settings_exposes_modulate_final_text_only_realtime_and_batch() -> None:
     assert 'value: "modulate-async"' in settings_source
     assert 'label: "Modulate.AI Multilingual Realtime"' in settings_source
     assert 'label: "Modulate.AI Multilingual Batch"' in settings_source
-    assert 'detail: "Final text only · no partials or enrichment signals"' in settings_source
-    assert 'detail: "One final transcript · no enrichment signals"' in settings_source
+    assert "const MODULATE_BATCH_USD_PER_AUDIO_HOUR = 0.03;" in settings_source
+    assert "const MODULATE_STREAMING_USD_PER_AUDIO_HOUR = 0.06;" in settings_source
+    assert "const MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT = 4.43;" in settings_source
+    assert "sttHourlyBenchmarkDetail(MODULATE_STREAMING_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT)" in settings_source
+    assert "sttHourlyBenchmarkDetail(MODULATE_BATCH_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT)" in settings_source
+    assert "Multilingual streaming shows finalized text only. Scriber does not request partial text or enrichment signals." in settings_source
+    assert "Multilingual batch returns one final transcript after recording stops. Scriber does not request enrichment signals." in settings_source
     assert 'defaultSttService: "modulate"' in settings_source
     assert 'defaultSttService: "modulate_async"' in settings_source
     assert 'apiKeys.modulate = modulateKey;' in settings_source
@@ -1530,6 +1541,11 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
     ).read_text(encoding="utf-8")
 
     assert "return `${euroText}€/h with ${errorText}% Error`;" in settings_source
+    hourly_benchmark_source = settings_source[
+        settings_source.index("function sttHourlyBenchmarkDetail")
+        : settings_source.index("function sttBenchmarkDetail")
+    ]
+    assert hourly_benchmark_source.count("maximumFractionDigits: 2,") == 2
     assert "0,00€/h with model-dependent Error" in settings_source
     assert "0,00 €/h" not in settings_source
     assert " % Error" not in settings_source
@@ -1546,6 +1562,7 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
     streaming_order = [
         '"elevenlabs"',
         '"assemblyai-realtime"',
+        '"modulate-realtime"',
         '"soniox-realtime"',
         '"google"',
         '"openai"',
@@ -1564,6 +1581,7 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
         '"speechmatics-async"',
         '"gladia-async"',
         '"smallest-async"',
+        '"modulate-async"',
         '"openai-async"',
         '"gemini-stt"',
         '"deepgram-async"',

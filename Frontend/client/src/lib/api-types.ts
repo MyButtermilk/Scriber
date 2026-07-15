@@ -509,6 +509,10 @@ export interface MeetingSpeakerAssignment {
   speakerLabel: string;
   currentDisplayName: string;
   sourceHint?: string;
+  profileId?: string | null;
+  /** Canonical Voice Library label; never an Outlook/custom Meeting label. */
+  profileDisplayName?: string | null;
+  profileIsNamed?: boolean;
   profileMatch: {
     profileId: string;
     displayName: string;
@@ -520,7 +524,9 @@ export interface MeetingSpeakerAssignment {
   } | null;
   suggestions: MeetingSpeakerSuggestion[];
   confirmedAttendee: OutlookCalendarContact | null;
-  participantLinkSource?: "manual" | MeetingSpeakerSuggestionSource | string;
+  /** A confirmed meeting-only label, never an Outlook identity or recipient. */
+  confirmedCustomName?: string | null;
+  participantLinkSource?: "manual" | "custom_name" | MeetingSpeakerSuggestionSource | string;
 }
 
 export interface MeetingSpeakerAssignmentsResponse {
@@ -538,7 +544,8 @@ export interface MeetingSpeakerAssignmentUpdate {
   speakerId: string;
   displayName: string;
   confirmedAttendee: OutlookCalendarContact | null;
-  source: "" | "manual" | MeetingSpeakerSuggestionSource | string;
+  customDisplayName?: string | null;
+  source: "" | "manual" | "custom_name" | MeetingSpeakerSuggestionSource | string;
   confirmedAt: string;
 }
 

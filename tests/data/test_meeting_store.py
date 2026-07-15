@@ -1622,6 +1622,37 @@ def test_removing_confirmed_participant_restores_anonymous_label(store: MeetingS
     assert store.detail(meeting["id"])["segments"][0]["speakerLabel"] == "Speaker 2"
 
 
+def test_meeting_local_speaker_name_does_not_rename_voice_profile(store: MeetingStore):
+    meeting = store.create(create_request())
+    store.add_segments(meeting["id"], [{
+        "id": "custom-name", "revision": "canonical", "source": "system",
+        "sequence": 0, "startMs": 0, "endMs": 1_000, "text": "Hello",
+        "speakerLabel": "Speaker 3",
+    }])
+    speaker = store.detail(meeting["id"])["speakers"][0]
+    registered = store.register_speaker_embedding(
+        meeting["id"], speaker["id"], "custom-name", [1.0] + [0.0] * 255
+    )
+    store.rename_speaker_profile(registered["profileId"], "Ada Lovelace")
+
+    assignment = store.assign_speaker_display_name(
+        meeting["id"], speaker["id"], "  Product   team  "
+    )
+
+    assert assignment["customDisplayName"] == "Product team"
+    assert assignment["confirmedAttendee"] is None
+    detail = store.detail(meeting["id"])
+    assert detail["speakers"][0]["displayName"] == "Product team"
+    assert detail["speakers"][0]["participantLinkSource"] == "custom_name"
+    assert detail["speakers"][0]["confirmedAttendee"] is None
+    assert detail["segments"][0]["speakerLabel"] == "Product team"
+    profile = next(
+        item for item in store.speaker_profiles()
+        if item["id"] == registered["profileId"]
+    )
+    assert profile["displayName"] == "Ada Lovelace"
+
+
 def test_audio_retention_removes_only_audio_records(store: MeetingStore):
     meeting = store.create(create_request(audio_retention_days=1))
     store.add_segments(meeting["id"], [{
@@ -2075,6 +2106,188 @@ def test_voice_profile_merge_combines_enrollment_seeds_without_exposing_them(
     assert centroid is not None
     assert centroid[0] == pytest.approx(2 / 5 ** 0.5)
     assert centroid[1] == pytest.approx(1 / 5 ** 0.5)
+
+
+def test_voice_profile_merge_updates_automatic_names_in_existing_meeting(
+    store: MeetingStore,
+):
+    target_vector = [1.0] + [0.0] * 255
+    source_vector = [0.0, 1.0] + [0.0] * 254
+    target = store.enroll_speaker_profile("Alice", target_vector)
+    source = store.enroll_speaker_profile("Alicia", source_vector)
+    meeting = store.create(create_request())
+    store.add_segments(meeting["id"], [
+        {
+            "id": "merge-target", "revision": "canonical", "source": "system",
+            "sequence": 0, "startMs": 0, "endMs": 1_000, "text": "First",
+            "speakerLabel": "Remote 1",
+        },
+        {
+            "id": "merge-source", "revision": "canonical", "source": "system",
+            "sequence": 1, "startMs": 1_000, "endMs": 2_000, "text": "Second",
+            "speakerLabel": "Remote 2",
+        },
+        {
+            "id": "merge-target-confirm", "revision": "canonical", "source": "system",
+            "sequence": 2, "startMs": 2_000, "endMs": 3_000, "text": "First again",
+            "speakerLabel": "Remote 1",
+        },
+        {
+            "id": "merge-source-confirm", "revision": "canonical", "source": "system",
+            "sequence": 3, "startMs": 3_000, "endMs": 4_000, "text": "Second again",
+            "speakerLabel": "Remote 2",
+        },
+        {
+            "id": "merge-custom", "revision": "canonical", "source": "system",
+            "sequence": 4, "startMs": 4_000, "endMs": 5_000, "text": "Third",
+            "speakerLabel": "Remote 3",
+        },
+        {
+            "id": "merge-custom-confirm", "revision": "canonical", "source": "system",
+            "sequence": 5, "startMs": 5_000, "endMs": 6_000, "text": "Third again",
+            "speakerLabel": "Remote 3",
+        },
+        {
+            "id": "merge-target-custom", "revision": "canonical", "source": "system",
+            "sequence": 6, "startMs": 6_000, "endMs": 7_000, "text": "Fourth",
+            "speakerLabel": "Remote 4",
+        },
+        {
+            "id": "merge-target-custom-confirm", "revision": "canonical", "source": "system",
+            "sequence": 7, "startMs": 7_000, "endMs": 8_000, "text": "Fourth again",
+            "speakerLabel": "Remote 4",
+        },
+    ])
+    speakers = {
+        item["label"]: item for item in store.detail(meeting["id"])["speakers"]
+    }
+    store.register_speaker_embedding(
+        meeting["id"], speakers["Remote 1"]["id"], "merge-target", target_vector
+    )
+    store.register_speaker_embedding(
+        meeting["id"], speakers["Remote 1"]["id"], "merge-target-confirm", target_vector
+    )
+    store.register_speaker_embedding(
+        meeting["id"], speakers["Remote 2"]["id"], "merge-source", source_vector
+    )
+    store.register_speaker_embedding(
+        meeting["id"], speakers["Remote 2"]["id"], "merge-source-confirm", source_vector
+    )
+    store.register_speaker_embedding(
+        meeting["id"], speakers["Remote 3"]["id"], "merge-custom", source_vector
+    )
+    store.register_speaker_embedding(
+        meeting["id"], speakers["Remote 3"]["id"], "merge-custom-confirm", source_vector
+    )
+    store.assign_speaker_display_name(
+        meeting["id"], speakers["Remote 3"]["id"], "Board room"
+    )
+    store.register_speaker_embedding(
+        meeting["id"], speakers["Remote 4"]["id"], "merge-target-custom", target_vector
+    )
+    store.register_speaker_embedding(
+        meeting["id"],
+        speakers["Remote 4"]["id"],
+        "merge-target-custom-confirm",
+        target_vector,
+    )
+    store.assign_speaker_display_name(
+        meeting["id"], speakers["Remote 4"]["id"], "Moderator desk"
+    )
+
+    store.merge_speaker_profiles(target["id"], source["id"])
+
+    detail = store.detail(meeting["id"])
+    assert {speaker["profileId"] for speaker in detail["speakers"]} == {target["id"]}
+    assert {speaker["displayName"] for speaker in detail["speakers"]} == {
+        "Alice", "Board room", "Moderator desk",
+    }
+    labels_by_speaker = {
+        speaker["label"]: speaker["displayName"] for speaker in detail["speakers"]
+    }
+    assert labels_by_speaker == {
+        "Remote 1": "Alice",
+        "Remote 2": "Alice",
+        "Remote 3": "Board room",
+        "Remote 4": "Moderator desk",
+    }
+    original_label_by_id = {
+        speaker["id"]: speaker["label"] for speaker in detail["speakers"]
+    }
+    segment_labels_by_speaker: dict[str, set[str]] = {}
+    for segment in detail["segments"]:
+        original_label = original_label_by_id[segment["speakerId"]]
+        segment_labels_by_speaker.setdefault(original_label, set()).add(
+            segment["speakerLabel"]
+        )
+    assert segment_labels_by_speaker == {
+        "Remote 1": {"Alice"},
+        "Remote 2": {"Alice"},
+        "Remote 3": {"Board room"},
+        "Remote 4": {"Moderator desk"},
+    }
+
+
+@pytest.mark.parametrize("named_requested_as_target", [True, False])
+def test_voice_profile_merge_preserves_only_named_profile_in_both_directions(
+    store: MeetingStore,
+    named_requested_as_target: bool,
+):
+    named_vector = [1.0] + [0.0] * 255
+    unnamed_vector = [0.0, 1.0] + [0.0] * 254
+    named = store.enroll_speaker_profile("Alice", named_vector)
+    meeting = store.create(create_request())
+    store.add_segments(meeting["id"], [
+        {
+            "id": "canonical-named", "revision": "canonical", "source": "system",
+            "sequence": 0, "startMs": 0, "endMs": 1_000, "text": "Named",
+            "speakerLabel": "Remote named",
+        },
+        {
+            "id": "canonical-unnamed", "revision": "canonical", "source": "system",
+            "sequence": 1, "startMs": 1_000, "endMs": 2_000, "text": "Unnamed",
+            "speakerLabel": "Remote unnamed",
+        },
+    ])
+    speakers = {
+        item["label"]: item for item in store.detail(meeting["id"])["speakers"]
+    }
+    named_match = store.register_speaker_embedding(
+        meeting["id"],
+        speakers["Remote named"]["id"],
+        "canonical-named",
+        named_vector,
+    )
+    unnamed_match = store.register_speaker_embedding(
+        meeting["id"],
+        speakers["Remote unnamed"]["id"],
+        "canonical-unnamed",
+        unnamed_vector,
+    )
+    assert named_match["profileId"] == named["id"]
+    assert unnamed_match["profileId"] != named["id"]
+
+    requested_target, requested_source = (
+        (named["id"], unnamed_match["profileId"])
+        if named_requested_as_target
+        else (unnamed_match["profileId"], named["id"])
+    )
+    result = store.merge_speaker_profiles(requested_target, requested_source)
+
+    assert result == {
+        "targetProfileId": named["id"],
+        "mergedProfileId": unnamed_match["profileId"],
+    }
+    profiles = store.speaker_profiles()
+    assert [(item["id"], item["displayName"], item["isNamed"]) for item in profiles] == [
+        (named["id"], "Alice", True),
+    ]
+    detail = store.detail(meeting["id"])
+    assert {speaker["profileId"] for speaker in detail["speakers"]} == {named["id"]}
+    # Both rows had only one observation, so both were anonymous before the
+    # explicit merge. The named target must project onto both afterwards.
+    assert {speaker["displayName"] for speaker in detail["speakers"]} == {"Alice"}
+    assert {segment["speakerLabel"] for segment in detail["segments"]} == {"Alice"}
 
 
 def test_voice_profile_split_keeps_explicit_seed_only_on_original_profile(

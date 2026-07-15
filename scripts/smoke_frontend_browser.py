@@ -1475,8 +1475,8 @@ class FrontendSmokeBackend:
     @staticmethod
     def _default_settings() -> dict[str, Any]:
         return {
-            "hotkey": "ctrl+alt+s",
-            "hotkeyRaw": "ctrl+alt+s",
+            "hotkey": "Ctrl + Shift + D",
+            "hotkeyRaw": "ctrl+shift+d",
             "mode": "toggle",
             "micDevice": "default",
             "favoriteMic": "",
@@ -1487,6 +1487,11 @@ class FrontendSmokeBackend:
             "summarizationPrompt": "",
             "summarizationModel": "gemini-flash-latest",
             "autoSummarize": False,
+            "postProcessingEnabled": True,
+            "postProcessingHotkey": "Ctrl + Shift + F",
+            "postProcessingHotkeyRaw": "ctrl+shift+f",
+            "meetingHotkey": "Ctrl + Shift + M",
+            "meetingHotkeyRaw": "ctrl+shift+m",
             "meetingFinalProvider": "soniox_async",
             "meetingAnalysisModel": "gemini-flash-latest",
             "meetingSmartTurnEnabled": True,

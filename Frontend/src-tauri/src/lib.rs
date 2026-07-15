@@ -88,6 +88,12 @@ const BACKEND_TERMINATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const BACKEND_HEALTH_MAX_RESPONSE_BYTES: u64 = 64 * 1024;
 static INITIAL_MAIN_WINDOW_REVEALED: AtomicBool = AtomicBool::new(false);
 const BACKEND_JSON_MAX_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
+const DEFAULT_LIVE_MIC_HOTKEY: &str = "ctrl+shift+d";
+const DEFAULT_POST_PROCESSING_HOTKEY: &str = "ctrl+shift+f";
+const DEFAULT_MEETING_HOTKEY: &str = "ctrl+shift+m";
+const MEETING_HOTKEY_FALLBACK: &str = "ctrl+alt+shift+m";
+const MEETING_HOTKEY_BACKEND_PATH: &str = "/api/meetings/hotkey";
+const MEETING_WORKSPACE_PATH: &str = "/meetings";
 const FORCE_MANAGED_BACKEND_ENV: &str = "SCRIBER_FORCE_MANAGED_BACKEND";
 const SESSION_TOKEN_ENV: &str = "SCRIBER_SESSION_TOKEN";
 const SHELL_IPC_PIPE_ENV: &str = "SCRIBER_SHELL_IPC_PIPE";
@@ -369,6 +375,51 @@ pub struct DesktopHotkeyStatus {
     capture_suspended: bool,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct PendingNavigation {
+    navigation_id: u64,
+    path: String,
+}
+
+#[derive(Default)]
+struct PendingNavigationStateInner {
+    next_navigation_id: u64,
+    pending: Option<PendingNavigation>,
+}
+
+#[derive(Default)]
+struct PendingNavigationState {
+    inner: Mutex<PendingNavigationStateInner>,
+}
+
+impl PendingNavigationState {
+    fn queue(&self, path: &str) -> PendingNavigation {
+        let mut state = lock_unpoisoned(&self.inner);
+        state.next_navigation_id = state.next_navigation_id.wrapping_add(1).max(1);
+        let navigation = PendingNavigation {
+            navigation_id: state.next_navigation_id,
+            path: path.to_string(),
+        };
+        state.pending = Some(navigation.clone());
+        navigation
+    }
+
+    fn pending(&self) -> Option<PendingNavigation> {
+        lock_unpoisoned(&self.inner).pending.clone()
+    }
+
+    fn acknowledge(&self, navigation_id: u64) -> bool {
+        let mut state = lock_unpoisoned(&self.inner);
+        if state.pending.as_ref().map(|item| item.navigation_id) == Some(navigation_id) {
+            state.pending = None;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DesktopWindowChromeTheme {
     Light,
@@ -461,6 +512,7 @@ pub struct SingleInstanceGuard;
 
 struct DesktopHotkeyState {
     inner: Mutex<DesktopHotkeyStateInner>,
+    registration: Mutex<()>,
 }
 
 struct NativeDeviceEventsState {
@@ -522,6 +574,7 @@ struct DesktopHotkeyStateInner {
 impl DesktopHotkeyState {
     fn new() -> Self {
         Self {
+            registration: Mutex::new(()),
             inner: Mutex::new(DesktopHotkeyStateInner {
                 registered_hotkey: None,
                 registered_hotkey_id: None,
@@ -699,7 +752,7 @@ impl DesktopHotkeyState {
                 }
                 state.last_dispatched_at = Some(now);
                 if is_meeting {
-                    Some("/api/meetings/hotkey")
+                    Some(MEETING_HOTKEY_BACKEND_PATH)
                 } else if is_post_processing {
                     Some("/api/live-mic/toggle-post-processing")
                 } else if state.mode == "push_to_talk" {
@@ -813,20 +866,40 @@ impl BackendManager {
 
     fn ensure_started(&self) -> BackendStatus {
         // Phase 1: snapshot under lock, then release before the blocking health check.
-        let (port, force_managed) = {
+        let (port, force_managed, child_pid, access) = {
             let mut state = lock_unpoisoned(&self.state);
             refresh_child_state(&mut state);
-            (state.port, force_managed_backend())
+            (
+                state.port,
+                force_managed_backend(),
+                state.child.as_ref().map(Child::id),
+                BackendAccess {
+                    base_url: state.base_url.clone(),
+                    session_token: state.session_token.clone(),
+                },
+            )
         };
 
-        // Phase 2: blocking TCP health check outside the lock (up to ~1 s).
-        let ready = health_ready(port);
+        // Phase 2: blocking probes outside the lock. A public health response alone
+        // cannot prove that an existing process belongs to this shell instance: a
+        // stale Scriber backend can occupy the default port with a different token.
+        let health = health_ready(port);
+        let authenticated = if health && child_pid.is_none() && !force_managed {
+            authenticated_backend_ready(&access)
+        } else {
+            true
+        };
+        let ready =
+            backend_ready_for_snapshot(health, authenticated, child_pid.is_some(), force_managed);
 
         // Phase 3: relock and decide, guarding against port changes while unlocked.
         {
             let mut state = lock_unpoisoned(&self.state);
             refresh_child_state(&mut state);
-            if ready && state.port == port && (!force_managed || state.child.is_some()) {
+            let current_child_pid = state.child.as_ref().map(Child::id);
+            if ready
+                && backend_snapshot_identity_matches(port, state.port, child_pid, current_child_pid)
+            {
                 state.started_at = None;
                 state.unhealthy_since = None;
                 state.message = if state.child.is_some() {
@@ -868,20 +941,41 @@ impl BackendManager {
 
     fn status(&self) -> BackendStatus {
         // Phase 1: snapshot under lock.
-        let (port, force_managed) = {
+        let (port, force_managed, child_pid, access) = {
             let mut state = lock_unpoisoned(&self.state);
             refresh_child_state(&mut state);
-            (state.port, force_managed_backend())
+            (
+                state.port,
+                force_managed_backend(),
+                state.child.as_ref().map(Child::id),
+                BackendAccess {
+                    base_url: state.base_url.clone(),
+                    session_token: state.session_token.clone(),
+                },
+            )
         };
 
-        // Phase 2: blocking TCP health check outside the lock (up to ~1 s).
+        // Phase 2: blocking probes outside the lock (up to a bounded local timeout).
         let health = health_ready(port);
+        let authenticated = if health && child_pid.is_none() && !force_managed {
+            authenticated_backend_ready(&access)
+        } else {
+            true
+        };
+        let snapshot_ready =
+            backend_ready_for_snapshot(health, authenticated, child_pid.is_some(), force_managed);
 
         // Phase 3: relock and compute status.
         {
             let mut state = lock_unpoisoned(&self.state);
             refresh_child_state(&mut state);
-            let ready = health && state.port == port && (!force_managed || state.child.is_some());
+            let ready = snapshot_ready
+                && backend_snapshot_identity_matches(
+                    port,
+                    state.port,
+                    child_pid,
+                    state.child.as_ref().map(Child::id),
+                );
             if ready {
                 state.started_at = None;
                 state.unhealthy_since = None;
@@ -904,14 +998,22 @@ impl BackendManager {
 
     fn restart(&self) -> Result<BackendStatus, String> {
         // Phase 1: snapshot under lock.
-        let port = {
+        let (port, access) = {
             let mut state = lock_unpoisoned(&self.state);
             refresh_child_state(&mut state);
-            state.port
+            (
+                state.port,
+                BackendAccess {
+                    base_url: state.base_url.clone(),
+                    session_token: state.session_token.clone(),
+                },
+            )
         };
 
-        // Phase 2: blocking TCP health check outside the lock (up to ~1 s).
-        let appears_external = !force_managed_backend() && health_ready(port);
+        // Phase 2: an external backend must answer with this shell's token. A
+        // public health response from a stale process must not block recovery.
+        let appears_external =
+            !force_managed_backend() && health_ready(port) && authenticated_backend_ready(&access);
 
         // Phase 3: relock and act.
         let mut state = lock_unpoisoned(&self.state);
@@ -996,6 +1098,21 @@ fn global_hotkey_status(hotkey_state: tauri::State<'_, DesktopHotkeyState>) -> D
 }
 
 #[tauri::command]
+fn navigation_listener_ready(
+    navigation_state: tauri::State<'_, PendingNavigationState>,
+) -> Option<PendingNavigation> {
+    navigation_state.pending()
+}
+
+#[tauri::command]
+fn acknowledge_navigation(
+    navigation_state: tauri::State<'_, PendingNavigationState>,
+    navigation_id: u64,
+) -> bool {
+    navigation_state.acknowledge(navigation_id)
+}
+
+#[tauri::command]
 fn refresh_global_hotkey(app: AppHandle) -> Result<DesktopHotkeyStatus, String> {
     refresh_global_hotkey_for_app(&app)
 }
@@ -1006,6 +1123,7 @@ fn set_global_hotkey_capture_active(
     active: bool,
 ) -> Result<DesktopHotkeyStatus, String> {
     let hotkey_state = app.state::<DesktopHotkeyState>();
+    let _registration_guard = lock_unpoisoned(&hotkey_state.registration);
     if active {
         app.global_shortcut()
             .unregister_all()
@@ -1020,7 +1138,7 @@ fn set_global_hotkey_capture_active(
         false,
         "Global hotkey capture finished; refreshing registration".to_string(),
     );
-    refresh_global_hotkey_for_app(&app)
+    refresh_global_hotkey_for_app_locked(&app, &hotkey_state)
 }
 
 #[tauri::command]
@@ -1271,6 +1389,7 @@ pub fn run() {
         .manage(single_instance_guard)
         .manage(BenchmarkHotkeyState::from_env())
         .manage(DesktopHotkeyState::new())
+        .manage(PendingNavigationState::default())
         .manage(TrayState::default())
         .manage(NativeDeviceEventsState::new())
         .manage(ShellIpcState::new(shell_ipc_config, shell_ipc_handle))
@@ -1318,6 +1437,8 @@ pub fn run() {
             get_desktop_autostart,
             set_desktop_autostart,
             global_hotkey_status,
+            navigation_listener_ready,
+            acknowledge_navigation,
             refresh_global_hotkey,
             set_global_hotkey_capture_active,
             set_desktop_window_chrome_theme,
@@ -2593,12 +2714,9 @@ fn tray_panel_position_for_work_area(
 
 fn show_main_window_path<R: Runtime>(app: &AppHandle<R>, path: &str) -> Result<(), String> {
     show_main_window(app);
-    app.emit_to(
-        MAIN_WINDOW_LABEL,
-        TRAY_NAVIGATE_EVENT,
-        json!({ "path": path }),
-    )
-    .map_err(|err| format!("main window navigation event failed: {err}"))
+    let navigation = app.state::<PendingNavigationState>().queue(path);
+    app.emit_to(MAIN_WINDOW_LABEL, TRAY_NAVIGATE_EVENT, navigation)
+        .map_err(|err| format!("main window navigation event failed: {err}"))
 }
 
 fn handle_tray_action<R: Runtime>(app: &AppHandle<R>, action: &str) -> Result<(), String> {
@@ -3481,6 +3599,14 @@ fn refresh_global_hotkey_for_app<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<DesktopHotkeyStatus, String> {
     let hotkey_state = app.state::<DesktopHotkeyState>();
+    let _registration_guard = lock_unpoisoned(&hotkey_state.registration);
+    refresh_global_hotkey_for_app_locked(app, &hotkey_state)
+}
+
+fn refresh_global_hotkey_for_app_locked<R: Runtime>(
+    app: &AppHandle<R>,
+    hotkey_state: &DesktopHotkeyState,
+) -> Result<DesktopHotkeyStatus, String> {
     if !tauri_global_hotkey_enabled() {
         let _ = app.global_shortcut().unregister_all();
         hotkey_state.set_unregistered(
@@ -3529,88 +3655,72 @@ fn refresh_global_hotkey_for_app<R: Runtime>(
         return Ok(hotkey_state.status());
     }
 
-    app.global_shortcut()
-        .unregister_all()
-        .map_err(|err| format!("Could not clear previous global shortcuts: {err}"))?;
-    app.global_shortcut()
-        .register(config.hotkey.as_str())
-        .map_err(|err| {
-            format!(
-                "Could not register global hotkey '{}': {err}",
-                config.hotkey
-            )
-        })?;
-    let post_hotkey_registered = config.post_processing_enabled
-        && !config.post_processing_hotkey.is_empty()
-        && config.post_processing_hotkey != config.hotkey;
-    if post_hotkey_registered {
+    if let Err(err) = app.global_shortcut().unregister_all() {
+        let message = format!("Could not clear previous global shortcuts: {err}");
+        hotkey_state.set_unregistered(config.mode, true, message.clone());
+        return Err(message);
+    }
+    if let Err(err) = app.global_shortcut().register(config.hotkey.as_str()) {
+        let message = format!(
+            "Could not register global hotkey '{}': {err}",
+            config.hotkey
+        );
+        hotkey_state.set_unregistered(config.mode, true, message.clone());
+        return Err(message);
+    }
+
+    let OptionalHotkeyRegistration {
+        post_processing_hotkey,
+        meeting_hotkey,
+        meeting_fallback,
+        errors: registration_errors,
+    } = register_optional_hotkeys(&config, |hotkey| {
         app.global_shortcut()
-            .register(config.post_processing_hotkey.as_str())
-            .map_err(|err| {
-                format!(
-                    "Could not register post-processing hotkey '{}': {err}",
-                    config.post_processing_hotkey
-                )
-            })?;
-    }
-    let configured_meeting_hotkey = if !config.meeting_hotkey.is_empty()
-        && config.meeting_hotkey != config.hotkey
-        && (!post_hotkey_registered || config.meeting_hotkey != config.post_processing_hotkey)
-    {
-        config.meeting_hotkey.clone()
-    } else {
-        String::new()
-    };
-    let mut registered_meeting_hotkey = configured_meeting_hotkey.clone();
-    let mut meeting_hotkey_fallback = false;
-    if !configured_meeting_hotkey.is_empty()
-        && app
-            .global_shortcut()
-            .register(configured_meeting_hotkey.as_str())
-            .is_err()
-    {
-        let fallback = "ctrl+alt+shift+m".to_string();
-        if fallback != config.hotkey
-            && (!post_hotkey_registered || fallback != config.post_processing_hotkey)
-            && app.global_shortcut().register(fallback.as_str()).is_ok()
-        {
-            registered_meeting_hotkey = fallback;
-            meeting_hotkey_fallback = true;
-        } else {
-            registered_meeting_hotkey.clear();
-        }
-    }
+            .register(hotkey)
+            .map_err(|err| err.to_string())
+    });
+    let post_hotkey_registered = !post_processing_hotkey.is_empty();
 
     let message = format!(
         "Global hotkey registered: {} ({}){}{}",
         config.hotkey,
         config.mode,
         if post_hotkey_registered {
-            format!(", post-processing: {}", config.post_processing_hotkey)
+            format!(", post-processing: {}", post_processing_hotkey)
         } else {
             String::new()
         },
-        if registered_meeting_hotkey.is_empty() {
+        if meeting_hotkey.is_empty() {
             String::new()
-        } else if meeting_hotkey_fallback {
-            format!(", meeting fallback: {}", registered_meeting_hotkey)
+        } else if meeting_fallback {
+            format!(", meeting fallback: {}", meeting_hotkey)
         } else {
-            format!(", meeting: {}", registered_meeting_hotkey)
+            format!(", meeting: {}", meeting_hotkey)
         },
     );
+    let message = if registration_errors.is_empty() {
+        message
+    } else {
+        format!("{message}; incomplete: {}", registration_errors.join("; "))
+    };
     write_shell_log(&message);
     hotkey_state.set_registered(
         config.hotkey,
         if post_hotkey_registered {
-            config.post_processing_hotkey
+            post_processing_hotkey
         } else {
             String::new()
         },
         post_hotkey_registered,
-        registered_meeting_hotkey,
+        meeting_hotkey,
         config.mode,
-        message,
+        message.clone(),
     );
+    // The primary shortcut is installed at this point. Optional shortcut
+    // conflicts are a stable degraded state, not a startup/authentication
+    // failure: returning success prevents the supervisor from tearing down and
+    // rebuilding every working shortcut on each retry tick. A later explicit
+    // refresh can still retry the unavailable optional shortcut.
     Ok(hotkey_state.status())
 }
 
@@ -3627,6 +3737,14 @@ fn handle_global_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event_stat
     else {
         return;
     };
+
+    if let Some(workspace_path) = workspace_path_for_hotkey_action(path) {
+        if let Err(err) = show_main_window_path(app, workspace_path) {
+            write_shell_log(&format!(
+                "meeting hotkey could not reveal the workspace: {err}"
+            ));
+        }
+    }
 
     let app_handle = app.clone();
     std::thread::spawn(move || {
@@ -3694,6 +3812,10 @@ fn handle_global_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event_stat
     });
 }
 
+fn workspace_path_for_hotkey_action(path: &str) -> Option<&'static str> {
+    (path == MEETING_HOTKEY_BACKEND_PATH).then_some(MEETING_WORKSPACE_PATH)
+}
+
 fn should_attach_benchmark_hotkey_marker(path: &str, recording_active: bool) -> bool {
     !recording_active
         && matches!(
@@ -3720,6 +3842,7 @@ fn should_wait_for_hotkey_backend(ready: bool, starting: bool) -> bool {
 fn start_backend_supervisor(app: AppHandle) {
     std::thread::spawn(move || {
         let mut hotkey_refreshed_after_ready = false;
+        let mut last_hotkey_refresh_error: Option<String> = None;
         let mut tray_refreshed_after_ready = false;
         loop {
             let Some(manager) = app.try_state::<BackendManager>() else {
@@ -3730,13 +3853,23 @@ fn start_backend_supervisor(app: AppHandle) {
             {
                 match refresh_global_hotkey_for_app(&app) {
                     Ok(_) => {
-                        hotkey_refreshed_after_ready = true;
+                        hotkey_refreshed_after_ready = hotkey_refresh_completed_after_attempt(
+                            hotkey_refreshed_after_ready,
+                            true,
+                        );
+                        last_hotkey_refresh_error = None;
                     }
                     Err(err) => {
-                        hotkey_refreshed_after_ready = true;
-                        write_shell_log(&format!(
-                            "global hotkey registration after backend ready skipped: {err}"
-                        ));
+                        hotkey_refreshed_after_ready = hotkey_refresh_completed_after_attempt(
+                            hotkey_refreshed_after_ready,
+                            false,
+                        );
+                        if last_hotkey_refresh_error.as_deref() != Some(err.as_str()) {
+                            write_shell_log(&format!(
+                                "global hotkey registration after backend ready failed; will retry: {err}"
+                            ));
+                            last_hotkey_refresh_error = Some(err);
+                        }
                     }
                 }
             }
@@ -3745,6 +3878,7 @@ fn start_backend_supervisor(app: AppHandle) {
                 tray_refreshed_after_ready = true;
             } else if !status.ready {
                 hotkey_refreshed_after_ready = false;
+                last_hotkey_refresh_error = None;
                 tray_refreshed_after_ready = false;
             }
             std::thread::sleep(BACKEND_SUPERVISOR_INTERVAL);
@@ -3813,6 +3947,13 @@ fn should_refresh_hotkey_after_backend_ready(
     backend_ready && !hotkey_refreshed_after_ready
 }
 
+fn hotkey_refresh_completed_after_attempt(
+    already_completed: bool,
+    attempt_succeeded: bool,
+) -> bool {
+    already_completed || attempt_succeeded
+}
+
 fn tauri_global_hotkey_enabled() -> bool {
     env::var(TAURI_GLOBAL_HOTKEY_ENV)
         .map(|value| {
@@ -3839,13 +3980,106 @@ struct BackendHotkeyConfig {
     mode: String,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct OptionalHotkeyRegistration {
+    post_processing_hotkey: String,
+    meeting_hotkey: String,
+    meeting_fallback: bool,
+    errors: Vec<String>,
+}
+
+fn register_optional_hotkeys<F>(
+    config: &BackendHotkeyConfig,
+    mut register: F,
+) -> OptionalHotkeyRegistration
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    let mut errors = Vec::new();
+    let post_requested = config.post_processing_enabled
+        && !config.post_processing_hotkey.is_empty()
+        && config.post_processing_hotkey != config.hotkey;
+    let post_processing_hotkey = if post_requested {
+        match register(&config.post_processing_hotkey) {
+            Ok(()) => config.post_processing_hotkey.clone(),
+            Err(err) => {
+                errors.push(format!(
+                    "post-processing hotkey '{}' is unavailable: {err}",
+                    config.post_processing_hotkey
+                ));
+                String::new()
+            }
+        }
+    } else {
+        if config.post_processing_enabled
+            && !config.post_processing_hotkey.is_empty()
+            && config.post_processing_hotkey == config.hotkey
+        {
+            errors.push("post-processing hotkey must differ from the Live Mic hotkey".to_string());
+        }
+        String::new()
+    };
+
+    let configured_meeting = if !config.meeting_hotkey.is_empty()
+        && config.meeting_hotkey != config.hotkey
+        && (!post_requested || config.meeting_hotkey != config.post_processing_hotkey)
+    {
+        config.meeting_hotkey.as_str()
+    } else {
+        ""
+    };
+    let meeting_error = if configured_meeting.is_empty() && !config.meeting_hotkey.is_empty() {
+        Some("meeting hotkey must differ from the Live Mic and post-processing hotkeys".to_string())
+    } else if configured_meeting.is_empty() {
+        None
+    } else {
+        match register(configured_meeting) {
+            Ok(()) => None,
+            Err(err) => Some(format!(
+                "meeting hotkey '{configured_meeting}' is unavailable: {err}"
+            )),
+        }
+    };
+
+    let mut meeting_hotkey = if meeting_error.is_none() {
+        configured_meeting.to_string()
+    } else {
+        String::new()
+    };
+    let mut meeting_fallback = false;
+    if let Some(primary_error) = meeting_error {
+        if MEETING_HOTKEY_FALLBACK != config.hotkey
+            && (!post_requested || MEETING_HOTKEY_FALLBACK != config.post_processing_hotkey)
+            && register(MEETING_HOTKEY_FALLBACK).is_ok()
+        {
+            meeting_hotkey = MEETING_HOTKEY_FALLBACK.to_string();
+            meeting_fallback = true;
+        } else {
+            errors.push(format!(
+                "{primary_error}; meeting fallback '{MEETING_HOTKEY_FALLBACK}' is also unavailable"
+            ));
+        }
+    }
+
+    OptionalHotkeyRegistration {
+        post_processing_hotkey,
+        meeting_hotkey,
+        meeting_fallback,
+        errors,
+    }
+}
+
 fn fetch_backend_hotkey_config(access: &BackendAccess) -> Result<BackendHotkeyConfig, String> {
     let value = request_backend_json(access, "GET", "/api/settings")?;
+    Ok(backend_hotkey_config_from_value(&value))
+}
+
+fn backend_hotkey_config_from_value(value: &Value) -> BackendHotkeyConfig {
     let raw_hotkey = value
         .get("hotkeyRaw")
         .or_else(|| value.get("hotkey"))
         .and_then(Value::as_str)
-        .unwrap_or("ctrl+alt+s");
+        .unwrap_or(DEFAULT_LIVE_MIC_HOTKEY);
     let raw_mode = value
         .get("mode")
         .and_then(Value::as_str)
@@ -3854,7 +4088,7 @@ fn fetch_backend_hotkey_config(access: &BackendAccess) -> Result<BackendHotkeyCo
         .get("postProcessingHotkeyRaw")
         .or_else(|| value.get("postProcessingHotkey"))
         .and_then(Value::as_str)
-        .unwrap_or("ctrl+shift+p");
+        .unwrap_or(DEFAULT_POST_PROCESSING_HOTKEY);
     let post_processing_enabled = value
         .get("postProcessingEnabled")
         .and_then(Value::as_bool)
@@ -3863,15 +4097,15 @@ fn fetch_backend_hotkey_config(access: &BackendAccess) -> Result<BackendHotkeyCo
         .get("meetingHotkeyRaw")
         .or_else(|| value.get("meetingHotkey"))
         .and_then(Value::as_str)
-        .unwrap_or("ctrl+alt+m");
+        .unwrap_or(DEFAULT_MEETING_HOTKEY);
 
-    Ok(BackendHotkeyConfig {
+    BackendHotkeyConfig {
         hotkey: normalize_global_shortcut(raw_hotkey),
         post_processing_hotkey: normalize_global_shortcut(raw_post_processing_hotkey),
         post_processing_enabled,
         meeting_hotkey: normalize_global_shortcut(raw_meeting_hotkey),
         mode: normalize_hotkey_mode(raw_mode),
-    })
+    }
 }
 
 fn normalize_hotkey_mode(mode: &str) -> String {
@@ -4487,6 +4721,59 @@ fn base_url(port: u16) -> String {
     format!("http://{DEFAULT_HOST}:{port}")
 }
 
+fn backend_ready_for_snapshot(
+    health_ready: bool,
+    authenticated: bool,
+    child_present: bool,
+    force_managed: bool,
+) -> bool {
+    health_ready && (child_present || (!force_managed && authenticated))
+}
+
+fn backend_snapshot_identity_matches(
+    snapshot_port: u16,
+    current_port: u16,
+    snapshot_child_pid: Option<u32>,
+    current_child_pid: Option<u32>,
+) -> bool {
+    snapshot_port == current_port && snapshot_child_pid == current_child_pid
+}
+
+fn authenticated_backend_ready(access: &BackendAccess) -> bool {
+    let Ok((host, port)) = parse_loopback_backend_url(&access.base_url) else {
+        return false;
+    };
+    let addr = SocketAddr::from((host, port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(250)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(750)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(750)));
+    let request =
+        build_backend_http_request("GET", "/api/runtime", port, &access.session_token, "");
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let Ok(response) =
+        read_backend_response_limited(&mut stream, BACKEND_HEALTH_MAX_RESPONSE_BYTES)
+    else {
+        return false;
+    };
+    let Ok((status, body)) = split_http_response(&response) else {
+        return false;
+    };
+    if !status.starts_with("HTTP/1.1 2") && !status.starts_with("HTTP/1.0 2") {
+        return false;
+    }
+    serde_json::from_str::<Value>(body)
+        .map(|value| runtime_identity_ready(&value))
+        .unwrap_or(false)
+}
+
+fn runtime_identity_ready(value: &Value) -> bool {
+    value.get("apiVersion").is_some() && value.get("runtimeMode").is_some()
+}
+
 fn health_ready(port: u16) -> bool {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(250)) else {
@@ -4621,6 +4908,104 @@ mod tests {
     }
 
     #[test]
+    fn external_backend_attachment_requires_the_shell_session_token() {
+        assert!(!super::backend_ready_for_snapshot(
+            true, false, false, false
+        ));
+        assert!(super::backend_ready_for_snapshot(true, true, false, false));
+        assert!(super::backend_ready_for_snapshot(true, false, true, false));
+        assert!(!super::backend_ready_for_snapshot(true, true, false, true));
+        assert!(!super::backend_ready_for_snapshot(
+            false, true, false, false
+        ));
+    }
+
+    #[test]
+    fn backend_readiness_snapshot_requires_the_same_child_identity_after_relock() {
+        assert!(super::backend_snapshot_identity_matches(
+            super::DEFAULT_PORT,
+            super::DEFAULT_PORT,
+            Some(41),
+            Some(41),
+        ));
+        assert!(super::backend_snapshot_identity_matches(
+            super::DEFAULT_PORT,
+            super::DEFAULT_PORT,
+            None,
+            None,
+        ));
+        assert!(!super::backend_snapshot_identity_matches(
+            super::DEFAULT_PORT,
+            super::DEFAULT_PORT,
+            Some(41),
+            None,
+        ));
+        assert!(!super::backend_snapshot_identity_matches(
+            super::DEFAULT_PORT,
+            super::DEFAULT_PORT,
+            None,
+            Some(42),
+        ));
+        assert!(!super::backend_snapshot_identity_matches(
+            super::DEFAULT_PORT,
+            super::DEFAULT_PORT + 1,
+            Some(41),
+            Some(41),
+        ));
+    }
+
+    #[test]
+    fn pending_navigation_acknowledgement_cannot_clear_a_newer_request() {
+        let state = super::PendingNavigationState::default();
+        let first = state.queue("/meetings");
+        assert_eq!(state.pending(), Some(first.clone()));
+
+        let second = state.queue("/settings");
+        assert!(second.navigation_id > first.navigation_id);
+        assert!(!state.acknowledge(first.navigation_id));
+        assert_eq!(state.pending(), Some(second.clone()));
+        assert!(state.acknowledge(second.navigation_id));
+        assert_eq!(state.pending(), None);
+    }
+
+    #[test]
+    fn authenticated_runtime_identity_requires_scriber_contract_fields() {
+        assert!(super::runtime_identity_ready(&serde_json::json!({
+            "apiVersion": "1",
+            "runtimeMode": "tauri-supervised"
+        })));
+        assert!(!super::runtime_identity_ready(&serde_json::json!({
+            "ok": true
+        })));
+    }
+
+    #[test]
+    fn public_health_cannot_attach_to_a_backend_with_another_session_token() {
+        let listener = TcpListener::bind((DEFAULT_HOST, 0)).expect("bind runtime probe server");
+        let port = listener.local_addr().expect("probe server address").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept runtime probe");
+            let mut request = [0_u8; 4096];
+            let bytes = stream.read(&mut request).expect("read runtime probe");
+            let request = String::from_utf8_lossy(&request[..bytes]);
+            assert!(request.starts_with("GET /api/runtime HTTP/1.1\r\n"));
+            assert!(request.contains("X-Scriber-Token: new-shell-token\r\n"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write unauthorized response");
+        });
+        let access = BackendAccess {
+            base_url: format!("http://{DEFAULT_HOST}:{port}"),
+            session_token: "new-shell-token".to_string(),
+        };
+
+        assert!(!super::authenticated_backend_ready(&access));
+        server.join().expect("runtime probe server joins");
+    }
+
+    #[test]
     fn managed_backend_start_timeout_waits_for_grace_period() {
         let now = Instant::now();
 
@@ -4640,6 +5025,110 @@ mod tests {
         assert!(!should_refresh_hotkey_after_backend_ready(false, false));
         assert!(!should_refresh_hotkey_after_backend_ready(true, true));
         assert!(should_refresh_hotkey_after_backend_ready(true, false));
+
+        let after_transient_error = super::hotkey_refresh_completed_after_attempt(false, false);
+        assert!(!after_transient_error);
+        assert!(should_refresh_hotkey_after_backend_ready(
+            true,
+            after_transient_error
+        ));
+
+        let after_success =
+            super::hotkey_refresh_completed_after_attempt(after_transient_error, true);
+        assert!(after_success);
+        assert!(!should_refresh_hotkey_after_backend_ready(
+            true,
+            after_success
+        ));
+    }
+
+    #[test]
+    fn missing_backend_hotkeys_use_the_fresh_install_defaults() {
+        let config = super::backend_hotkey_config_from_value(&serde_json::json!({}));
+
+        assert_eq!(config.hotkey, super::DEFAULT_LIVE_MIC_HOTKEY);
+        assert_eq!(
+            config.post_processing_hotkey,
+            super::DEFAULT_POST_PROCESSING_HOTKEY
+        );
+        assert!(config.post_processing_enabled);
+        assert_eq!(config.meeting_hotkey, super::DEFAULT_MEETING_HOTKEY);
+        assert_eq!(config.mode, "toggle");
+    }
+
+    #[test]
+    fn post_processing_registration_failure_does_not_block_meetings() {
+        let config = super::backend_hotkey_config_from_value(&serde_json::json!({}));
+        let mut attempted = Vec::new();
+        let outcome = super::register_optional_hotkeys(&config, |hotkey| {
+            attempted.push(hotkey.to_string());
+            if hotkey == super::DEFAULT_POST_PROCESSING_HOTKEY {
+                Err("occupied".to_string())
+            } else {
+                Ok(())
+            }
+        });
+
+        assert!(outcome.post_processing_hotkey.is_empty());
+        assert_eq!(outcome.meeting_hotkey, super::DEFAULT_MEETING_HOTKEY);
+        assert!(!outcome.meeting_fallback);
+        assert_eq!(outcome.errors.len(), 1);
+        assert_eq!(
+            attempted,
+            vec![
+                super::DEFAULT_POST_PROCESSING_HOTKEY.to_string(),
+                super::DEFAULT_MEETING_HOTKEY.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn occupied_meeting_default_uses_the_documented_fallback() {
+        let config = super::backend_hotkey_config_from_value(&serde_json::json!({}));
+        let outcome = super::register_optional_hotkeys(&config, |hotkey| {
+            if hotkey == super::DEFAULT_MEETING_HOTKEY {
+                Err("occupied".to_string())
+            } else {
+                Ok(())
+            }
+        });
+
+        assert_eq!(
+            outcome.post_processing_hotkey,
+            super::DEFAULT_POST_PROCESSING_HOTKEY
+        );
+        assert_eq!(outcome.meeting_hotkey, super::MEETING_HOTKEY_FALLBACK);
+        assert!(outcome.meeting_fallback);
+        assert!(outcome.errors.is_empty());
+    }
+
+    #[test]
+    fn double_meeting_registration_failure_is_not_reported_as_complete() {
+        let config = super::backend_hotkey_config_from_value(&serde_json::json!({}));
+        let outcome = super::register_optional_hotkeys(&config, |hotkey| {
+            if hotkey == super::DEFAULT_POST_PROCESSING_HOTKEY {
+                Ok(())
+            } else {
+                Err("occupied".to_string())
+            }
+        });
+
+        assert!(outcome.meeting_hotkey.is_empty());
+        assert!(!outcome.meeting_fallback);
+        assert_eq!(outcome.errors.len(), 1);
+        assert!(outcome.errors[0].contains(super::MEETING_HOTKEY_FALLBACK));
+    }
+
+    #[test]
+    fn meeting_hotkey_reveals_the_meeting_workspace_only() {
+        assert_eq!(
+            super::workspace_path_for_hotkey_action(super::MEETING_HOTKEY_BACKEND_PATH),
+            Some(super::MEETING_WORKSPACE_PATH)
+        );
+        assert_eq!(
+            super::workspace_path_for_hotkey_action("/api/live-mic/toggle"),
+            None
+        );
     }
 
     #[test]
@@ -5319,20 +5808,20 @@ mod tests {
     #[test]
     fn desktop_meeting_hotkey_maps_to_confirmation_endpoint() {
         let state = DesktopHotkeyState::new();
-        let meeting_id = shortcut_id_for_hotkey("ctrl+alt+m").unwrap();
+        let meeting_id = shortcut_id_for_hotkey(super::DEFAULT_MEETING_HOTKEY).unwrap();
         state.set_registered(
-            "ctrl+alt+s".to_string(),
+            super::DEFAULT_LIVE_MIC_HOTKEY.to_string(),
             String::new(),
             false,
-            "ctrl+alt+m".to_string(),
+            super::DEFAULT_MEETING_HOTKEY.to_string(),
             "toggle".to_string(),
             "registered".to_string(),
         );
         let now = Instant::now();
-        assert_eq!(state.status().meeting_hotkey, "ctrl+alt+m");
+        assert_eq!(state.status().meeting_hotkey, super::DEFAULT_MEETING_HOTKEY);
         assert_eq!(
             state.action_for_event(meeting_id, ShortcutState::Pressed, now),
-            Some("/api/meetings/hotkey")
+            Some(super::MEETING_HOTKEY_BACKEND_PATH)
         );
         assert_eq!(
             state.action_for_event(

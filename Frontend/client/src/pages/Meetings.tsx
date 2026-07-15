@@ -2718,10 +2718,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 </div>
               )}
 
-              {!OPEN_STATES.has(detail.state) && detail.captureMetadata.calendarEvent && (
+              {!OPEN_STATES.has(detail.state) && (
                 <SpeakerAttendeeAssignments
                   meetingId={detail.id}
-                  calendarEvent={detail.captureMetadata.calendarEvent}
+                  calendarEvent={detail.captureMetadata.calendarEvent ?? null}
                   playableSpeakerIds={playableSpeakerIds}
                   onPlaySpeaker={playSpeakerSnippet}
                   onAssignmentsChanged={() => {

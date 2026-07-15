@@ -2105,6 +2105,9 @@ function Initialize-GlobalHotkeySmokeData {
     $effectiveDefaultStt = if ([string]::IsNullOrWhiteSpace($DefaultStt)) { $invalidProvider } else { $DefaultStt.Trim() }
     $lines = @(
         "SCRIBER_HOTKEY=$Hotkey",
+        "SCRIBER_POST_PROCESSING_ENABLED=1",
+        "SCRIBER_POST_PROCESSING_HOTKEY=ctrl+shift+f",
+        "SCRIBER_MEETING_HOTKEY=ctrl+shift+m",
         "SCRIBER_MODE=toggle",
         "SCRIBER_DEFAULT_STT=$effectiveDefaultStt",
         "SCRIBER_INJECT_METHOD=type",
@@ -2129,7 +2132,7 @@ function Test-GlobalHotkeyRegistration {
     )
 
     $shellLogPath = Join-Path $RuntimeDataDir "logs\tauri-shell.log"
-    $expectedRegistration = "Global hotkey registered: $Hotkey (toggle)"
+    $expectedRegistration = "Global hotkey registered: $Hotkey (toggle), post-processing: ctrl+shift+f, meeting: ctrl+shift+m"
     if (-not (Wait-TextFileContains -Path $shellLogPath -Pattern $expectedRegistration -DeadlineSec $DeadlineSec)) {
         throw "Global hotkey registration was not observed in $shellLogPath."
     }
@@ -3145,6 +3148,9 @@ $oldRuntimeMode = $env:SCRIBER_RUNTIME_MODE
 $oldLaunchKind = $env:SCRIBER_BACKEND_LAUNCH_KIND
 $oldTauriGlobalHotkey = $env:SCRIBER_TAURI_GLOBAL_HOTKEY
 $oldScriberHotkey = $env:SCRIBER_HOTKEY
+$oldScriberPostProcessingEnabled = $env:SCRIBER_POST_PROCESSING_ENABLED
+$oldScriberPostProcessingHotkey = $env:SCRIBER_POST_PROCESSING_HOTKEY
+$oldScriberMeetingHotkey = $env:SCRIBER_MEETING_HOTKEY
 $oldScriberMode = $env:SCRIBER_MODE
 $oldScriberDefaultStt = $env:SCRIBER_DEFAULT_STT
 $oldScriberInjectMethod = $env:SCRIBER_INJECT_METHOD
@@ -3211,6 +3217,9 @@ if (-not $EnableDeviceMonitor) {
 if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManualGlobalHotkey) {
     $env:SCRIBER_TAURI_GLOBAL_HOTKEY = "1"
     $env:SCRIBER_HOTKEY = $globalHotkeySmokeConfig.hotkey
+    $env:SCRIBER_POST_PROCESSING_ENABLED = "1"
+    $env:SCRIBER_POST_PROCESSING_HOTKEY = "ctrl+shift+f"
+    $env:SCRIBER_MEETING_HOTKEY = "ctrl+shift+m"
     $env:SCRIBER_MODE = "toggle"
     $env:SCRIBER_DEFAULT_STT = $globalHotkeySmokeConfig.defaultStt
     $env:SCRIBER_INJECT_METHOD = "type"
@@ -3731,6 +3740,9 @@ try {
     $env:SCRIBER_BACKEND_LAUNCH_KIND = $oldLaunchKind
     $env:SCRIBER_TAURI_GLOBAL_HOTKEY = $oldTauriGlobalHotkey
     $env:SCRIBER_HOTKEY = $oldScriberHotkey
+    $env:SCRIBER_POST_PROCESSING_ENABLED = $oldScriberPostProcessingEnabled
+    $env:SCRIBER_POST_PROCESSING_HOTKEY = $oldScriberPostProcessingHotkey
+    $env:SCRIBER_MEETING_HOTKEY = $oldScriberMeetingHotkey
     $env:SCRIBER_MODE = $oldScriberMode
     $env:SCRIBER_DEFAULT_STT = $oldScriberDefaultStt
     $env:SCRIBER_INJECT_METHOD = $oldScriberInjectMethod

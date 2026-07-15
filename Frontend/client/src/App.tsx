@@ -343,8 +343,34 @@ function TrayRecordingStateBridge() {
   return null;
 }
 
+type TauriNavigationRequest = {
+  navigationId?: number;
+  path?: string;
+};
+
 function TauriNavigationBridge() {
   const [, setLocation] = useLocation();
+  const lastNavigationIdRef = useRef(0);
+
+  const applyNavigation = useCallback((request: TauriNavigationRequest | null | undefined) => {
+    const path = String(request?.path || "").trim();
+    if (!path.startsWith("/")) {
+      return;
+    }
+    const navigationId = Number(request?.navigationId || 0);
+    if (Number.isSafeInteger(navigationId) && navigationId > 0) {
+      if (navigationId <= lastNavigationIdRef.current) {
+        return;
+      }
+      lastNavigationIdRef.current = navigationId;
+    }
+    setLocation(path);
+    if (Number.isSafeInteger(navigationId) && navigationId > 0) {
+      void import("@tauri-apps/api/core")
+        .then(({ invoke }) => invoke<boolean>("acknowledge_navigation", { navigationId }))
+        .catch((error) => console.debug("Tauri navigation acknowledgement failed.", error));
+    }
+  }, [setLocation]);
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -352,28 +378,30 @@ function TauriNavigationBridge() {
     }
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void import("@tauri-apps/api/event")
-      .then(({ listen }) =>
-        listen<{ path?: string }>("scriber-navigate", (event) => {
-          const path = String(event.payload?.path || "").trim();
-          if (path.startsWith("/")) {
-            setLocation(path);
-          }
-        }),
-      )
-      .then((cleanup) => {
-        if (disposed) {
-          cleanup();
-        } else {
-          unlisten = cleanup;
-        }
-      })
+    void (async () => {
+      const [{ listen }, { invoke }] = await Promise.all([
+        import("@tauri-apps/api/event"),
+        import("@tauri-apps/api/core"),
+      ]);
+      const cleanup = await listen<TauriNavigationRequest>("scriber-navigate", (event) => {
+        applyNavigation(event.payload);
+      });
+      if (disposed) {
+        cleanup();
+        return;
+      }
+      unlisten = cleanup;
+      const pending = await invoke<TauriNavigationRequest | null>("navigation_listener_ready");
+      if (!disposed) {
+        applyNavigation(pending);
+      }
+    })()
       .catch((error) => console.debug("Tauri navigation listener failed.", error));
     return () => {
       disposed = true;
       unlisten?.();
     };
-  }, [setLocation]);
+  }, [applyNavigation]);
 
   return null;
 }

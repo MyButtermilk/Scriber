@@ -27,6 +27,38 @@ def test_tauri_shell_defers_backend_start_off_setup_hot_path() -> None:
     assert "std::thread::sleep(BACKEND_SUPERVISOR_INTERVAL);" in lib
 
 
+def test_hotkey_refresh_is_serialized_and_partial_registration_is_settled() -> None:
+    lib = read_script("Frontend/src-tauri/src/lib.rs")
+    wrapper = lib.split("fn refresh_global_hotkey_for_app<R: Runtime>", 1)[1].split(
+        "fn refresh_global_hotkey_for_app_locked", 1
+    )[0]
+    locked = lib.split("fn refresh_global_hotkey_for_app_locked", 1)[1].split(
+        "fn handle_global_shortcut_event", 1
+    )[0]
+
+    assert "registration: Mutex<()>" in lib
+    assert "lock_unpoisoned(&hotkey_state.registration)" in wrapper
+    assert "refresh_global_hotkey_for_app_locked(app, &hotkey_state)" in wrapper
+    assert "Optional shortcut\n    // conflicts are a stable degraded state" in locked
+    assert locked.rstrip().endswith("Ok(hotkey_state.status())\n}")
+
+
+def test_backend_relock_and_frontend_navigation_preserve_runtime_identity() -> None:
+    lib = read_script("Frontend/src-tauri/src/lib.rs")
+    app = read_script("Frontend/client/src/App.tsx")
+
+    assert "backend_snapshot_identity_matches(" in lib
+    assert "state.child.as_ref().map(Child::id)" in lib
+    assert "struct PendingNavigationState" in lib
+    assert "fn navigation_listener_ready(" in lib
+    assert "fn acknowledge_navigation(" in lib
+    assert "PendingNavigationState::default()" in lib
+    assert 'listen<TauriNavigationRequest>("scriber-navigate"' in app
+    assert 'invoke<TauriNavigationRequest | null>("navigation_listener_ready")' in app
+    assert 'invoke<boolean>("acknowledge_navigation", { navigationId })' in app
+    assert "navigationId <= lastNavigationIdRef.current" in app
+
+
 def test_main_window_close_hides_to_tray_without_destroying_restore_target() -> None:
     lib = read_script("Frontend/src-tauri/src/lib.rs")
 
@@ -1231,7 +1263,9 @@ def test_desktop_smoke_can_verify_os_global_hotkey_dispatch() -> None:
     assert "hotkey_received_to_first_audio_frame_ms" in desktop
     assert "userReady = $userReady" in desktop
     assert "hotPathMetrics = if ($userReady)" in desktop
-    assert "Global hotkey registered: $Hotkey (toggle)" in desktop
+    assert "Global hotkey registered: $Hotkey (toggle), post-processing: ctrl+shift+f, meeting: ctrl+shift+m" in desktop
+    assert '"SCRIBER_POST_PROCESSING_HOTKEY=ctrl+shift+f"' in desktop
+    assert '"SCRIBER_MEETING_HOTKEY=ctrl+shift+m"' in desktop
     assert "SCRIBER_DEFAULT_STT=$effectiveDefaultStt" in desktop
     assert "Assert-UnderRoot -Root (Join-Path $Root \"tmp\") -Path $RuntimeDataDir -Label \"Global hotkey smoke DataDir\"" in desktop
     assert "$env:SCRIBER_HOTKEY = $globalHotkeySmokeConfig.hotkey" in desktop

@@ -73,6 +73,7 @@ import type {
   SettingsUpdatePayload,
 } from "@/lib/api-types";
 import { apiRequest, OUTLOOK_SYNC_REQUEST_TIMEOUT_MS } from "@/lib/queryClient";
+import { refreshAllMeetingSpeakerIdentityCaches } from "@/lib/meeting-cache";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
@@ -208,6 +209,11 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
 ] as const;
 
 const USD_TO_EUR_FOR_ESTIMATES = 0.877;
+// Multilingual transcription base rates from https://www.modulate.ai/api-pricing.
+// Optional redaction, deepfake, emotion, accent, and other enrichment charges are excluded.
+const MODULATE_BATCH_USD_PER_AUDIO_HOUR = 0.03;
+const MODULATE_STREAMING_USD_PER_AUDIO_HOUR = 0.06;
+const MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT = 4.43;
 const DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest";
 const DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b";
 const DEFAULT_POST_PROCESSING_PROMPT = `Glätte das folgende Speech-to-Text-Transkript sprachlich, typografisch und strukturell, ohne Inhalt zu verändern, zu kürzen, zu interpretieren oder neue Informationen hinzuzufügen.
@@ -542,22 +548,27 @@ interface ProviderModelOption {
   icon?: ProviderIconKey;
 }
 
-function sttBenchmarkDetail(usdPerThousandMinutes: number, wordErrorRatePercent: number): string {
-  const euroPerHour = usdPerThousandMinutes * USD_TO_EUR_FOR_ESTIMATES * 0.06;
+function sttHourlyBenchmarkDetail(usdPerHour: number, wordErrorRatePercent: number): string {
+  const euroPerHour = usdPerHour * USD_TO_EUR_FOR_ESTIMATES;
   const euroText = euroPerHour.toLocaleString("de-DE", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
   const errorText = wordErrorRatePercent.toLocaleString("de-DE", {
     minimumFractionDigits: wordErrorRatePercent % 1 === 0 ? 0 : 1,
-    maximumFractionDigits: 1,
+    maximumFractionDigits: 2,
   });
   return `${euroText}€/h with ${errorText}% Error`;
+}
+
+function sttBenchmarkDetail(usdPerThousandMinutes: number, wordErrorRatePercent: number): string {
+  return sttHourlyBenchmarkDetail(usdPerThousandMinutes * 0.06, wordErrorRatePercent);
 }
 
 const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
   { value: "elevenlabs", label: "ElevenLabs Live", detail: sttBenchmarkDetail(6.50, 3.6), group: "cloud_streaming", icon: "elevenlabs" },
   { value: "assemblyai-realtime", label: "AssemblyAI", detail: sttBenchmarkDetail(7.50, 4.1), group: "cloud_streaming", icon: "assemblyai" },
+  { value: "modulate-realtime", label: "Modulate.AI Multilingual Realtime", detail: sttHourlyBenchmarkDetail(MODULATE_STREAMING_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT), group: "cloud_streaming", icon: "modulate" },
   { value: "soniox-realtime", label: "Soniox", detail: sttBenchmarkDetail(2.00, 4.5), group: "cloud_streaming", icon: "soniox" },
   { value: "google", label: "Google Cloud", detail: sttBenchmarkDetail(16.00, 4.8), group: "cloud_streaming", icon: "googlecloud" },
   { value: "openai", label: "OpenAI Realtime", detail: sttBenchmarkDetail(17.00, 4.9), group: "cloud_streaming", icon: "openai" },
@@ -566,7 +577,6 @@ const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
   { value: "deepgram", label: "Deepgram", detail: sttBenchmarkDetail(4.80, 6.6), group: "cloud_streaming", icon: "deepgram" },
   { value: "gladia", label: "Gladia", detail: sttBenchmarkDetail(12.50, 7.8), group: "cloud_streaming", icon: "gladia" },
   { value: "speechmatics", label: "Speechmatics", detail: sttBenchmarkDetail(17.50, 8.0), group: "cloud_streaming", icon: "speechmatics" },
-  { value: "modulate-realtime", label: "Modulate.AI Multilingual Realtime", detail: "Final text only · no partials or enrichment signals", group: "cloud_streaming", icon: "modulate" },
   { value: "azure_mai", label: "Microsoft MAI", detail: sttBenchmarkDetail(6.00, 2.4), group: "cloud_async", icon: "azure" },
   { value: "assemblyai", label: "AssemblyAI", detail: sttBenchmarkDetail(3.50, 3.1), group: "cloud_async", icon: "assemblyai" },
   { value: "mistral-async", label: "Mistral Batch", detail: sttBenchmarkDetail(3.00, 3.6), group: "cloud_async", icon: "mistral" },
@@ -575,10 +585,10 @@ const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
   { value: "speechmatics-async", label: "Speechmatics", detail: sttBenchmarkDetail(6.70, 4.0), group: "cloud_async", icon: "speechmatics" },
   { value: "gladia-async", label: "Gladia", detail: sttBenchmarkDetail(4.07, 4.1), group: "cloud_async", icon: "gladia" },
   { value: "smallest-async", label: "Smallest AI", detail: sttBenchmarkDetail(5.00, 4.4), group: "cloud_async", icon: "smallest" },
+  { value: "modulate-async", label: "Modulate.AI Multilingual Batch", detail: sttHourlyBenchmarkDetail(MODULATE_BATCH_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT), group: "cloud_async", icon: "modulate" },
   { value: "openai-async", label: "OpenAI Batch", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_async", icon: "openai" },
   { value: "gemini-stt", label: "Gemini", detail: sttBenchmarkDetail(6.66, 5.1), group: "cloud_async", icon: "gemini" },
   { value: "deepgram-async", label: "Deepgram", detail: sttBenchmarkDetail(4.30, 5.2), group: "cloud_async", icon: "deepgram" },
-  { value: "modulate-async", label: "Modulate.AI Multilingual Batch", detail: "One final transcript · no enrichment signals", group: "cloud_async", icon: "modulate" },
   { value: "onnx_local", label: "Local ONNX", detail: "0,00€/h with model-dependent Error", group: "local" },
 ];
 
@@ -1134,9 +1144,9 @@ export default function Settings() {
   const [showGroqKey, setShowGroqKey] = useState(false);
   const [showSpeechmaticsKey, setShowSpeechmaticsKey] = useState(false);
 
-  const [hotkey, setHotkey] = useState("Ctrl + Shift + S");
-  const [postProcessingHotkey, setPostProcessingHotkey] = useState("Ctrl + Shift + P");
-  const [meetingHotkey, setMeetingHotkey] = useState("Ctrl + Alt + M");
+  const [hotkey, setHotkey] = useState("Ctrl + Shift + D");
+  const [postProcessingHotkey, setPostProcessingHotkey] = useState("Ctrl + Shift + F");
+  const [meetingHotkey, setMeetingHotkey] = useState("Ctrl + Shift + M");
   const [sonioxRealtimeModel, setSonioxRealtimeModel] = useState("stt-rt-v5");
   const [meetingTranscriptionMode, setMeetingTranscriptionMode] = useState<MeetingTranscriptionMode>("live_final");
   const [meetingFinalProvider, setMeetingFinalProvider] = useState("soniox_async");
@@ -1332,11 +1342,12 @@ export default function Settings() {
         targetProfileId: mergeTargetProfileId,
         sourceProfileId: mergeSourceProfileId,
       });
-      return response.json();
+      return response.json() as Promise<{ targetProfileId: string; mergedProfileId: string }>;
     },
-    onSuccess: () => {
+    onSuccess: async (payload) => {
+      setMergeTargetProfileId(payload.targetProfileId);
       setMergeSourceProfileId("");
-      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
+      await refreshAllMeetingSpeakerIdentityCaches(queryClient);
       toast({ title: "Duplicate speakers merged" });
     },
     onError: (error) => toast({ title: "Speakers could not be merged", description: error.message, variant: "destructive" }),
@@ -1754,9 +1765,9 @@ export default function Settings() {
         const keys = settings.apiKeys || {};
         setAutostartEnabled(autostart.enabled || false);
         setAutostartAvailable(autostart.available || false);
-        setHotkey(settings.hotkey || settings.hotkeyRaw || "");
-        setPostProcessingHotkey(settings.postProcessingHotkey || settings.postProcessingHotkeyRaw || "Ctrl + Shift + P");
-        setMeetingHotkey(settings.meetingHotkey || settings.meetingHotkeyRaw || "Ctrl + Alt + M");
+        setHotkey(settings.hotkey || settings.hotkeyRaw || "Ctrl + Shift + D");
+        setPostProcessingHotkey(settings.postProcessingHotkey || settings.postProcessingHotkeyRaw || "Ctrl + Shift + F");
+        setMeetingHotkey(settings.meetingHotkey || settings.meetingHotkeyRaw || "Ctrl + Shift + M");
         setSonioxRealtimeModel(settings.sonioxRealtimeModel || "stt-rt-v5");
         setMeetingTranscriptionMode(settings.meetingTranscriptionMode === "final_only" ? "final_only" : "live_final");
         setMeetingFinalProvider(settings.meetingFinalProvider || "soniox_async");

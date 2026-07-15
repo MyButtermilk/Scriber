@@ -207,6 +207,7 @@ export function applyMeetingSpeakerName(
         // Voice Library profile. Cached suggestions were derived from the old
         // identity, so none of them are safe to keep for this speaker.
         confirmedAttendee: null,
+        confirmedCustomName: null,
         participantLinkSource: "",
         profileMatch: item.profileMatch ? {
           ...item.profileMatch,
@@ -248,6 +249,21 @@ export async function refreshMeetingCollections(queryClient: QueryClient): Promi
 export async function refreshMeetingDetail(queryClient: QueryClient, meetingId: string): Promise<void> {
   if (!meetingId) return;
   await queryClient.invalidateQueries({ queryKey: ["/api/meetings", meetingId], exact: true });
+}
+
+/** A profile merge is global: stale names may exist in every Meeting using either profile. */
+export async function refreshAllMeetingSpeakerIdentityCaches(queryClient: QueryClient): Promise<void> {
+  await Promise.all([
+    queryClient.invalidateQueries({
+      predicate: (query) => {
+        const key = query.queryKey;
+        if (key[0] !== "/api/meetings") return false;
+        if (key.length === 2) return key[1] !== "history";
+        return key.length === 3 && key[2] === "speaker-assignments";
+      },
+    }),
+    queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] }),
+  ]);
 }
 
 export async function refreshMeetingCapabilities(queryClient: QueryClient): Promise<void> {

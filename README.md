@@ -46,7 +46,9 @@ Scriber is not another upload page wrapped around one speech API. It is a Window
 
 Use the normal hotkey for fast, faithful speech-to-text. Use the separate post-processing hotkey when the result should be cleaned, structured, and ready to send.
 
-- Global start and stop hotkey
+- Ready-to-use defaults on a fresh install: **Ctrl+Shift+D** for Live Mic and
+  **Ctrl+Shift+F** for post-processing; existing Settings or `.env` choices are
+  preserved
 - Rust and WASAPI microphone capture
 - Optional microphone pre-warming for lower startup latency
 - Native recording overlay with live feedback
@@ -94,6 +96,8 @@ summary, decisions, action items, cited chat answers, and reusable exports.
   diarization; the signed app supplies an isolated static worker while only the
   models are downloaded, shared by File, YouTube, Meetings, and Meeting imports
 - Import an existing audio or video recording directly into the Meeting workspace
+- **Ctrl+Shift+M** opens, restores, and focuses the Meeting workspace on a fresh
+  install; an existing custom shortcut remains unchanged
 - Optional local speaker library with explicit biometric opt-in and deletion
 - Optional Outlook Calendar connection with a refreshable list of today's
   events, organizer and attendee details, and an explicit event/no-event choice;
@@ -103,6 +107,12 @@ summary, decisions, action items, cited chat answers, and reusable exports.
   expires.
 - Voice Library and local-account matches are suggested first after the Meeting;
   optional AI suggestions for unresolved speakers always require confirmation
+- Name unresolved speakers directly in the Meeting, including people, teams,
+  rooms, or shared microphones. These meeting-local labels do not create Outlook
+  identities, rename Voice Library profiles, or add email recipients
+- Permanently merge duplicate speaker identities when one person was detected as
+  two speakers; Scriber preserves explicitly assigned Meeting labels and asks for
+  confirmation before changing the local Voice Library
 - Email drafts reuse the selected event's suitable participant addresses and
   show recipients for review before sending
 - Markdown, JSON, PDF, DOCX, multitrack FLAC, and synchronized Opus playback
@@ -132,6 +142,17 @@ Use a realtime provider when words should appear while you speak.
 ### Cloud async and batch
 
 Use completed-audio processing for long recordings, file imports, and providers optimized for accuracy or cost.
+
+### Modulate.AI multilingual transcription
+
+Modulate.AI is available for multilingual batch and realtime transcription.
+Scriber keeps only final transcript text: partial results and optional emotion,
+accent, deepfake, and PII/PHI signals are disabled. The provider's published base
+prices are **$0.03 per audio hour** for batch and **$0.06 per audio hour** for
+streaming, without optional add-ons. Settings uses **4.43% word error rate** as
+the comparison benchmark and sorts models by their displayed error rate.
+[See Modulate's official API pricing.](https://www.modulate.ai/api-pricing)
+[Transcription quick start.](https://docs.modulate.ai/quickstart)
 
 ### Local ONNX
 

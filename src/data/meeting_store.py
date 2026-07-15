@@ -2998,6 +2998,51 @@ class MeetingStore:
             "confirmedAt": now,
         }
 
+    def assign_speaker_display_name(
+        self,
+        meeting_id: str,
+        speaker_id: str,
+        display_name: str,
+    ) -> dict[str, Any]:
+        """Persist a meeting-local speaker name without creating an identity link.
+
+        A free name may describe a person, team, room, or shared microphone. It
+        deliberately does not rename a linked biometric Voice Library profile
+        and does not create an Outlook participant or email-recipient link.
+        """
+        self.get(meeting_id)
+        display_name = " ".join(str(display_name).split())
+        if not display_name or len(display_name) > 120:
+            raise ValueError("Speaker name must contain 1 to 120 characters.")
+        now = _utc_now()
+        with db._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                "SELECT id FROM meeting_speakers WHERE meeting_id=? AND id=?",
+                (meeting_id, speaker_id),
+            ).fetchone()
+            if current is None:
+                raise MeetingNotFound("Meeting speaker not found")
+            conn.execute(
+                """UPDATE meeting_speakers SET display_name=?,display_name_source='manual',
+                   participant_name='',participant_address='',participant_link_source='custom_name',
+                   updated_at=? WHERE meeting_id=? AND id=?""",
+                (display_name, now, meeting_id, speaker_id),
+            )
+            conn.execute(
+                "UPDATE meeting_segments SET speaker_label=? WHERE meeting_id=? AND speaker_id=?",
+                (display_name, meeting_id, speaker_id),
+            )
+            conn.commit()
+        return {
+            "speakerId": speaker_id,
+            "displayName": display_name,
+            "confirmedAttendee": None,
+            "customDisplayName": display_name,
+            "source": "custom_name",
+            "confirmedAt": now,
+        }
+
     def create_chat_thread(self, meeting_id: str, title: str = "") -> dict[str, Any]:
         self.get(meeting_id)
         now = _utc_now()
@@ -3950,19 +3995,29 @@ class MeetingStore:
         now = _utc_now()
         with db._get_connection() as conn:
             target = conn.execute(
-                """SELECT id,enrollment_embedding_blob,enrollment_sample_count,
+                """SELECT id,display_name,is_named,enrollment_embedding_blob,enrollment_sample_count,
                           enrollment_weight_sum,enrollment_resultant_norm,enrolled_at
                    FROM speaker_profiles WHERE id=?""",
                 (target_profile_id,),
             ).fetchone()
             source = conn.execute(
-                """SELECT id,enrollment_embedding_blob,enrollment_sample_count,
+                """SELECT id,display_name,is_named,enrollment_embedding_blob,enrollment_sample_count,
                           enrollment_weight_sum,enrollment_resultant_norm,enrolled_at
                    FROM speaker_profiles WHERE id=?""",
                 (source_profile_id,),
             ).fetchone()
             if target is None or source is None:
                 raise MeetingNotFound("Speaker profile not found")
+            # A merge must never silently discard the only human-provided
+            # Voice Library name. Canonicalize the direction before moving any
+            # observations: when exactly one profile is named, that profile is
+            # always the durable target regardless of request order.
+            if not bool(target["is_named"]) and bool(source["is_named"]):
+                target, source = source, target
+                target_profile_id, source_profile_id = (
+                    source_profile_id,
+                    target_profile_id,
+                )
             observations = conn.execute(
                 "SELECT * FROM speaker_profile_observations WHERE profile_id=?",
                 (source_profile_id,),
@@ -4012,9 +4067,44 @@ class MeetingStore:
                         target_profile_id,
                     ),
                 )
+            if bool(target["is_named"]):
+                # Project the canonical name onto every non-manual Meeting row
+                # represented by either profile. This includes target-owned
+                # anonymous rows that were previously left behind. Explicit
+                # custom or Outlook/manual labels remain untouched.
+                conn.execute(
+                    """UPDATE meeting_segments SET speaker_label=?
+                       WHERE speaker_id IN (
+                         SELECT id FROM meeting_speakers
+                         WHERE profile_id IN (?,?) AND display_name_source<>'manual'
+                       )""",
+                    (
+                        str(target["display_name"]),
+                        target_profile_id,
+                        source_profile_id,
+                    ),
+                )
+                conn.execute(
+                    """UPDATE meeting_speakers SET profile_id=?,display_name=?,
+                       display_name_source='profile',updated_at=?
+                       WHERE profile_id IN (?,?) AND display_name_source<>'manual'""",
+                    (
+                        target_profile_id,
+                        str(target["display_name"]),
+                        now,
+                        target_profile_id,
+                        source_profile_id,
+                    ),
+                )
             conn.execute(
-                "UPDATE meeting_speakers SET profile_id=?,updated_at=? WHERE profile_id=?",
-                (target_profile_id, now, source_profile_id),
+                """UPDATE meeting_speakers SET profile_id=?,updated_at=?
+                   WHERE profile_id IN (?,?)""",
+                (
+                    target_profile_id,
+                    now,
+                    target_profile_id,
+                    source_profile_id,
+                ),
             )
             conn.execute("DELETE FROM speaker_profiles WHERE id=?", (source_profile_id,))
             self._recompute_speaker_profile_conn(conn, target_profile_id, now)
