@@ -293,6 +293,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
         reader_factory=None,
         first_frame_timeout_seconds: float | None = None,
         prewarm_id: str = "",
+        capture_route: dict | None = None,
+        on_start_marker=None,
     ):
         self.sample_rate = int(sample_rate)
         self.target_channels = int(target_channels)
@@ -336,6 +338,11 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.frame_pipe_first_live_sequence = None
         self.requested_prebuffer_ms = 0
         self.requested_prewarm_id = str(prewarm_id or "")
+        self.capture_route = dict(capture_route) if isinstance(capture_route, dict) else None
+        self.capture_route_source = "freshResolution"
+        self.device_selection_ms = None
+        self.capture_start_response_ms = None
+        self.first_live_frame_wait_ms = None
         self.adopted_prewarm: dict | None = None
         self.frame_pipe_reader_end_reason = "notStarted"
         self.frame_pipe_first_frame_read_ms = None
@@ -365,6 +372,16 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self._reader_started_at = 0.0
         self._last_callback_at = 0.0
         self._last_error = ""
+        self._on_start_marker = on_start_marker
+
+    def _mark_start(self, marker: str) -> None:
+        callback = self._on_start_marker
+        if not callable(callback):
+            return
+        try:
+            callback(marker)
+        except Exception:
+            return
 
     @property
     def stream(self):
@@ -439,12 +456,35 @@ class RustPrototypeFrameSource(AudioFrameSource):
                 timeout_seconds=2.0,
             ):
                 self._pending_stop_stream_id = ""
-        selection = _rust_audio_device_selection_payload(
-            self.device,
-            sample_rate=self.sample_rate,
-            channels=self.target_channels,
-            shell_call=self._shell_call,
+        selection_started = time.monotonic()
+        if self.requested_prewarm_id and isinstance(self.capture_route, dict):
+            # The route belongs to the exact leased prewarm ID. Rust remains
+            # authoritative: it opens the requested/default endpoint and
+            # compares that actual endpoint with the one prewarm opened before
+            # exposing any buffered audio.
+            selection = {
+                "devicePreference": str(
+                    self.capture_route.get("devicePreference") or self.device or "default"
+                ),
+                "portAudioLabel": str(self.capture_route.get("portAudioLabel") or ""),
+                "nativeEndpointIdHash": (
+                    str(self.capture_route.get("nativeEndpointIdHash") or "") or None
+                ),
+            }
+            self.capture_route_source = "prewarmLease"
+        else:
+            selection = _rust_audio_device_selection_payload(
+                self.device,
+                sample_rate=self.sample_rate,
+                channels=self.target_channels,
+                shell_call=self._shell_call,
+            )
+            self.capture_route_source = "freshResolution"
+        self.device_selection_ms = round(
+            max(0.0, time.monotonic() - selection_started) * 1000.0,
+            3,
         )
+        self._mark_start("capture_route_ready")
         self.requested_prebuffer_ms = _rust_audio_prebuffer_ms()
         payload = {
             "sampleRate": self.sample_rate,
@@ -462,7 +502,14 @@ class RustPrototypeFrameSource(AudioFrameSource):
                 "sampleFormat": "pcm_i16_le",
             },
         }
+        self._mark_start("audio_capture_start_ipc_started")
+        capture_start_started = time.monotonic()
         response = self._shell_call("audioCaptureStart", payload, timeout_seconds=2.0)
+        self.capture_start_response_ms = round(
+            max(0.0, time.monotonic() - capture_start_started) * 1000.0,
+            3,
+        )
+        self._mark_start("audio_capture_start_ipc_done")
         if not isinstance(response, dict):
             self.fallback_reason = "rustCaptureInvalidResponse"
             raise RuntimeError("Rust audio capture start returned an invalid response")
@@ -557,16 +604,22 @@ class RustPrototypeFrameSource(AudioFrameSource):
         # reach the callback, but they are not proof that the new live capture
         # owns the endpoint. Only the first non-PREBUFFER frame may release the
         # caller to commit prewarm adoption and publish on_ready.
+        first_live_started = time.monotonic()
         if not self._live_capture_ready_event.wait(self._first_frame_timeout_seconds):
             self.fallback_reason = "rustFirstLiveFrameTimeout"
             self.stop(close=True)
             raise RuntimeError("Rust audio capture did not deliver a first live frame in time")
+        self.first_live_frame_wait_ms = round(
+            max(0.0, time.monotonic() - first_live_started) * 1000.0,
+            3,
+        )
         if not self._live_capture_ready:
             error = self._last_error or "frame pipe ended before the first live frame"
             self.stop(close=True)
             raise RuntimeError(
                 f"Rust audio capture failed before first frame became live-ready: {error}"
             )
+        self._mark_start("first_live_frame_ready")
 
     def stop(self, *, close: bool) -> None:
         self._stop_event.set()
@@ -665,6 +718,10 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "device": str(self.device),
             "requestedPrebufferMs": self.requested_prebuffer_ms,
             "requestedPrewarmIdHash": _hash_private_hint(self.requested_prewarm_id),
+            "captureRouteSource": self.capture_route_source,
+            "deviceSelectionMs": self.device_selection_ms,
+            "captureStartResponseMs": self.capture_start_response_ms,
+            "firstLiveFrameWaitMs": self.first_live_frame_wait_ms,
             "adoptedPrewarm": self._redacted_adopted_prewarm(),
             "streamIdHash": _hash_private_hint(self.stream_id),
             "pendingStopStreamIdHash": _hash_private_hint(self._pending_stop_stream_id),
@@ -1032,6 +1089,8 @@ class MicrophoneInput(BaseInputTransport):
         on_audio_level=None,
         on_ready=None,
         on_last_audio_chunk_sent=None,
+        on_start_marker=None,
+        fresh_device_resolver=None,
     ):
         params = TransportParams(
             audio_in_enabled=True,
@@ -1050,6 +1109,8 @@ class MicrophoneInput(BaseInputTransport):
         self.on_audio_level = on_audio_level
         self.on_ready = on_ready
         self.on_last_audio_chunk_sent = on_last_audio_chunk_sent
+        self.on_start_marker = on_start_marker
+        self._fresh_device_resolver = fresh_device_resolver
         self.stream = None
         self._frame_source: AudioFrameSource | None = None
         self._requested_audio_engine = _requested_audio_engine()
@@ -1142,7 +1203,22 @@ class MicrophoneInput(BaseInputTransport):
             block_size=self.block_size,
             device=self.device,
             prewarm_id=self._rust_prewarm_id,
+            capture_route=(
+                self._rust_prewarm_adoption.get("captureRoute")
+                if isinstance(self._rust_prewarm_adoption, dict)
+                else None
+            ),
+            on_start_marker=self.on_start_marker,
         )
+
+    def _mark_start(self, marker: str) -> None:
+        callback = self.on_start_marker
+        if not callable(callback):
+            return
+        try:
+            callback(marker)
+        except Exception:
+            return
 
     def _open_and_start_frame_source(self) -> None:
         source = self._frame_source
@@ -1257,6 +1333,7 @@ class MicrophoneInput(BaseInputTransport):
                     and getattr(self.prewarm_manager, "engine", "") == "rust-wasapi"
                 ):
                     try:
+                        self._mark_start("prewarm_attach_started")
                         def attach_prewarm() -> dict | None:
                             attached = self.prewarm_manager.attach_active_capture(
                                 None,
@@ -1285,6 +1362,8 @@ class MicrophoneInput(BaseInputTransport):
                     except Exception as exc:
                         logger.debug(f"Could not attach Rust prewarm session: {exc}")
                         adopted = None
+                    finally:
+                        self._mark_start("prewarm_attach_done")
                     prewarm_id = str(
                         (adopted or {}).get("prewarmId")
                         or (adopted or {}).get("prewarm_id")
@@ -1308,6 +1387,15 @@ class MicrophoneInput(BaseInputTransport):
                         )
                     except Exception as exc:
                         logger.debug(f"Could not pause idle mic prewarm before Rust capture: {exc}")
+                    if callable(self._fresh_device_resolver):
+                        # A route can be replaced after the read-only warm hint
+                        # was used to construct this input but before attach.
+                        # Never reinterpret that stale numeric PortAudio index
+                        # as a fresh request: resolve the current Settings route
+                        # only on this rare rejection path.
+                        self.device = await _run_bounded_blocking_transition(
+                            self._fresh_device_resolver
+                        )
 
             # Native endpoint resolution and shell/audio-sidecar startup are
             # bounded blocking operations. Keep them off aiohttp/Pipecat's event
@@ -1338,6 +1426,20 @@ class MicrophoneInput(BaseInputTransport):
 
                     await _run_bounded_blocking_transition(commit_prewarm)
             device_index = getattr(self._frame_source, "device_index", None)
+            source_diagnostics = (
+                self._frame_source.diagnostic_snapshot()
+                if self._frame_source is not None
+                and callable(getattr(self._frame_source, "diagnostic_snapshot", None))
+                else {}
+            )
+            logger.info(
+                "Rust microphone warm-start stages: route={}, selectionMs={}, "
+                "captureStartMs={}, firstLiveWaitMs={}",
+                source_diagnostics.get("captureRouteSource", "unknown"),
+                source_diagnostics.get("deviceSelectionMs"),
+                source_diagnostics.get("captureStartResponseMs"),
+                source_diagnostics.get("firstLiveFrameWaitMs"),
+            )
             logger.info(f"Microphone stream started (device={'default' if device_index is None else device_index})")
             # Signal that microphone is ready and capturing audio
             if self.on_ready:

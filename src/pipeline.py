@@ -1281,9 +1281,13 @@ def invalidate_mic_device_resolution_cache() -> None:
 def _mic_device_resolution_cache_ttl() -> float:
     return _env_float(
         "SCRIBER_MIC_DEVICE_CACHE_TTL_SEC",
-        10.0,
+        # Native endpoint notifications and Settings changes explicitly
+        # invalidate this cache. A ten-second default made every longer
+        # dictation pay PortAudio enumeration again on the next hotkey even
+        # though the device generation had not changed.
+        3600.0,
         minimum=0.0,
-        maximum=3600.0,
+        maximum=86400.0,
     )
 
 
@@ -1357,6 +1361,39 @@ def _resolve_mic_device(device_name: str) -> str:
             logger=logger,
         )
     return remember(resolved)
+
+
+def _resolve_live_mic_capture_device(
+    mic_prewarm_manager: object | None,
+) -> tuple[str, bool]:
+    """Return the capture device plus whether it came from the warm lease."""
+
+    leased_device = getattr(
+        mic_prewarm_manager,
+        "leased_capture_device_preference",
+        None,
+    )
+    if callable(leased_device):
+        try:
+            resolved = leased_device(
+                sample_rate=int(getattr(Config, "SAMPLE_RATE", 16000) or 16000),
+                target_channels=max(
+                    1,
+                    int(getattr(Config, "CHANNELS", 1) or 1),
+                ),
+                block_size=max(
+                    64,
+                    int(getattr(Config, "MIC_BLOCK_SIZE", 512) or 512),
+                ),
+            )
+            if resolved not in (None, ""):
+                return str(resolved), True
+        except Exception as exc:
+            logger.debug(
+                "Could not reuse the idle microphone route; resolving it normally: {}",
+                type(exc).__name__,
+            )
+    return _resolve_mic_device(Config.MIC_DEVICE), False
 
 
 class ConnectionErrorHandlerProcessor(FrameProcessor):
@@ -1613,6 +1650,7 @@ class ScriberPipeline:
         on_progress: Optional[Callable[[str], None]] = None,
         on_mic_ready: Optional[Callable[[], None]] = None,
         on_last_audio_chunk_sent: Optional[Callable[[], None]] = None,
+        on_audio_start_marker: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
         mic_prewarm_manager=None,
         enable_speaker_diarization: bool = False,
@@ -1638,6 +1676,7 @@ class ScriberPipeline:
         self.on_progress = on_progress
         self.on_mic_ready = on_mic_ready
         self.on_last_audio_chunk_sent = on_last_audio_chunk_sent
+        self.on_audio_start_marker = on_audio_start_marker
         self.on_error = on_error
         self.mic_prewarm_manager = mic_prewarm_manager
         self.enable_speaker_diarization = bool(enable_speaker_diarization)
@@ -2833,16 +2872,25 @@ class ScriberPipeline:
                 use_prewarm_for_capture = bool(Config.MIC_ALWAYS_ON or prewarm_active)
 
                 # Always use our custom MicrophoneInput to support on_audio_level callback
+                capture_device, capture_device_from_warm_lease = (
+                    _resolve_live_mic_capture_device(self.mic_prewarm_manager)
+                )
                 self.audio_input = MicrophoneInput(
                     sample_rate=Config.SAMPLE_RATE,
                     channels=Config.CHANNELS,
                     block_size=Config.MIC_BLOCK_SIZE,
-                    device=_resolve_mic_device(Config.MIC_DEVICE),
+                    device=capture_device,
+                    fresh_device_resolver=(
+                        (lambda: _resolve_mic_device(Config.MIC_DEVICE))
+                        if capture_device_from_warm_lease
+                        else None
+                    ),
                     keep_alive=use_prewarm_for_capture,
                     prewarm_manager=self.mic_prewarm_manager,
                     on_audio_level=self.on_audio_level,
                     on_ready=self.on_mic_ready,
                     on_last_audio_chunk_sent=self.on_last_audio_chunk_sent,
+                    on_start_marker=self.on_audio_start_marker,
                 )
 
                 inject_immediately = (

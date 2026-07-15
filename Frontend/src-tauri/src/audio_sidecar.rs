@@ -16,6 +16,7 @@ use std::{
     io::{self, BufRead, Read, Write},
     process::ExitCode,
     sync::{
+        atomic::{AtomicBool, AtomicU8, Ordering},
         mpsc::{self, Sender, TryRecvError},
         Arc, Mutex,
     },
@@ -30,8 +31,8 @@ use std::ptr::{null, null_mut};
 #[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, GetLastError, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, ERROR_PIPE_LISTENING,
-        GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE,
+        CloseHandle, GetLastError, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
+        ERROR_PIPE_LISTENING, GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE,
     },
     Storage::FileSystem::{
         CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING,
@@ -68,6 +69,13 @@ const SYNTHETIC_SIGNAL_ENV: &str = "SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL";
 const WASAPI_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_WASAPI_CAPTURE";
 const DISABLE_WASAPI_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE";
 const FRAME_PIPE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const FRAME_PIPE_WRITE_TIMEOUT: Duration = Duration::from_millis(500);
+const PREWARM_BURST_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const PREWARM_PROMOTION_ACCEPT_TIMEOUT: Duration = Duration::from_secs(1);
+const PREWARM_PROMOTION_ACCEPTED_COMPLETION_TIMEOUT: Duration = Duration::from_millis(500);
+const PREWARM_PROMOTION_ENDPOINT_RESOLUTION_TIMEOUT: Duration = Duration::from_millis(300);
+const PROMOTED_CAPTURE_STOP_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
+static PROMOTION_ENDPOINT_RESOLVER_ACTIVE: AtomicBool = AtomicBool::new(false);
 // Handoff blocks are retained only while the replacement WASAPI client is
 // being initialized.  Keep that queue bounded without making the prewarm
 // worker wait on the capture writer.  A limit breach fails the capture
@@ -75,6 +83,7 @@ const FRAME_PIPE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 // audio.
 const PREWARM_HANDOFF_TAIL_MIN_BYTES: usize = 8 * 1024 * 1024;
 const PREWARM_HANDOFF_TAIL_MAX_BYTES: usize = 64 * 1024 * 1024;
+const IN_PLACE_PREWARM_HANDOFF_MODE: &str = "in-place-iaudio-client-promotion";
 const WAVE_FORMAT_IEEE_FLOAT_TAG: u16 = 3;
 const WAVE_FORMAT_EXTENSIBLE_TAG: u16 = 0xfffe;
 
@@ -694,64 +703,70 @@ impl AudioSidecarState {
     }
 
     fn start_capture(&mut self, request: CaptureRequest) -> Result<Value, String> {
-        let (mut delayed_prewarm_stop, mut adopted_prewarm) =
-            if request.prewarm_id.trim().is_empty() {
-                (None, None)
+        let use_wasapi_capture = wasapi_capture_enabled();
+        let result = if request.prewarm_id.trim().is_empty() {
+            if use_wasapi_capture {
+                start_wasapi_capture_impl(request, None, None)
             } else {
-                let prewarm_id = request.prewarm_id.clone();
-                let Some(mut prewarm_session) = self.prewarm_sessions.remove(&prewarm_id) else {
-                    return Err(format!("requested prewarmId was not found: {prewarm_id}"));
-                };
-                let adopted = match prewarm_session.begin_handoff() {
+                start_synthetic_capture_impl(request, None)
+            }
+        } else {
+            let prewarm_id = request.prewarm_id.clone();
+            let Some(mut prewarm_session) = self.prewarm_sessions.remove(&prewarm_id) else {
+                return Err(format!("requested prewarmId was not found: {prewarm_id}"));
+            };
+
+            if use_wasapi_capture && prewarm_session.source == "wasapi-prewarm" {
+                match start_wasapi_promoted_capture(request.clone(), Box::new(prewarm_session)) {
+                    Ok(result) => Ok(result),
+                    Err((failure, returned_session)) => match failure.fallback {
+                        PrewarmPromotionFallback::AdoptWithOverlap => {
+                            start_wasapi_replacement_with_adopted_prewarm(
+                                request,
+                                returned_session,
+                                &failure.reason,
+                            )
+                        }
+                        PrewarmPromotionFallback::ColdWithOverlap => {
+                            start_wasapi_cold_replacement_with_overlap(
+                                request,
+                                returned_session,
+                                &failure.reason,
+                            )
+                        }
+                        PrewarmPromotionFallback::Abort => {
+                            // Once the prewarm worker atomically accepted an in-place
+                            // promotion, it owns the handoff.  Starting a second capture
+                            // would risk duplicating or dropping the prefix, so fail the
+                            // request and let the supervisor's bounded sidecar cleanup
+                            // reclaim the worker.
+                            returned_session.request_stop();
+                            Err(failure.reason)
+                        }
+                    },
+                }
+            } else if use_wasapi_capture {
+                start_wasapi_cold_replacement_with_overlap(
+                    request,
+                    Box::new(prewarm_session),
+                    "prewarmPromotionSourceMismatch",
+                )
+            } else {
+                let mut adopted = match prewarm_session.begin_handoff() {
                     Ok(adopted) => adopted,
                     Err(err) => {
                         let _ = prewarm_session.stop("captureStartFailed");
                         return Err(err);
                     }
                 };
-                let pending_stop_payload = json!({
-                    "sidecar": SIDECAR_NAME,
-                    "stopped": false,
-                    "prewarmId": adopted.prewarm_id,
-                    "reason": "pendingCaptureReady",
-                    "source": adopted.source,
-                });
-                (Some(prewarm_session), Some((adopted, pending_stop_payload)))
-            };
-        let use_wasapi_capture = wasapi_capture_enabled();
-        // A snapshot may be empty while the live prewarm worker is about to
-        // publish its first block. Defer every WASAPI adoption so blocks that
-        // arrive after the atomic handoff boundary cannot fall through a gap.
-        let defer_prewarm_stop_to_capture = use_wasapi_capture && adopted_prewarm.is_some();
-        let deferred_prewarm_session = if defer_prewarm_stop_to_capture {
-            delayed_prewarm_stop.take()
-        } else {
-            None
-        };
-        let result = if use_wasapi_capture {
-            start_wasapi_capture_impl(request, adopted_prewarm, deferred_prewarm_session)
-        } else {
-            if let Some(mut prewarm_session) = delayed_prewarm_stop.take() {
                 let (stop_payload, tail_blocks) =
                     prewarm_session.stop_and_finish_handoff("adoptedIntoCapture");
-                let tail_blocks = tail_blocks?;
-                if let Some((adopted, pending_stop_payload)) = adopted_prewarm.as_mut() {
-                    adopted.append_tail(tail_blocks, request.block_size);
-                    *pending_stop_payload = stop_payload;
-                }
+                adopted.append_tail(tail_blocks?, request.block_size);
+                start_synthetic_capture_impl(request, Some((adopted, stop_payload)))
             }
-            start_synthetic_capture_impl(request, adopted_prewarm)
         };
         match result {
-            Ok((session, mut payload)) => {
-                if let Some(mut prewarm_session) = delayed_prewarm_stop {
-                    let stop_payload = prewarm_session.stop("adoptedIntoCapture");
-                    patch_adopted_prewarm_stop_payload(
-                        &mut payload,
-                        stop_payload,
-                        "overlap-capture-start-before-prewarm-stop",
-                    );
-                }
+            Ok((session, payload)) => {
                 let stream_id = session.stream_id.clone();
                 if let Some(mut old_session) = self.capture_sessions.remove(&stream_id) {
                     let _ = old_session.stop("duplicateStreamId");
@@ -759,12 +774,7 @@ impl AudioSidecarState {
                 self.capture_sessions.insert(stream_id, session);
                 Ok(payload)
             }
-            Err(err) => {
-                if let Some(mut prewarm_session) = delayed_prewarm_stop {
-                    let _ = prewarm_session.stop("captureStartFailed");
-                }
-                Err(err)
-            }
+            Err(err) => Err(err),
         }
     }
 
@@ -883,17 +893,27 @@ struct CaptureWriterStats {
 struct CaptureSession {
     stream_id: String,
     source: &'static str,
-    stop_tx: Sender<()>,
-    join_handle: Option<JoinHandle<CaptureWriterStats>>,
+    worker: CaptureSessionWorker,
     started_at: Instant,
+}
+
+enum CaptureSessionWorker {
+    Dedicated {
+        stop_tx: Sender<()>,
+        join_handle: Option<JoinHandle<CaptureWriterStats>>,
+    },
+    PromotedPrewarm(Box<PrewarmSession>),
 }
 
 impl CaptureSession {
     fn worker_finished(&self) -> bool {
-        self.join_handle
-            .as_ref()
-            .map(|handle| handle.is_finished())
-            .unwrap_or(true)
+        match &self.worker {
+            CaptureSessionWorker::Dedicated { join_handle, .. } => join_handle
+                .as_ref()
+                .map(|handle| handle.is_finished())
+                .unwrap_or(true),
+            CaptureSessionWorker::PromotedPrewarm(session) => session.worker_finished(),
+        }
     }
 
     fn status(&self) -> Value {
@@ -910,9 +930,19 @@ impl CaptureSession {
     }
 
     fn stop(&mut self, reason: &str) -> Value {
-        let _ = self.stop_tx.send(());
-        let stats = self
-            .join_handle
+        if let CaptureSessionWorker::PromotedPrewarm(session) = &mut self.worker {
+            return session.stop_promoted_capture(&self.stream_id, reason, self.started_at);
+        }
+
+        let CaptureSessionWorker::Dedicated {
+            stop_tx,
+            join_handle,
+        } = &mut self.worker
+        else {
+            unreachable!("promoted capture returned above")
+        };
+        let _ = stop_tx.send(());
+        let stats = join_handle
             .take()
             .map(|handle| {
                 handle.join().unwrap_or_else(|_| CaptureWriterStats {
@@ -935,6 +965,7 @@ impl CaptureSession {
             "bytesWritten": stats.bytes_written,
             "deferredPrewarmStop": stats.deferred_prewarm_stop,
             "writerError": stats.error,
+            "wasapiClientReused": false,
             "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         })
     }
@@ -1134,7 +1165,128 @@ struct PrewarmStats {
     buffered_blocks: u64,
     buffered_audio_frames: u64,
     buffered_payload_bytes: u64,
+    promoted_capture: Option<CaptureWriterStats>,
     error: Option<String>,
+}
+
+struct PrewarmPromotionRequest {
+    pipe: PromotionPipeHandle,
+    request: CaptureRequest,
+    current_endpoint_id_hash: Value,
+    decision: Arc<PrewarmPromotionDecision>,
+    accepted_tx: Sender<Result<PrewarmPromotionAccepted, PrewarmPromotionFailure>>,
+}
+
+enum PrewarmWorkerCommand {
+    Stop,
+    Promote(Box<PrewarmPromotionRequest>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PrewarmPromotionAccepted {
+    blocks: u64,
+    audio_frames: u64,
+    payload_bytes: u64,
+}
+
+const PREWARM_PROMOTION_PENDING: u8 = 0;
+const PREWARM_PROMOTION_ACCEPTED: u8 = 1;
+const PREWARM_PROMOTION_CANCELLED: u8 = 2;
+
+#[derive(Debug, Default)]
+struct PrewarmPromotionDecision {
+    state: AtomicU8,
+}
+
+impl PrewarmPromotionDecision {
+    fn try_accept(&self) -> bool {
+        self.state
+            .compare_exchange(
+                PREWARM_PROMOTION_PENDING,
+                PREWARM_PROMOTION_ACCEPTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn cancel_if_pending(&self) -> bool {
+        self.state
+            .compare_exchange(
+                PREWARM_PROMOTION_PENDING,
+                PREWARM_PROMOTION_CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+}
+
+struct PromotionEndpointResolverLease;
+
+impl PromotionEndpointResolverLease {
+    fn try_acquire() -> Option<Self> {
+        PROMOTION_ENDPOINT_RESOLVER_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for PromotionEndpointResolverLease {
+    fn drop(&mut self) {
+        PROMOTION_ENDPOINT_RESOLVER_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrewarmPromotionFallback {
+    AdoptWithOverlap,
+    ColdWithOverlap,
+    Abort,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrewarmPromotionFailure {
+    reason: String,
+    fallback: PrewarmPromotionFallback,
+}
+
+impl PrewarmPromotionFailure {
+    fn new(reason: impl Into<String>, fallback: PrewarmPromotionFallback) -> Self {
+        Self {
+            reason: reason.into(),
+            fallback,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PromotionPipeHandle {
+    raw: isize,
+}
+
+impl PromotionPipeHandle {
+    fn new(raw: isize) -> Self {
+        Self { raw }
+    }
+
+    #[cfg(windows)]
+    fn raw(&self) -> HANDLE {
+        self.raw as HANDLE
+    }
+}
+
+impl Drop for PromotionPipeHandle {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if self.raw != 0 && self.raw != INVALID_HANDLE_VALUE as isize {
+            unsafe {
+                CloseHandle(self.raw as HANDLE);
+            }
+            self.raw = 0;
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1230,6 +1382,22 @@ impl PrewarmBuffer {
             .unwrap_or((0, 0))
     }
 
+    fn restore_handoff_snapshot(&mut self, snapshot: Vec<Vec<u8>>) {
+        let mut restored = VecDeque::from(snapshot);
+        if let Some(tail) = self.handoff_tail.take() {
+            restored.extend(tail.blocks);
+        }
+        restored.extend(self.blocks.drain(..));
+        if self.max_blocks == 0 {
+            restored.clear();
+        } else {
+            while restored.len() > self.max_blocks {
+                restored.pop_front();
+            }
+        }
+        self.blocks = restored;
+    }
+
     fn block_count(&self) -> u64 {
         (self.blocks.len() as u64).saturating_add(
             self.handoff_tail
@@ -1264,6 +1432,7 @@ impl PrewarmBuffer {
     }
 }
 
+#[cfg(test)]
 fn patch_adopted_prewarm_stop_payload(
     payload: &mut Value,
     stop_payload: Value,
@@ -1283,7 +1452,8 @@ fn patch_adopted_prewarm_stop_payload(
 struct PrewarmSession {
     prewarm_id: String,
     source: &'static str,
-    stop_tx: Sender<()>,
+    request: CaptureRequest,
+    control_tx: Sender<PrewarmWorkerCommand>,
     join_handle: Option<JoinHandle<PrewarmStats>>,
     started_at: Instant,
     buffer: Arc<Mutex<PrewarmBuffer>>,
@@ -1296,6 +1466,11 @@ struct PrewarmSession {
 }
 
 type FinishedPrewarmHandoff = (Value, Result<Vec<Vec<u8>>, String>);
+
+struct BoundedPrewarmJoin {
+    stats: PrewarmStats,
+    timed_out: bool,
+}
 
 impl PrewarmSession {
     fn begin_handoff(&self) -> Result<AdoptedPrewarm, String> {
@@ -1323,10 +1498,9 @@ impl PrewarmSession {
         })
     }
 
-    fn stop_worker(&mut self, reason: &str) -> Value {
-        let _ = self.stop_tx.send(());
-        let stats = self
-            .join_handle
+    fn join_worker(&mut self) -> PrewarmStats {
+        let _ = self.control_tx.send(PrewarmWorkerCommand::Stop);
+        self.join_handle
             .take()
             .map(|handle| {
                 handle.join().unwrap_or_else(|_| PrewarmStats {
@@ -1334,7 +1508,46 @@ impl PrewarmSession {
                     ..PrewarmStats::default()
                 })
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    fn request_stop(&self) {
+        let _ = self.control_tx.send(PrewarmWorkerCommand::Stop);
+    }
+
+    fn join_worker_bounded(&mut self, timeout: Duration) -> BoundedPrewarmJoin {
+        self.request_stop();
+        let Some(handle) = self.join_handle.take() else {
+            return BoundedPrewarmJoin {
+                stats: PrewarmStats::default(),
+                timed_out: false,
+            };
+        };
+        let deadline = Instant::now() + timeout;
+        while !handle.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(2));
+        }
+        if handle.is_finished() {
+            return BoundedPrewarmJoin {
+                stats: handle.join().unwrap_or_else(|_| PrewarmStats {
+                    error: Some("prewarmThreadPanicked".to_string()),
+                    ..PrewarmStats::default()
+                }),
+                timed_out: false,
+            };
+        }
+        drop(handle);
+        BoundedPrewarmJoin {
+            stats: PrewarmStats {
+                error: Some("prewarmWorkerStopTimeout".to_string()),
+                ..PrewarmStats::default()
+            },
+            timed_out: true,
+        }
+    }
+
+    fn stop_worker(&mut self, reason: &str) -> Value {
+        let stats = self.join_worker();
 
         json!({
             "sidecar": SIDECAR_NAME,
@@ -1348,6 +1561,81 @@ impl PrewarmSession {
             "bufferedAudioFrames": stats.buffered_audio_frames,
             "bufferedPayloadBytes": stats.buffered_payload_bytes,
             "prewarmError": stats.error,
+            "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        })
+    }
+
+    fn stop_promoted_capture(
+        &mut self,
+        stream_id: &str,
+        reason: &str,
+        capture_started_at: Instant,
+    ) -> Value {
+        let bounded_join = self.join_worker_bounded(PROMOTED_CAPTURE_STOP_JOIN_TIMEOUT);
+        let mut prewarm_stats = bounded_join.stats;
+        let capture_stats =
+            prewarm_stats
+                .promoted_capture
+                .take()
+                .unwrap_or_else(|| CaptureWriterStats {
+                    error: prewarm_stats
+                        .error
+                        .clone()
+                        .or_else(|| Some("promotedPrewarmCaptureStatsMissing".to_string())),
+                    ..CaptureWriterStats::default()
+                });
+        let (discarded_blocks, discarded_payload_bytes) = self
+            .buffer
+            .lock()
+            .map(|mut buffer| buffer.abort_handoff())
+            .unwrap_or((0, 0));
+        let writer_error = capture_stats.error.or(prewarm_stats.error);
+
+        json!({
+            "sidecar": SIDECAR_NAME,
+            "stopped": !bounded_join.timed_out,
+            "streamId": stream_id,
+            "reason": reason,
+            "source": "wasapi-capture",
+            "connected": capture_stats.connected,
+            "framesWritten": capture_stats.frames_written,
+            "prebufferFramesWritten": capture_stats.prebuffer_frames_written,
+            "liveFramesWritten": capture_stats.live_frames_written,
+            "bytesWritten": capture_stats.bytes_written,
+            "deferredPrewarmStop": capture_stats.deferred_prewarm_stop,
+            "writerError": writer_error,
+            "workerStopTimedOut": bounded_join.timed_out,
+            "discardedHandoffBlocks": discarded_blocks,
+            "discardedHandoffPayloadBytes": discarded_payload_bytes,
+            "wasapiClientReused": true,
+            "handoffMode": "in-place-iaudio-client-promotion",
+            "sidecarUptimeMs": capture_started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        })
+    }
+
+    fn stop_bounded(&mut self, reason: &str, timeout: Duration) -> Value {
+        let bounded_join = self.join_worker_bounded(timeout);
+        let stats = bounded_join.stats;
+        let (discarded_blocks, discarded_payload_bytes) = self
+            .buffer
+            .lock()
+            .map(|mut buffer| buffer.abort_handoff())
+            .unwrap_or((0, 0));
+        json!({
+            "sidecar": SIDECAR_NAME,
+            "stopped": !bounded_join.timed_out,
+            "prewarmId": self.prewarm_id,
+            "reason": reason,
+            "source": self.source,
+            "totalBlocksObserved": stats.total_blocks_observed,
+            "totalAudioFramesObserved": stats.total_audio_frames_observed,
+            "bufferedBlocks": stats.buffered_blocks,
+            "bufferedAudioFrames": stats.buffered_audio_frames,
+            "bufferedPayloadBytes": stats.buffered_payload_bytes,
+            "prewarmError": stats.error,
+            "workerStopTimedOut": bounded_join.timed_out,
+            "discardedHandoffBlocks": discarded_blocks,
+            "discardedHandoffPayloadBytes": discarded_payload_bytes,
             "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         })
     }
@@ -1400,6 +1688,53 @@ impl PrewarmSession {
         (payload, tail_blocks)
     }
 
+    fn stop_and_finish_handoff_bounded(
+        &mut self,
+        reason: &str,
+        timeout: Duration,
+    ) -> FinishedPrewarmHandoff {
+        let bounded_join = self.join_worker_bounded(timeout);
+        let stats = bounded_join.stats;
+        // Never detach a still-writing worker and then claim its tail is
+        // complete. On timeout the capture fails closed; the already-requested
+        // Stop and process-level cleanup reclaim the detached worker later.
+        let tail_blocks = if bounded_join.timed_out {
+            Err("prewarmWorkerStopTimeout".to_string())
+        } else {
+            match self.buffer.lock() {
+                Ok(mut buffer) => buffer.finish_handoff().map_err(str::to_string),
+                Err(_) => Err("prewarmBufferLockPoisoned".to_string()),
+            }
+        };
+        let (tail_block_count, tail_payload_bytes) = tail_blocks
+            .as_ref()
+            .map(|blocks| {
+                (
+                    blocks.len() as u64,
+                    blocks.iter().map(|block| block.len() as u64).sum::<u64>(),
+                )
+            })
+            .unwrap_or((0, 0));
+        let payload = json!({
+            "sidecar": SIDECAR_NAME,
+            "stopped": !bounded_join.timed_out,
+            "prewarmId": self.prewarm_id,
+            "reason": reason,
+            "source": self.source,
+            "totalBlocksObserved": stats.total_blocks_observed,
+            "totalAudioFramesObserved": stats.total_audio_frames_observed,
+            "bufferedBlocks": stats.buffered_blocks,
+            "bufferedAudioFrames": stats.buffered_audio_frames,
+            "bufferedPayloadBytes": stats.buffered_payload_bytes,
+            "prewarmError": stats.error,
+            "workerStopTimedOut": bounded_join.timed_out,
+            "handoffTailBlocks": tail_block_count,
+            "handoffTailPayloadBytes": tail_payload_bytes,
+            "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        });
+        (payload, tail_blocks)
+    }
+
     fn worker_finished(&self) -> bool {
         self.join_handle
             .as_ref()
@@ -1439,18 +1774,18 @@ fn stop_deferred_prewarm_session(
     prewarm_session: &mut Option<PrewarmSession>,
     reason: &str,
 ) -> Option<Value> {
-    prewarm_session
-        .take()
-        .map(|mut prewarm_session| prewarm_session.stop(reason))
+    prewarm_session.take().map(|mut prewarm_session| {
+        prewarm_session.stop_bounded(reason, PROMOTED_CAPTURE_STOP_JOIN_TIMEOUT)
+    })
 }
 
 fn finish_deferred_prewarm_handoff(
     prewarm_session: &mut Option<PrewarmSession>,
     reason: &str,
 ) -> Option<FinishedPrewarmHandoff> {
-    prewarm_session
-        .take()
-        .map(|mut prewarm_session| prewarm_session.stop_and_finish_handoff(reason))
+    prewarm_session.take().map(|mut prewarm_session| {
+        prewarm_session.stop_and_finish_handoff_bounded(reason, PROMOTED_CAPTURE_STOP_JOIN_TIMEOUT)
+    })
 }
 
 #[derive(Debug, Default)]
@@ -1606,8 +1941,10 @@ fn start_synthetic_capture_impl(
     let session = CaptureSession {
         stream_id: stream_id.clone(),
         source: "synthetic-frame-pipe",
-        stop_tx,
-        join_handle: Some(join_handle),
+        worker: CaptureSessionWorker::Dedicated {
+            stop_tx,
+            join_handle: Some(join_handle),
+        },
         started_at: Instant::now(),
     };
     let payload = json!({
@@ -1642,6 +1979,329 @@ fn start_synthetic_capture_impl(
     _adopted_prewarm: Option<(AdoptedPrewarm, Value)>,
 ) -> Result<(CaptureSession, Value), String> {
     Err("synthetic frame-pipe capture is only implemented on Windows".to_string())
+}
+
+fn start_wasapi_replacement_with_adopted_prewarm(
+    request: CaptureRequest,
+    prewarm_session: Box<PrewarmSession>,
+    fallback_reason: &str,
+) -> Result<(CaptureSession, Value), String> {
+    let adopted = match prewarm_session.begin_handoff() {
+        Ok(adopted) => adopted,
+        Err(error) => {
+            prewarm_session.request_stop();
+            return Err(format!(
+                "{fallback_reason}: replacement prewarm handoff failed: {error}"
+            ));
+        }
+    };
+    let pending_stop_payload = json!({
+        "sidecar": SIDECAR_NAME,
+        "stopped": false,
+        "prewarmId": adopted.prewarm_id,
+        "reason": "pendingCaptureReady",
+        "source": adopted.source,
+    });
+    start_wasapi_capture_impl(
+        request,
+        Some((adopted, pending_stop_payload)),
+        Some(*prewarm_session),
+    )
+    .map(|(session, mut payload)| {
+        patch_wasapi_promotion_fallback(&mut payload, fallback_reason);
+        (session, payload)
+    })
+}
+
+fn start_wasapi_cold_replacement_with_overlap(
+    request: CaptureRequest,
+    mut prewarm_session: Box<PrewarmSession>,
+    fallback_reason: &str,
+) -> Result<(CaptureSession, Value), String> {
+    // Keep the existing prewarm IAudioClient running until the replacement is
+    // ready.  The old audio is intentionally not replayed when endpoint or
+    // format compatibility is uncertain, but Windows keeps a continuous
+    // microphone-privacy indication across the replacement.
+    match start_wasapi_capture_impl(request, None, None) {
+        Ok((session, mut payload)) => {
+            let stop_payload = prewarm_session.stop_bounded(
+                "inPlacePromotionColdFallback",
+                PROMOTED_CAPTURE_STOP_JOIN_TIMEOUT,
+            );
+            patch_wasapi_promotion_fallback(&mut payload, fallback_reason);
+            if let Value::Object(root) = &mut payload {
+                root.insert("prewarmFallbackStop".to_string(), stop_payload);
+            }
+            Ok((session, payload))
+        }
+        Err(error) => {
+            prewarm_session.request_stop();
+            Err(error)
+        }
+    }
+}
+
+fn patch_wasapi_promotion_fallback(payload: &mut Value, reason: &str) {
+    if let Value::Object(root) = payload {
+        root.insert("wasapiClientReused".to_string(), Value::Bool(false));
+        root.insert(
+            "handoffMode".to_string(),
+            Value::String("replacement-wasapi-client".to_string()),
+        );
+        root.insert(
+            "prewarmPromotionFallbackReason".to_string(),
+            Value::String(reason.chars().take(96).collect()),
+        );
+    }
+}
+
+fn wasapi_promoted_capture_payload(
+    stream_id: &str,
+    pipe_path: &str,
+    request: &CaptureRequest,
+    prewarm_session: &PrewarmSession,
+    accepted: PrewarmPromotionAccepted,
+) -> Value {
+    let pending_transition = json!({
+        "stopped": false,
+        "reason": "promotedInPlace",
+        "source": prewarm_session.source,
+        "physicalClientReused": true,
+    });
+    let adopted_prewarm = json!({
+        "prewarmId": prewarm_session.prewarm_id.clone(),
+        "source": prewarm_session.source,
+        "blocks": accepted.blocks,
+        "audioFrames": accepted.audio_frames,
+        "payloadBytes": accepted.payload_bytes,
+        "adopted": true,
+        "stop": pending_transition,
+        "nativeEndpointIdHash": prewarm_session.native_endpoint_id_hash.clone(),
+        "endpointSelection": prewarm_session.endpoint_selection.clone(),
+        "mixFormat": prewarm_session.mix_format_payload.clone(),
+        "resampler": prewarm_session.resampler_payload.clone(),
+        "handoffMode": IN_PLACE_PREWARM_HANDOFF_MODE,
+    });
+    json!({
+        "sidecar": SIDECAR_NAME,
+        "captureAvailable": true,
+        "wasapiCapture": true,
+        "syntheticFramePipe": false,
+        "source": "wasapi-capture",
+        "streamId": stream_id,
+        "framePipe": pipe_path,
+        "sampleRate": request.sample_rate,
+        "channels": request.channels,
+        "captureChannels": request.channels,
+        "sampleFormat": "pcm_i16_le",
+        "nativeEndpointIdHash": prewarm_session.native_endpoint_id_hash.clone(),
+        "adoptedPrewarm": adopted_prewarm,
+        "endpointSelection": prewarm_session.endpoint_selection.clone(),
+        "requestedFormat": request.to_payload(),
+        "audioFrameProtocol": audio_frame_protocol_payload(),
+        "mixFormat": prewarm_session.mix_format_payload.clone(),
+        "resampler": prewarm_session.resampler_payload.clone(),
+        "wasapiReadyDeferred": false,
+        "firstFramesFromAdoptedPrewarm": true,
+        "wasapiClientReused": true,
+        "handoffMode": IN_PLACE_PREWARM_HANDOFF_MODE,
+    })
+}
+
+#[cfg(windows)]
+fn start_wasapi_promoted_capture(
+    request: CaptureRequest,
+    prewarm_session: Box<PrewarmSession>,
+) -> Result<(CaptureSession, Value), (PrewarmPromotionFailure, Box<PrewarmSession>)> {
+    if let Err(reason) = validate_prewarm_promotion_format(&prewarm_session.request, &request) {
+        return Err((
+            PrewarmPromotionFailure::new(reason, PrewarmPromotionFallback::ColdWithOverlap),
+            prewarm_session,
+        ));
+    }
+
+    let current_endpoint_id_hash = match resolve_promotion_endpoint_hash(request.clone()) {
+        Ok(hash) => hash,
+        Err(failure) => return Err((failure, prewarm_session)),
+    };
+    if let Err(reason) = validate_in_place_endpoint_hashes(
+        &prewarm_session.native_endpoint_id_hash,
+        &current_endpoint_id_hash,
+    ) {
+        return Err((
+            PrewarmPromotionFailure::new(reason, PrewarmPromotionFallback::ColdWithOverlap),
+            prewarm_session,
+        ));
+    }
+
+    let stream_id = Uuid::new_v4().simple().to_string();
+    let pipe_path = format!(r"\\.\pipe\scriber-audio-{stream_id}");
+    let pipe = match create_frame_pipe(&pipe_path) {
+        Ok(handle) => PromotionPipeHandle::new(handle as isize),
+        Err(_error) => {
+            return Err((
+                PrewarmPromotionFailure::new(
+                    "prewarmPromotionPipeCreateFailed",
+                    PrewarmPromotionFallback::AdoptWithOverlap,
+                ),
+                prewarm_session,
+            ))
+        }
+    };
+    let (accepted_tx, accepted_rx) = mpsc::channel();
+    let decision = Arc::new(PrewarmPromotionDecision::default());
+    let command = PrewarmWorkerCommand::Promote(Box::new(PrewarmPromotionRequest {
+        pipe,
+        request: request.clone(),
+        current_endpoint_id_hash,
+        decision: Arc::clone(&decision),
+        accepted_tx,
+    }));
+    if prewarm_session.control_tx.send(command).is_err() {
+        return Err((
+            PrewarmPromotionFailure::new(
+                "prewarmPromotionWorkerUnavailable",
+                PrewarmPromotionFallback::AdoptWithOverlap,
+            ),
+            prewarm_session,
+        ));
+    }
+
+    let accepted = match accepted_rx.recv_timeout(PREWARM_PROMOTION_ACCEPT_TIMEOUT) {
+        Ok(Ok(accepted)) => accepted,
+        Ok(Err(failure)) => return Err((failure, prewarm_session)),
+        Err(mpsc::RecvTimeoutError::Timeout) if decision.cancel_if_pending() => {
+            return Err((
+                PrewarmPromotionFailure::new(
+                    "prewarmPromotionAcceptanceTimeout",
+                    PrewarmPromotionFallback::AdoptWithOverlap,
+                ),
+                prewarm_session,
+            ));
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) if decision.cancel_if_pending() => {
+            return Err((
+                PrewarmPromotionFailure::new(
+                    "prewarmPromotionAcceptanceChannelClosed",
+                    PrewarmPromotionFallback::AdoptWithOverlap,
+                ),
+                prewarm_session,
+            ));
+        }
+        Err(_) => {
+            // ACCEPTED won the atomic race. The worker may already have moved
+            // the rolling prefix into the promoted state, so a replacement is
+            // no longer safe. Give the completion message one short bounded
+            // grace period, then abort instead of silently losing that prefix.
+            match accepted_rx.recv_timeout(PREWARM_PROMOTION_ACCEPTED_COMPLETION_TIMEOUT) {
+                Ok(Ok(accepted)) => accepted,
+                Ok(Err(failure)) => return Err((failure, prewarm_session)),
+                Err(_) => {
+                    prewarm_session.request_stop();
+                    return Err((
+                        PrewarmPromotionFailure::new(
+                            "prewarmPromotionAcceptedCompletionTimeout",
+                            PrewarmPromotionFallback::Abort,
+                        ),
+                        prewarm_session,
+                    ));
+                }
+            }
+        }
+    };
+    let payload = wasapi_promoted_capture_payload(
+        &stream_id,
+        &pipe_path,
+        &request,
+        &prewarm_session,
+        accepted,
+    );
+    let session = CaptureSession {
+        stream_id,
+        source: "wasapi-capture",
+        worker: CaptureSessionWorker::PromotedPrewarm(prewarm_session),
+        started_at: Instant::now(),
+    };
+    Ok((session, payload))
+}
+
+#[cfg(windows)]
+fn resolve_promotion_endpoint_hash(
+    request: CaptureRequest,
+) -> Result<Value, PrewarmPromotionFailure> {
+    let Some(resolver_lease) = PromotionEndpointResolverLease::try_acquire() else {
+        return Err(PrewarmPromotionFailure::new(
+            "prewarmPromotionEndpointResolverBusy",
+            PrewarmPromotionFallback::AdoptWithOverlap,
+        ));
+    };
+    let (result_tx, result_rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("scriber-audio-promotion-endpoint".to_string())
+        .spawn(move || {
+            // Keep the single-flight lease in the worker, including after the
+            // caller's 300 ms deadline. A stuck COM call therefore permits no
+            // second detached resolver thread; later captures take the bounded
+            // overlap fallback until this worker exits or the process restarts.
+            let _resolver_lease = resolver_lease;
+            let result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+                .ok()
+                .map_err(|error| format!("promotion endpoint COM initialization failed: {error}"))
+                .and_then(|_| {
+                    let result = (|| -> Result<Value, String> {
+                        let enumerator: IMMDeviceEnumerator =
+                            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+                                .map_err(|error| {
+                                    format!(
+                                        "promotion endpoint enumerator creation failed: {error}"
+                                    )
+                                })?;
+                        select_wasapi_capture_device(&enumerator, &request)
+                            .map(|selected| selected.endpoint_id_hash)
+                    })();
+                    unsafe {
+                        CoUninitialize();
+                    }
+                    result
+                });
+            let _ = result_tx.send(result);
+        })
+        .map_err(|_| {
+            PrewarmPromotionFailure::new(
+                "prewarmPromotionEndpointResolverUnavailable",
+                PrewarmPromotionFallback::AdoptWithOverlap,
+            )
+        })?;
+
+    match result_rx.recv_timeout(PREWARM_PROMOTION_ENDPOINT_RESOLUTION_TIMEOUT) {
+        Ok(Ok(endpoint_id_hash)) => Ok(endpoint_id_hash),
+        Ok(Err(_)) => Err(PrewarmPromotionFailure::new(
+            "prewarmPromotionEndpointResolutionFailed",
+            PrewarmPromotionFallback::AdoptWithOverlap,
+        )),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(PrewarmPromotionFailure::new(
+            "prewarmPromotionEndpointResolutionTimeout",
+            PrewarmPromotionFallback::AdoptWithOverlap,
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(PrewarmPromotionFailure::new(
+            "prewarmPromotionEndpointResolverDisconnected",
+            PrewarmPromotionFallback::AdoptWithOverlap,
+        )),
+    }
+}
+
+#[cfg(not(windows))]
+fn start_wasapi_promoted_capture(
+    _request: CaptureRequest,
+    prewarm_session: Box<PrewarmSession>,
+) -> Result<(CaptureSession, Value), (PrewarmPromotionFailure, Box<PrewarmSession>)> {
+    Err((
+        PrewarmPromotionFailure::new(
+            "prewarmPromotionUnsupportedPlatform",
+            PrewarmPromotionFallback::Abort,
+        ),
+        prewarm_session,
+    ))
 }
 
 #[cfg(windows)]
@@ -1723,8 +2383,10 @@ fn start_wasapi_capture_impl(
         let session = CaptureSession {
             stream_id: stream_id.clone(),
             source: "wasapi-capture",
-            stop_tx,
-            join_handle: Some(join_handle),
+            worker: CaptureSessionWorker::Dedicated {
+                stop_tx,
+                join_handle: Some(join_handle),
+            },
             started_at: Instant::now(),
         };
         let payload = wasapi_capture_payload(
@@ -1755,8 +2417,10 @@ fn start_wasapi_capture_impl(
     let session = CaptureSession {
         stream_id: stream_id.clone(),
         source: "wasapi-capture",
-        stop_tx,
-        join_handle: Some(join_handle),
+        worker: CaptureSessionWorker::Dedicated {
+            stop_tx,
+            join_handle: Some(join_handle),
+        },
         started_at: Instant::now(),
     };
     let payload = wasapi_capture_payload(
@@ -1858,6 +2522,12 @@ fn wasapi_capture_payload(
         "resampler": resampler,
         "wasapiReadyDeferred": wasapi_ready_deferred,
         "firstFramesFromAdoptedPrewarm": wasapi_ready_deferred,
+        "wasapiClientReused": false,
+        "handoffMode": if adopted_prewarm.is_some() {
+            "overlap-capture-start-before-prewarm-stop"
+        } else {
+            "replacement-wasapi-client"
+        },
     })
 }
 
@@ -2178,12 +2848,12 @@ fn start_synthetic_prewarm_impl(
     match ready_rx.recv_timeout(Duration::from_secs(1)) {
         Ok(Ok(())) => {}
         Ok(Err(err)) => {
-            let _ = stop_tx.send(());
+            let _ = stop_tx.send(PrewarmWorkerCommand::Stop);
             let _ = join_handle.join();
             return Err(err);
         }
         Err(err) => {
-            let _ = stop_tx.send(());
+            let _ = stop_tx.send(PrewarmWorkerCommand::Stop);
             let _ = join_handle.join();
             return Err(format!(
                 "synthetic prewarm did not observe its first audio block: {err}"
@@ -2201,7 +2871,8 @@ fn start_synthetic_prewarm_impl(
     let session = PrewarmSession {
         prewarm_id: prewarm_id.clone(),
         source: "synthetic-prewarm",
-        stop_tx,
+        request: request.clone(),
+        control_tx: stop_tx,
         join_handle: Some(join_handle),
         started_at: Instant::now(),
         buffer,
@@ -2263,12 +2934,12 @@ fn start_wasapi_prewarm_impl(request: CaptureRequest) -> Result<(PrewarmSession,
     let ready = match ready_rx.recv_timeout(Duration::from_secs(3)) {
         Ok(Ok(ready)) => ready,
         Ok(Err(err)) => {
-            let _ = stop_tx.send(());
+            let _ = stop_tx.send(PrewarmWorkerCommand::Stop);
             let _ = join_handle.join();
             return Err(err);
         }
         Err(err) => {
-            let _ = stop_tx.send(());
+            let _ = stop_tx.send(PrewarmWorkerCommand::Stop);
             let _ = join_handle.join();
             return Err(format!("WASAPI prewarm did not become ready: {err}"));
         }
@@ -2287,7 +2958,8 @@ fn start_wasapi_prewarm_impl(request: CaptureRequest) -> Result<(PrewarmSession,
     let session = PrewarmSession {
         prewarm_id: prewarm_id.clone(),
         source: "wasapi-prewarm",
-        stop_tx,
+        request: request.clone(),
+        control_tx: stop_tx,
         join_handle: Some(join_handle),
         started_at: Instant::now(),
         buffer,
@@ -2327,7 +2999,7 @@ fn start_wasapi_prewarm_impl(_request: CaptureRequest) -> Result<(PrewarmSession
 
 fn run_synthetic_prewarm_worker(
     request: CaptureRequest,
-    stop_rx: mpsc::Receiver<()>,
+    control_rx: mpsc::Receiver<PrewarmWorkerCommand>,
     buffer: Arc<Mutex<PrewarmBuffer>>,
     ready_tx: Sender<Result<(), String>>,
 ) -> PrewarmStats {
@@ -2339,8 +3011,15 @@ fn run_synthetic_prewarm_worker(
     let max_buffered_blocks = u64::from(requested_prebuffer_frame_count(&request));
     let payload_len = usize::from(request.channels) * request.block_size as usize * 2;
     loop {
-        match stop_rx.recv_timeout(frame_interval) {
-            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        match control_rx.recv_timeout(frame_interval) {
+            Ok(PrewarmWorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Ok(PrewarmWorkerCommand::Promote(promotion)) => {
+                let _ = promotion.accepted_tx.send(Err(PrewarmPromotionFailure::new(
+                    "prewarmPromotionRequiresWasapiWorker",
+                    PrewarmPromotionFallback::AdoptWithOverlap,
+                )));
+                continue;
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
         let payload = vec![0_u8; payload_len];
@@ -2915,6 +3594,7 @@ fn write_adopted_prebuffer_blocks(
     sequence: &mut u64,
     stats: &mut CaptureWriterStats,
 ) -> Result<(), String> {
+    let write_deadline = Instant::now() + PREWARM_BURST_WRITE_TIMEOUT;
     for payload in blocks {
         let timestamp_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         let header = AudioFrameHeader::new(
@@ -2928,7 +3608,7 @@ fn write_adopted_prebuffer_blocks(
         .map_err(|err| format!("adopted prewarm frame header failed: {err}"))?;
         let frame = encode_audio_frame(&header, payload)
             .map_err(|err| format!("adopted prewarm frame encode failed: {err}"))?;
-        let bytes_written = write_all_to_pipe(pipe_handle, &frame)?;
+        let bytes_written = write_all_to_pipe_until(pipe_handle, &frame, write_deadline)?;
         stats.frames_written = stats.frames_written.saturating_add(1);
         stats.prebuffer_frames_written = stats.prebuffer_frames_written.saturating_add(1);
         stats.bytes_written = stats.bytes_written.saturating_add(u64::from(bytes_written));
@@ -2996,7 +3676,6 @@ fn run_wasapi_capture_writer(
         stats.deferred_prewarm_stop = Some(stop_payload);
     }
     unsafe {
-        FlushFileBuffers(pipe_handle);
         DisconnectNamedPipe(pipe_handle);
         CloseHandle(pipe_handle);
     }
@@ -3006,7 +3685,7 @@ fn run_wasapi_capture_writer(
 #[cfg(windows)]
 fn run_wasapi_prewarm_worker(
     request: CaptureRequest,
-    stop_rx: mpsc::Receiver<()>,
+    control_rx: mpsc::Receiver<PrewarmWorkerCommand>,
     ready_tx: Sender<Result<WasapiReady, String>>,
     buffer: Arc<Mutex<PrewarmBuffer>>,
     microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
@@ -3015,7 +3694,7 @@ fn run_wasapi_prewarm_worker(
     let mut ready_sent = false;
     let result = run_wasapi_prewarm_worker_inner(
         &request,
-        &stop_rx,
+        &control_rx,
         &ready_tx,
         &mut ready_sent,
         &mut stats,
@@ -3315,7 +3994,7 @@ fn run_wasapi_capture_writer_inner(
 #[cfg(windows)]
 fn run_wasapi_prewarm_worker_inner(
     request: &CaptureRequest,
-    stop_rx: &mpsc::Receiver<()>,
+    control_rx: &mpsc::Receiver<PrewarmWorkerCommand>,
     ready_tx: &Sender<Result<WasapiReady, String>>,
     ready_sent: &mut bool,
     stats: &mut PrewarmStats,
@@ -3365,22 +4044,23 @@ fn run_wasapi_prewarm_worker_inner(
             // it before Start() creates a visible privacy-indicator gap.
             ready_tx
                 .send(Ok(WasapiReady {
-                    endpoint_id_hash,
+                    endpoint_id_hash: endpoint_id_hash.clone(),
                     endpoint_selection: selected.endpoint_selection,
                     mix_format: mix_format.clone(),
                 }))
                 .map_err(|err| format!("could not report WASAPI prewarm readiness: {err}"))?;
             *ready_sent = true;
 
-            pump_wasapi_prewarm(
+            pump_wasapi_prewarm(WasapiPrewarmPumpContext {
                 request,
-                stop_rx,
-                &capture_client,
+                control_rx,
+                prewarm_endpoint_id_hash: &endpoint_id_hash,
+                capture_client: &capture_client,
                 mix_format,
                 stats,
                 buffer,
                 microphone_channel_selection,
-            )
+            })
         })();
         let stop_result = unsafe { client.Stop() };
         if let Err(err) = stop_result {
@@ -3554,73 +4234,322 @@ fn advance_loopback_frame_deadline(
 }
 
 #[cfg(windows)]
-fn pump_wasapi_prewarm(
-    request: &CaptureRequest,
-    stop_rx: &mpsc::Receiver<()>,
-    capture_client: &IAudioCaptureClient,
+struct PromotedCaptureState {
+    pipe: PromotionPipeHandle,
+    request: CaptureRequest,
+    started: Instant,
+    connect_started: Instant,
+    connected: bool,
+    stream_started_micros: u64,
+    sequence: u64,
+    adopted_blocks: Vec<Vec<u8>>,
+}
+
+#[cfg(windows)]
+fn validate_prewarm_promotion_format(
+    prewarm_request: &CaptureRequest,
+    capture_request: &CaptureRequest,
+) -> Result<(), &'static str> {
+    if !capture_request
+        .capture_kind
+        .eq_ignore_ascii_case("microphone")
+    {
+        return Err("prewarmPromotionCaptureKindMismatch");
+    }
+    if prewarm_request.sample_rate != capture_request.sample_rate
+        || prewarm_request.channels != capture_request.channels
+        || prewarm_request.block_size != capture_request.block_size
+    {
+        return Err("prewarmPromotionFormatMismatch");
+    }
+    Ok(())
+}
+
+fn validate_in_place_endpoint_hashes(
+    prewarm_endpoint_id_hash: &Value,
+    current_endpoint_id_hash: &Value,
+) -> Result<(), &'static str> {
+    let prewarm_hash = prewarm_endpoint_id_hash
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or("prewarmPromotionEndpointIdentityUnavailable")?;
+    let current_hash = current_endpoint_id_hash
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or("prewarmPromotionEndpointIdentityUnavailable")?;
+    if prewarm_hash != current_hash {
+        return Err("prewarmPromotionEndpointMismatch");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+struct WasapiPrewarmPumpContext<'a> {
+    request: &'a CaptureRequest,
+    control_rx: &'a mpsc::Receiver<PrewarmWorkerCommand>,
+    prewarm_endpoint_id_hash: &'a Value,
+    capture_client: &'a IAudioCaptureClient,
     mix_format: WasapiMixFormat,
-    stats: &mut PrewarmStats,
+    stats: &'a mut PrewarmStats,
     buffer: Arc<Mutex<PrewarmBuffer>>,
     microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
-) -> Result<(), String> {
+}
+
+#[cfg(windows)]
+fn pump_wasapi_prewarm(context: WasapiPrewarmPumpContext<'_>) -> Result<(), String> {
+    let WasapiPrewarmPumpContext {
+        request,
+        control_rx,
+        prewarm_endpoint_id_hash,
+        capture_client,
+        mix_format,
+        stats,
+        buffer,
+        microphone_channel_selection,
+    } = context;
     let mut converter = WasapiPcmConverter::with_channel_selection(
         mix_format,
         request,
         microphone_channel_selection,
     );
     let max_buffered_blocks = u64::from(requested_prebuffer_frame_count(request));
-    loop {
-        match stop_rx.try_recv() {
-            Ok(()) | Err(TryRecvError::Disconnected) => return Ok(()),
-            Err(TryRecvError::Empty) => {}
-        }
-
-        let mut packet_frames = unsafe { capture_client.GetNextPacketSize() }
-            .map_err(|err| format!("WASAPI GetNextPacketSize failed: {err}"))?;
-        if packet_frames == 0 {
-            thread::sleep(Duration::from_millis(5));
-            continue;
-        }
-
-        while packet_frames > 0 {
-            let mut data_ptr: *mut u8 = null_mut();
-            let mut frames_to_read = 0_u32;
-            let mut flags = 0_u32;
-            unsafe {
-                capture_client
-                    .GetBuffer(&mut data_ptr, &mut frames_to_read, &mut flags, None, None)
-                    .map_err(|err| format!("WASAPI GetBuffer failed: {err}"))?;
-            }
-            let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
-            let blocks = converter.push_packet(data_ptr.cast_const(), frames_to_read, silent);
-            let release_result = unsafe { capture_client.ReleaseBuffer(frames_to_read) };
-            release_result.map_err(|err| format!("WASAPI ReleaseBuffer failed: {err}"))?;
-            for payload in blocks? {
-                stats.total_blocks_observed = stats.total_blocks_observed.saturating_add(1);
-                stats.total_audio_frames_observed = stats
-                    .total_audio_frames_observed
-                    .saturating_add(u64::from(request.block_size));
-                if max_buffered_blocks > 0 {
-                    match buffer.lock() {
-                        Ok(mut buffer) => {
-                            buffer.push(payload).map_err(str::to_string)?;
-                            stats.buffered_blocks = buffer.block_count();
-                            stats.buffered_audio_frames =
-                                buffer.audio_frame_count(request.block_size);
-                            stats.buffered_payload_bytes = buffer.payload_bytes();
-                        }
-                        Err(_) => {
-                            return Err("prewarmBufferLockPoisoned".to_string());
-                        }
+    let mut promotion_state: Option<PromotedCaptureState> = None;
+    let result = (|| -> Result<(), String> {
+        loop {
+            loop {
+                match control_rx.try_recv() {
+                    Ok(PrewarmWorkerCommand::Stop) | Err(TryRecvError::Disconnected) => {
+                        return Ok(())
                     }
-                } else {
-                    drop(payload);
+                    Ok(PrewarmWorkerCommand::Promote(promotion)) => {
+                        let PrewarmPromotionRequest {
+                            pipe,
+                            request: capture_request,
+                            current_endpoint_id_hash,
+                            decision,
+                            accepted_tx,
+                        } = *promotion;
+                        if promotion_state.is_some() {
+                            let _ = accepted_tx.send(Err(PrewarmPromotionFailure::new(
+                                "prewarmPromotionAlreadyStarted",
+                                PrewarmPromotionFallback::Abort,
+                            )));
+                            continue;
+                        }
+                        if let Err(reason) =
+                            validate_prewarm_promotion_format(request, &capture_request)
+                        {
+                            let _ = accepted_tx.send(Err(PrewarmPromotionFailure::new(
+                                reason,
+                                PrewarmPromotionFallback::ColdWithOverlap,
+                            )));
+                            continue;
+                        }
+                        if let Err(reason) = validate_in_place_endpoint_hashes(
+                            prewarm_endpoint_id_hash,
+                            &current_endpoint_id_hash,
+                        ) {
+                            let _ = accepted_tx.send(Err(PrewarmPromotionFailure::new(
+                                reason,
+                                PrewarmPromotionFallback::ColdWithOverlap,
+                            )));
+                            continue;
+                        }
+                        // This is the single ownership boundary. A caller that
+                        // timed out and changed PENDING to CANCELLED wins before
+                        // any rolling audio leaves the prewarm buffer. Once this
+                        // CAS succeeds the caller is forbidden from launching a
+                        // replacement capture.
+                        if !decision.try_accept() {
+                            let _ = accepted_tx.send(Err(PrewarmPromotionFailure::new(
+                                "prewarmPromotionCancelledBeforeHandoff",
+                                PrewarmPromotionFallback::AdoptWithOverlap,
+                            )));
+                            continue;
+                        }
+
+                        let adopted_blocks = match buffer.lock() {
+                            Ok(mut buffer) => match buffer.begin_handoff() {
+                                Ok(blocks) => blocks,
+                                Err(reason) => {
+                                    let _ = accepted_tx.send(Err(PrewarmPromotionFailure::new(
+                                        reason,
+                                        PrewarmPromotionFallback::Abort,
+                                    )));
+                                    continue;
+                                }
+                            },
+                            Err(_) => {
+                                let _ = accepted_tx.send(Err(PrewarmPromotionFailure::new(
+                                    "prewarmBufferLockPoisoned",
+                                    PrewarmPromotionFallback::Abort,
+                                )));
+                                continue;
+                            }
+                        };
+                        let accepted = PrewarmPromotionAccepted {
+                            blocks: adopted_blocks.len() as u64,
+                            audio_frames: (adopted_blocks.len() as u64)
+                                .saturating_mul(u64::from(request.block_size)),
+                            payload_bytes: adopted_blocks
+                                .iter()
+                                .map(|block| block.len() as u64)
+                                .sum(),
+                        };
+                        let promoted_capture_stats = CaptureWriterStats {
+                            deferred_prewarm_stop: Some(json!({
+                                "stopped": false,
+                                "reason": "promotedInPlace",
+                                "physicalClientReused": true,
+                            })),
+                            ..CaptureWriterStats::default()
+                        };
+                        let promoted_state = PromotedCaptureState {
+                            pipe,
+                            started: capture_request.clock_origin.unwrap_or_else(Instant::now),
+                            connect_started: Instant::now(),
+                            connected: false,
+                            stream_started_micros: 0,
+                            sequence: 0,
+                            request: capture_request,
+                            adopted_blocks,
+                        };
+                        if accepted_tx.send(Ok(accepted)).is_err() {
+                            // The caller disappeared after ACCEPTED but before it
+                            // obtained ownership. Restore the exact snapshot and
+                            // any tail accumulated under the handoff marker, then
+                            // continue the original prewarm stream.
+                            buffer
+                                .lock()
+                                .map_err(|_| "prewarmBufferLockPoisoned".to_string())?
+                                .restore_handoff_snapshot(promoted_state.adopted_blocks);
+                            continue;
+                        }
+                        stats.promoted_capture = Some(promoted_capture_stats);
+                        promotion_state = Some(promoted_state);
+                    }
+                    Err(TryRecvError::Empty) => break,
                 }
             }
-            packet_frames = unsafe { capture_client.GetNextPacketSize() }
+
+            if let Some(state) = promotion_state.as_mut() {
+                if !state.connected {
+                    if state.connect_started.elapsed() >= FRAME_PIPE_CONNECT_TIMEOUT {
+                        return Err(format!(
+                            "audio frame pipe client did not connect within {} ms",
+                            FRAME_PIPE_CONNECT_TIMEOUT.as_millis()
+                        ));
+                    }
+                    if poll_frame_pipe_client(state.pipe.raw())? {
+                        state.connected = true;
+                        state.stream_started_micros = state
+                            .started
+                            .elapsed()
+                            .as_micros()
+                            .min(u128::from(u64::MAX))
+                            as u64;
+                        let tail_blocks = buffer
+                            .lock()
+                            .map_err(|_| "prewarmBufferLockPoisoned".to_string())?
+                            .finish_handoff()
+                            .map_err(str::to_string)?;
+                        state.adopted_blocks.extend(tail_blocks);
+                        let capture_stats = stats
+                            .promoted_capture
+                            .as_mut()
+                            .ok_or_else(|| "promotedCaptureStatsMissing".to_string())?;
+                        capture_stats.connected = true;
+                        write_adopted_prebuffer_blocks(
+                            state.pipe.raw(),
+                            &state.request,
+                            &state.adopted_blocks,
+                            state.started,
+                            &mut state.sequence,
+                            capture_stats,
+                        )?;
+                        state.adopted_blocks.clear();
+                    }
+                }
+            }
+
+            let mut packet_frames = unsafe { capture_client.GetNextPacketSize() }
                 .map_err(|err| format!("WASAPI GetNextPacketSize failed: {err}"))?;
+            if packet_frames == 0 {
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+
+            while packet_frames > 0 {
+                let mut data_ptr: *mut u8 = null_mut();
+                let mut frames_to_read = 0_u32;
+                let mut flags = 0_u32;
+                unsafe {
+                    capture_client
+                        .GetBuffer(&mut data_ptr, &mut frames_to_read, &mut flags, None, None)
+                        .map_err(|err| format!("WASAPI GetBuffer failed: {err}"))?;
+                }
+                let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
+                let blocks = converter.push_packet(data_ptr.cast_const(), frames_to_read, silent);
+                let release_result = unsafe { capture_client.ReleaseBuffer(frames_to_read) };
+                release_result.map_err(|err| format!("WASAPI ReleaseBuffer failed: {err}"))?;
+                for payload in blocks? {
+                    stats.total_blocks_observed = stats.total_blocks_observed.saturating_add(1);
+                    stats.total_audio_frames_observed = stats
+                        .total_audio_frames_observed
+                        .saturating_add(u64::from(request.block_size));
+                    if let Some(state) = promotion_state.as_mut().filter(|state| state.connected) {
+                        let capture_stats = stats
+                            .promoted_capture
+                            .as_mut()
+                            .ok_or_else(|| "promotedCaptureStatsMissing".to_string())?;
+                        write_wasapi_capture_frame(
+                            state.pipe.raw(),
+                            &state.request,
+                            &payload,
+                            0,
+                            state.stream_started_micros,
+                            &mut state.sequence,
+                            capture_stats,
+                        )?;
+                    } else if max_buffered_blocks > 0 || promotion_state.is_some() {
+                        match buffer.lock() {
+                            Ok(mut buffer) => {
+                                buffer.push(payload).map_err(str::to_string)?;
+                                stats.buffered_blocks = buffer.block_count();
+                                stats.buffered_audio_frames =
+                                    buffer.audio_frame_count(request.block_size);
+                                stats.buffered_payload_bytes = buffer.payload_bytes();
+                            }
+                            Err(_) => {
+                                return Err("prewarmBufferLockPoisoned".to_string());
+                            }
+                        }
+                    }
+                }
+                packet_frames = unsafe { capture_client.GetNextPacketSize() }
+                    .map_err(|err| format!("WASAPI GetNextPacketSize failed: {err}"))?;
+            }
         }
+    })();
+
+    if let Some(state) = promotion_state.take() {
+        if let Err(reason) = &result {
+            if let Some(capture_stats) = stats.promoted_capture.as_mut() {
+                capture_stats.error = Some(reason.clone());
+            }
+        }
+        if state.connected {
+            unsafe {
+                DisconnectNamedPipe(state.pipe.raw());
+            }
+        }
+        // PromotionPipeHandle closes the OS handle here.  Do not flush: a
+        // disconnected or stalled client must never make stop/rollback wait
+        // without a bound.
     }
+    result
 }
 
 #[cfg(windows)]
@@ -3726,6 +4655,26 @@ fn wait_for_pipe_client(pipe_handle: HANDLE, stop_rx: &mpsc::Receiver<()>) -> Re
 }
 
 #[cfg(windows)]
+fn poll_frame_pipe_client(pipe_handle: HANDLE) -> Result<bool, String> {
+    let connected = unsafe { ConnectNamedPipe(pipe_handle, null_mut()) };
+    if connected != 0 {
+        finish_frame_pipe_connect(pipe_handle, FramePipePostConnectMode::PreserveNonBlocking)?;
+        return Ok(true);
+    }
+    let error = unsafe { GetLastError() };
+    if error == ERROR_PIPE_CONNECTED {
+        finish_frame_pipe_connect(pipe_handle, FramePipePostConnectMode::PreserveNonBlocking)?;
+        return Ok(true);
+    }
+    if error == ERROR_PIPE_LISTENING {
+        return Ok(false);
+    }
+    Err(format!(
+        "ConnectNamedPipe failed for audio frame pipe: {error}"
+    ))
+}
+
+#[cfg(windows)]
 fn wait_for_meeting_output_pipe_client(
     pipe_handle: HANDLE,
     stop_rx: &mpsc::Receiver<()>,
@@ -3810,37 +4759,86 @@ fn frame_pipe_wait_mode_update(post_connect_mode: FramePipePostConnectMode) -> O
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PipeWriteAttemptError {
+    Retry,
+    Fatal(String),
+}
+
+fn write_all_with_bounded_retry<Attempt, Wait>(
+    bytes: &[u8],
+    deadline: Instant,
+    mut attempt: Attempt,
+    mut wait: Wait,
+) -> Result<u32, String>
+where
+    Attempt: FnMut(&[u8]) -> Result<usize, PipeWriteAttemptError>,
+    Wait: FnMut(),
+{
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        if Instant::now() >= deadline {
+            return Err("audioFramePipeWriteTimeout".to_string());
+        }
+        match attempt(&bytes[offset..]) {
+            Ok(0) | Err(PipeWriteAttemptError::Retry) => {
+                wait();
+            }
+            Ok(written) => {
+                if written > bytes.len() - offset {
+                    return Err("audioFramePipeWriteReportedInvalidLength".to_string());
+                }
+                offset += written;
+            }
+            Err(PipeWriteAttemptError::Fatal(error)) => return Err(error),
+        }
+    }
+    u32::try_from(offset).map_err(|_| "audioFramePipeWriteLengthOverflow".to_string())
+}
+
+#[cfg(windows)]
+fn write_all_to_pipe_until(
+    pipe_handle: HANDLE,
+    bytes: &[u8],
+    deadline: Instant,
+) -> Result<u32, String> {
+    write_all_with_bounded_retry(
+        bytes,
+        deadline,
+        |remaining| {
+            let chunk_len = remaining.len().min(u32::MAX as usize) as u32;
+            let mut written = 0u32;
+            let ok = unsafe {
+                WriteFile(
+                    pipe_handle,
+                    remaining.as_ptr(),
+                    chunk_len,
+                    &mut written,
+                    null_mut(),
+                )
+            };
+            if ok != 0 {
+                return Ok(written as usize);
+            }
+            let error = unsafe { GetLastError() };
+            if error == ERROR_NO_DATA || error == ERROR_PIPE_LISTENING || error == ERROR_PIPE_BUSY {
+                return Err(PipeWriteAttemptError::Retry);
+            }
+            Err(PipeWriteAttemptError::Fatal(format!(
+                "WriteFile failed for audio frame pipe: {error}"
+            )))
+        },
+        || thread::sleep(Duration::from_millis(1)),
+    )
+}
+
 #[cfg(windows)]
 fn write_all_to_pipe(pipe_handle: HANDLE, bytes: &[u8]) -> Result<u32, String> {
-    let mut offset = 0usize;
-    let mut total_written = 0u32;
-    while offset < bytes.len() {
-        let remaining = &bytes[offset..];
-        let chunk_len = remaining.len().min(u32::MAX as usize) as u32;
-        let mut written = 0u32;
-        let ok = unsafe {
-            WriteFile(
-                pipe_handle,
-                remaining.as_ptr(),
-                chunk_len,
-                &mut written,
-                null_mut(),
-            )
-        };
-        if ok == 0 {
-            let err = unsafe { GetLastError() };
-            if err == ERROR_NO_DATA {
-                return Err("synthetic frame pipe client disconnected".to_string());
-            }
-            return Err(format!("WriteFile failed for synthetic frame pipe: {err}"));
-        }
-        if written == 0 {
-            return Err("WriteFile wrote zero bytes to synthetic frame pipe".to_string());
-        }
-        offset = offset.saturating_add(written as usize);
-        total_written = total_written.saturating_add(written);
-    }
-    Ok(total_written)
+    write_all_to_pipe_until(
+        pipe_handle,
+        bytes,
+        Instant::now() + FRAME_PIPE_WRITE_TIMEOUT,
+    )
 }
 
 #[cfg(windows)]
@@ -3996,6 +4994,87 @@ mod tests {
         EnvVarGuard { key, old_value }
     }
 
+    fn test_microphone_capture_request() -> CaptureRequest {
+        CaptureRequest {
+            sample_rate: 16_000,
+            channels: 1,
+            block_size: 512,
+            device_preference: "default".to_string(),
+            port_audio_label: String::new(),
+            native_endpoint_id_hash: String::new(),
+            prebuffer_ms: 400,
+            prewarm_id: "prewarm-test".to_string(),
+            capture_kind: "microphone".to_string(),
+            clock_origin: None,
+        }
+    }
+
+    fn test_prewarm_session_with_stats(stats: PrewarmStats) -> PrewarmSession {
+        let (control_tx, control_rx) = mpsc::channel();
+        let join_handle = thread::spawn(move || loop {
+            match control_rx.recv() {
+                Ok(PrewarmWorkerCommand::Stop) | Err(_) => return stats,
+                Ok(PrewarmWorkerCommand::Promote(promotion)) => {
+                    let _ = promotion.accepted_tx.send(Err(PrewarmPromotionFailure::new(
+                        "testWorkerDoesNotPromote",
+                        PrewarmPromotionFallback::Abort,
+                    )));
+                }
+            }
+        });
+        PrewarmSession {
+            prewarm_id: "prewarm-test".to_string(),
+            source: "wasapi-prewarm",
+            request: test_microphone_capture_request(),
+            control_tx,
+            join_handle: Some(join_handle),
+            started_at: Instant::now(),
+            buffer: Arc::new(Mutex::new(PrewarmBuffer::new(8))),
+            block_size: 512,
+            native_endpoint_id_hash: Value::String("endpoint-a".to_string()),
+            endpoint_selection: json!({
+                "mode": "default",
+                "selectedNativeEndpointIdHash": "endpoint-a",
+                "usedDefaultEndpoint": true,
+            }),
+            mix_format_payload: json!({"sampleRate": 48_000, "channels": 2}),
+            resampler_payload: json!({
+                "sourceSampleRate": 48_000,
+                "targetSampleRate": 16_000,
+                "sourceChannels": 2,
+                "targetChannels": 1,
+                "method": "nearest",
+            }),
+            microphone_channel_selection: Arc::new(Mutex::new(
+                MicrophoneChannelSelectionState::default(),
+            )),
+        }
+    }
+
+    fn test_prewarm_session_with_worker(
+        buffer: Arc<Mutex<PrewarmBuffer>>,
+        control_tx: Sender<PrewarmWorkerCommand>,
+        join_handle: JoinHandle<PrewarmStats>,
+    ) -> PrewarmSession {
+        PrewarmSession {
+            prewarm_id: "prewarm-test".to_string(),
+            source: "wasapi-prewarm",
+            request: test_microphone_capture_request(),
+            control_tx,
+            join_handle: Some(join_handle),
+            started_at: Instant::now(),
+            buffer,
+            block_size: 512,
+            native_endpoint_id_hash: Value::String("endpoint-a".to_string()),
+            endpoint_selection: Value::Null,
+            mix_format_payload: Value::Null,
+            resampler_payload: Value::Null,
+            microphone_channel_selection: Arc::new(Mutex::new(
+                MicrophoneChannelSelectionState::default(),
+            )),
+        }
+    }
+
     #[test]
     fn stdio_request_reader_rejects_oversized_lines() {
         let mut input = io::Cursor::new(vec![b'x'; SIDECAR_JSON_LINE_MAX_BYTES + 1]);
@@ -4025,6 +5104,396 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(markers, vec![0x11, 0x22, 0x33, 0x44, 0x55]);
         assert_eq!(buffer.finish_handoff(), Err("prewarmHandoffNotStarted"));
+    }
+
+    #[test]
+    fn canceled_promotion_cannot_be_accepted_or_begin_a_handoff() {
+        let decision = PrewarmPromotionDecision::default();
+
+        assert!(decision.cancel_if_pending());
+        assert!(!decision.try_accept());
+        assert!(!decision.cancel_if_pending());
+    }
+
+    #[test]
+    fn accepted_promotion_cannot_fall_back_after_the_ownership_boundary() {
+        let decision = PrewarmPromotionDecision::default();
+
+        assert!(decision.try_accept());
+        assert!(!decision.cancel_if_pending());
+        assert!(!decision.try_accept());
+    }
+
+    #[test]
+    fn endpoint_resolver_lease_allows_only_one_detached_worker() {
+        assert!(!PROMOTION_ENDPOINT_RESOLVER_ACTIVE.load(Ordering::Acquire));
+        let first = PromotionEndpointResolverLease::try_acquire()
+            .expect("first endpoint resolver should acquire the lease");
+
+        assert!(PROMOTION_ENDPOINT_RESOLVER_ACTIVE.load(Ordering::Acquire));
+        assert!(PromotionEndpointResolverLease::try_acquire().is_none());
+
+        drop(first);
+        assert!(!PROMOTION_ENDPOINT_RESOLVER_ACTIVE.load(Ordering::Acquire));
+        let replacement = PromotionEndpointResolverLease::try_acquire()
+            .expect("lease should become available after worker exit");
+        drop(replacement);
+        assert!(!PROMOTION_ENDPOINT_RESOLVER_ACTIVE.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn rejected_promotion_restores_snapshot_and_tail_in_original_order() {
+        let mut buffer = PrewarmBuffer::new(8);
+        buffer.push(vec![0x11]).unwrap();
+        buffer.push(vec![0x22]).unwrap();
+        let snapshot = buffer.begin_handoff().unwrap();
+        buffer.push(vec![0x33]).unwrap();
+        buffer.push(vec![0x44]).unwrap();
+
+        buffer.restore_handoff_snapshot(snapshot);
+        let restored = buffer.begin_handoff().unwrap();
+
+        assert_eq!(
+            restored
+                .into_iter()
+                .map(|block| block[0])
+                .collect::<Vec<_>>(),
+            vec![0x11, 0x22, 0x33, 0x44]
+        );
+    }
+
+    #[test]
+    fn rejected_promotion_restores_only_the_newest_bounded_audio() {
+        let mut buffer = PrewarmBuffer::new(4);
+        buffer.push(vec![0x11]).unwrap();
+        buffer.push(vec![0x22]).unwrap();
+        buffer.push(vec![0x33]).unwrap();
+        let snapshot = buffer.begin_handoff().unwrap();
+        buffer.push(vec![0x44]).unwrap();
+        buffer.push(vec![0x55]).unwrap();
+
+        buffer.restore_handoff_snapshot(snapshot);
+        let restored = buffer.begin_handoff().unwrap();
+
+        assert_eq!(
+            restored
+                .into_iter()
+                .map(|block| block[0])
+                .collect::<Vec<_>>(),
+            vec![0x22, 0x33, 0x44, 0x55]
+        );
+    }
+
+    #[test]
+    fn bounded_pipe_write_retries_partial_zero_and_transient_attempts_without_duplication() {
+        let input = b"abcdefgh";
+        let mut output = Vec::new();
+        let mut attempts = 0_u32;
+
+        let written = write_all_with_bounded_retry(
+            input,
+            Instant::now() + Duration::from_secs(1),
+            |remaining| {
+                attempts += 1;
+                match attempts {
+                    1 => Ok(0),
+                    2 => Err(PipeWriteAttemptError::Retry),
+                    _ => {
+                        let count = remaining.len().min(2);
+                        output.extend_from_slice(&remaining[..count]);
+                        Ok(count)
+                    }
+                }
+            },
+            || {},
+        )
+        .unwrap();
+
+        assert_eq!(written, input.len() as u32);
+        assert_eq!(output, input);
+        assert!(attempts >= 6);
+    }
+
+    #[test]
+    fn bounded_pipe_write_times_out_instead_of_spinning_forever() {
+        let started = Instant::now();
+        let error = write_all_with_bounded_retry(
+            b"audio",
+            started + Duration::from_millis(4),
+            |_| Err(PipeWriteAttemptError::Retry),
+            || thread::sleep(Duration::from_millis(1)),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "audioFramePipeWriteTimeout");
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn bounded_pipe_write_preserves_fatal_errors() {
+        let error = write_all_with_bounded_retry(
+            b"audio",
+            Instant::now() + Duration::from_secs(1),
+            |_| Err(PipeWriteAttemptError::Fatal("brokenPipe".to_string())),
+            || {},
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "brokenPipe");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn in_place_prewarm_promotion_requires_matching_live_format() {
+        let prewarm = test_microphone_capture_request();
+        let mut capture = prewarm.clone();
+
+        assert_eq!(
+            validate_prewarm_promotion_format(&prewarm, &capture),
+            Ok(())
+        );
+
+        capture.sample_rate = 48_000;
+        assert_eq!(
+            validate_prewarm_promotion_format(&prewarm, &capture),
+            Err("prewarmPromotionFormatMismatch")
+        );
+        capture = prewarm.clone();
+        capture.channels = 2;
+        assert_eq!(
+            validate_prewarm_promotion_format(&prewarm, &capture),
+            Err("prewarmPromotionFormatMismatch")
+        );
+        capture = prewarm.clone();
+        capture.block_size = 160;
+        assert_eq!(
+            validate_prewarm_promotion_format(&prewarm, &capture),
+            Err("prewarmPromotionFormatMismatch")
+        );
+        capture = prewarm.clone();
+        capture.capture_kind = "loopback".to_string();
+        assert_eq!(
+            validate_prewarm_promotion_format(&prewarm, &capture),
+            Err("prewarmPromotionCaptureKindMismatch")
+        );
+    }
+
+    #[test]
+    fn in_place_prewarm_promotion_requires_same_actual_endpoint() {
+        let endpoint_a = Value::String("endpoint-a".to_string());
+        let another_endpoint_a = Value::String("endpoint-a".to_string());
+        let endpoint_b = Value::String("endpoint-b".to_string());
+
+        assert_eq!(
+            validate_in_place_endpoint_hashes(&endpoint_a, &another_endpoint_a),
+            Ok(())
+        );
+        assert_eq!(
+            validate_in_place_endpoint_hashes(&endpoint_a, &endpoint_b),
+            Err("prewarmPromotionEndpointMismatch")
+        );
+        assert_eq!(
+            validate_in_place_endpoint_hashes(&Value::Null, &endpoint_b),
+            Err("prewarmPromotionEndpointIdentityUnavailable")
+        );
+        assert_eq!(
+            validate_in_place_endpoint_hashes(&endpoint_a, &Value::Null),
+            Err("prewarmPromotionEndpointIdentityUnavailable")
+        );
+    }
+
+    #[test]
+    fn promoted_capture_payload_is_explicit_about_reused_wasapi_client() {
+        let request = test_microphone_capture_request();
+        let mut session = test_prewarm_session_with_stats(PrewarmStats::default());
+        let payload = wasapi_promoted_capture_payload(
+            "stream-test",
+            r"\\.\pipe\scriber-audio-test",
+            &request,
+            &session,
+            PrewarmPromotionAccepted {
+                blocks: 4,
+                audio_frames: 2_048,
+                payload_bytes: 4_096,
+            },
+        );
+
+        assert_eq!(payload["wasapiClientReused"], true);
+        assert_eq!(payload["handoffMode"], IN_PLACE_PREWARM_HANDOFF_MODE);
+        assert_eq!(payload["wasapiReadyDeferred"], false);
+        assert_eq!(payload["adoptedPrewarm"]["adopted"], true);
+        assert_eq!(payload["adoptedPrewarm"]["blocks"], 4);
+        assert_eq!(
+            payload["adoptedPrewarm"]["handoffMode"],
+            IN_PLACE_PREWARM_HANDOFF_MODE
+        );
+        assert_eq!(
+            payload["adoptedPrewarm"]["stop"]["reason"],
+            "promotedInPlace"
+        );
+        let _ = session.stop("testCleanup");
+    }
+
+    #[test]
+    fn prewarm_promotion_fallback_is_explicit_and_bounded() {
+        let mut payload = json!({
+            "wasapiClientReused": true,
+            "handoffMode": IN_PLACE_PREWARM_HANDOFF_MODE,
+        });
+        let long_reason = "x".repeat(128);
+
+        patch_wasapi_promotion_fallback(&mut payload, &long_reason);
+
+        assert_eq!(payload["wasapiClientReused"], false);
+        assert_eq!(payload["handoffMode"], "replacement-wasapi-client");
+        assert_eq!(
+            payload["prewarmPromotionFallbackReason"]
+                .as_str()
+                .map(str::len),
+            Some(96)
+        );
+    }
+
+    #[test]
+    fn capture_stop_owns_and_cleans_promoted_prewarm_worker() {
+        let promoted_capture = CaptureWriterStats {
+            connected: true,
+            frames_written: 8,
+            prebuffer_frames_written: 3,
+            live_frames_written: 5,
+            bytes_written: 16_384,
+            ..CaptureWriterStats::default()
+        };
+        let prewarm = test_prewarm_session_with_stats(PrewarmStats {
+            promoted_capture: Some(promoted_capture),
+            ..PrewarmStats::default()
+        });
+        let mut capture = CaptureSession {
+            stream_id: "stream-promoted".to_string(),
+            source: "wasapi-capture",
+            worker: CaptureSessionWorker::PromotedPrewarm(Box::new(prewarm)),
+            started_at: Instant::now(),
+        };
+
+        let stopped = capture.stop("responseAckRollback");
+
+        assert_eq!(stopped["stopped"], true);
+        assert_eq!(stopped["reason"], "responseAckRollback");
+        assert_eq!(stopped["wasapiClientReused"], true);
+        assert_eq!(stopped["handoffMode"], IN_PLACE_PREWARM_HANDOFF_MODE);
+        assert_eq!(stopped["connected"], true);
+        assert_eq!(stopped["prebufferFramesWritten"], 3);
+        assert_eq!(stopped["liveFramesWritten"], 5);
+        assert_eq!(stopped["writerError"], Value::Null);
+        assert_eq!(stopped["workerStopTimedOut"], false);
+        assert!(capture.worker_finished());
+    }
+
+    #[test]
+    fn promoted_capture_stop_detaches_a_stalled_worker_within_the_bound() {
+        let (control_tx, control_rx) = mpsc::channel();
+        let join_handle = thread::spawn(move || {
+            let _ = control_rx.recv();
+            thread::sleep(Duration::from_millis(100));
+            PrewarmStats::default()
+        });
+        let mut session = PrewarmSession {
+            prewarm_id: "bounded-stop-test".to_string(),
+            source: "wasapi-prewarm",
+            request: test_microphone_capture_request(),
+            control_tx,
+            join_handle: Some(join_handle),
+            started_at: Instant::now(),
+            buffer: Arc::new(Mutex::new(PrewarmBuffer::new(8))),
+            block_size: 512,
+            native_endpoint_id_hash: Value::String("endpoint-a".to_string()),
+            endpoint_selection: Value::Null,
+            mix_format_payload: Value::Null,
+            resampler_payload: Value::Null,
+            microphone_channel_selection: Arc::new(Mutex::new(
+                MicrophoneChannelSelectionState::default(),
+            )),
+        };
+        let started = Instant::now();
+
+        let joined = session.join_worker_bounded(Duration::from_millis(5));
+
+        assert!(joined.timed_out);
+        assert_eq!(
+            joined.stats.error.as_deref(),
+            Some("prewarmWorkerStopTimeout")
+        );
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert!(session.join_handle.is_none());
+    }
+
+    #[test]
+    fn bounded_deferred_handoff_joins_before_returning_the_complete_tail() {
+        let buffer = Arc::new(Mutex::new(PrewarmBuffer::new(8)));
+        buffer.lock().unwrap().push(vec![0x11]).unwrap();
+        let worker_buffer = Arc::clone(&buffer);
+        let (control_tx, control_rx) = mpsc::channel();
+        let join_handle = thread::spawn(move || {
+            assert!(matches!(control_rx.recv(), Ok(PrewarmWorkerCommand::Stop)));
+            worker_buffer.lock().unwrap().push(vec![0x22]).unwrap();
+            PrewarmStats::default()
+        });
+        let mut session =
+            test_prewarm_session_with_worker(Arc::clone(&buffer), control_tx, join_handle);
+        let snapshot = session.begin_handoff().unwrap();
+
+        let (stop, tail) = session
+            .stop_and_finish_handoff_bounded("adoptedIntoCapture", Duration::from_millis(100));
+        let tail = tail.unwrap();
+
+        assert_eq!(stop["stopped"], true);
+        assert_eq!(stop["workerStopTimedOut"], false);
+        assert_eq!(stop["handoffTailBlocks"], 1);
+        assert_eq!(
+            snapshot
+                .blocks
+                .into_iter()
+                .chain(tail)
+                .map(|block| block[0])
+                .collect::<Vec<_>>(),
+            vec![0x11, 0x22]
+        );
+    }
+
+    #[test]
+    fn bounded_deferred_handoff_never_claims_a_tail_from_a_stalled_worker() {
+        let buffer = Arc::new(Mutex::new(PrewarmBuffer::new(8)));
+        buffer.lock().unwrap().push(vec![0x11]).unwrap();
+        let worker_buffer = Arc::clone(&buffer);
+        let (control_tx, control_rx) = mpsc::channel();
+        let join_handle = thread::spawn(move || {
+            assert!(matches!(control_rx.recv(), Ok(PrewarmWorkerCommand::Stop)));
+            thread::sleep(Duration::from_millis(60));
+            worker_buffer.lock().unwrap().push(vec![0x33]).unwrap();
+            PrewarmStats::default()
+        });
+        let mut session =
+            test_prewarm_session_with_worker(Arc::clone(&buffer), control_tx, join_handle);
+        let snapshot = session.begin_handoff().unwrap();
+        let started = Instant::now();
+
+        let (stop, tail) =
+            session.stop_and_finish_handoff_bounded("adoptedIntoCapture", Duration::from_millis(5));
+
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert_eq!(stop["stopped"], false);
+        assert_eq!(stop["workerStopTimedOut"], true);
+        assert_eq!(tail.unwrap_err(), "prewarmWorkerStopTimeout");
+        assert_eq!(snapshot.blocks, vec![vec![0x11]]);
+
+        // The detached worker still owns the handoff marker. Once it exits its
+        // late block remains in the tail; the timed-out call did not falsely
+        // finalize or replay an incomplete prefix.
+        thread::sleep(Duration::from_millis(80));
+        assert_eq!(
+            buffer.lock().unwrap().finish_handoff().unwrap(),
+            vec![vec![0x33]]
+        );
     }
 
     #[test]
@@ -4069,7 +5538,11 @@ mod tests {
         let mut session = PrewarmSession {
             prewarm_id: "cancel-test".to_string(),
             source: "test-prewarm",
-            stop_tx,
+            request: CaptureRequest {
+                block_size: 1,
+                ..test_microphone_capture_request()
+            },
+            control_tx: stop_tx,
             join_handle: Some(join_handle),
             started_at: Instant::now(),
             buffer: Arc::clone(&buffer),
@@ -4536,6 +6009,7 @@ mod tests {
         assert_eq!(stop["stopped"], true);
         assert_eq!(stop["reason"], "adoptedIntoCapture");
         assert_eq!(stop["source"], "synthetic-prewarm");
+        assert_eq!(stop["workerStopTimedOut"], false);
         assert!(stop["totalBlocksObserved"].as_u64().unwrap_or_default() > 0);
     }
 
@@ -5061,6 +6535,11 @@ mod tests {
         assert_eq!(payload["wasapiCapture"], true);
         assert_eq!(payload["wasapiReadyDeferred"], true);
         assert_eq!(payload["firstFramesFromAdoptedPrewarm"], true);
+        assert_eq!(payload["wasapiClientReused"], false);
+        assert_eq!(
+            payload["handoffMode"],
+            "overlap-capture-start-before-prewarm-stop"
+        );
         assert_eq!(payload["nativeEndpointIdHash"], "prewarm-endpoint-hash");
         assert_eq!(payload["adoptedPrewarm"]["adopted"], true);
         assert_eq!(payload["adoptedPrewarm"]["blocks"], 1);

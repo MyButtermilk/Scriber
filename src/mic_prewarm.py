@@ -182,6 +182,7 @@ class RustAudioPrewarmManager:
         self._prewarm_id = ""
         self._prewarm_payload: dict[str, Any] = {}
         self._stream_signature: dict[str, Any] = {}
+        self._route_generation = 0
         self._temporary_idle_prewarm = False
         self._paused_for_active_capture = False
         self._paused_for_device_refresh = False
@@ -440,6 +441,11 @@ class RustAudioPrewarmManager:
                 if prebuffer_ms is None
                 else self._build_start_payload(prebuffer_ms=prebuffer_ms)
             )
+            # These values validate the Python-side route lease only. Keep
+            # them out of the private shell IPC payload so configuration
+            # metadata is not copied into a transport that does not need it.
+            configured_device = str(payload.pop("_configuredDevice", "default"))
+            favorite_mic = str(payload.pop("_favoriteMic", ""))
             shell_started = time.monotonic()
             response = self._shell_call("audioPrewarmStart", payload, timeout_seconds=2.0)
             shell_response_ms = round(max(0.0, time.monotonic() - shell_started) * 1000.0, 3)
@@ -516,7 +522,15 @@ class RustAudioPrewarmManager:
                     "device_preference": str(payload.get("devicePreference") or "default"),
                     "port_audio_label": str(payload.get("portAudioLabel") or ""),
                     "native_endpoint_id_hash": str(payload.get("nativeEndpointIdHash") or ""),
+                    # DeviceMonitor and Settings rebuild the idle prewarm when
+                    # either value changes. Keeping the exact configuration
+                    # beside the resolved route lets the hotkey path validate
+                    # the lease without another PortAudio/IMMDevice inventory.
+                    "configured_device": configured_device or "default",
+                    "favorite_mic": favorite_mic,
+                    "route_generation": self._route_generation + 1,
                 }
+                self._route_generation += 1
                 self._stream_started_at = time.monotonic()
                 self._stream_start_count += 1
                 if active_resume_started_at > 0:
@@ -640,6 +654,8 @@ class RustAudioPrewarmManager:
             "devicePreference": selection.get("devicePreference") or device_preference,
             "portAudioLabel": selection.get("portAudioLabel") or "",
             "nativeEndpointIdHash": selection.get("nativeEndpointIdHash") or None,
+            "_configuredDevice": device_preference,
+            "_favoriteMic": str(getattr(Config, "FAVORITE_MIC", "") or ""),
             "prebufferMs": effective_prebuffer_ms,
             "frameProtocol": {
                 "magic": "SAF1",
@@ -797,11 +813,12 @@ class RustAudioPrewarmManager:
         block_size: int,
         device: object,
     ) -> dict[str, Any] | None:
-        # Capture the candidate under the ownership lock, but resolve Windows
-        # device identity outside it because endpoint inventory may cross the
-        # private shell IPC boundary.  We revalidate the exact candidate before
-        # leasing it so a concurrent stop/restart cannot adopt a different
-        # session with a stale identity decision.
+        # Device identity was resolved when this exact prewarm session started.
+        # DeviceMonitor and Settings tear down/rebuild that session whenever the
+        # route can change, while Rust still compares the endpoint actually
+        # opened by prewarm with the endpoint opened by capture. Re-running
+        # PortAudio compatibility probes plus audioEndpointInventory here made
+        # every warm hotkey pay a highly variable cold-device cost.
         with self._lock:
             if not Config.MIC_ALWAYS_ON and not self._temporary_idle_prewarm:
                 return None
@@ -818,49 +835,27 @@ class RustAudioPrewarmManager:
                 return None
             if int(signature.get("block_size") or 0) != int(block_size):
                 return None
-
             candidate_prewarm_id = self._prewarm_id
-
-        requested_selection: dict[str, Any] | None = None
-        try:
-            resolved_selection = self._device_selection_payload(
-                "default" if device is None else str(device),
-                sample_rate=int(sample_rate),
-                channels=int(target_channels),
+            requested_device = self._normalized_device_preference(device)
+            stored_device = self._normalized_device_preference(
+                signature.get("device_preference")
             )
-            if (
-                isinstance(resolved_selection, dict)
-                and "devicePreference" in resolved_selection
-            ):
-                requested_selection = resolved_selection
-        except Exception:
-            pass
-
-        with self._lock:
-            if (
-                self._prewarm_id != candidate_prewarm_id
-                or self._stream_signature != signature
-                or self._paused_for_device_refresh
-                or self._active_capture_attached
-                or (not Config.MIC_ALWAYS_ON and not self._temporary_idle_prewarm)
-            ):
-                return None
+            configured_device = str(
+                getattr(Config, "MIC_DEVICE", "default") or "default"
+            )
+            favorite_mic = str(getattr(Config, "FAVORITE_MIC", "") or "")
             device_identity_matches = bool(
-                requested_selection is not None
-                and self._device_identity_matches(signature, requested_selection)
+                requested_device == stored_device
+                and configured_device == str(
+                    signature.get("configured_device") or "default"
+                )
+                and favorite_mic == str(signature.get("favorite_mic") or "")
             )
             if not device_identity_matches:
                 stored_endpoint_hash = str(
                     signature.get("native_endpoint_id_hash") or ""
                 ).strip()
-                requested_endpoint_hash = str(
-                    (requested_selection or {}).get("nativeEndpointIdHash") or ""
-                ).strip()
-                rejection_reason = (
-                    "device_identity_mismatch"
-                    if requested_selection is not None
-                    else "device_identity_unavailable"
-                )
+                rejection_reason = "device_route_generation_mismatch"
                 self._adoption_device_identity_rejection_count += 1
                 self._last_adoption_rejection_reason = rejection_reason
                 self._record_transition_locked(
@@ -872,7 +867,7 @@ class RustAudioPrewarmManager:
                     rejection_reason,
                     prewarmIdHash=self._hash_hint(candidate_prewarm_id),
                     storedNativeEndpointIdHash=stored_endpoint_hash or None,
-                    requestedNativeEndpointIdHash=requested_endpoint_hash or None,
+                    routeGeneration=signature.get("route_generation"),
                 )
                 return None
 
@@ -898,9 +893,66 @@ class RustAudioPrewarmManager:
                 "prewarmId": prewarm_id,
                 "prewarm_id": prewarm_id,
                 "signature": signature,
+                "captureRoute": {
+                    "devicePreference": str(
+                        signature.get("device_preference") or "default"
+                    ),
+                    "portAudioLabel": str(
+                        signature.get("port_audio_label") or ""
+                    ),
+                    "nativeEndpointIdHash": (
+                        str(signature.get("native_endpoint_id_hash") or "") or None
+                    ),
+                },
+                "routeGeneration": signature.get("route_generation"),
                 "start": self._redacted_start_payload_locked(),
                 "device": str(device),
             }
+
+    def leased_capture_device_preference(
+        self,
+        *,
+        sample_rate: int,
+        target_channels: int,
+        block_size: int,
+    ) -> str | None:
+        """Return the already-resolved PortAudio preference for this warm route.
+
+        This is a read-only hint for constructing ``MicrophoneInput``. It does
+        not attach, consume, or otherwise mutate the prewarm lease; the later
+        ``attach_active_capture`` call remains the ownership boundary and Rust
+        still validates the actual native endpoint before exposing audio.
+        """
+
+        with self._lock:
+            if not Config.MIC_ALWAYS_ON and not self._temporary_idle_prewarm:
+                return None
+            if (
+                self._paused_for_device_refresh
+                or self._active_capture_attached
+                or not self._prewarm_id
+            ):
+                return None
+            signature = self._stream_signature
+            if int(signature.get("sample_rate") or 0) != int(sample_rate):
+                return None
+            if int(signature.get("target_channels") or 0) != int(target_channels):
+                return None
+            if int(signature.get("block_size") or 0) != int(block_size):
+                return None
+            configured_device = str(
+                getattr(Config, "MIC_DEVICE", "default") or "default"
+            )
+            favorite_mic = str(getattr(Config, "FAVORITE_MIC", "") or "")
+            if configured_device != str(
+                signature.get("configured_device") or "default"
+            ):
+                return None
+            if favorite_mic != str(signature.get("favorite_mic") or ""):
+                return None
+            return self._normalized_device_preference(
+                signature.get("device_preference")
+            )
 
     def commit_active_capture(self, prewarm_id: str) -> bool:
         """Commit a leased prewarm only after native capture returned ready.

@@ -74,6 +74,7 @@ def test_rust_audio_app_prewarm_smoke_script_documents_app_lifecycle_contract() 
     assert "audioPrewarmStart" in script
     assert "audioCaptureStart" in script
     assert "prewarmId" in script
+    assert "capture_route=(adopted or {}).get(\"captureRoute\")" in script
     assert "managerResume" in script
     assert "adoptedPrewarm" in script
     assert "healthRestartCount" in script

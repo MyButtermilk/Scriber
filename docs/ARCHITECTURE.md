@@ -28,8 +28,16 @@ Live mic:
 2. Hotkey calls backend live-mic endpoints. A second optional post-processing
    hotkey calls the dedicated live-mic post-processing endpoint; the normal
    hotkey always keeps plain STT output.
-3. Python resolves the microphone under the PortAudio guard.
-4. Optional idle prewarm stream can be adopted and prepend its rolling prebuffer.
+3. Without a valid warm lease, Python resolves the microphone under the
+   PortAudio guard. Always-on idle prewarm instead binds the already-resolved
+   PortAudio/native route to its exact prewarm ID, so the hotkey path does not
+   repeat device inventory or compatibility probing.
+4. A matching idle WASAPI prewarm stream is promoted in place: Rust validates
+   the currently requested actual endpoint, attaches the capture frame pipe,
+   emits the rolling snapshot plus bounded handoff tail as prebuffer, and then
+   continues live audio from the same running `IAudioClient`. Format, endpoint,
+   or handoff failures fall back to a fresh replacement client without replaying
+   incompatible prebuffer audio.
 5. Pipecat/provider pipeline processes audio.
 6. Transcript text is injected into the active app and saved to SQLite. When a
    session was started through the post-processing hotkey, pipeline raw-text
@@ -948,8 +956,17 @@ Rust audio:
   diagnostic compatibility and no longer selects Python capture.
 - `src/mic_prewarm.py` uses the Rust prewarm manager as the only app-level
   idle-prewarm implementation. It keeps `audioPrewarmStart` alive during idle,
-  hands the `prewarmId` to the next Rust capture, and records redacted adoption
-  diagnostics.
+  hands the `prewarmId` plus its immutable resolved route to the next Rust
+  capture, and records redacted adoption diagnostics. A valid route lease skips
+  a second PortAudio/native inventory pass at hotkey time; native endpoint events
+  and Settings route changes invalidate the cache and rebuild idle prewarm.
+- A compatible leased WASAPI session is promoted without stopping or opening a
+  second `IAudioClient`. The running prewarm worker atomically redirects new
+  blocks into a bounded handoff tail while the capture pipe connects, writes the
+  snapshot and tail exactly once as PREBUFFER, and then writes live frames. Rust
+  re-resolves and compares the actual endpoint before exposing any buffered
+  audio. The promoted capture owns the worker through response acknowledgement,
+  capture stop, and cleanup.
 - On process startup, persisted Always-on prewarm waits for DeviceMonitor's
   forced initial PortAudio refresh callback, including favorite-device
   resolution, and then starts against the final device inventory. A

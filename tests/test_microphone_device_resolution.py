@@ -4,10 +4,12 @@ import types
 
 import pytest
 
+import src.pipeline as pipeline
 from src.audio_devices import get_default_input_device_index
 from src.config import Config
 from src.pipeline import _normalize_device_name as normalize_pipeline_device_name
 from src.pipeline import _resolve_mic_device
+from src.pipeline import _resolve_live_mic_capture_device
 from src.pipeline import invalidate_mic_device_resolution_cache
 from src.web_api import ScriberWebController
 
@@ -261,6 +263,83 @@ def test_resolve_mic_device_uses_cache_for_repeated_resolution(monkeypatch: pyte
 
     assert _resolve_mic_device("default") == "1"
     assert query_count == first_query_count
+
+
+def test_resolve_mic_device_default_cache_survives_long_idle_interval(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    query_count = 0
+    clock = [100.0]
+    monkeypatch.delenv("SCRIBER_MIC_DEVICE_CACHE_TTL_SEC", raising=False)
+    monkeypatch.setattr(pipeline.time, "monotonic", lambda: clock[0])
+    module = _install_fake_sounddevice(
+        monkeypatch,
+        devices=[
+            {"name": "Built-in Mic, MME", "max_input_channels": 1, "hostapi": 0},
+            {"name": "Dock Mic, MME", "max_input_channels": 1, "hostapi": 0},
+        ],
+        hostapis=[{"name": "MME"}],
+        default_input=0,
+    )
+    original_query_devices = module.query_devices
+
+    def counting_query_devices(*args, **kwargs):
+        nonlocal query_count
+        query_count += 1
+        return original_query_devices(*args, **kwargs)
+
+    module.query_devices = counting_query_devices
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "Dock Mic, MME", raising=False)
+
+    assert pipeline._mic_device_resolution_cache_ttl() == 3600.0
+    assert _resolve_mic_device("default") == "1"
+    first_query_count = query_count
+    assert first_query_count > 0
+
+    # A recording several minutes later must still use the event-invalidated
+    # cache instead of re-enumerating PortAudio on the hotkey path.
+    clock[0] += 300.0
+    assert _resolve_mic_device("default") == "1"
+    assert query_count == first_query_count
+
+
+def test_live_mic_capture_device_reuses_valid_prewarm_route(monkeypatch):
+    calls: list[dict] = []
+
+    class Prewarm:
+        def leased_capture_device_preference(self, **kwargs):
+            calls.append(kwargs)
+            return "9"
+
+    monkeypatch.setattr(
+        pipeline,
+        "_resolve_mic_device",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a valid warm route must skip PortAudio resolution")
+        ),
+    )
+
+    assert _resolve_live_mic_capture_device(Prewarm()) == ("9", True)
+    assert calls == [
+        {
+            "sample_rate": int(Config.SAMPLE_RATE),
+            "target_channels": int(Config.CHANNELS),
+            "block_size": int(Config.MIC_BLOCK_SIZE),
+        }
+    ]
+
+
+def test_live_mic_capture_device_falls_back_when_warm_route_is_unavailable(
+    monkeypatch,
+):
+    class Prewarm:
+        def leased_capture_device_preference(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(pipeline, "_resolve_mic_device", lambda device: f"fresh:{device}")
+    monkeypatch.setattr(Config, "MIC_DEVICE", "Dock Mic", raising=False)
+
+    assert _resolve_live_mic_capture_device(Prewarm()) == ("fresh:Dock Mic", False)
 
 
 @pytest.mark.asyncio

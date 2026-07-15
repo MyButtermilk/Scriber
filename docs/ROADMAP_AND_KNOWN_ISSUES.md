@@ -1326,17 +1326,18 @@ Rust audio:
   fallback, adopted prewarm, no dropped frames, selected Insta360 endpoint hash
   `51112d9ccdd3a140`, and about 126 ms hotkey-to-first-audio. The sidecar now
   overlaps prewarm and active capture for adoption and exposes
-  `adoptedPrewarm.handoffMode=overlap-capture-start-before-prewarm-stop`. On
-  2026-06-29 this was tightened after a visible Always-On-Mic privacy-light
-  blink was still observed following a longer idle period: when adopted WASAPI
-  prebuffer blocks exist, the old `PrewarmSession` is moved into the capture
-  writer and is stopped only after the replacement WASAPI `IAudioClient.Start()`
-  succeeds. Early handoff failures stop the deferred session with explicit
-  reasons (`captureStartFailed` or
-  `captureWriterFinishedBeforePrewarmHandoff`) instead of silently dropping
-  idle prewarm. This is the current mitigation for privacy-light continuity and
-  minimum hotkey latency with `SCRIBER_MIC_ALWAYS_ON=1`; it is not yet a true
-  same-stream handoff.
+  `adoptedPrewarm.handoffMode=overlap-capture-start-before-prewarm-stop`. The
+  interim 2026-06-29 overlap avoided stopping prewarm before a replacement
+  client became live. On 2026-07-15 this was replaced by true in-place
+  promotion: after format and actual-endpoint validation, capture attaches its
+  frame pipe to the original running prewarm `IAudioClient`, drains snapshot and
+  bounded tail once as PREBUFFER, and continues Live frames without reopening
+  the microphone. The hardened five-cycle physical Windows app smoke measured
+  capture-start responses of `6.069–9.704 ms` and first-Live waits of
+  `4.333–10.411 ms`; all cycles reused the client, matched the endpoint,
+  confirmed stop and idle resume, and had zero sequence/protocol or
+  prebuffer-after-live errors. Mismatch and early handoff failures remain
+  fail-closed on a fresh client without replaying incompatible prebuffer audio.
   The hardware matrix now records native DeviceMonitor refresh evidence without
   forced per-poll refreshes. The aggregate readiness runner can now also start
   that guided physical matrix directly with `-RunMicrophoneHardwareMatrix` and

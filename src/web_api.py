@@ -3952,13 +3952,32 @@ class ScriberWebController:
             self._stop_mic_watchdog_if_idle()
         return True
 
-    async def _sync_idle_mic_prewarm_after_settings(self) -> bool:
+    async def _sync_idle_mic_prewarm_after_settings(
+        self,
+        *,
+        force_route_restart: bool = False,
+    ) -> bool:
         if not Config.MIC_ALWAYS_ON:
             self._cancel_post_recording_mic_prewarm_timer()
             await asyncio.to_thread(self._mic_prewarm.stop, reason="settings_disabled")
             self._stop_mic_watchdog_if_idle()
             return False
         active = False
+        if (
+            force_route_restart
+            and self._mic_prewarm.is_active
+            and not self._is_listening
+            and not self._is_stopping
+            and self._meeting_store.active() is None
+        ):
+            # A route change must rebuild the native idle stream immediately.
+            # Merely calling resume used to keep the old prewarm ID alive, so
+            # the hotkey path had to rediscover/reject it at user-interaction
+            # time.
+            await asyncio.to_thread(
+                self._mic_prewarm.stop,
+                reason="settings_route_changed",
+            )
         if self._is_listening or self._is_stopping or self._meeting_store.active() is not None:
             await asyncio.to_thread(self._mic_prewarm.pause_for_active_capture)
         else:
@@ -8283,27 +8302,49 @@ class ScriberWebController:
             if self._is_listening or self._is_stopping:
                 return None
 
+            # Trace from controller entry. The previous tracer was created only
+            # after provider validation, admission, overlay scheduling, and
+            # pipeline construction, so production logs hid a meaningful part
+            # of the user-visible Preparing interval.
+            session_id = uuid4().hex
+            self._start_hot_path_tracer(
+                session_id,
+                tauri_hotkey_marker=tauri_hotkey_marker,
+            )
+            self._mark_hot_path(session_id, "controller_accepted")
+
             # Publish the start generation before the first await.  Both the
             # durable Meeting-owner lookup and the cross-process audio lease
             # lookup can block in SQLite; an explicit Stop arriving in either
             # window must cancel this exact start instead of reporting that
             # Live Mic is already stopped while startup continues.
             start_generation = self._begin_live_mic_start_transition()
-            info = await _live_mic_audio_conflict(self)
+            try:
+                info = await _live_mic_audio_conflict(self)
+            except BaseException:
+                self._finish_live_mic_start_transition(start_generation)
+                self._clear_hot_path_tracer(session_id)
+                raise
             if self._live_mic_start_transition_cancelled(start_generation):
                 self._finish_live_mic_start_transition(start_generation)
+                self._clear_hot_path_tracer(session_id)
                 return None
             if info is not None:
                 self._finish_live_mic_start_transition(start_generation)
+                self._clear_hot_path_tracer(session_id)
                 await self.broadcast(self._provider_error_event_from_info(info))
                 return info
 
             if provider_replay_execution is not None:
                 if post_process or tauri_hotkey_marker is not None:
+                    self._finish_live_mic_start_transition(start_generation)
+                    self._clear_hot_path_tracer(session_id)
                     raise ProviderReplayConflict(
                         "provider replay cannot use hotkey or post-processing overrides"
                     )
                 if self._provider_replay_execution is not None:
+                    self._finish_live_mic_start_transition(start_generation)
+                    self._clear_hot_path_tracer(session_id)
                     raise ProviderReplayConflict("another provider replay is active")
 
             self._post_processing_session_ids.clear()
@@ -8336,11 +8377,15 @@ class ScriberWebController:
                     meta={"error": str(exc), "provider_error_code": info.code},
                 )
                 await self.broadcast(self._provider_error_event_from_info(info))
+                self._finish_live_mic_start_transition(start_generation)
+                self._clear_hot_path_tracer(session_id)
                 return info
+
+            self._mark_hot_path(session_id, "start_preflight_done")
 
             started_at = datetime.now()
             rec = TranscriptRecord(
-                id=uuid4().hex,
+                id=session_id,
                 title=f"Live Mic {started_at.strftime('%Y-%m-%d %H:%M')}",
                 date=_format_date_label(started_at),
                 duration="00:00",
@@ -8349,7 +8394,6 @@ class ScriberWebController:
                 language=Config.LANGUAGE or "auto",
             )
             rec.start()
-            session_id = rec.id
 
             # Show initializing overlay immediately for user feedback without
             # blocking microphone startup on shell IPC or WebView wakeup.
@@ -8362,6 +8406,7 @@ class ScriberWebController:
                 self._overlay_audio_enabled = False
                 self._hide_recording_overlay_async(session_id=session_id)
                 self._finish_live_mic_start_transition(start_generation)
+                self._clear_hot_path_tracer(session_id)
                 return None
 
             # Callback to transition overlay when mic is ready
@@ -8518,25 +8563,33 @@ class ScriberWebController:
                 if Config.MIC_ALWAYS_ON or self._mic_prewarm.is_active
                 else None
             )
+            recheck_audio_conflict = False
             try:
                 if mic_prewarm_manager is None and not pipeline_runtime_was_cold:
                     await self._pause_idle_mic_prewarm_for_capture()
+                    recheck_audio_conflict = True
 
                 if self._live_mic_start_transition_cancelled(start_generation):
                     raise _LiveMicStartAborted(
                         "Live microphone start was cancelled before audio admission"
                     )
 
-                # Prewarm shutdown can block in native code. Re-read both durable
-                # Meeting ownership and the process-local device-test claim after
-                # that await and directly before scheduling native Live Mic capture.
-                info = await _live_mic_audio_conflict(self)
+                # Only a real prewarm shutdown creates an ownership-changing
+                # wait that needs the legacy second read. Always-on adoption
+                # does not mutate ownership here, and the persistent audio CAS
+                # below remains the final cross-process admission authority.
+                info = (
+                    await _live_mic_audio_conflict(self)
+                    if recheck_audio_conflict
+                    else None
+                )
             except BaseException as admission_exc:
                 self._active_provider = None
                 self._overlay_audio_enabled = False
                 self._hide_recording_overlay_async(session_id=session_id)
                 self._resume_idle_mic_prewarm_after_capture()
                 self._finish_live_mic_start_transition(start_generation)
+                self._clear_hot_path_tracer(session_id)
                 if isinstance(admission_exc, _LiveMicStartAborted):
                     return None
                 raise
@@ -8547,6 +8600,7 @@ class ScriberWebController:
                 self._resume_idle_mic_prewarm_after_capture()
                 self._finish_live_mic_start_transition(start_generation)
                 await self.broadcast(self._provider_error_event_from_info(info))
+                self._clear_hot_path_tracer(session_id)
                 return info
 
             try:
@@ -8569,6 +8623,7 @@ class ScriberWebController:
                     retryable=True,
                 )
                 await self.broadcast(self._provider_error_event_from_info(info))
+                self._clear_hot_path_tracer(session_id)
                 return info
             except BaseException:
                 self._active_provider = None
@@ -8576,7 +8631,10 @@ class ScriberWebController:
                 self._hide_recording_overlay_async(session_id=session_id)
                 self._resume_idle_mic_prewarm_after_capture()
                 self._finish_live_mic_start_transition(start_generation)
+                self._clear_hot_path_tracer(session_id)
                 raise
+
+            self._mark_hot_path(session_id, "audio_claimed")
 
             cold_start_prewarm_started = False
             try:
@@ -8627,6 +8685,10 @@ class ScriberWebController:
                     on_injection_marker=on_injection_marker,
                     on_mic_ready=on_mic_ready,
                     on_last_audio_chunk_sent=on_last_audio_chunk_sent,
+                    on_audio_start_marker=lambda marker: self._mark_hot_path(
+                        session_id,
+                        marker,
+                    ),
                     on_error=on_pipeline_error,
                     mic_prewarm_manager=mic_prewarm_manager,
                     enable_speaker_diarization=False,
@@ -8693,6 +8755,7 @@ class ScriberWebController:
                         else None
                     ),
                 )
+                self._mark_hot_path(session_id, "pipeline_constructed")
             except BaseException as start_exc:
                 # Ownership is acquired before provider construction so a
                 # competing controller cannot leave an unstarted pipeline
@@ -8720,6 +8783,7 @@ class ScriberWebController:
                         )
                 self._resume_idle_mic_prewarm_after_capture()
                 self._finish_live_mic_start_transition(start_generation)
+                self._clear_hot_path_tracer(session_id)
                 if isinstance(start_exc, _LiveMicStartAborted):
                     return None
                 raise
@@ -8731,11 +8795,6 @@ class ScriberWebController:
             if post_process and Config.POST_PROCESSING_ENABLED:
                 self._post_processing_session_ids.add(session_id)
             self._clear_input_warning_state(session_id=session_id, broadcast=True)
-            self._start_hot_path_tracer(
-                session_id,
-                tauri_hotkey_marker=tauri_hotkey_marker,
-            )
-            self._mark_hot_path(session_id, "controller_accepted")
             self._set_recording_state(RecordingState.INITIALIZING, context="start_listening")
             self._emit_workflow_event(
                 message="Live mic session requested",
@@ -8755,6 +8814,7 @@ class ScriberWebController:
             )
             self._pipeline = pipeline
             self._provider_replay_execution = provider_replay_execution
+            self._mark_hot_path(session_id, "pipeline_task_scheduled")
             self._pipeline_task = asyncio.create_task(self._pipeline.start(), name="scriber_pipeline")
             self._pipeline_task.add_done_callback(lambda task: self._on_pipeline_done(task, session_id=session_id))
             self._is_listening = True
@@ -11109,6 +11169,8 @@ class ScriberWebController:
         old_post_processing_hotkey = Config.POST_PROCESSING_HOTKEY
         old_meeting_hotkey = Config.MEETING_HOTKEY
         old_mode = Config.MODE
+        old_mic_device = str(getattr(Config, "MIC_DEVICE", "default") or "default")
+        old_favorite_mic = str(getattr(Config, "FAVORITE_MIC", "") or "")
         validated_mode: str | None = None
         validated_service: str | None = None
         validated_soniox_mode: str | None = None
@@ -11119,6 +11181,7 @@ class ScriberWebController:
         validated_onnx_model: str | None = None
         validated_onnx_quantization: str | None = None
         mic_runtime_changed = False
+        mic_route_changed = False
 
         # Validate first to avoid partial updates on invalid payloads.
         if "mode" in payload and isinstance(payload["mode"], str):
@@ -11202,11 +11265,19 @@ class ScriberWebController:
             Config.set_mic_device(payload["micDevice"])
             invalidate_mic_device_resolution_cache()
             mic_runtime_changed = True
+            mic_route_changed = (
+                str(getattr(Config, "MIC_DEVICE", "default") or "default")
+                != old_mic_device
+            )
 
         if "favoriteMic" in payload and isinstance(payload["favoriteMic"], str):
             Config.set_favorite_mic(payload["favoriteMic"])
             invalidate_mic_device_resolution_cache()
             mic_runtime_changed = True
+            mic_route_changed = mic_route_changed or (
+                str(getattr(Config, "FAVORITE_MIC", "") or "")
+                != old_favorite_mic
+            )
 
         mic_always_on = _payload_bool(payload, "micAlwaysOn")
         if mic_always_on is not None:
@@ -11370,7 +11441,9 @@ class ScriberWebController:
             self.register_hotkeys()
 
         if mic_runtime_changed:
-            await self._sync_idle_mic_prewarm_after_settings()
+            await self._sync_idle_mic_prewarm_after_settings(
+                force_route_restart=mic_route_changed,
+            )
 
         await self.broadcast({"type": "settings_updated"})
         settings = await asyncio.to_thread(self.get_settings)

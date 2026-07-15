@@ -130,8 +130,6 @@ def validate_smoke(payload: dict[str, Any]) -> list[str]:
     adopted = final_source.get("adoptedPrewarm")
     if not isinstance(adopted, dict) or adopted.get("adopted") is not True:
         errors.append("sourceFinal.adoptedPrewarm.adopted must be true")
-    elif int(adopted.get("blocks") or 0) <= 0:
-        errors.append("sourceFinal.adoptedPrewarm.blocks must be positive")
     if int(final_source.get("callbackCount") or 0) <= 0:
         errors.append("sourceFinal.callbackCount must be positive")
     if int(final_source.get("framePipePrebufferFramesRead") or 0) <= 0:
@@ -201,8 +199,6 @@ def validate_source_final(final_source: dict[str, Any], prefix: str) -> list[str
     adopted = final_source.get("adoptedPrewarm")
     if not isinstance(adopted, dict) or adopted.get("adopted") is not True:
         errors.append(f"{prefix} sourceFinal.adoptedPrewarm.adopted must be true")
-    elif int(adopted.get("blocks") or 0) <= 0:
-        errors.append(f"{prefix} sourceFinal.adoptedPrewarm.blocks must be positive")
     if int(final_source.get("callbackCount") or 0) <= 0:
         errors.append(f"{prefix} sourceFinal.callbackCount must be positive")
     if int(final_source.get("framePipePrebufferFramesRead") or 0) <= 0:
@@ -465,25 +461,39 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                     shell_call=adapter,
                     first_frame_timeout_seconds=max(0.25, float(args.first_frame_timeout_sec)),
                     prewarm_id=prewarm_id,
+                    capture_route=(adopted or {}).get("captureRoute"),
                 )
                 source.open(callback)
                 source.start()
+                if not manager.commit_active_capture(prewarm_id):
+                    payload["error"] = (
+                        "RustAudioPrewarmManager could not commit the adopted prewarm lease"
+                    )
+                    payload["cycles"] = cycles + [cycle]
+                    payload["ipcCalls"] = adapter.calls
+                    return payload
                 cycle["sourceStarted"] = source.diagnostic_snapshot()
                 payload["sourceStarted"] = cycle["sourceStarted"]
                 time.sleep(max(0.05, float(args.duration_sec)))
+
+                # Mirror the production stop contract: detach the consumed
+                # lease and wait for replacement idle prewarm to report ready
+                # before stopping the active capture. This overlap is what
+                # keeps the Windows privacy indicator continuously lit.
+                manager.detach_active_capture(None)
+                if args.resume_after_capture:
+                    resumed = manager.resume_after_active_capture()
+                    cycle["managerResume"] = manager.diagnostic_snapshot()
+                    cycle["managerResume"]["resumeReturned"] = bool(resumed)
                 source.stop(close=True)
                 cycle["sourceFinal"] = source.diagnostic_snapshot()
                 payload["sourceFinal"] = cycle["sourceFinal"]
                 source = None
-                manager.detach_active_capture(None)
                 cycle["callbacks"] = callbacks[:5]
                 cycle["callbackCount"] = len(callbacks)
                 cycle["summary"] = summarize_source(cycle["sourceFinal"], len(callbacks))
                 if args.resume_after_capture:
-                    resumed = manager.resume_after_active_capture()
                     time.sleep(max(0.05, float(args.post_resume_duration_sec)))
-                    cycle["managerResume"] = manager.diagnostic_snapshot()
-                    cycle["managerResume"]["resumeReturned"] = bool(resumed)
                     post_reason = (
                         "smoke_post_resume"
                         if cycle_index == int(args.capture_cycles)

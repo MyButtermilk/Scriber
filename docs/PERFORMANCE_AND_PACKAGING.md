@@ -83,11 +83,29 @@ Live mic:
 - Rust/WASAPI sidecar capture is now the standard live-mic capture path.
 - Always-On-Mic uses the Rust prewarm manager and can prepend adopted sidecar
   prebuffer frames when recording starts.
+- A compatible warm lease now promotes the already-running WASAPI
+  `IAudioClient` in place instead of opening a replacement client on every
+  hotkey. A hardened five-cycle physical Windows smoke on 2026-07-15 measured
+  capture-start responses of `6.069–9.704 ms` and first live frame waits of
+  `4.333–10.411 ms`; every cycle reported
+  `handoffMode=in-place-iaudio-client-promotion`, client reuse, matching endpoint
+  identity, and zero sequence/protocol or prebuffer-after-live errors.
+- A valid Always-On-Mic lease carries the exact resolved PortAudio/native route
+  that opened that prewarm session. Warm capture reuses that route and skips the
+  former duplicate endpoint-inventory and compatibility passes; Rust still
+  verifies the endpoint actually opened before exposing prebuffer audio.
 - Live mic attaches Pipecat Silero VAD only when the Settings opt-in is enabled.
   With VAD off, HTTP-style providers receive one synthetic recording-wide turn
   and no Silero model is loaded or replenished.
-- Device-name/favorite resolution has a short TTL cache.
+- Device-name/favorite resolution uses a one-hour fallback TTL because native
+  endpoint events and Settings mutations invalidate it immediately. This keeps
+  normal pauses between dictations off the PortAudio enumeration path without
+  hiding a known route change.
 - Device refresh is deferred while a recording stream is active.
+- Hot-path tracing begins at controller entry and separates prewarm attach,
+  route selection, capture-start IPC, first live frame, mic-ready, and overlay
+  presentation. This keeps the user-visible `Preparing` interval attributable
+  instead of folding all audio startup into one opaque number.
 - Audio-level UI work is throttled to about 60 Hz.
 - Live waveform uses Canvas/RAF instead of per-frame React state.
 - The recording overlay is prepared hidden so the first hotkey has immediate
@@ -2573,24 +2591,31 @@ Implementation plan:
      failure with `Mikrofon (4- Insta360 Link)` and confirmed the fixed active
      capture uses the Rust/Tauri endpoint hash `51112d9ccdd3a140` instead of
      the stale Python-local hash.
-   - Implemented on 2026-06-11 and tightened on 2026-06-29: Rust prewarm
-     adoption overlaps idle prewarm with the next WASAPI capture instead of
-     stopping prewarm before the live stream exists. The 2026-06-29 decision is
-     that adopted WASAPI capture owns the old `PrewarmSession` until the capture
-     writer has written adopted prebuffer blocks and successfully called
-     `IAudioClient.Start()` on the replacement capture client. Only then may the
-     writer stop prewarm with reason `adoptedIntoCapture`. If pipe creation,
-     writer startup, or live-capture handoff fails first, the deferred session
-     must be stopped with an explicit failure reason such as
-     `captureStartFailed` or `captureWriterFinishedBeforePrewarmHandoff`.
-     This avoids the observed case where `SCRIBER_MIC_ALWAYS_ON=1` still showed
-     a brief Windows microphone privacy-light off/on blink after several idle
-     minutes because the parent command handler stopped prewarm before the new
-     WASAPI client was actually live. The design deliberately favors minimum
-     always-on hotkey latency and privacy-indicator continuity over releasing
-     the idle microphone between recordings. It is still an overlap of two
-     shared WASAPI clients for a short handoff window, not a same-stream
-     transfer.
+   - Implemented on 2026-06-11, tightened on 2026-06-29, and replaced with an
+     in-place promotion on 2026-07-15: a compatible adopted WASAPI capture now
+     keeps the original prewarm `IAudioClient` running. The worker first
+     validates capture format and the currently requested actual endpoint,
+     atomically drains the rolling snapshot, redirects concurrent blocks into a
+     bounded tail while the capture pipe connects, writes snapshot plus tail
+     exactly once as PREBUFFER, and then continues Live frames from that same
+     client. The promoted capture owns the worker through response-ACK rollback,
+     normal `captureStop`, and cleanup. Format/endpoint mismatch, worker
+     rejection, or pipe setup failure falls back to a replacement client and
+     never replays incompatible buffered audio. This removes the variable
+     replacement-`IAudioClient.Start()` cost from the normal Always-On hotkey
+     path while preserving endpoint safety and the Windows privacy indicator.
+   - Physical Windows evidence on 2026-07-15 after timeout, backpressure, and
+     cleanup hardening: the corrected app-level smoke ran five
+     prewarm/capture/stop/resume cycles. Capture-start responses were
+     `6.069–9.704 ms` and first Live frame waits were `4.333–10.411 ms`; every
+     cycle reported
+     `handoffMode=in-place-iaudio-client-promotion`, client reuse, matching
+     endpoint identity, positive PREBUFFER followed by Live frames, confirmed
+     stop, healthy replacement idle prewarm, and zero sequence/protocol or
+     prebuffer-after-live errors. Across all cycles it delivered 98 PREBUFFER
+     and 171 Live frames. Replacement idle prewarm became ready before active
+     capture stopped in `21.819–60.429 ms`, preserving the overlap-first privacy
+     indicator contract.
    - Provider-backed Rust-only evidence on 2026-06-11:
      `tmp\rust-promotion-evidence\rust-only-provider-after-overlap-handoff-provider-confirm-recording-hot-path-1.json`
      passed with Azure MAI provider transcript, `engine=rust-wasapi`,

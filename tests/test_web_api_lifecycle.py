@@ -1457,6 +1457,44 @@ async def test_update_settings_toggles_idle_mic_prewarm(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"micDevice": "Dock Mic, Windows WASAPI"},
+        {"favoriteMic": "Dock Mic, Windows WASAPI"},
+    ],
+)
+async def test_update_settings_route_change_restarts_active_idle_prewarm(
+    monkeypatch,
+    tmp_path,
+    payload,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(web_api.Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(web_api.Config, "FAVORITE_MIC", "", raising=False)
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", MagicMock())
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
+    _FakeRustMicPrewarmManager.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    await _wait_for_prewarm_task(ctl)
+    manager = _FakeRustMicPrewarmManager.instances[-1]
+    assert manager.active is True
+    assert manager.resume_calls == 1
+
+    await ctl.update_settings(payload)
+
+    assert manager.stop_calls == 1
+    assert manager.stop_reasons == ["settings_route_changed"]
+    assert manager.resume_calls == 2
+    assert manager.active is True
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_update_settings_disabling_vad_discards_unused_silero_warmup(
     monkeypatch,
     tmp_path,
@@ -2996,6 +3034,8 @@ async def test_start_listening_missing_provider_key_returns_error_without_histor
     assert ctl._current is None
     assert ctl._pipeline_task is None
     assert ctl._history == []
+    assert ctl._live_mic_start_in_progress_generation is None
+    assert ctl._hot_path_tracers == {}
     pipeline_mock.assert_not_called()
     show_initializing_mock.assert_not_called()
 
@@ -3443,6 +3483,34 @@ async def test_explicit_stop_during_initial_audio_conflict_lookup_cancels_start(
     assert ctl._pipeline is None
     assert ctl._is_listening is False
     assert ctl._session_id is None
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_live_start_trace_exists_before_first_audio_conflict_lookup():
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    observed_snapshot: dict = {}
+
+    async def inspect_trace_before_lookup(_controller):
+        with ctl._hot_path_lock:
+            assert len(ctl._hot_path_tracers) == 1
+            tracer = next(iter(ctl._hot_path_tracers.values()))
+            observed_snapshot.update(tracer.snapshot())
+        raise RuntimeError("stop after inspecting trace boundary")
+
+    with patch(
+        "src.web_api._live_mic_audio_conflict",
+        side_effect=inspect_trace_before_lookup,
+    ):
+        with pytest.raises(RuntimeError, match="trace boundary"):
+            await ctl.start_listening()
+
+    assert observed_snapshot["markerNames"] == [
+        "hotkey_received",
+        "controller_accepted",
+    ]
+    assert ctl._hot_path_tracers == {}
+    assert ctl._live_mic_start_in_progress_generation is None
     ctl.shutdown()
 
 

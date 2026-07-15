@@ -254,6 +254,59 @@ def test_rust_prototype_frame_source_honors_selection_device_preference(monkeypa
     assert snapshot["endpointSelection"]["usedDefaultEndpoint"] is True
 
 
+def test_rust_prototype_frame_source_reuses_leased_prewarm_route(monkeypatch):
+    commands: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("leased prewarm route must skip fresh device inventory")
+        ),
+    )
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, payload or {}))
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream-warm-route",
+                    "framePipe": "memory-pipe",
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                    "nativeEndpointIdHash": "warm-endpoint-hash",
+                },
+            }
+        raise AssertionError(command)
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=512,
+        device="17",
+        prewarm_id="prewarm-warm-route",
+        capture_route={
+            "devicePreference": "17",
+            "portAudioLabel": "Warm Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "warm-endpoint-hash",
+        },
+        shell_call=shell_call,
+    )
+
+    source.open(lambda *_args: None)
+
+    assert [command for command, _payload in commands] == ["audioCaptureStart"]
+    assert commands[0][1]["devicePreference"] == "17"
+    assert commands[0][1]["portAudioLabel"] == "Warm Mic, Windows WASAPI"
+    assert commands[0][1]["nativeEndpointIdHash"] == "warm-endpoint-hash"
+    assert commands[0][1]["prewarmId"] == "prewarm-warm-route"
+    snapshot = source.diagnostic_snapshot()
+    assert snapshot["captureRouteSource"] == "prewarmLease"
+    assert snapshot["deviceSelectionMs"] is not None
+
+
 @pytest.mark.parametrize(
     ("response_override", "error_match"),
     [
@@ -1563,6 +1616,91 @@ async def test_rust_prototype_does_not_adopt_python_prewarm_when_always_on(monke
     assert snapshot["engine"] == "rust-wasapi"
     assert snapshot["usingPrewarmStream"] is False
     assert snapshot["prewarmAdoptionSkippedReason"] == "engine:rust-wasapi"
+
+
+def test_microphone_input_passes_leased_route_to_rust_frame_source(monkeypatch):
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def frame_source_factory(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(microphone, "RustPrototypeFrameSource", frame_source_factory)
+    mic = microphone.MicrophoneInput(
+        sample_rate=16000,
+        channels=1,
+        block_size=512,
+        device="17",
+    )
+    mic._rust_prewarm_id = "prewarm-route-pass"
+    mic._rust_prewarm_adoption = {
+        "captureRoute": {
+            "devicePreference": "17",
+            "portAudioLabel": "Warm Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "warm-endpoint-hash",
+        }
+    }
+
+    assert mic._create_frame_source() is sentinel
+    assert captured["prewarm_id"] == "prewarm-route-pass"
+    assert captured["capture_route"] == mic._rust_prewarm_adoption["captureRoute"]
+
+
+@pytest.mark.asyncio
+async def test_microphone_input_resolves_current_device_when_warm_hint_turns_stale(
+    monkeypatch,
+):
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
+    fake_source = _FakeRustFrameSource()
+    fresh_resolution_calls: list[str] = []
+    opened_devices: list[str] = []
+
+    class ReplacedPrewarmManager:
+        engine = "rust-wasapi"
+
+        def __init__(self) -> None:
+            self.pause_calls = 0
+
+        def attach_active_capture(self, *_args, **_kwargs):
+            # Simulate DeviceMonitor replacing the route between the read-only
+            # pipeline hint and the authoritative attach boundary.
+            return None
+
+        def pause_for_active_capture(self) -> None:
+            self.pause_calls += 1
+
+    prewarm = ReplacedPrewarmManager()
+    mic = microphone.MicrophoneInput(
+        sample_rate=16000,
+        channels=1,
+        block_size=512,
+        device="7",
+        keep_alive=True,
+        prewarm_manager=prewarm,
+        fresh_device_resolver=lambda: (
+            fresh_resolution_calls.append("resolved") or "12"
+        ),
+    )
+    mic._create_audio_task = lambda: None
+
+    async def fake_drain_queue():
+        return None
+
+    mic._drain_queue = fake_drain_queue
+
+    def create_frame_source():
+        opened_devices.append(str(mic.device))
+        return fake_source
+
+    mic._create_frame_source = create_frame_source
+
+    await mic.start(microphone.StartFrame())
+    await mic.stop(microphone.EndFrame())
+
+    assert prewarm.pause_calls == 1
+    assert fresh_resolution_calls == ["resolved"]
+    assert opened_devices == ["12"]
 
 
 @pytest.mark.asyncio

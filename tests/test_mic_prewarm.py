@@ -143,7 +143,9 @@ def test_rust_audio_prewarm_manager_adopts_session_without_stopping(monkeypatch)
     monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
     monkeypatch.setattr(Config, "MIC_PREBUFFER_MS", 400, raising=False)
     monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
     commands: list[tuple[str, dict]] = []
+    selection_calls: list[str] = []
 
     def shell_call(command, payload=None, **_kwargs):
         commands.append((command, payload or {}))
@@ -168,17 +170,36 @@ def test_rust_audio_prewarm_manager_adopts_session_without_stopping(monkeypatch)
         raise AssertionError(command)
 
     manager = RustAudioPrewarmManager(shell_call=shell_call)
-    monkeypatch.setattr(
-        manager,
-        "_device_selection_payload",
-        lambda *_args, **_kwargs: {
+
+    def selection(device_preference, **_kwargs):
+        selection_calls.append(str(device_preference))
+        return {
             "devicePreference": "default",
             "portAudioLabel": "Default Mic, Windows WASAPI",
             "nativeEndpointIdHash": "endpoint-hash",
-        },
-    )
+        }
+
+    monkeypatch.setattr(manager, "_device_selection_payload", selection)
 
     assert manager.start_if_enabled() is True
+    assert selection_calls == ["default"]
+    assert manager.leased_capture_device_preference(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=160,
+    ) == "default"
+    prewarm_start_payload = next(
+        payload for command, payload in commands if command == "audioPrewarmStart"
+    )
+    assert "_configuredDevice" not in prewarm_start_payload
+    assert "_favoriteMic" not in prewarm_start_payload
+    monkeypatch.setattr(
+        manager,
+        "_device_selection_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("warm adoption must not resolve devices")
+        ),
+    )
     assert manager.is_active is True
     adopted = manager.attach_active_capture(
         None,
@@ -190,6 +211,13 @@ def test_rust_audio_prewarm_manager_adopts_session_without_stopping(monkeypatch)
 
     assert adopted is not None
     assert adopted["prewarmId"] == "prewarm-1"
+    assert adopted["captureRoute"] == {
+        "devicePreference": "default",
+        "portAudioLabel": "Default Mic, Windows WASAPI",
+        "nativeEndpointIdHash": "endpoint-hash",
+    }
+    assert adopted["routeGeneration"] == 1
+    assert selection_calls == ["default"]
     assert manager.is_active is True
     assert manager.commit_active_capture("prewarm-1") is True
     assert manager.is_active is False
@@ -206,6 +234,36 @@ def test_rust_audio_prewarm_manager_adopts_session_without_stopping(monkeypatch)
     assert "prewarm-1" not in str(snapshot)
 
 
+def test_rust_audio_prewarm_warm_route_hint_rejects_stale_config(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "Mic A", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "Favorite A", raising=False)
+    manager = RustAudioPrewarmManager(shell_call=lambda *_args, **_kwargs: {})
+    with manager._lock:
+        manager._prewarm_id = "prewarm-route-hint"
+        manager._stream_signature = {
+            "sample_rate": 16000,
+            "target_channels": 1,
+            "block_size": 160,
+            "device_preference": "7",
+            "configured_device": "Mic A",
+            "favorite_mic": "Favorite A",
+        }
+
+    assert manager.leased_capture_device_preference(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=160,
+    ) == "7"
+
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "Favorite B", raising=False)
+    assert manager.leased_capture_device_preference(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=160,
+    ) is None
+
+
 def test_rust_audio_prewarm_rejects_changed_device_then_restarts_with_new_identity(
     monkeypatch,
 ):
@@ -215,6 +273,7 @@ def test_rust_audio_prewarm_rejects_changed_device_then_restarts_with_new_identi
     monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
     monkeypatch.setattr(Config, "MIC_PREBUFFER_MS", 400, raising=False)
     monkeypatch.setattr(Config, "MIC_DEVICE", "Mic A", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
     commands: list[tuple[str, dict]] = []
     start_ids = iter(["prewarm-mic-a", "prewarm-mic-b"])
 
@@ -276,13 +335,13 @@ def test_rust_audio_prewarm_rejects_changed_device_then_restarts_with_new_identi
     assert rejected["activeCaptureAttached"] is False
     assert rejected["adoptionCount"] == 0
     assert rejected["adoptionDeviceIdentityRejectionCount"] == 1
-    assert rejected["lastAdoptionRejectionReason"] == "device_identity_mismatch"
+    assert rejected["lastAdoptionRejectionReason"] == "device_route_generation_mismatch"
     assert rejected["recentEvents"][-1] == {
         "event": "adoption_rejected",
-        "reason": "device_identity_mismatch",
+        "reason": "device_route_generation_mismatch",
         "prewarmIdHash": manager._hash_hint("prewarm-mic-a"),
         "storedNativeEndpointIdHash": "endpoint-hash-a",
-        "requestedNativeEndpointIdHash": "endpoint-hash-b",
+        "routeGeneration": 1,
         "ageSeconds": rejected["recentEvents"][-1]["ageSeconds"],
     }
     assert "prewarm-mic-a" not in str(rejected)
@@ -311,12 +370,13 @@ def test_rust_audio_prewarm_rejects_changed_device_then_restarts_with_new_identi
     assert manager.commit_active_capture("prewarm-mic-b") is True
 
 
-def test_rust_audio_prewarm_identity_uses_endpoint_hash_not_portaudio_index(monkeypatch):
+def test_rust_audio_prewarm_rejects_stale_portaudio_route_until_device_refresh(monkeypatch):
     monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
     monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
     monkeypatch.setattr(Config, "CHANNELS", 1, raising=False)
     monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
     monkeypatch.setattr(Config, "MIC_DEVICE", "Mic A", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
 
     def shell_call(command, _payload=None, **_kwargs):
         if command == "audioPrewarmStart":
@@ -342,9 +402,10 @@ def test_rust_audio_prewarm_identity_uses_endpoint_hash_not_portaudio_index(monk
         block_size=160,
         device="4",
     )
-    assert adopted is not None
-    assert adopted["prewarmId"] == "prewarm-index-shift"
-    assert manager.diagnostic_snapshot()["adoptionDeviceIdentityRejectionCount"] == 0
+    assert adopted is None
+    snapshot = manager.diagnostic_snapshot()
+    assert snapshot["adoptionDeviceIdentityRejectionCount"] == 1
+    assert snapshot["lastAdoptionRejectionReason"] == "device_route_generation_mismatch"
 
 
 def test_rust_audio_prewarm_rejects_hashless_non_default_identity():
@@ -371,40 +432,47 @@ def test_rust_audio_prewarm_rejects_hashless_non_default_identity():
     ) is True
 
 
-def test_rust_audio_prewarm_rejects_adoption_when_device_identity_is_unavailable(
+def test_rust_audio_prewarm_rejects_config_route_change_without_resolving_devices(
     monkeypatch,
 ):
     monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "Mic B", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
     manager = RustAudioPrewarmManager(shell_call=lambda *_args, **_kwargs: {})
     with manager._lock:
-        manager._prewarm_id = "prewarm-unresolved-device"
+        manager._prewarm_id = "prewarm-stale-route"
         manager._stream_signature = {
             "sample_rate": 16000,
             "target_channels": 1,
             "block_size": 160,
-            "device_preference": "default",
-            "native_endpoint_id_hash": "",
+            "device_preference": "1",
+            "native_endpoint_id_hash": "endpoint-a",
+            "configured_device": "Mic A",
+            "favorite_mic": "",
+            "route_generation": 4,
         }
 
-    def unavailable(*_args, **_kwargs):
-        raise RuntimeError("inventory unavailable")
-
-    monkeypatch.setattr(manager, "_device_selection_payload", unavailable)
+    monkeypatch.setattr(
+        manager,
+        "_device_selection_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("route mismatch must not resolve devices")
+        ),
+    )
     assert manager.attach_active_capture(
         None,
         sample_rate=16000,
         target_channels=1,
         block_size=160,
-        device="default",
+        device="1",
     ) is None
 
     snapshot = manager.diagnostic_snapshot()
     assert snapshot["activeCaptureAttached"] is False
     assert snapshot["adoptionCount"] == 0
     assert snapshot["adoptionDeviceIdentityRejectionCount"] == 1
-    assert snapshot["lastAdoptionRejectionReason"] == "device_identity_unavailable"
-    assert "inventory unavailable" not in str(snapshot)
-    assert "prewarm-unresolved-device" not in str(snapshot)
+    assert snapshot["lastAdoptionRejectionReason"] == "device_route_generation_mismatch"
+    assert "prewarm-stale-route" not in str(snapshot)
 
 
 def test_rust_audio_prewarm_manager_adopts_temporary_session_without_always_on(monkeypatch):
@@ -471,6 +539,8 @@ def test_rust_audio_prewarm_manager_rolls_back_failed_capture_without_losing_ses
     monkeypatch,
 ):
     monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
     commands: list[tuple[str, dict]] = []
 
     def shell_call(command, payload=None, **_kwargs):

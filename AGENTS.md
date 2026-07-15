@@ -475,11 +475,34 @@ Packaging and scripts:
   empty, do not stop the idle `PrewarmSession` in the parent `captureStart`
   handler. `begin_handoff` atomically drains the rolling snapshot and redirects
   later blocks into a bounded tail; overflow must fail capture visibly. Before
-  writing any adopted block, compare the actual endpoint hash opened by prewarm
-  with the replacement WASAPI client's actual endpoint hash so a Windows
-  default-device change cannot mix microphone A and B. Start the replacement
-  `IAudioClient`, stop/join the old worker, and drain that tail exactly once
-  before new live frames. Python must likewise
+  writing any adopted block, capture start must resolve the currently requested
+  endpoint on a separate, single-flight COM worker while the prewarm audio worker keeps
+  draining, then compare its actual endpoint hash with the endpoint already
+  opened so a Windows default-device change cannot mix microphone A and B. When
+  capture kind, sample format, block size, and actual endpoint still match,
+  promote that same running `IAudioClient` in place:
+  attach the new frame pipe, keep later blocks in the bounded handoff tail until
+  the pipe connects, drain snapshot plus tail exactly once as PREBUFFER, then
+  write live frames from the same client without stopping or activating another
+  client. Promotion ownership uses one atomic
+  `PENDING -> ACCEPTED/CANCELLED` transition before `begin_handoff`: a timeout
+  that wins cancellation may use the existing overlap/snapshot fallback, while
+  an accepted promotion must never silently start a second capture. The frame
+  pipe handle remains RAII-owned across the command queue, nonblocking writes
+  retry partial/zero/transient results only inside fixed deadlines, and the
+  promoted stop path must neither call unbounded `FlushFileBuffers` nor wait
+  indefinitely for its worker. The promoted `CaptureSession` owns the original
+  prewarm worker so response-delivery/ACK rollback and `captureStop` both request
+  stop and join only within the bounded cleanup window. A confirmed format or
+  endpoint incompatibility starts the replacement client while the old client
+  remains active, then stops the old client without replaying incompatible
+  audio. Transient preflight or pipe-setup failures reuse the existing bounded
+  snapshot/tail overlap fallback instead of first stopping prewarm. A timed-out
+  resolver keeps the single-flight lease until its detached worker really exits,
+  so repeated capture starts cannot accumulate COM threads. The overlap fallback
+  must bound its old-worker join, finalize the tail only after that worker exited,
+  fail closed on timeout, and close its frame pipe without `FlushFileBuffers`.
+  Python must likewise
   keep adoption provisional until its frame reader has successfully processed
   the first non-prebuffer live frame. Prebuffer frames remain durable and are
   delivered downstream, but they must not fire `on_ready` or commit the prewarm
@@ -488,7 +511,15 @@ Packaging and scripts:
   or `captureWriterFinishedBeforePrewarmHandoff`. This keeps
   `SCRIBER_MIC_ALWAYS_ON=1` optimized for minimum hotkey latency and prevents a
   visible Windows microphone privacy-indicator off/on blink between idle
-  prewarm and live capture. The reverse stop handoff is equally overlap-first:
+  prewarm and live capture. Resolve the PortAudio/native capture route once
+  when idle prewarm starts and bind it to that exact prewarm ID plus the current
+  microphone/favorite configuration. A warm hotkey may reuse this immutable
+  requested route and must not repeat endpoint inventory or PortAudio
+  compatibility probes; Rust's actual opened-endpoint comparison remains the
+  fail-closed authority. Native device events and microphone/favorite Settings
+  changes must invalidate the resolution cache and rebuild idle prewarm before
+  the next hotkey. A capture without a valid leased route keeps the normal
+  fresh-resolution path. The reverse stop handoff is equally overlap-first:
   a replacement prewarm must successfully call `IAudioClient.Start()` and
   report ready before Tauri drains the active capture sidecar. A failed prewarm
   start leaves capture running until normal cleanup; never close capture first
