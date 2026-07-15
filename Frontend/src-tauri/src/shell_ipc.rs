@@ -1389,7 +1389,11 @@ fn parse_audio_capture_start_options(
         device_preference: bounded_string(payload, "devicePreference", "default", 96),
         port_audio_label: bounded_string(payload, "portAudioLabel", "", 160),
         native_endpoint_id_hash: bounded_string(payload, "nativeEndpointIdHash", "", 64),
-        prebuffer_ms: optional_u64(payload, "prebufferMs", 0, 2_000) as u32,
+        // Cold process startup can spend several seconds importing the Python
+        // transcription runtime. Keep this transport boundary aligned with the
+        // audio sidecar's 6-second rolling-buffer contract so installed builds
+        // do not silently truncate the capture-first prebuffer to two seconds.
+        prebuffer_ms: optional_u64(payload, "prebufferMs", 0, 6_000) as u32,
         prewarm_id: bounded_string(payload, "prewarmId", "", 96),
     })
 }
@@ -3993,7 +3997,7 @@ mod tests {
         assert_eq!(options.sample_rate, 192_000);
         assert_eq!(options.channels, 16);
         assert_eq!(options.block_size, 16_384);
-        assert_eq!(options.prebuffer_ms, 2_000);
+        assert_eq!(options.prebuffer_ms, 6_000);
         assert_eq!(options.native_endpoint_id_hash, "");
         assert!(options
             .device_preference

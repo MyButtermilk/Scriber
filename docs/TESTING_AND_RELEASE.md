@@ -291,6 +291,19 @@ unchanged staged directory: Doctor and the scorer reject missing manifests,
 source changes, or a mismatched desktop, backend, or audio sidecar, even when
 the stale component reports the same semantic version.
 
+AutoResearch B7 provider-tail evidence must use the installed app. The endpoint
+probe launches one isolated Tauri runtime per provider with a UUID-gated replay
+capability, prepares a fixed product-owned fixture, binds `arm` to the focused
+TextReceiver PID plus process creation time, and polls status until the normal
+Live Mic pipeline completes. Microsoft traverses the real Azure-MAI adapter and
+parser through a local one-shot raw transport; Soniox traverses Pipecat 1.5's
+real `stt-rt-v5` WebSocket parser through a loopback server. Eligible latency is
+the installed backend's provider-bound Windows-QPC marker to the external
+observer's QPC marker. Fixture hash/length, run/sample/session/process
+generation, target generation, marker source/order, clipboard/paste callback,
+and cleanup all fail closed. Source-level `TextInjector` imports or fabricated
+provider markers are not valid evidence.
+
 Default real YouTube smoke URL:
 
 ```text

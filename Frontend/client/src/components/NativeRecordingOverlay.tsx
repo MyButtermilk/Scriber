@@ -4,13 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Square } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
-  apiUrl,
   isTauriRuntime,
   loadBackendBaseUrlFromTauri,
   setTrayRecordingState,
   wsUrl,
 } from "@/lib/backend";
-import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
+import { requestLiveMicStop } from "@/lib/live-mic-control";
 import {
   DEFAULT_VISUALIZER_BAR_COUNT,
   loadVisualizerBarCount,
@@ -437,10 +436,7 @@ export default function NativeRecordingOverlay() {
 
   const handleStop = useCallback(async () => {
     try {
-      await fetchWithTimeout(apiUrl("/api/live-mic/stop"), {
-        method: "POST",
-        credentials: "include",
-      }, 15_000);
+      await requestLiveMicStop();
     } catch {
       // The backend state stream will hide the overlay if stop already won.
     }

@@ -1010,7 +1010,7 @@ from src.audio_devices import (
     resolve_input_microphone_device,
 )
 from src.device_monitor import get_device_guard_lock
-from src.injector import TextInjector
+from src.injector import InjectionTargetGuard, TextInjector
 from src.microphone import MicrophoneInput
 from src.audio_file_input import FfmpegAudioFileInput
 from src.mistral_stt import (
@@ -1500,6 +1500,14 @@ class ScriberPipeline:
         text_injection_enabled: bool = True,
         execution_route: Mapping[str, Any] | None = None,
         direct_file_expected_duration_seconds: float | None = None,
+        injection_target_guard: InjectionTargetGuard | None = None,
+        injection_method_override: str | None = None,
+        azure_mai_raw_transport=None,
+        on_provider_response_complete: Optional[Callable[[], None]] = None,
+        soniox_replay_url: str | None = None,
+        soniox_replay_final_message_sha256: str | None = None,
+        on_soniox_last_final_token_received: Optional[Callable[[], None]] = None,
+        soniox_replay_model: str | None = None,
     ):
         self.service_name = service_name
         self.on_status_change = on_status_change
@@ -1521,6 +1529,44 @@ class ScriberPipeline:
             else bool(direct_file_speaker_diarization)
         )
         self.text_injection_enabled = bool(text_injection_enabled)
+        self.injection_target_guard = injection_target_guard
+        self.injection_method_override = (
+            str(injection_method_override or "").strip().lower() or None
+        )
+        self.azure_mai_raw_transport = azure_mai_raw_transport
+        self.on_provider_response_complete = on_provider_response_complete
+        self.soniox_replay_url = str(soniox_replay_url or "").strip() or None
+        self.soniox_replay_final_message_sha256 = (
+            str(soniox_replay_final_message_sha256 or "").strip().lower() or None
+        )
+        self.on_soniox_last_final_token_received = on_soniox_last_final_token_received
+        self.soniox_replay_model = str(soniox_replay_model or "").strip() or None
+        replay_parts = (
+            self.soniox_replay_url,
+            self.soniox_replay_final_message_sha256,
+            self.on_soniox_last_final_token_received,
+            self.soniox_replay_model,
+        )
+        if any(part is not None for part in replay_parts):
+            if not all(part is not None for part in replay_parts):
+                raise ValueError("Soniox replay configuration must be complete")
+            if not re.fullmatch(
+                r"ws://127\.0\.0\.1:[1-9][0-9]{0,4}/transcribe-websocket",
+                self.soniox_replay_url or "",
+            ):
+                raise ValueError("Soniox replay URL must be an IPv4 loopback endpoint")
+            port_text = (self.soniox_replay_url or "").split(":", 2)[-1].split("/", 1)[0]
+            if int(port_text) > 65535:
+                raise ValueError("Soniox replay URL port is invalid")
+            if not re.fullmatch(
+                r"[0-9a-f]{64}",
+                self.soniox_replay_final_message_sha256 or "",
+            ):
+                raise ValueError("Soniox replay final-message digest is invalid")
+            if not callable(self.on_soniox_last_final_token_received):
+                raise ValueError("Soniox replay receive callback is required")
+            if self.soniox_replay_model != "stt-rt-v5":
+                raise ValueError("Soniox replay model must be stt-rt-v5")
         # File/YouTube/meeting jobs pass a persisted immutable route here.  Live
         # dictation intentionally keeps ``None`` and continues to read current
         # settings at session start.
@@ -1944,8 +1990,14 @@ class ScriberPipeline:
             return Config.get_api_key(service)
 
         if self.service_name in ("soniox", "soniox_async"):
-            if not _get_api_key("soniox"): raise ValueError("Soniox API Key is missing.")
-            use_async = self.service_name == "soniox_async" or Config.SONIOX_MODE == "async"
+            soniox_api_key = _get_api_key("soniox")
+            if not soniox_api_key and self.soniox_replay_url is None:
+                raise ValueError("Soniox API Key is missing.")
+            use_async = (
+                False
+                if self.soniox_replay_url is not None
+                else self.service_name == "soniox_async" or Config.SONIOX_MODE == "async"
+            )
             if use_async:
                 logger.info("Using Soniox async transcription mode")
                 return SonioxAsyncProcessor(
@@ -1961,26 +2013,51 @@ class ScriberPipeline:
             settings_cls = getattr(soniox_service_cls, "Settings", None)
             if settings_cls is None:
                 raise RuntimeError("Soniox realtime transcription requires Pipecat 1.5.0.")
-            lang_hint = _selected_language()
-            rt_model = Config.SONIOX_RT_MODEL
+            lang_hint = Language.EN if self.soniox_replay_url is not None else _selected_language()
+            rt_model = self.soniox_replay_model or Config.SONIOX_RT_MODEL
             settings_candidates: dict[str, Any] = {
                 "model": rt_model,
                 "language_hints": [lang_hint] if lang_hint else None,
                 "enable_speaker_diarization": self.enable_speaker_diarization if for_file else False,
             }
-            if Config.CUSTOM_VOCAB and soniox_context_cls:
-                terms = [t.strip() for t in Config.CUSTOM_VOCAB.split(",") if t.strip()]
+            soniox_custom_vocab = (
+                "" if self.soniox_replay_url is not None else Config.CUSTOM_VOCAB
+            )
+            if soniox_custom_vocab and soniox_context_cls:
+                terms = [t.strip() for t in soniox_custom_vocab.split(",") if t.strip()]
                 if terms:
                     logger.info(f"Applying custom vocabulary: {terms}")
                     settings_candidates["context"] = soniox_context_cls(terms=terms)
             settings = settings_cls(**_filter_supported_kwargs(settings_cls, settings_candidates))
             logger.info("Creating SonioxSTTService with Pipecat 1.5 settings and forced turn endpointing")
-            return soniox_service_cls(
-                api_key=_get_api_key("soniox"),
-                sample_rate=Config.SAMPLE_RATE,
-                settings=settings,
-                vad_force_turn_endpoint=True,
-            )
+            service_kwargs: dict[str, Any] = {
+                "api_key": (
+                    "local-replay"
+                    if self.soniox_replay_url is not None
+                    else soniox_api_key
+                ),
+                "sample_rate": Config.SAMPLE_RATE,
+                "settings": settings,
+                "vad_force_turn_endpoint": True,
+            }
+            if self.soniox_replay_url is not None:
+                service_kwargs["url"] = self.soniox_replay_url
+            service = soniox_service_cls(**service_kwargs)
+            if self.soniox_replay_url is not None:
+                from src.runtime.provider_replay import (
+                    install_soniox_replay_receive_observer,
+                )
+
+                install_soniox_replay_receive_observer(
+                    service,
+                    final_message_sha256=(
+                        self.soniox_replay_final_message_sha256 or ""
+                    ),
+                    on_last_final_token_received=(
+                        self.on_soniox_last_final_token_received
+                    ),
+                )
+            return service
 
         elif self.service_name in ("mistral", "mistral_async"):
             if not _get_api_key("mistral"):
@@ -2221,17 +2298,19 @@ class ScriberPipeline:
         
         elif self.service_name == "azure_mai":
             api_key = _get_api_key("azure_mai")
-            if not api_key:
+            if not api_key and self.azure_mai_raw_transport is None:
                 raise ValueError("Azure MAI Speech Key is missing.")
             logger.info("Using Microsoft MAI Transcribe Pipecat STT service")
             return AzureMaiTranscribeSTTService(
-                speech_key=api_key,
+                speech_key=api_key or "local-replay",
                 region=validate_azure_mai_region(getattr(Config, "AZURE_MAI_REGION", None)),
                 language=self._execution_language(),
                 model=self._execution_model(Config.AZURE_MAI_MODEL),
                 custom_vocab=self._execution_custom_vocab(),
                 session=session,
                 on_progress=self.on_progress,
+                raw_transport=self.azure_mai_raw_transport,
+                on_response_complete=self.on_provider_response_complete,
             )
         
         elif self.service_name == "gladia":
@@ -2423,7 +2502,10 @@ class ScriberPipeline:
                 # 1. SegmentedSTTService silence-gating and optional mid-recording segmentation.
                 # 2. Async live providers so silent recordings can be ended locally.
                 # 3. Soniox SmartTurn, which consumes explicit Pipecat VAD boundaries.
-                uses_smart_turn = _live_service_uses_smart_turn(self.service_name)
+                uses_smart_turn = (
+                    self.soniox_replay_url is not None
+                    or _live_service_uses_smart_turn(self.service_name)
+                )
                 needs_vad = (
                     isinstance(stt_service, SegmentedSTTService)
                     or _live_service_needs_local_vad(self.service_name)
@@ -2475,18 +2557,28 @@ class ScriberPipeline:
                     on_last_audio_chunk_sent=self.on_last_audio_chunk_sent,
                 )
 
-                inject_immediately = injects_immediately_in_live_mode(self.service_name) and not (
-                    self.service_name == "soniox" and Config.SONIOX_MODE == "async"
+                inject_immediately = (
+                    True
+                    if self.soniox_replay_url is not None
+                    else injects_immediately_in_live_mode(self.service_name) and not (
+                        self.service_name == "soniox" and Config.SONIOX_MODE == "async"
+                    )
                 )
                 text_injector = TextInjector(
                     inject_immediately=inject_immediately,
                     enabled=self.text_injection_enabled,
                     on_injected=self.on_text_injected,
                     on_injection_marker=self.on_injection_marker,
+                    target_guard=self.injection_target_guard,
+                    injection_method=self.injection_method_override,
                 )
                 self.text_injector = text_injector
                 needs_soniox_realtime_final_signal = (
-                    self.service_name == "soniox" and Config.SONIOX_MODE != "async"
+                    self.service_name == "soniox"
+                    and (
+                        self.soniox_replay_url is not None
+                        or Config.SONIOX_MODE != "async"
+                    )
                 )
                 transcript_cb = (
                     TranscriptionCallbackProcessor(
@@ -2547,6 +2639,11 @@ class ScriberPipeline:
                 self.task = PipelineTask(
                     self.pipeline,
                     params=PipelineParams(allow_interruptions=True),
+                    # Scriber does not expose RTVI or Pipecat turn-tracking. Keep
+                    # those framework processors out of every live task so they
+                    # cannot add per-frame work or retain unused conversation state.
+                    enable_rtvi=False,
+                    enable_turn_tracking=False,
                     check_dangling_tasks=False,  # suppress false-positive dangling task warnings (e.g., Soniox keepalive)
                 )
 
@@ -2656,6 +2753,8 @@ class ScriberPipeline:
                 self.task = PipelineTask(
                     self.pipeline,
                     params=PipelineParams(allow_interruptions=False),
+                    enable_rtvi=False,
+                    enable_turn_tracking=False,
                     check_dangling_tasks=False,
                 )
                 self.runner = PipelineRunner(handle_sigint=False, handle_sigterm=False)
@@ -3252,9 +3351,17 @@ class ScriberPipeline:
 
         is_soniox_async = (
             self.service_name == "soniox_async"
-            or (self.service_name == "soniox" and Config.SONIOX_MODE == "async")
+            or (
+                self.service_name == "soniox"
+                and self.soniox_replay_url is None
+                and Config.SONIOX_MODE == "async"
+            )
         )
-        is_async_finalization = _live_service_uses_async_finalization(self.service_name)
+        is_async_finalization = (
+            False
+            if self.soniox_replay_url is not None
+            else _live_service_uses_async_finalization(self.service_name)
+        )
         if self.on_status_change:
             self.on_status_change("Transcribing..." if is_async_finalization else "Stopping...")
 

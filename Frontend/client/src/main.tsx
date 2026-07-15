@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import "@fontsource/inter/400.css";
 import "@carrot-kpi/switzer-font/latin-400.css";
 import "./index.css";
+import { startFrontendLongTaskObserver } from "./lib/frontend-performance";
 
 // Ignore ResizeObserver loop error - this is a known harmless error that occurs
 // with Radix UI components when elements resize during animations
@@ -27,6 +28,8 @@ if (isTrayWindow) {
         root.render(<NativeRecordingOverlay />);
     });
 } else {
+    const stopLongTaskObserver = startFrontendLongTaskObserver();
+    window.addEventListener("beforeunload", stopLongTaskObserver, { once: true });
     void import("./App").then(({ default: App }) => {
         root.render(<App />);
     });

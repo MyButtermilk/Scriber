@@ -11,6 +11,30 @@ class HotPathTracer:
         self.session_id = session_id
         self._clock_ns = clock_ns or time.perf_counter_ns
         self._marks: dict[str, int] = {}
+        self._tauri_hotkey_received: dict[str, Any] | None = None
+
+    def bind_tauri_hotkey_received(self, marker: dict[str, Any]) -> None:
+        """Seed the trace from one prevalidated, request-bound Tauri callback."""
+
+        timestamp_ns = int(marker["timestampNs"])
+        self.mark("hotkey_received", timestamp_ns=timestamp_ns)
+        self.mark("tauri_hotkey_received", timestamp_ns=timestamp_ns)
+        # Preserve only the bounded timing/identity contract. No request body,
+        # path, token, hotkey chord, transcript, or window data is retained.
+        self._tauri_hotkey_received = {
+            field: marker[field]
+            for field in (
+                "schemaVersion",
+                "marker",
+                "source",
+                "runId",
+                "sampleId",
+                "processId",
+                "qpcTicks",
+                "qpcFrequency",
+                "timestampNs",
+            )
+        }
 
     def mark(self, name: str, *, timestamp_ns: int | None = None) -> None:
         if not name:
@@ -48,10 +72,13 @@ class HotPathTracer:
             if start_ts is not None:
                 marker["sinceHotkeyMs"] = (timestamp - start_ts) / 1_000_000
             markers.append(marker)
-        return {
+        snapshot = {
             "sessionId": self.session_id,
             "markerNames": [name for name, _timestamp in ordered],
             "markers": markers,
             "segments": self.report(),
         }
+        if self._tauri_hotkey_received is not None:
+            snapshot["tauriHotkeyReceived"] = dict(self._tauri_hotkey_received)
+        return snapshot
 

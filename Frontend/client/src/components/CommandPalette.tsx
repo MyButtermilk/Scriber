@@ -26,6 +26,7 @@ import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
 import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
+import { requestLiveMicStop } from "@/lib/live-mic-control";
 import type { SettingsResponse } from "@/lib/api-types";
 
 interface CommandPaletteProps {
@@ -109,11 +110,12 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   // Toggle recording
   const handleToggleRecording = async () => {
     try {
-      const endpoint = isRecording ? "/api/live-mic/stop" : "/api/live-mic/start";
-      const res = await fetchWithTimeout(apiUrl(endpoint), {
-        method: "POST",
-        credentials: "include",
-      }, 15_000);
+      const res = isRecording
+        ? await requestLiveMicStop()
+        : await fetchWithTimeout(apiUrl("/api/live-mic/start"), {
+            method: "POST",
+            credentials: "include",
+          }, 15_000);
       if (!res.ok) {
         const text = await res.text();
         let payload: unknown = null;

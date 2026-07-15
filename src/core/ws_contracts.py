@@ -142,6 +142,19 @@ def history_updated_event(
     return version_event_payload(payload)
 
 
+def frontend_performance_flush_event(
+    source_instance_id: str,
+    heartbeat_sequence: int,
+) -> dict[str, Any]:
+    return version_event_payload(
+        {
+            "type": "frontend_performance_flush",
+            "sourceInstanceId": str(source_instance_id),
+            "heartbeatSequence": max(1, int(heartbeat_sequence)),
+        }
+    )
+
+
 def transcribing_event(*, session_id: str | None = None) -> dict[str, Any]:
     return _optional_session({"type": "transcribing"}, session_id)
 
@@ -401,6 +414,17 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
         for field in ("transcriptId", "transcriptType", "status", "step", "summaryStatus", "updatedAt", "reason"):
             if field in payload and not isinstance(payload.get(field), str):
                 raise WSContractError(f"history_updated event requires string '{field}' when present")
+    elif event_type == "frontend_performance_flush":
+        _require_string(payload, "sourceInstanceId", event_type)
+        heartbeat_sequence = payload.get("heartbeatSequence")
+        if (
+            not isinstance(heartbeat_sequence, int)
+            or isinstance(heartbeat_sequence, bool)
+            or heartbeat_sequence < 1
+        ):
+            raise WSContractError(
+                "frontend_performance_flush event requires positive int 'heartbeatSequence'"
+            )
     elif event_type in {"settings_updated", "transcribing"}:
         pass
     elif event_type in {"session_started", "session_finished"}:

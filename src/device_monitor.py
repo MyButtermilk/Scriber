@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from importlib import import_module
+from importlib.util import find_spec
 import sys
 import re
 import threading
@@ -10,13 +12,55 @@ from loguru import logger
 
 from src.audio_devices import get_input_hostapi_priorities, normalize_device_name
 
-try:
-    import sounddevice as sd  # type: ignore
 
-    HAS_SOUNDDEVICE = True
+# Importing sounddevice initializes CFFI/PortAudio and used to add roughly half
+# a second to every backend process before DeviceMonitor had even started its
+# worker. Keep the historical public globals so tests and downstream embedders
+# can still monkeypatch ``sd`` and ``HAS_SOUNDDEVICE``; only the real module is
+# resolved lazily, once, when the monitor worker actually enumerates devices.
+try:
+    HAS_SOUNDDEVICE = find_spec("sounddevice") is not None
 except Exception:
-    sd = None  # type: ignore[assignment]
-    HAS_SOUNDDEVICE = False
+    # A frozen importer may not implement find_spec completely. Let the first
+    # real use attempt the guarded import and fail to the Default-only list.
+    HAS_SOUNDDEVICE = True
+sd: Any | None = None
+_SOUNDDEVICE_IMPORT_LOCK = threading.Lock()
+_SOUNDDEVICE_IMPORT_ATTEMPTED = False
+
+
+def _load_sounddevice_once() -> Any | None:
+    """Return sounddevice without loading it on the backend import path.
+
+    ``sd``/``HAS_SOUNDDEVICE`` remain intentional monkeypatch seams. A supplied
+    fake module wins without touching importlib, while setting availability to
+    false retains the previous fail-safe Default-only behavior.
+    """
+
+    global HAS_SOUNDDEVICE, _SOUNDDEVICE_IMPORT_ATTEMPTED, sd
+
+    current = sd
+    if current is not None:
+        return current if HAS_SOUNDDEVICE else None
+    if not HAS_SOUNDDEVICE:
+        return None
+
+    with _SOUNDDEVICE_IMPORT_LOCK:
+        current = sd
+        if current is not None:
+            return current if HAS_SOUNDDEVICE else None
+        if not HAS_SOUNDDEVICE or _SOUNDDEVICE_IMPORT_ATTEMPTED:
+            return None
+        _SOUNDDEVICE_IMPORT_ATTEMPTED = True
+        try:
+            current = import_module("sounddevice")
+        except Exception:
+            HAS_SOUNDDEVICE = False
+            sd = None
+            return None
+        sd = current
+        HAS_SOUNDDEVICE = True
+        return current
 
 
 _DEVICE_GUARD_LOCK = threading.RLock()
@@ -109,11 +153,16 @@ def _endpoint_id_flow_hint(device_id) -> int | None:
     return _to_int(match.group(1), -1)
 
 
-def _default_input_index() -> int | None:
-    if not HAS_SOUNDDEVICE:
+def _default_input_index(sounddevice_module: Any | None = None) -> int | None:
+    sounddevice = (
+        _load_sounddevice_once()
+        if sounddevice_module is None
+        else sounddevice_module
+    )
+    if sounddevice is None:
         return None
     try:
-        dev = sd.default.device
+        dev = sounddevice.default.device
         if isinstance(dev, (tuple, list)) and dev:
             idx = int(dev[0])
         else:
@@ -185,20 +234,21 @@ def _enumerate_microphones(
     sample_rate: int = 16000,
     channels: int = 1,
 ) -> list[dict[str, str]]:
-    if not HAS_SOUNDDEVICE:
-        return [{"deviceId": "default", "label": "Default"}]
-
     result: list[dict[str, str]] = [{"deviceId": "default", "label": "Default"}]
+    sounddevice = _load_sounddevice_once()
+    if sounddevice is None:
+        return result
+
     with get_device_guard_lock():
         try:
-            all_devices = list(sd.query_devices())
+            all_devices = list(sounddevice.query_devices())
         except Exception as exc:
             logger.debug(f"[DeviceMonitor] query_devices failed: {exc}")
             return result
 
         try:
             host_priorities = get_input_hostapi_priorities(
-                sd,
+                sounddevice,
                 all_devices,
                 sample_rate=sample_rate,
                 channels=channels,
@@ -206,7 +256,7 @@ def _enumerate_microphones(
         except Exception:
             host_priorities = []
 
-        default_idx = _default_input_index()
+        default_idx = _default_input_index(sounddevice)
         default_norm = ""
         if default_idx is not None and 0 <= default_idx < len(all_devices):
             default_norm = normalize_device_name(str(all_devices[default_idx].get("name", "")))
@@ -251,11 +301,12 @@ def _enumerate_microphones(
 
 def _refresh_portaudio_cache() -> tuple[bool, bool]:
     """Return (did_refresh, deferred_due_to_active_stream)."""
-    if not HAS_SOUNDDEVICE:
+    sounddevice = _load_sounddevice_once()
+    if sounddevice is None:
         return False, False
 
-    terminate = getattr(sd, "_terminate", None)
-    initialize = getattr(sd, "_initialize", None)
+    terminate = getattr(sounddevice, "_terminate", None)
+    initialize = getattr(sounddevice, "_initialize", None)
     if not callable(terminate) or not callable(initialize):
         return False, False
 

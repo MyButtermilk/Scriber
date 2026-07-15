@@ -486,6 +486,7 @@ import {
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
 import { recordingTimeLabel, transcriptHistoryPeriod } from "@/lib/transcript-history-period";
+import { requestLiveMicStop } from "@/lib/live-mic-control";
 
 export default function LiveMic() {
   const { toast } = useToast();
@@ -558,6 +559,12 @@ export default function LiveMic() {
 
   const transcriptsQuery = useTranscriptHistoryQuery<Transcript>({ type: "mic", q: debouncedSearch });
   const transcripts = transcriptsQuery.items;
+  const historyLocalDay = new Date().toDateString();
+  const historyReferenceTime = useMemo(() => new Date(), [historyLocalDay]);
+  const getTranscriptHistoryGroup = useCallback(
+    (item: Transcript) => transcriptHistoryPeriod(item.createdAt, historyReferenceTime),
+    [historyReferenceTime],
+  );
   const activeSessionIdRef = useRef<string | null>(null);
 
   const refreshVisualizerBarCount = useCallback(async (signal?: AbortSignal) => {
@@ -789,7 +796,11 @@ export default function LiveMic() {
   const { isConnected } = useSharedWebSocket(handleWsMessage);
 
   useEffect(() => {
-    if (!hasActiveSession && !isConnected) {
+    // The shared WebSocket sends an authoritative state snapshot on connect
+    // and all subsequent live state transitions. Poll only while an active
+    // session has lost that connection; otherwise this endpoint repeatedly
+    // serializes and parses the complete, growing transcript for no benefit.
+    if (!hasActiveSession || isConnected) {
       return;
     }
 
@@ -816,15 +827,13 @@ export default function LiveMic() {
       }
     };
 
-    const firstCheck = window.setTimeout(reconcileBackendState, hasActiveSession ? 750 : 0);
-    const interval = hasActiveSession ? window.setInterval(reconcileBackendState, 2000) : undefined;
+    const firstCheck = window.setTimeout(reconcileBackendState, 750);
+    const interval = window.setInterval(reconcileBackendState, 2000);
     return () => {
       cancelled = true;
       controller.abort();
       window.clearTimeout(firstCheck);
-      if (interval !== undefined) {
-        window.clearInterval(interval);
-      }
+      window.clearInterval(interval);
     };
   }, [applyBackendStateSnapshot, hasActiveSession, isConnected]);
 
@@ -846,12 +855,13 @@ export default function LiveMic() {
       setElapsed(0);
     }
     try {
-      const endpoint = action === "stop" ? "/api/live-mic/stop" : "/api/live-mic/start";
-      const res = await fetchWithTimeout(
-        apiUrl(endpoint),
-        { method: "POST", credentials: "include" },
-        15_000,
-      );
+      const res = action === "stop"
+        ? await requestLiveMicStop()
+        : await fetchWithTimeout(
+            apiUrl("/api/live-mic/start"),
+            { method: "POST", credentials: "include" },
+            15_000,
+          );
       if (!res.ok) {
         const text = await res.text();
         let payload: unknown = null;
@@ -1181,7 +1191,7 @@ export default function LiveMic() {
                 items={transcripts}
                 viewMode={viewMode}
                 getItemKey={(item) => item.id}
-                getItemGroup={(item) => transcriptHistoryPeriod(item.createdAt)}
+                getItemGroup={getTranscriptHistoryGroup}
                 estimateListRowHeight={108}
                 estimateGridRowHeight={210}
                 hasMore={transcriptsQuery.hasNextPage}

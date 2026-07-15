@@ -35,8 +35,14 @@ class _FakeMicPrewarmManager:
         self.pause_calls += 1
         self.active = False
 
-    def resume_after_active_capture(self, *, temporary: bool = False) -> bool:
+    def resume_after_active_capture(
+        self,
+        *,
+        temporary: bool = False,
+        prebuffer_ms: int | None = None,
+    ) -> bool:
         self.resume_calls += 1
+        self.last_prebuffer_ms = prebuffer_ms
         self.temporary = bool(temporary and not web_api.Config.MIC_ALWAYS_ON)
         self.active = bool(web_api.Config.MIC_ALWAYS_ON or temporary)
         if not self.active:
@@ -112,6 +118,44 @@ def test_soniox_stt_prewarm_uses_lazy_pipecat_runtime_import(monkeypatch):
     web_api._prewarm_stt_service("soniox")
 
     import_runtime.assert_called_once_with("soniox", "pipecat.services.soniox.stt")
+
+
+def test_cold_device_cache_invalidation_does_not_import_pipeline(monkeypatch):
+    monkeypatch.setattr(web_api, "ScriberPipeline", None)
+    monkeypatch.setattr(web_api, "_invalidate_mic_device_resolution_cache_impl", None)
+    monkeypatch.setattr(web_api, "_pipeline_cache_invalidation_pending", False)
+    monkeypatch.delitem(sys.modules, "src.pipeline", raising=False)
+
+    web_api.invalidate_mic_device_resolution_cache()
+
+    assert "src.pipeline" not in sys.modules
+    assert web_api._pipeline_cache_invalidation_pending is True
+
+
+def test_pending_device_cache_invalidation_runs_once_after_lazy_import(monkeypatch):
+    invalidations: list[str] = []
+
+    class _LazyPipeline:
+        pass
+
+    fake_pipeline_module = types.ModuleType("src.pipeline")
+    fake_pipeline_module.ScriberPipeline = _LazyPipeline
+    fake_pipeline_module.invalidate_mic_device_resolution_cache = (
+        lambda: invalidations.append("invalidated")
+    )
+    monkeypatch.setitem(sys.modules, "src.pipeline", fake_pipeline_module)
+    monkeypatch.setattr(web_api, "ScriberPipeline", None)
+    monkeypatch.setattr(web_api, "_invalidate_mic_device_resolution_cache_impl", None)
+    monkeypatch.setattr(web_api, "_pipeline_cache_invalidation_pending", True)
+
+    loaded = web_api._load_scriber_pipeline_runtime()
+
+    assert loaded is _LazyPipeline
+    assert invalidations == ["invalidated"]
+    assert web_api._pipeline_cache_invalidation_pending is False
+
+    web_api.invalidate_mic_device_resolution_cache()
+    assert invalidations == ["invalidated", "invalidated"]
 
 
 def test_backend_loop_handler_suppresses_only_windows_proactor_disconnects(monkeypatch):
@@ -283,7 +327,69 @@ def test_begin_shutdown_releases_persisted_native_audio_claim(tmp_path):
     assert ctl._shutting_down is True
     ctl._retry_scheduler.cancel.assert_called_once_with(cancel_running=True)
     assert ctl._persistent_audio_claim is None
+    release_thread = ctl._shutdown_audio_release_thread
+    assert release_thread is not None
+    release_thread.join(timeout=1.0)
+    assert not release_thread.is_alive()
     assert ctl._audio_admission_store.active() is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_audio_claim_waits_for_acquire_then_rolls_back(monkeypatch):
+    started = threading.Event()
+    finish = threading.Event()
+    claim = web_api.AudioAdmissionClaim(
+        owner_kind="live_mic",
+        owner_id="session-cancelled-acquire",
+        controller_id="controller-cancelled-acquire",
+        state_version=1,
+        lease_expires_at="2099-01-01T00:00:00Z",
+        updated_at="2026-07-15T00:00:00Z",
+    )
+
+    class _BlockingStore:
+        def __init__(self):
+            self.released: list[web_api.AudioAdmissionClaim] = []
+
+        def acquire(self, **_kwargs):
+            started.set()
+            assert finish.wait(timeout=1.0)
+            return claim
+
+        def release(self, target):
+            self.released.append(target)
+            return True
+
+    store = _BlockingStore()
+    ctl = types.SimpleNamespace(
+        _persistent_audio_claim=None,
+        _audio_admission_heartbeat_task=None,
+        _audio_admission_lost_meetings=set(),
+        _shutting_down=False,
+    )
+    monkeypatch.setattr(
+        web_api,
+        "_persistent_audio_admission",
+        lambda _controller: (store, "controller-cancelled-acquire"),
+    )
+
+    task = asyncio.create_task(
+        web_api._claim_persistent_audio(
+            ctl,
+            owner_kind="live_mic",
+            owner_id="session-cancelled-acquire",
+            heartbeat=False,
+        )
+    )
+    assert await asyncio.wait_for(asyncio.to_thread(started.wait, 1.0), timeout=1.5)
+    task.cancel()
+    finish.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert store.released == [claim]
+    assert ctl._persistent_audio_claim is None
 
 
 @pytest.mark.asyncio
@@ -2735,6 +2841,11 @@ class _PrewarmAwarePipeline:
         self.stop_gate.set()
 
 
+class _EarlyFailingPrewarmPipeline(_PrewarmAwarePipeline):
+    async def start(self):
+        raise RuntimeError("synthetic provider initialization failure")
+
+
 @pytest.mark.asyncio
 async def test_hotkey_toggle_is_deferred_while_stop_is_in_progress():
     loop = asyncio.get_running_loop()
@@ -2906,6 +3017,7 @@ async def test_start_listening_passes_idle_prewarm_without_closing_it(monkeypatc
     _PrewarmAwarePipeline.instances.clear()
 
     ctl = ScriberWebController(asyncio.get_running_loop())
+    monkeypatch.setattr(ctl, "_validate_live_provider_ready", lambda _provider: None)
     await _wait_for_prewarm_task(ctl)
     manager = _FakeRustMicPrewarmManager.instances[-1]
 
@@ -2927,6 +3039,499 @@ async def test_start_listening_passes_idle_prewarm_without_closing_it(monkeypatc
         pipeline.stop_gate.set()
         await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
 
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_first_live_start_confirms_audio_before_pipeline_runtime_import(monkeypatch):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    manager = _FakeRustMicPrewarmManager()
+    ctl._mic_prewarm = manager
+    _PrewarmAwarePipeline.instances.clear()
+    event_loop_thread = threading.get_ident()
+    import_started = threading.Event()
+    prewarm_started = threading.Event()
+    import_threads: list[int] = []
+    prewarm_threads: list[int] = []
+
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setattr(web_api, "ScriberPipeline", None)
+
+    def load_runtime():
+        if web_api.ScriberPipeline is not None:
+            return web_api.ScriberPipeline
+        import_threads.append(threading.get_ident())
+        import_started.set()
+        assert prewarm_started.is_set()
+        assert manager.active is True
+        web_api.ScriberPipeline = _PrewarmAwarePipeline
+        return _PrewarmAwarePipeline
+
+    original_resume = manager.resume_after_active_capture
+
+    def start_prewarm(*, temporary=False, prebuffer_ms=None):
+        prewarm_threads.append(threading.get_ident())
+        prewarm_started.set()
+        return original_resume(
+            temporary=temporary,
+            prebuffer_ms=prebuffer_ms,
+        )
+
+    monkeypatch.setattr(manager, "resume_after_active_capture", start_prewarm)
+
+    with (
+        patch("src.web_api._load_scriber_pipeline_runtime", side_effect=load_runtime),
+        patch.object(ctl, "_select_available_provider", return_value="openai"),
+        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.show_recording_overlay"),
+    ):
+        await asyncio.wait_for(ctl.start_listening(), timeout=2.0)
+
+        assert import_threads and import_threads[0] != event_loop_thread
+        assert prewarm_threads and prewarm_threads[0] != event_loop_thread
+        assert import_started.is_set()
+        assert manager.last_prebuffer_ms == 6000
+        assert manager.temporary is True
+        pipeline = _PrewarmAwarePipeline.instances[-1]
+        assert pipeline.mic_prewarm_manager is manager
+
+        pipeline.stop_gate.set()
+        await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_warm_live_start_does_not_submit_runtime_loader_to_threadpool(monkeypatch):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._mic_prewarm = _FakeRustMicPrewarmManager()
+    _PrewarmAwarePipeline.instances.clear()
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setattr(web_api, "ScriberPipeline", _PrewarmAwarePipeline)
+    original_to_thread = asyncio.to_thread
+    submitted_functions: list[object] = []
+
+    async def tracking_to_thread(function, *args, **kwargs):
+        submitted_functions.append(function)
+        return await original_to_thread(function, *args, **kwargs)
+
+    loader = MagicMock(return_value=_PrewarmAwarePipeline)
+    monkeypatch.setattr(web_api.asyncio, "to_thread", tracking_to_thread)
+
+    with (
+        patch("src.web_api._load_scriber_pipeline_runtime", loader),
+        patch.object(ctl, "_select_available_provider", return_value="openai"),
+        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.show_recording_overlay"),
+    ):
+        await ctl.start_listening()
+        assert loader.call_count == 1
+        assert loader not in submitted_functions
+
+        pipeline = _PrewarmAwarePipeline.instances[-1]
+        pipeline.stop_gate.set()
+        await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cold_runtime_failure_releases_claim_and_stops_unretained_prewarm(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setattr(
+        web_api.Config,
+        "MIC_POST_RECORDING_PREWARM_SECONDS",
+        0.0,
+        raising=False,
+    )
+    monkeypatch.setattr(web_api, "ScriberPipeline", None)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    manager = _FakeRustMicPrewarmManager()
+    ctl._mic_prewarm = manager
+
+    def fail_runtime_import():
+        raise RuntimeError("synthetic pipeline import failure")
+
+    with (
+        patch(
+            "src.web_api._load_scriber_pipeline_runtime",
+            side_effect=fail_runtime_import,
+        ),
+        patch.object(ctl, "_select_available_provider", return_value="openai"),
+        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.hide_recording_overlay"),
+    ):
+        with pytest.raises(RuntimeError, match="synthetic pipeline import failure"):
+            await ctl.start_listening()
+
+    assert manager.resume_calls == 1
+    assert manager.stop_calls == 1
+    assert manager.stop_reasons == ["live_mic_cold_start_failed"]
+    assert manager.active is False
+    assert ctl._persistent_audio_claim is None
+    assert ctl._is_listening is False
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_early_pipeline_failure_releases_claim_and_temporary_prewarm(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setattr(
+        web_api.Config,
+        "MIC_POST_RECORDING_PREWARM_SECONDS",
+        0.0,
+        raising=False,
+    )
+    monkeypatch.setattr(web_api, "ScriberPipeline", None)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    manager = _FakeRustMicPrewarmManager()
+    ctl._mic_prewarm = manager
+
+    def load_runtime():
+        web_api.ScriberPipeline = _EarlyFailingPrewarmPipeline
+        return _EarlyFailingPrewarmPipeline
+
+    with (
+        patch(
+            "src.web_api._load_scriber_pipeline_runtime",
+            side_effect=load_runtime,
+        ),
+        patch.object(ctl, "_select_available_provider", return_value="openai"),
+        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_schedule_transcript_save"),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.hide_recording_overlay"),
+    ):
+        await ctl.start_listening()
+        pipeline_task = ctl._pipeline_task
+        assert pipeline_task is not None
+        await asyncio.gather(pipeline_task, return_exceptions=True)
+        for _ in range(100):
+            if ctl._pipeline_task is None and ctl._persistent_audio_claim is None:
+                break
+            await asyncio.sleep(0.01)
+
+    assert manager.resume_calls == 1
+    assert manager.stop_calls == 1
+    assert manager.stop_reasons == [
+        "live_mic_pipeline_ended_before_audio_cleanup"
+    ]
+    assert manager.active is False
+    assert ctl._persistent_audio_claim is None
+    assert ctl._is_listening is False
+    assert ctl._is_stopping is False
+    assert ctl._pipeline is None
+    assert ctl._pipeline_task is None
+    assert ctl._session_id is None
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_explicit_stop_during_cold_start_aborts_before_provider_activation(monkeypatch):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    manager = _FakeRustMicPrewarmManager()
+    ctl._mic_prewarm = manager
+    _PrewarmAwarePipeline.instances.clear()
+    import_started = threading.Event()
+    finish_import = threading.Event()
+
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setattr(
+        web_api.Config,
+        "MIC_POST_RECORDING_PREWARM_SECONDS",
+        0.0,
+        raising=False,
+    )
+    monkeypatch.setattr(web_api, "ScriberPipeline", None)
+
+    def load_runtime():
+        if web_api.ScriberPipeline is not None:
+            return web_api.ScriberPipeline
+        import_started.set()
+        assert finish_import.wait(timeout=1.0)
+        web_api.ScriberPipeline = _PrewarmAwarePipeline
+        return _PrewarmAwarePipeline
+
+    with (
+        patch("src.web_api._load_scriber_pipeline_runtime", side_effect=load_runtime),
+        patch.object(ctl, "_select_available_provider", return_value="openai"),
+        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.show_recording_overlay"),
+        patch("src.web_api.show_transcribing_overlay"),
+        patch("src.web_api.hide_recording_overlay"),
+    ):
+        start_task = asyncio.create_task(ctl.start_listening())
+        assert await asyncio.wait_for(
+            asyncio.to_thread(import_started.wait, 1.0),
+            timeout=1.5,
+        )
+
+        outcome = ctl.request_async_stop_listening()
+        queued_stop = ctl._background_stop_task
+        assert outcome == {
+            "stopAccepted": True,
+            "stopScheduled": True,
+            "alreadyFinalizing": False,
+            "alreadyStopped": False,
+        }
+        assert queued_stop is not None
+
+        finish_import.set()
+        await asyncio.wait_for(start_task, timeout=2.0)
+        await asyncio.wait_for(asyncio.shield(queued_stop), timeout=2.0)
+
+    assert _PrewarmAwarePipeline.instances == []
+    assert manager.stop_reasons == ["live_mic_cold_start_failed"]
+    assert ctl._persistent_audio_claim is None
+    assert ctl._is_listening is False
+    assert ctl._is_stopping is False
+    assert ctl._session_id is None
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_explicit_stop_during_initial_audio_conflict_lookup_cancels_start(
+    monkeypatch,
+):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    lookup_started = asyncio.Event()
+    finish_lookup = asyncio.Event()
+
+    async def delayed_conflict_lookup(_controller):
+        lookup_started.set()
+        await finish_lookup.wait()
+        return None
+
+    with patch(
+        "src.web_api._live_mic_audio_conflict",
+        side_effect=delayed_conflict_lookup,
+    ):
+        start_task = asyncio.create_task(ctl.start_listening())
+        await asyncio.wait_for(lookup_started.wait(), timeout=1.0)
+
+        outcome = ctl.request_async_stop_listening()
+        queued_stop = ctl._background_stop_task
+        assert outcome == {
+            "stopAccepted": True,
+            "stopScheduled": True,
+            "alreadyFinalizing": False,
+            "alreadyStopped": False,
+        }
+        assert queued_stop is not None
+
+        finish_lookup.set()
+        await asyncio.wait_for(start_task, timeout=1.0)
+        await asyncio.wait_for(asyncio.shield(queued_stop), timeout=1.0)
+
+    assert ctl._live_mic_start_in_progress_generation is None
+    assert ctl._persistent_audio_claim is None
+    assert ctl._pipeline is None
+    assert ctl._is_listening is False
+    assert ctl._session_id is None
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_explicit_stop_during_audio_claim_cancels_before_pipeline_construction(
+    monkeypatch,
+):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    manager = _FakeRustMicPrewarmManager()
+    ctl._mic_prewarm = manager
+    _PrewarmAwarePipeline.instances.clear()
+    claim_started = asyncio.Event()
+    finish_claim = asyncio.Event()
+
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setattr(
+        web_api.Config,
+        "MIC_POST_RECORDING_PREWARM_SECONDS",
+        0.0,
+        raising=False,
+    )
+    monkeypatch.setattr(web_api, "ScriberPipeline", _PrewarmAwarePipeline)
+
+    async def delayed_claim(*_args, **_kwargs):
+        claim_started.set()
+        await finish_claim.wait()
+        return None
+
+    with (
+        patch("src.web_api._live_mic_audio_conflict", new=AsyncMock(return_value=None)),
+        patch("src.web_api._claim_persistent_audio", side_effect=delayed_claim),
+        patch.object(ctl, "_select_available_provider", return_value="openai"),
+        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.hide_recording_overlay"),
+    ):
+        start_task = asyncio.create_task(ctl.start_listening())
+        await asyncio.wait_for(claim_started.wait(), timeout=1.0)
+
+        outcome = ctl.request_async_stop_listening()
+        queued_stop = ctl._background_stop_task
+        assert outcome["stopScheduled"] is True
+        assert outcome["alreadyStopped"] is False
+        assert queued_stop is not None
+
+        finish_claim.set()
+        await asyncio.wait_for(start_task, timeout=1.0)
+        await asyncio.wait_for(asyncio.shield(queued_stop), timeout=1.0)
+
+    assert _PrewarmAwarePipeline.instances == []
+    assert ctl._live_mic_start_in_progress_generation is None
+    assert ctl._persistent_audio_claim is None
+    assert ctl._pipeline is None
+    assert ctl._is_listening is False
+    assert ctl._session_id is None
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_second_toggle_during_cold_start_aborts_before_provider_activation(
+    monkeypatch,
+):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    # This is an intentional second toggle rather than a duplicate Windows
+    # hotkey edge, so exercise behavior after the product's debounce grace.
+    ctl._live_toggle_start_grace_seconds = 0.0
+    manager = _FakeRustMicPrewarmManager()
+    ctl._mic_prewarm = manager
+    _PrewarmAwarePipeline.instances.clear()
+    import_started = threading.Event()
+    finish_import = threading.Event()
+
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setattr(
+        web_api.Config,
+        "MIC_POST_RECORDING_PREWARM_SECONDS",
+        0.0,
+        raising=False,
+    )
+    monkeypatch.setattr(web_api, "ScriberPipeline", None)
+
+    def load_runtime():
+        import_started.set()
+        assert finish_import.wait(timeout=1.0)
+        web_api.ScriberPipeline = _PrewarmAwarePipeline
+        return _PrewarmAwarePipeline
+
+    with (
+        patch("src.web_api._load_scriber_pipeline_runtime", side_effect=load_runtime),
+        patch.object(ctl, "_select_available_provider", return_value="openai"),
+        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.hide_recording_overlay"),
+    ):
+        start_task = asyncio.create_task(ctl.start_listening())
+        assert await asyncio.wait_for(
+            asyncio.to_thread(import_started.wait, 1.0),
+            timeout=1.5,
+        )
+
+        await ctl.toggle_listening()
+        queued_stop = ctl._background_stop_task
+        assert queued_stop is not None
+        finish_import.set()
+        await asyncio.wait_for(start_task, timeout=2.0)
+        await asyncio.wait_for(asyncio.shield(queued_stop), timeout=2.0)
+
+    assert _PrewarmAwarePipeline.instances == []
+    assert manager.stop_reasons == ["live_mic_cold_start_failed"]
+    assert ctl._persistent_audio_claim is None
+    assert ctl._is_listening is False
+    assert ctl._session_id is None
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_during_cold_start_drains_transition_without_starting_pipeline(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    monkeypatch.setattr(
+        web_api.Config,
+        "MIC_POST_RECORDING_PREWARM_SECONDS",
+        0.0,
+        raising=False,
+    )
+    monkeypatch.setattr(web_api, "ScriberPipeline", None)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    manager = _FakeRustMicPrewarmManager()
+    ctl._mic_prewarm = manager
+    _PrewarmAwarePipeline.instances.clear()
+    import_started = threading.Event()
+    finish_import = threading.Event()
+
+    def load_runtime():
+        import_started.set()
+        assert finish_import.wait(timeout=1.0)
+        web_api.ScriberPipeline = _PrewarmAwarePipeline
+        return _PrewarmAwarePipeline
+
+    with (
+        patch("src.web_api._load_scriber_pipeline_runtime", side_effect=load_runtime),
+        patch.object(ctl, "_select_available_provider", return_value="openai"),
+        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.hide_recording_overlay"),
+    ):
+        start_task = asyncio.create_task(ctl.start_listening())
+        assert await asyncio.wait_for(
+            asyncio.to_thread(import_started.wait, 1.0),
+            timeout=1.5,
+        )
+        drain_task = asyncio.create_task(
+            ctl.drain_background_tasks_for_shutdown(timeout_seconds=2.0)
+        )
+        await asyncio.sleep(0)
+        finish_import.set()
+        await asyncio.wait_for(drain_task, timeout=2.5)
+        await asyncio.gather(start_task, return_exceptions=True)
+
+    assert ctl._shutting_down is True
+    assert _PrewarmAwarePipeline.instances == []
+    assert manager.stop_reasons == ["live_mic_cold_start_failed"]
+    assert ctl._persistent_audio_claim is None
+    assert ctl._live_mic_start_task is None
+    assert ctl._live_mic_start_in_progress_generation is None
+    assert ctl._is_listening is False
     ctl.shutdown()
 
 
@@ -3000,6 +3605,7 @@ async def test_start_listening_passes_temporary_prewarm_when_always_on_disabled(
     _PrewarmAwarePipeline.instances.clear()
 
     ctl = ScriberWebController(asyncio.get_running_loop())
+    monkeypatch.setattr(ctl, "_validate_live_provider_ready", lambda _provider: None)
     manager = _FakeRustMicPrewarmManager.instances[-1]
     manager.active = True
     manager.temporary = True

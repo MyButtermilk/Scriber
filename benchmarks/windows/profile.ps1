@@ -1,6 +1,7 @@
 param(
     [string]$OutputPath = "",
-    [string]$InstallRoot = ""
+    [string]$InstallRoot = "",
+    [string]$Python = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -63,7 +64,7 @@ function Get-NormalizedFileVersion {
 
 $os = Get-CimInstance Win32_OperatingSystem
 $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-$gpu = @(Get-CimInstance Win32_VideoController | ForEach-Object {
+$gpu = @(Get-CimInstance Win32_VideoController | Sort-Object Name, DriverVersion | ForEach-Object {
     [pscustomobject]@{
         name = $_.Name
         driverVersion = $_.DriverVersion
@@ -72,18 +73,24 @@ $gpu = @(Get-CimInstance Win32_VideoController | ForEach-Object {
 })
 $memoryBytes = [int64]$os.TotalVisibleMemorySize * 1024
 $power = Get-CommandText @("powercfg", "/getactivescheme")
-$battery = @(Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | ForEach-Object {
+$battery = @(Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | Sort-Object Name, DeviceID | ForEach-Object {
     [pscustomobject]@{
         name = $_.Name
         batteryStatus = $_.BatteryStatus
         estimatedChargeRemaining = $_.EstimatedChargeRemaining
     }
 })
+$batteryIdentity = @($battery | ForEach-Object {
+    [pscustomobject]@{
+        name = $_.name
+        batteryStatus = $_.batteryStatus
+    }
+})
 
 $screens = @()
 try {
     Add-Type -AssemblyName System.Windows.Forms
-    $screens = @([System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
+    $screens = @([System.Windows.Forms.Screen]::AllScreens | Sort-Object DeviceName | ForEach-Object {
         [pscustomobject]@{
             deviceName = $_.DeviceName
             primary = $_.Primary
@@ -105,7 +112,7 @@ try {
     $screens = @()
 }
 
-$audio = @(Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue | ForEach-Object {
+$audio = @(Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue | Sort-Object Name, Manufacturer, DeviceID | ForEach-Object {
     [pscustomobject]@{
         name = $_.Name
         manufacturer = $_.Manufacturer
@@ -113,7 +120,7 @@ $audio = @(Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue | For
     }
 })
 
-$pythonVersion = Get-CommandText @("python", "--version")
+$pythonVersion = ""
 $nodeVersion = Get-CommandText @("node", "--version")
 $desktopExe = Join-Path $InstallRoot "scriber-desktop.exe"
 $backendExe = Join-Path $InstallRoot "backend\scriber-backend.exe"
@@ -133,9 +140,20 @@ $binaryVersionMatchesSource = (
 )
 $attestationScript = Join-Path $RepoRoot "scripts\perf\runtime_attestation.py"
 $runtimeAttestation = $null
+$runtimeAttestationChecked = $false
 $runtimeAttestationExitCode = -1
-$pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+$pythonCommand = if ($Python) {
+    Get-Command $Python -ErrorAction SilentlyContinue
+} elseif ($env:SCRIBER_PYTHON) {
+    Get-Command $env:SCRIBER_PYTHON -ErrorAction SilentlyContinue
+} else {
+    Get-Command python.exe -ErrorAction SilentlyContinue
+}
+if ($pythonCommand) {
+    $pythonVersion = Get-CommandText @($pythonCommand.Source, "--version")
+}
 if ($pythonCommand -and (Test-Path -LiteralPath $attestationScript -PathType Leaf)) {
+    $runtimeAttestationChecked = $true
     $attestationOutput = @(& $pythonCommand.Source $attestationScript verify `
         --repo-root $RepoRoot `
         --install-root $InstallRoot 2>$null)
@@ -155,31 +173,92 @@ $runtimeAttestationErrorCodes = @()
 if ($runtimeAttestation -and $runtimeAttestation.errors) {
     $runtimeAttestationErrorCodes = @($runtimeAttestation.errors | ForEach-Object { [string]$_.code })
 }
+$buildAttestationId = if ($runtimeAttestationValid) { [string]$runtimeAttestation.attestationId } else { "" }
+$scorerPath = Join-Path $RepoRoot "scripts\perf\evaluator\local_wux.py"
+$scorerHash = Get-FileHashOrEmpty -Path $scorerPath
 $evaluatorFiles = @(
     (Join-Path $RepoRoot "scripts\perf\run.ps1"),
     (Join-Path $RepoRoot "scripts\perf\benchmark_lint.py"),
     (Join-Path $RepoRoot "scripts\perf\doctor.py"),
     (Join-Path $RepoRoot "scripts\perf\runtime_attestation.py"),
-    (Join-Path $RepoRoot "benchmarks\windows\profile.ps1")
+    (Join-Path $RepoRoot "benchmarks\windows\profile.ps1"),
+    (Join-Path $RepoRoot "benchmarks\windows\endpoint_probe.py"),
+    (Join-Path $RepoRoot "benchmarks\windows\app_ux_collector.py"),
+    (Join-Path $RepoRoot "benchmarks\windows\app_ux_lifecycle_import.schema.json"),
+    (Join-Path $RepoRoot "benchmarks\windows\app_action.ps1"),
+    (Join-Path $RepoRoot "benchmarks\windows\app_observer.ps1"),
+    (Join-Path $RepoRoot "benchmarks\windows\trace_collector.py"),
+    $scorerPath
 )
 $evaluatorHashSource = @($evaluatorFiles | ForEach-Object { Get-FileHashOrEmpty -Path $_ }) -join "|"
 $commit = Get-CommandText @("git", "rev-parse", "HEAD")
+$baselinePath = Join-Path $RepoRoot "benchmarks\results\baseline.json"
+$baselineSha256 = Get-FileHashOrEmpty -Path $baselinePath
+$baselineId = ""
+if (Test-Path -LiteralPath $baselinePath -PathType Leaf) {
+    try {
+        $baselineId = [string]((Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json).baselineId)
+    } catch {
+        $baselineId = ""
+    }
+}
+$windowsIdentity = [pscustomobject]@{
+    caption = $os.Caption
+    version = $os.Version
+    buildNumber = $os.BuildNumber
+    architecture = $os.OSArchitecture
+}
+$cpuIdentity = [pscustomobject]@{
+    name = $cpu.Name
+    logicalProcessors = $cpu.NumberOfLogicalProcessors
+    cores = $cpu.NumberOfCores
+    maxClockMhz = $cpu.MaxClockSpeed
+}
+$providerIdentity = [pscustomobject]@{
+    defaultStt = $env:SCRIBER_DEFAULT_STT
+    sonioxMode = $env:SCRIBER_SONIOX_MODE
+    azureMaiRegion = $env:SCRIBER_AZURE_MAI_REGION
+    azureMaiModel = $env:SCRIBER_AZURE_MAI_MODEL
+    locale = $env:SCRIBER_LANGUAGE
+}
+$networkAdapters = @(Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled } | Sort-Object Description, SettingID | ForEach-Object {
+    [pscustomobject]@{
+        description = $_.Description
+        dhcpEnabled = $_.DHCPEnabled
+    }
+})
+
+# profile_id identifies only the comparable machine/runtime environment. Build,
+# evaluator, attestation, timestamps, and battery charge are recorded separately
+# so a candidate build can still be compared on the same environment profile.
+$environmentIdentity = [ordered]@{
+    schemaVersion = 1
+    windows = $windowsIdentity
+    cpu = $cpuIdentity
+    ramBytes = $memoryBytes
+    gpu = $gpu
+    powerScheme = $power
+    battery = $batteryIdentity
+    monitors = $screens
+    audioDevices = $audio
+    micBlockSize = $env:SCRIBER_MIC_BLOCK_SIZE
+    pythonVersion = $pythonVersion
+    nodeVersion = $nodeVersion
+    productionBuildMode = "packaged-tauri"
+    tauriVersion = ""
+    webview2Version = ""
+    provider = $providerIdentity
+    textInjectionMethod = $env:SCRIBER_INJECT_METHOD
+    networkAdapters = $networkAdapters
+}
+$profileId = Get-JsonHash -Value $environmentIdentity
 
 $payloadNoId = [ordered]@{
     schemaVersion = 1
     generatedAtUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-    windows = [pscustomobject]@{
-        caption = $os.Caption
-        version = $os.Version
-        buildNumber = $os.BuildNumber
-        architecture = $os.OSArchitecture
-    }
-    cpu = [pscustomobject]@{
-        name = $cpu.Name
-        logicalProcessors = $cpu.NumberOfLogicalProcessors
-        cores = $cpu.NumberOfCores
-        maxClockMhz = $cpu.MaxClockSpeed
-    }
+    environmentProfileSchemaVersion = 1
+    windows = $windowsIdentity
+    cpu = $cpuIdentity
     ramBytes = $memoryBytes
     gpu = $gpu
     powerScheme = $power
@@ -198,6 +277,9 @@ $payloadNoId = [ordered]@{
     backendProductVersion = $backendProductVersion
     audioSidecarProductVersion = $audioSidecarProductVersion
     binaryVersionMatchesSource = [bool]$binaryVersionMatchesSource
+    buildAttestationId = $buildAttestationId
+    runtimeAttestationChecked = [bool]$runtimeAttestationChecked
+    runtimeAttestationExitCode = [int]$runtimeAttestationExitCode
     runtimeAttestationValid = [bool]$runtimeAttestationValid
     runtimeAttestationId = if ($runtimeAttestation) { [string]$runtimeAttestation.attestationId } else { "" }
     runtimeAttestationManifestSha256 = if ($runtimeAttestation) { [string]$runtimeAttestation.manifestSha256 } else { "" }
@@ -206,25 +288,16 @@ $payloadNoId = [ordered]@{
     desktopSha256 = Get-FileHashOrEmpty -Path $desktopExe
     backendSha256 = Get-FileHashOrEmpty -Path $backendExe
     audioSidecarSha256 = Get-FileHashOrEmpty -Path $audioSidecarExe
-    provider = [pscustomobject]@{
-        defaultStt = $env:SCRIBER_DEFAULT_STT
-        sonioxMode = $env:SCRIBER_SONIOX_MODE
-        azureMaiRegion = $env:SCRIBER_AZURE_MAI_REGION
-        azureMaiModel = $env:SCRIBER_AZURE_MAI_MODEL
-        locale = $env:SCRIBER_LANGUAGE
-    }
+    baselineId = $baselineId
+    baselineSha256 = $baselineSha256
+    provider = $providerIdentity
     textInjectionMethod = $env:SCRIBER_INJECT_METHOD
-    networkAdapters = @(Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled } | ForEach-Object {
-        [pscustomobject]@{
-            description = $_.Description
-            dhcpEnabled = $_.DHCPEnabled
-        }
-    })
+    networkAdapters = $networkAdapters
     evaluatorVersion = 1
     evaluatorHash = (Get-JsonHash -Value $evaluatorHashSource)
+    scorerHash = $scorerHash
 }
 
-$profileId = Get-JsonHash -Value $payloadNoId
 $payload = [ordered]@{}
 foreach ($key in $payloadNoId.Keys) {
     $payload[$key] = $payloadNoId[$key]

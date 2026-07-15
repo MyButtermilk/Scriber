@@ -227,6 +227,39 @@ async def test_hot_path_metrics_can_include_active_readiness_snapshot(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_hot_path_metrics_expose_request_bound_tauri_marker_only_for_its_session(tmp_path):
+    loop = asyncio.get_running_loop()
+    metrics_store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
+    ctl = ScriberWebController(loop, latency_metrics_store=metrics_store)
+    marker = {
+        "schemaVersion": 1,
+        "marker": "hotkey_received",
+        "source": "tauri_global_shortcut",
+        "runId": "7de1a48651d44f859042b7cbcb30da52",
+        "sampleId": "2b3022ee3f404333a1156da089a24962",
+        "processId": 4321,
+        "qpcTicks": 10_000_000,
+        "qpcFrequency": 10_000_000,
+        "timestampNs": 1_000_000_000,
+    }
+    session_id = "session-tauri-marker"
+
+    ctl._start_hot_path_tracer(session_id, tauri_hotkey_marker=marker)
+    ctl._mark_hot_path(session_id, "mic_ready", timestamp_ns=1_125_000_000)
+    ctl._start_hot_path_tracer("ordinary-session")
+
+    out = ctl.get_hot_path_metrics(limit=10, include_active=True)
+    active = next(item for item in out["activeItems"] if item["sessionId"] == session_id)
+    ordinary = next(
+        item for item in out["activeItems"] if item["sessionId"] == "ordinary-session"
+    )
+
+    assert active["tauriHotkeyReceived"] == marker
+    assert active["segments"]["hotkey_received_to_mic_ready_ms"] == 125.0
+    assert "tauriHotkeyReceived" not in ordinary
+
+
+@pytest.mark.asyncio
 async def test_overlay_commands_mark_hot_path_readiness_segments(tmp_path):
     loop = asyncio.get_running_loop()
     metrics_store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")

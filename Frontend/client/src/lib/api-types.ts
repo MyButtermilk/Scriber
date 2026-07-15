@@ -590,6 +590,16 @@ export interface BackendStateResponse {
   transcribing: boolean;
 }
 
+export interface LiveMicStopRequestResponse {
+  apiVersion: typeof REST_API_VERSION;
+  stopAccepted: boolean;
+  stopScheduled: boolean;
+  alreadyFinalizing: boolean;
+  alreadyStopped: boolean;
+  finalizing: boolean;
+  sessionId: string | null;
+}
+
 export interface AutostartStatus {
   enabled: boolean;
   available: boolean;
@@ -635,6 +645,65 @@ export interface FrontendReadyResponse {
   apiVersion: typeof REST_API_VERSION;
   ready: boolean;
   lastSeen: FrontendReadyLastSeen | null;
+}
+
+export interface FrontendLongTaskEntry {
+  sequence: number;
+  startTimeMs: number;
+  durationMs: number;
+}
+
+export interface FrontendPerformanceReportRequest {
+  apiVersion: typeof REST_API_VERSION;
+  sourceInstanceId: string;
+  observerSupported: boolean;
+  windowStartedAtMs: number;
+  observedAtMs: number;
+  droppedEntries: number;
+  heartbeatSequence: number;
+  entries: FrontendLongTaskEntry[];
+}
+
+export interface FrontendPerformanceWindow {
+  startedAtFrontendUptimeMs: number;
+  observedAtFrontendUptimeMs: number;
+  receivedAtUptimeSeconds: number;
+  queryAfterSequence: number | null;
+  count: number;
+  cumulativeCount: number;
+  maxDurationMs: number;
+  totalDurationMs: number;
+  lastSequence: number;
+  droppedEntries: number;
+  sequenceGaps: number;
+  retainedEntries: number;
+  heartbeatSequence: number;
+  heartbeatObservedAtFrontendUptimeMs: number | null;
+  heartbeatReceivedAtUptimeSeconds: number | null;
+  truncated: boolean;
+}
+
+export interface FrontendPerformanceFlushRequest {
+  apiVersion: typeof REST_API_VERSION;
+  sourceInstanceId: string;
+}
+
+export interface FrontendPerformanceFlushResponse {
+  apiVersion: typeof REST_API_VERSION;
+  accepted: boolean;
+  sourceInstanceId: string;
+  heartbeatSequence: number;
+  requestedAfterFrontendUptimeMs: number;
+  requestedAtUptimeSeconds: number;
+}
+
+export interface FrontendPerformanceResponse {
+  apiVersion: typeof REST_API_VERSION;
+  available: boolean;
+  reason: "not_reported" | "source_instance_changed" | null;
+  observerSupported: boolean | null;
+  sourceInstanceId: string | null;
+  window: FrontendPerformanceWindow | null;
 }
 
 export interface RuntimeLogEntry {

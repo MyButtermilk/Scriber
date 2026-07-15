@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/b7-app-ux-lifecycle-import-v1.schema.json",
+  "title": "Scriber B7 installed lifecycle App UX evidence import",
+  "description": "Provider-replay-owned evidence for exactly the three installed lifecycle scenarios. Semantic marker, QPC, process-generation, artifact-hash, and per-scenario count checks are additionally enforced by endpoint_probe.validate_app_ux_lifecycle_import.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "contract",
+    "runId",
+    "installedExeSha256",
+    "harnessManifestSha256",
+    "samplesPerScenario",
+    "scenarioOrder",
+    "samples",
+    "resourceEvidence"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "contract": { "const": "b7-app-ux-lifecycle-import-v1" },
+    "runId": { "$ref": "#/$defs/nonNilUuid" },
+    "installedExeSha256": { "$ref": "#/$defs/sha256" },
+    "harnessManifestSha256": { "$ref": "#/$defs/sha256" },
+    "samplesPerScenario": { "type": "integer", "minimum": 1 },
+    "scenarioOrder": {
+      "const": [
+        "stop_to_transcribing_visible",
+        "provider_result_to_completed_visible",
+        "session_finished_to_history_visible"
+      ]
+    },
+    "samples": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/lifecycleSample" }
+    },
+    "resourceEvidence": { "$ref": "#/$defs/resourceEvidence" }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nonNilUuid": {
+      "type": "string",
+      "pattern": "^(?!(?:0{32}|00000000-0000-0000-0000-000000000000)$)(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "marker": {
+      "type": "object",
+      "required": [
+        "marker",
+        "source",
+        "qpcTicks",
+        "qpcFrequency",
+        "processGenerationFingerprint",
+        "artifact"
+      ],
+      "properties": {
+        "marker": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "qpcTicks": { "type": "integer", "minimum": 1 },
+        "qpcFrequency": { "type": "integer", "minimum": 1 },
+        "processGenerationFingerprint": { "$ref": "#/$defs/sha256" },
+        "artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "stableFrame": {
+      "allOf": [
+        { "$ref": "#/$defs/marker" },
+        {
+          "type": "object",
+          "required": [
+            "stableSampleCount",
+            "expectedTextSha256",
+            "windowProcessId",
+            "processCreationTime100ns"
+          ],
+          "properties": {
+            "marker": { "const": "first_stable_visible_frame" },
+            "source": { "const": "windows_uia" },
+            "stableSampleCount": { "type": "integer", "minimum": 2 },
+            "expectedTextSha256": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/sha256" }
+            },
+            "windowProcessId": { "type": "integer", "minimum": 1 },
+            "processCreationTime100ns": { "type": "integer", "minimum": 1 }
+          }
+        }
+      ]
+    },
+    "frontendPerformance": {
+      "type": "object",
+      "required": [
+        "observerSupported",
+        "sourceInstanceId",
+        "queryAfterSequence",
+        "lastSequence",
+        "truncated",
+        "droppedEntriesBefore",
+        "droppedEntriesAfter",
+        "sequenceGapsBefore",
+        "sequenceGapsAfter",
+        "heartbeatAcknowledged",
+        "measurementEndQpcTicks",
+        "heartbeatAckQpcTicks",
+        "count",
+        "maxDurationMs",
+        "totalDurationMs",
+        "artifact"
+      ],
+      "properties": {
+        "observerSupported": { "const": true },
+        "sourceInstanceId": { "$ref": "#/$defs/nonNilUuid" },
+        "queryAfterSequence": { "type": "integer", "minimum": 0 },
+        "lastSequence": { "type": "integer", "minimum": 0 },
+        "truncated": { "const": false },
+        "droppedEntriesBefore": { "type": "integer", "minimum": 0 },
+        "droppedEntriesAfter": { "type": "integer", "minimum": 0 },
+        "sequenceGapsBefore": { "type": "integer", "minimum": 0 },
+        "sequenceGapsAfter": { "type": "integer", "minimum": 0 },
+        "heartbeatAcknowledged": { "const": true },
+        "measurementEndQpcTicks": { "type": "integer", "minimum": 1 },
+        "heartbeatAckQpcTicks": { "type": "integer", "minimum": 1 },
+        "count": { "type": "integer", "minimum": 0 },
+        "maxDurationMs": { "type": "number", "minimum": 0 },
+        "totalDurationMs": { "type": "number", "minimum": 0 },
+        "artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "eventEvidence": {
+      "type": "object",
+      "required": [
+        "installedRuntime",
+        "apiVersion",
+        "runId",
+        "sampleId",
+        "sessionId",
+        "source",
+        "marker",
+        "qpcTicks",
+        "processGenerationFingerprint",
+        "artifact"
+      ],
+      "properties": {
+        "installedRuntime": { "const": true },
+        "apiVersion": { "type": "integer", "minimum": 1 },
+        "runId": { "$ref": "#/$defs/nonNilUuid" },
+        "sampleId": { "$ref": "#/$defs/nonNilUuid" },
+        "sessionId": { "$ref": "#/$defs/nonNilUuid" },
+        "source": { "type": "string", "minLength": 1 },
+        "marker": { "type": "string", "minLength": 1 },
+        "qpcTicks": { "type": "integer", "minimum": 1 },
+        "processGenerationFingerprint": { "$ref": "#/$defs/sha256" },
+        "artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "lifecycleSample": {
+      "type": "object",
+      "required": [
+        "scenario",
+        "iteration",
+        "runId",
+        "sampleId",
+        "installedExeSha256",
+        "harnessManifestSha256",
+        "processGenerationFingerprint",
+        "processGeneration",
+        "start",
+        "stableFrame",
+        "durationMs",
+        "frontendPerformance",
+        "eventEvidence"
+      ],
+      "properties": {
+        "scenario": {
+          "enum": [
+            "stop_to_transcribing_visible",
+            "provider_result_to_completed_visible",
+            "session_finished_to_history_visible"
+          ]
+        },
+        "iteration": { "type": "integer", "minimum": 1 },
+        "runId": { "$ref": "#/$defs/nonNilUuid" },
+        "sampleId": { "$ref": "#/$defs/nonNilUuid" },
+        "installedExeSha256": { "$ref": "#/$defs/sha256" },
+        "harnessManifestSha256": { "$ref": "#/$defs/sha256" },
+        "processGenerationFingerprint": { "$ref": "#/$defs/sha256" },
+        "processGeneration": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fingerprint", "artifact"],
+          "properties": {
+            "fingerprint": { "$ref": "#/$defs/sha256" },
+            "artifact": { "$ref": "#/$defs/artifact" }
+          }
+        },
+        "start": { "$ref": "#/$defs/marker" },
+        "stableFrame": { "$ref": "#/$defs/stableFrame" },
+        "durationMs": { "type": "number", "minimum": 0 },
+        "frontendPerformance": { "$ref": "#/$defs/frontendPerformance" },
+        "eventEvidence": { "$ref": "#/$defs/eventEvidence" }
+      }
+    },
+    "resourceEvidence": {
+      "type": "object",
+      "required": [
+        "runId",
+        "installedExeSha256",
+        "harnessManifestSha256",
+        "sampleCount",
+        "idleCpuPercent",
+        "workingSetMb",
+        "artifact"
+      ],
+      "properties": {
+        "runId": { "$ref": "#/$defs/nonNilUuid" },
+        "installedExeSha256": { "$ref": "#/$defs/sha256" },
+        "harnessManifestSha256": { "$ref": "#/$defs/sha256" },
+        "sampleCount": { "type": "integer", "minimum": 3 },
+        "idleCpuPercent": { "type": "number", "minimum": 0 },
+        "workingSetMb": { "type": "number", "minimum": 0 },
+        "artifact": { "$ref": "#/$defs/artifact" }
+      }
+    }
+  }
+}

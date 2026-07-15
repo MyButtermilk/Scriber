@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 from typing import Any
+from uuid import UUID
 
 
 class RESTContractError(ValueError):
@@ -449,6 +451,422 @@ def validate_frontend_ready_request_payload(payload: dict[str, Any]) -> None:
     _require_string(payload, "backendBaseUrl", contract)
     _require_string(payload, "locationOrigin", contract)
     _require_string(payload, "path", contract, allow_empty=True)
+
+
+def validate_tauri_hotkey_marker_request_payload(
+    payload: dict[str, Any],
+    *,
+    configured_run_id: str | None,
+    expected_parent_pid: int,
+    now_ns: int,
+) -> dict[str, Any]:
+    """Validate the benchmark-only marker attached by the Tauri hotkey callback.
+
+    The contract is intentionally narrow. It accepts no user content and binds
+    one absolute Windows-QPC observation to the configured benchmark run, one
+    opaque sample, and the direct Tauri parent of the managed backend.
+    """
+
+    contract = "POST /api/live-mic/* benchmarkHotkeyMarker"
+    if not isinstance(payload, dict):
+        raise RESTContractError(f"{contract} payload must be a dict")
+    if set(payload) != {"benchmarkHotkeyMarker"}:
+        raise RESTContractError(
+            f"{contract} permits only 'benchmarkHotkeyMarker'"
+        )
+    marker = _require_dict(payload, "benchmarkHotkeyMarker", contract)
+    expected_fields = {
+        "schemaVersion",
+        "marker",
+        "source",
+        "runId",
+        "sampleId",
+        "processId",
+        "qpcTicks",
+        "qpcFrequency",
+        "timestampNs",
+    }
+    if set(marker) != expected_fields:
+        raise RESTContractError(f"{contract} contains unsupported marker fields")
+    if _require_int(marker, "schemaVersion", contract) != 1:
+        raise RESTContractError(f"{contract} requires schemaVersion 1")
+    if _require_string(marker, "marker", contract) != "hotkey_received":
+        raise RESTContractError(f"{contract} requires marker 'hotkey_received'")
+    if _require_string(marker, "source", contract) != "tauri_global_shortcut":
+        raise RESTContractError(
+            f"{contract} requires source 'tauri_global_shortcut'"
+        )
+
+    def canonical_uuid(raw: str, field: str) -> str:
+        try:
+            value = UUID(raw)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise RESTContractError(
+                f"{contract} requires UUID '{field}'"
+            ) from exc
+        if value.int == 0:
+            raise RESTContractError(f"{contract} requires non-nil UUID '{field}'")
+        return value.hex
+
+    configured = (configured_run_id or "").strip()
+    if not configured:
+        raise RESTContractError(f"{contract} is disabled for this runtime")
+    expected_run_id = canonical_uuid(configured, "configuredRunId")
+    run_id = canonical_uuid(_require_string(marker, "runId", contract), "runId")
+    sample_id = canonical_uuid(
+        _require_string(marker, "sampleId", contract), "sampleId"
+    )
+    if run_id != expected_run_id:
+        raise RESTContractError(f"{contract} runId does not match this runtime")
+
+    process_id = _require_int(marker, "processId", contract)
+    if expected_parent_pid <= 0 or process_id != expected_parent_pid:
+        raise RESTContractError(
+            f"{contract} processId is not the managed backend parent"
+        )
+    qpc_ticks = _require_int(marker, "qpcTicks", contract)
+    qpc_frequency = _require_int(marker, "qpcFrequency", contract)
+    timestamp_ns = _require_int(marker, "timestampNs", contract)
+    signed_i64_max = (1 << 63) - 1
+    if not (0 < qpc_ticks <= signed_i64_max):
+        raise RESTContractError(f"{contract} requires bounded positive qpcTicks")
+    if not (1_000 <= qpc_frequency <= 10_000_000_000):
+        raise RESTContractError(f"{contract} requires bounded qpcFrequency")
+    if not (0 < timestamp_ns <= signed_i64_max):
+        raise RESTContractError(f"{contract} requires bounded positive timestampNs")
+    normalized_ns = (qpc_ticks * 1_000_000_000) // qpc_frequency
+    if timestamp_ns != normalized_ns:
+        raise RESTContractError(
+            f"{contract} timestampNs must be normalized from its QPC values"
+        )
+    # A marker should traverse only the local Tauri -> managed-backend request.
+    # Keep a small clock tolerance while rejecting stale replay and future data.
+    if now_ns <= 0 or timestamp_ns > now_ns + 1_000_000_000:
+        raise RESTContractError(f"{contract} timestamp is outside the local clock")
+    if now_ns - timestamp_ns > 30_000_000_000:
+        raise RESTContractError(f"{contract} timestamp is stale")
+
+    return {
+        "schemaVersion": 1,
+        "marker": "hotkey_received",
+        "source": "tauri_global_shortcut",
+        "runId": run_id,
+        "sampleId": sample_id,
+        "processId": process_id,
+        "qpcTicks": qpc_ticks,
+        "qpcFrequency": qpc_frequency,
+        "timestampNs": timestamp_ns,
+    }
+
+
+def _canonical_provider_replay_uuid(
+    raw: str,
+    *,
+    field: str,
+    contract: str,
+) -> str:
+    try:
+        value = UUID(raw)
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise RESTContractError(f"{contract} requires UUID '{field}'") from exc
+    if value.int == 0:
+        raise RESTContractError(f"{contract} requires non-nil UUID '{field}'")
+    return value.hex
+
+
+def _matching_provider_replay_run_id(
+    payload: dict[str, Any],
+    *,
+    configured_run_id: str | None,
+    contract: str,
+) -> str:
+    configured = _canonical_provider_replay_uuid(
+        str(configured_run_id or ""),
+        field="configuredRunId",
+        contract=contract,
+    )
+    requested = _canonical_provider_replay_uuid(
+        _require_string(payload, "runId", contract),
+        field="runId",
+        contract=contract,
+    )
+    if requested != configured:
+        # Keep a wrong run indistinguishable from an unavailable benchmark
+        # runtime at the HTTP boundary.
+        raise RESTContractError(f"{contract} runId does not match this runtime")
+    return requested
+
+
+def validate_provider_replay_prepare_request_payload(
+    payload: dict[str, Any],
+    *,
+    configured_run_id: str | None,
+) -> dict[str, Any]:
+    contract = "POST /api/runtime/benchmark/provider-replay/prepare"
+    if not isinstance(payload, dict):
+        raise RESTContractError(f"{contract} payload must be a dict")
+    if set(payload) != {"schemaVersion", "runId", "provider"}:
+        raise RESTContractError(f"{contract} contains unsupported fields")
+    if _require_int(payload, "schemaVersion", contract) != 1:
+        raise RESTContractError(f"{contract} requires schemaVersion 1")
+    run_id = _matching_provider_replay_run_id(
+        payload,
+        configured_run_id=configured_run_id,
+        contract=contract,
+    )
+    provider = _require_string(payload, "provider", contract).strip().lower()
+    if provider not in {"microsoft", "soniox"}:
+        raise RESTContractError(
+            f"{contract} provider must be 'microsoft' or 'soniox'"
+        )
+    return {
+        "schemaVersion": 1,
+        "runId": run_id,
+        "provider": provider,
+    }
+
+
+def validate_provider_replay_arm_request_payload(
+    payload: dict[str, Any],
+    *,
+    configured_run_id: str | None,
+) -> dict[str, Any]:
+    contract = "POST /api/runtime/benchmark/provider-replay/{sampleId}/arm"
+    if not isinstance(payload, dict):
+        raise RESTContractError(f"{contract} payload must be a dict")
+    expected = {
+        "schemaVersion",
+        "runId",
+        "targetProcessId",
+        "targetCreationTime100ns",
+    }
+    if set(payload) != expected:
+        raise RESTContractError(f"{contract} contains unsupported fields")
+    if _require_int(payload, "schemaVersion", contract) != 1:
+        raise RESTContractError(f"{contract} requires schemaVersion 1")
+    run_id = _matching_provider_replay_run_id(
+        payload,
+        configured_run_id=configured_run_id,
+        contract=contract,
+    )
+    process_id = _require_int(payload, "targetProcessId", contract)
+    creation_time = _require_int(payload, "targetCreationTime100ns", contract)
+    if not (0 < process_id <= (1 << 32) - 1):
+        raise RESTContractError(f"{contract} requires bounded targetProcessId")
+    if not (0 < creation_time <= (1 << 64) - 1):
+        raise RESTContractError(
+            f"{contract} requires bounded targetCreationTime100ns"
+        )
+    return {
+        "schemaVersion": 1,
+        "runId": run_id,
+        "targetProcessId": process_id,
+        "targetCreationTime100ns": creation_time,
+    }
+
+
+def validate_provider_replay_status_query(
+    query: dict[str, Any],
+    *,
+    configured_run_id: str | None,
+) -> dict[str, Any]:
+    contract = "GET /api/runtime/benchmark/provider-replay/{sampleId}"
+    if not isinstance(query, dict) or set(query) != {"runId"}:
+        raise RESTContractError(f"{contract} requires only query field 'runId'")
+    return {
+        "runId": _matching_provider_replay_run_id(
+            query,
+            configured_run_id=configured_run_id,
+            contract=contract,
+        )
+    }
+
+
+def validate_frontend_performance_request_payload(payload: dict[str, Any]) -> None:
+    contract = "POST /api/runtime/frontend-performance"
+    if not isinstance(payload, dict):
+        raise RESTContractError(f"{contract} payload must be a dict")
+
+    _require_api_version(payload, contract)
+    source_instance_id = _require_string(payload, "sourceInstanceId", contract)
+    if len(source_instance_id) > 64 or not all(
+        char.isalnum() or char in "-_" for char in source_instance_id
+    ):
+        raise RESTContractError(
+            f"{contract} requires bounded opaque 'sourceInstanceId'"
+        )
+    observer_supported = _require_bool(payload, "observerSupported", contract)
+    window_started_at_ms = _require_number(payload, "windowStartedAtMs", contract)
+    observed_at_ms = _require_number(payload, "observedAtMs", contract)
+    dropped_entries = _require_int(payload, "droppedEntries", contract)
+    heartbeat_sequence = _require_int(payload, "heartbeatSequence", contract)
+    if (
+        not math.isfinite(window_started_at_ms)
+        or not math.isfinite(observed_at_ms)
+        or window_started_at_ms < 0
+        or observed_at_ms < window_started_at_ms
+    ):
+        raise RESTContractError(
+            f"{contract} requires a finite monotonic frontend observation window"
+        )
+    if dropped_entries < 0 or dropped_entries > 1_000_000:
+        raise RESTContractError(f"{contract} requires bounded non-negative 'droppedEntries'")
+    if heartbeat_sequence < 0 or heartbeat_sequence > 1_000_000_000:
+        raise RESTContractError(f"{contract} requires bounded non-negative 'heartbeatSequence'")
+
+    entries = payload.get("entries")
+    if not isinstance(entries, list) or len(entries) > 64:
+        raise RESTContractError(f"{contract} requires at most 64 'entries'")
+    if entries and not observer_supported:
+        raise RESTContractError(
+            f"{contract} cannot include entries when the observer is unsupported"
+        )
+    previous_sequence = 0
+    for item in entries:
+        if not isinstance(item, dict):
+            raise RESTContractError(f"{contract} requires object entries")
+        sequence = _require_int(item, "sequence", contract)
+        start_time_ms = _require_number(item, "startTimeMs", contract)
+        duration_ms = _require_number(item, "durationMs", contract)
+        if sequence <= previous_sequence:
+            raise RESTContractError(
+                f"{contract} requires strictly increasing entry sequences"
+            )
+        if (
+            not math.isfinite(start_time_ms)
+            or not math.isfinite(duration_ms)
+            or start_time_ms < window_started_at_ms
+            or start_time_ms > observed_at_ms
+            or duration_ms <= 200
+            or duration_ms > 600_000
+        ):
+            raise RESTContractError(
+                f"{contract} requires finite, bounded long-task timings over 200 ms"
+            )
+        previous_sequence = sequence
+
+
+def validate_frontend_performance_payload(payload: dict[str, Any]) -> None:
+    contract = "/api/runtime/frontend-performance"
+    if not isinstance(payload, dict):
+        raise RESTContractError(f"{contract} payload must be a dict")
+
+    _require_api_version(payload, contract)
+    available = _require_bool(payload, "available", contract)
+    _require_optional_string(payload, "reason", contract)
+    _require_optional_bool(payload, "observerSupported", contract)
+    _require_optional_string(payload, "sourceInstanceId", contract)
+    reason = payload.get("reason")
+    if reason not in {None, "not_reported", "source_instance_changed"}:
+        raise RESTContractError(f"{contract} contains unsupported 'reason'")
+    window = payload.get("window")
+    if not available:
+        if reason is None:
+            raise RESTContractError(f"{contract} requires a reason when unavailable")
+        if window is not None:
+            raise RESTContractError(f"{contract} requires null 'window' when unavailable")
+        return
+    if reason is not None:
+        raise RESTContractError(f"{contract} requires null 'reason' when available")
+    _require_bool(payload, "observerSupported", contract)
+    _require_string(payload, "sourceInstanceId", contract)
+    if not isinstance(window, dict):
+        raise RESTContractError(f"{contract} requires object 'window' when available")
+
+    for field in (
+        "startedAtFrontendUptimeMs",
+        "observedAtFrontendUptimeMs",
+        "receivedAtUptimeSeconds",
+        "maxDurationMs",
+        "totalDurationMs",
+    ):
+        value = _require_number(window, field, contract)
+        if not math.isfinite(value) or value < 0:
+            raise RESTContractError(f"{contract} requires finite non-negative '{field}'")
+    for field in (
+        "count",
+        "cumulativeCount",
+        "lastSequence",
+        "droppedEntries",
+        "sequenceGaps",
+        "retainedEntries",
+        "heartbeatSequence",
+    ):
+        if _require_int(window, field, contract) < 0:
+            raise RESTContractError(f"{contract} requires non-negative '{field}'")
+    query_after_sequence = window.get("queryAfterSequence")
+    _require_optional_int(window, "queryAfterSequence", contract)
+    for field in (
+        "heartbeatObservedAtFrontendUptimeMs",
+        "heartbeatReceivedAtUptimeSeconds",
+    ):
+        _require_optional_number(window, field, contract)
+        value = window.get(field)
+        if value is not None and (not math.isfinite(float(value)) or float(value) < 0):
+            raise RESTContractError(
+                f"{contract} requires finite non-negative '{field}' when present"
+            )
+    if query_after_sequence is not None and query_after_sequence < 0:
+        raise RESTContractError(
+            f"{contract} requires non-negative 'queryAfterSequence'"
+        )
+    _require_bool(window, "truncated", contract)
+    if window["count"] > window["cumulativeCount"]:
+        raise RESTContractError(
+            f"{contract} count cannot exceed cumulativeCount"
+        )
+    if window["count"] == 0 and (
+        float(window["maxDurationMs"]) != 0
+        or float(window["totalDurationMs"]) != 0
+    ):
+        raise RESTContractError(
+            f"{contract} empty windows require zero duration aggregates"
+        )
+
+
+def validate_frontend_performance_flush_request_payload(payload: dict[str, Any]) -> None:
+    contract = "POST /api/runtime/frontend-performance/flush-request"
+    if not isinstance(payload, dict):
+        raise RESTContractError(f"{contract} payload must be a dict")
+    _require_api_version(payload, contract)
+    source_instance_id = _require_string(payload, "sourceInstanceId", contract)
+    if len(source_instance_id) > 64 or not all(
+        char.isalnum() or char in "-_" for char in source_instance_id
+    ):
+        raise RESTContractError(
+            f"{contract} requires bounded opaque 'sourceInstanceId'"
+        )
+
+
+def validate_live_mic_stop_request_payload(payload: dict[str, Any]) -> None:
+    """Validate the asynchronous Live Mic stop acknowledgement contract."""
+    contract = "POST /api/live-mic/stop-request"
+    if not isinstance(payload, dict):
+        raise RESTContractError(f"{contract} payload must be a dict")
+
+    _require_api_version(payload, contract)
+    stop_accepted = _require_bool(payload, "stopAccepted", contract)
+    stop_scheduled = _require_bool(payload, "stopScheduled", contract)
+    already_finalizing = _require_bool(payload, "alreadyFinalizing", contract)
+    already_stopped = _require_bool(payload, "alreadyStopped", contract)
+    finalizing = _require_bool(payload, "finalizing", contract)
+    _require_optional_string(payload, "sessionId", contract)
+
+    disposition_count = sum(
+        (stop_scheduled, already_finalizing, already_stopped)
+    )
+    if stop_accepted and disposition_count != 1:
+        raise RESTContractError(
+            f"{contract} requires exactly one accepted stop disposition"
+        )
+    if not stop_accepted and disposition_count != 0:
+        raise RESTContractError(
+            f"{contract} cannot report a stop disposition when acceptance failed"
+        )
+    if finalizing != bool(stop_scheduled or already_finalizing):
+        raise RESTContractError(
+            f"{contract} requires 'finalizing' to match scheduled/in-progress work"
+        )
 
 
 def validate_audio_diagnostics_payload(payload: dict[str, Any]) -> None:

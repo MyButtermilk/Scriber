@@ -24,17 +24,57 @@ from pipecat.frames.frames import (
 from src.config import Config
 from src.runtime.shell_ipc import call_shell_ipc, record_command_diagnostic
 
-try:
-    if sys.platform.startswith("linux") and "DISPLAY" not in os.environ:
-        raise ImportError("Headless Linux detected")
-    import pyautogui
-    import keyboard
-    HAS_GUI = True
-except (ImportError, KeyError, OSError) as e:
-    HAS_GUI = False
-    pyautogui = None
-    keyboard = None
-    logger.warning(f"GUI libraries not available: {e}. Text injection will be mocked.")
+HAS_GUI = not (sys.platform.startswith("linux") and "DISPLAY" not in os.environ)
+pyautogui = None
+keyboard = None
+_GUI_MODULES_LOCK = threading.Lock()
+_GUI_IMPORT_ATTEMPTED = False
+
+
+def _ensure_gui_modules() -> bool:
+    """Load legacy GUI fallbacks only when text is actually injected.
+
+    Live Mic constructs TextInjector at recording start, but normally does not
+    need pyautogui/keyboard until final text is pasted. Importing both eagerly
+    delayed the first microphone start and retained their dependency graph even
+    when the native clipboard/SendInput paths were sufficient.
+    """
+
+    global HAS_GUI, _GUI_IMPORT_ATTEMPTED, keyboard, pyautogui
+    if not HAS_GUI:
+        return False
+    if pyautogui is not None and keyboard is not None:
+        return True
+    with _GUI_MODULES_LOCK:
+        if pyautogui is not None and keyboard is not None:
+            return True
+        if _GUI_IMPORT_ATTEMPTED:
+            return pyautogui is not None or keyboard is not None
+        _GUI_IMPORT_ATTEMPTED = True
+        import_errors: list[str] = []
+        if pyautogui is None:
+            try:
+                import pyautogui as pyautogui_module
+
+                pyautogui = pyautogui_module
+            except (ImportError, KeyError, OSError) as exc:
+                import_errors.append(f"pyautogui:{type(exc).__name__}")
+        if keyboard is None:
+            try:
+                import keyboard as keyboard_module
+
+                keyboard = keyboard_module
+            except (ImportError, KeyError, OSError) as exc:
+                import_errors.append(f"keyboard:{type(exc).__name__}")
+        if import_errors:
+            logger.warning(
+                "Some legacy GUI injection fallbacks are unavailable "
+                f"({', '.join(import_errors)})"
+            )
+        if pyautogui is None and keyboard is None:
+            HAS_GUI = False
+            return False
+        return True
 
 
 class _ClipboardAccessFailed:
@@ -55,6 +95,63 @@ class _ClipboardSnapshot:
     formats: list[_ClipboardFormatSnapshot]
     unsupported_format_count: int = 0
     total_bytes: int = 0
+
+
+@dataclass(frozen=True)
+class InjectionTargetGuard:
+    """Immutable identity for a text-injection destination.
+
+    Normal product sessions may continue to use the configured title-only
+    guard. Installed benchmark replays additionally bind the exact target
+    process generation so a recycled PID or same-title foreground window can
+    never receive the fixture text.
+    """
+
+    title: str
+    process_id: int | None = None
+    process_creation_time_100ns: int | None = None
+    window_handle: int | None = None
+
+    def __post_init__(self) -> None:
+        title = str(self.title or "").strip()
+        object.__setattr__(self, "title", title)
+        has_pid = self.process_id is not None
+        has_creation = self.process_creation_time_100ns is not None
+        if has_pid != has_creation:
+            raise ValueError(
+                "InjectionTargetGuard requires process_id and "
+                "process_creation_time_100ns together"
+            )
+        if has_pid:
+            if not title:
+                raise ValueError("A process-bound InjectionTargetGuard requires a title")
+            for field_name, value in (
+                ("process_id", self.process_id),
+                ("process_creation_time_100ns", self.process_creation_time_100ns),
+            ):
+                if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                    raise ValueError(f"InjectionTargetGuard {field_name} must be a positive integer")
+        if self.window_handle is not None:
+            if not has_pid:
+                raise ValueError(
+                    "InjectionTargetGuard window_handle requires a complete process generation"
+                )
+            if (
+                isinstance(self.window_handle, bool)
+                or not isinstance(self.window_handle, int)
+                or self.window_handle <= 0
+            ):
+                raise ValueError(
+                    "InjectionTargetGuard window_handle must be a positive integer"
+                )
+
+
+@dataclass(frozen=True)
+class _ForegroundTargetSnapshot:
+    title: str
+    process_id: int
+    process_creation_time_100ns: int | None
+    window_handle: int
 
 
 _MAX_CLIPBOARD_SNAPSHOT_BYTES = 64 * 1024 * 1024
@@ -235,7 +332,7 @@ def _send_input_text(text: str) -> bool:
 
 
 def _active_window_title() -> str:
-    if not HAS_GUI or not pyautogui:
+    if not HAS_GUI or not _ensure_gui_modules() or not pyautogui:
         return ""
     try:
         return pyautogui.getActiveWindowTitle() or ""
@@ -257,14 +354,186 @@ def _active_window_matches_expected_target(expected_title: str) -> bool:
     return _active_window_title() == expected_title
 
 
-def _foreground_target_guard_allows_dispatch(expected_title: str, *, phase: str) -> bool:
-    if _active_window_matches_expected_target(expected_title):
+def _active_foreground_target_snapshot() -> _ForegroundTargetSnapshot | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        _set_ctypes_signature(
+            getattr(user32, "GetForegroundWindow", None),
+            restype=wintypes.HWND,
+        )
+        _set_ctypes_signature(
+            getattr(user32, "GetWindowThreadProcessId", None),
+            argtypes=[wintypes.HWND, ctypes.POINTER(wintypes.DWORD)],
+            restype=wintypes.DWORD,
+        )
+        _set_ctypes_signature(
+            getattr(user32, "GetWindowTextLengthW", None),
+            argtypes=[wintypes.HWND],
+            restype=ctypes.c_int,
+        )
+        _set_ctypes_signature(
+            getattr(user32, "GetWindowTextW", None),
+            argtypes=[wintypes.HWND, wintypes.LPWSTR, ctypes.c_int],
+            restype=ctypes.c_int,
+        )
+        _set_ctypes_signature(
+            getattr(kernel32, "OpenProcess", None),
+            argtypes=[wintypes.DWORD, wintypes.BOOL, wintypes.DWORD],
+            restype=wintypes.HANDLE,
+        )
+        _set_ctypes_signature(
+            getattr(kernel32, "GetProcessTimes", None),
+            argtypes=[
+                wintypes.HANDLE,
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+            ],
+            restype=wintypes.BOOL,
+        )
+        _set_ctypes_signature(
+            getattr(kernel32, "CloseHandle", None),
+            argtypes=[wintypes.HANDLE],
+            restype=wintypes.BOOL,
+        )
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        hwnd_value = int(hwnd)
+
+        title_length = max(0, int(user32.GetWindowTextLengthW(hwnd) or 0))
+        title_buffer = ctypes.create_unicode_buffer(title_length + 1)
+        user32.GetWindowTextW(hwnd, title_buffer, len(title_buffer))
+        title = str(title_buffer.value or "")
+
+        process_id = wintypes.DWORD()
+        if not user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id)):
+            return None
+        pid = int(process_id.value)
+        if pid <= 0:
+            return None
+
+        process_query_limited_information = 0x1000
+        handle = kernel32.OpenProcess(
+            process_query_limited_information,
+            False,
+            pid,
+        )
+        creation_100ns: int | None = None
+        if handle:
+            try:
+                creation = wintypes.FILETIME()
+                exit_time = wintypes.FILETIME()
+                kernel_time = wintypes.FILETIME()
+                user_time = wintypes.FILETIME()
+                if kernel32.GetProcessTimes(
+                    handle,
+                    ctypes.byref(creation),
+                    ctypes.byref(exit_time),
+                    ctypes.byref(kernel_time),
+                    ctypes.byref(user_time),
+                ):
+                    creation_100ns = (int(creation.dwHighDateTime) << 32) | int(
+                        creation.dwLowDateTime
+                    )
+            finally:
+                kernel32.CloseHandle(handle)
+        # Title and process identity must describe the same still-foreground
+        # HWND. A focus change anywhere inside this snapshot fails closed.
+        if int(user32.GetForegroundWindow() or 0) != hwnd_value:
+            return None
+        return _ForegroundTargetSnapshot(
+            title=title,
+            process_id=pid,
+            process_creation_time_100ns=creation_100ns,
+            window_handle=hwnd_value,
+        )
+    except Exception:
+        return None
+
+
+def _active_foreground_process_identity() -> tuple[int | None, int | None]:
+    snapshot = _active_foreground_target_snapshot()
+    if snapshot is None:
+        return None, None
+    return snapshot.process_id, snapshot.process_creation_time_100ns
+
+
+def _coerce_injection_target_guard(
+    target: str | InjectionTargetGuard | None,
+) -> InjectionTargetGuard | None:
+    if isinstance(target, InjectionTargetGuard):
+        return target
+    title = str(target or "").strip()
+    return InjectionTargetGuard(title=title) if title else None
+
+
+def _foreground_target_guard_allows_dispatch(
+    target: str | InjectionTargetGuard | None,
+    *,
+    phase: str,
+    identity_only: bool = False,
+) -> bool:
+    guard = _coerce_injection_target_guard(target)
+    if guard is None:
         return True
-    logger.warning(
-        "Text injection skipped because foreground target title did not match "
-        f"(phase={phase})"
+    expected_title = str(guard.title or "").strip()
+    process_bound = (
+        guard.process_id is not None
+        and guard.process_creation_time_100ns is not None
     )
-    return False
+    if not process_bound:
+        if identity_only:
+            return True
+        if not expected_title or _active_window_matches_expected_target(expected_title):
+            return True
+        logger.warning(
+            "Text injection skipped because foreground target title did not match "
+            f"(phase={phase})"
+        )
+        return False
+
+    snapshot = _active_foreground_target_snapshot()
+    if snapshot is None:
+        logger.warning(
+            "Text injection skipped because foreground target identity was unavailable "
+            f"(phase={phase})"
+        )
+        return False
+    if not identity_only and expected_title and snapshot.title != expected_title:
+        logger.warning(
+            "Text injection skipped because foreground target title did not match "
+            f"(phase={phase})"
+        )
+        return False
+    if snapshot.process_id != int(guard.process_id):
+        logger.warning(
+            "Text injection skipped because foreground target process did not match "
+            f"(phase={phase})"
+        )
+        return False
+    if snapshot.process_creation_time_100ns != int(
+        guard.process_creation_time_100ns
+    ):
+        logger.warning(
+            "Text injection skipped because foreground target generation did not match "
+            f"(phase={phase})"
+        )
+        return False
+    if (
+        guard.window_handle is not None
+        and snapshot.window_handle != int(guard.window_handle)
+    ):
+        logger.warning(
+            "Text injection skipped because foreground target window did not match "
+            f"(phase={phase})"
+        )
+        return False
+    return True
 
 
 def _is_slow_app(title: str) -> bool:
@@ -559,6 +828,7 @@ def _paste_text(
     *,
     skip_clipboard_restore: bool = False,
     on_marker: Optional[Callable[[str], None]] = None,
+    target_guard: InjectionTargetGuard | None = None,
 ) -> bool:
     """
     Inject text via clipboard paste (Ctrl+V).
@@ -570,12 +840,16 @@ def _paste_text(
     """
     if not HAS_GUI:
         return False
+    if not _ensure_gui_modules():
+        return False
     if sys.platform != "win32":
         return False
 
-    expected_target_title = _expected_injection_target_title()
+    target = target_guard or _coerce_injection_target_guard(
+        _expected_injection_target_title()
+    )
     if not _foreground_target_guard_allows_dispatch(
-        expected_target_title,
+        target,
         phase="before_clipboard_set",
     ):
         return False
@@ -605,24 +879,50 @@ def _paste_text(
             time.sleep(pre_delay_ms / 1000.0)
 
         if not _foreground_target_guard_allows_dispatch(
-            expected_target_title,
+            target,
             phase="before_paste_dispatch",
         ):
             return False
 
-        try:
-            if keyboard and hasattr(keyboard, "press_and_release"):
-                keyboard.press_and_release("ctrl+v")
-            else:
-                raise RuntimeError("keyboard.press_and_release unavailable")
-        except Exception:
-            if pyautogui and hasattr(pyautogui, "hotkey"):
-                pyautogui.hotkey("ctrl", "v", interval=0.05)
-            else:
-                return False
+        # Select exactly one input backend before dispatch. Once an input API
+        # has been called, an exception cannot prove that Ctrl+V was not
+        # partially delivered. Retrying through another backend could paste
+        # twice or into a newly focused window, so an uncertain dispatch is
+        # terminal and deliberately suppresses every outer auto fallback.
+        dispatch = None
+        if keyboard and hasattr(keyboard, "press_and_release"):
+            dispatch = lambda: keyboard.press_and_release("ctrl+v")
+        elif pyautogui and hasattr(pyautogui, "hotkey"):
+            dispatch = lambda: pyautogui.hotkey("ctrl", "v", interval=0.05)
+        if dispatch is None:
+            return False
+
         paste_dispatched = True
+        try:
+            dispatch()
+        except Exception as exc:
+            logger.warning(
+                "Clipboard paste dispatch returned an uncertain result; "
+                f"unsafe retries disabled ({type(exc).__name__})"
+            )
+            if on_marker:
+                on_marker("paste_dispatch_uncertain")
+            return True
         if on_marker:
             on_marker("paste")
+
+        if not _foreground_target_guard_allows_dispatch(
+            target,
+            phase="after_paste_dispatch",
+            identity_only=True,
+        ):
+            # Ctrl+V has already been dispatched. Never report this as an
+            # unattempted paste because `auto` would then send the same text a
+            # second time through SendInput/typing. External benchmark evidence
+            # still fails closed on this diagnostic marker.
+            if on_marker:
+                on_marker("target_changed_after_paste")
+            return True
 
         if Config.DEBUG:
             logger.info(
@@ -798,12 +1098,16 @@ class TextInjector(FrameProcessor):
         enabled: bool = True,
         on_injected: Optional[Callable[[str], None]] = None,
         on_injection_marker: Optional[Callable[..., None]] = None,
+        target_guard: InjectionTargetGuard | None = None,
+        injection_method: str | None = None,
     ):
         super().__init__()
         self.inject_immediately = inject_immediately
         self.enabled = bool(enabled)
         self.on_injected = on_injected
         self.on_injection_marker = on_injection_marker
+        self.target_guard = target_guard
+        self.injection_method = str(injection_method or "").strip().lower() or None
         self._buffer = []
         self._last_injected = ""
 
@@ -883,20 +1187,44 @@ class TextInjector(FrameProcessor):
             return
 
         try:
-            method = (getattr(Config, "INJECT_METHOD", "auto") or "auto").lower().strip()
+            method = self.injection_method or (
+                getattr(Config, "INJECT_METHOD", "auto") or "auto"
+            ).lower().strip()
         except Exception:
             method = "auto"
         if method not in {"auto", "type", "paste", "sendinput", "tauri"}:
             method = "auto"
 
-        expected_target_title = _expected_injection_target_title()
+        target_guard = self.target_guard or _coerce_injection_target_guard(
+            _expected_injection_target_title()
+        )
         if not _foreground_target_guard_allows_dispatch(
-            expected_target_title,
+            target_guard,
             phase="before_injection",
         ):
             return
 
+        strict_target_guard = bool(
+            self.target_guard is not None
+            and self.target_guard.process_id is not None
+            and self.target_guard.process_creation_time_100ns is not None
+        )
+        if strict_target_guard and method not in {"auto", "paste"}:
+            logger.warning(
+                "Strict target-bound text injection supports guarded clipboard paste only"
+            )
+            return
+
         if method == "tauri":
+            if target_guard and (
+                target_guard.process_id is not None
+                or target_guard.process_creation_time_100ns is not None
+            ):
+                logger.warning(
+                    "Tauri text injection skipped because the native IPC path "
+                    "cannot enforce the requested target process generation"
+                )
+                return
             if _tauri_inject_text(text, on_marker=self._notify_injection_marker):
                 self._notify_injected(text)
             return
@@ -908,6 +1236,11 @@ class TextInjector(FrameProcessor):
         paste_kwargs = {"skip_clipboard_restore": False}
         if self.on_injection_marker:
             paste_kwargs["on_marker"] = self._notify_injection_marker
+        # Config-derived title guards remain resolved inside `_paste_text` for
+        # backwards compatibility. Only the immutable per-instance contract
+        # must be threaded explicitly through every dispatch phase.
+        if self.target_guard is not None:
+            paste_kwargs["target_guard"] = self.target_guard
 
         # Explicit modes are strict. Only "auto" falls back across methods.
         if method == "paste":
@@ -919,7 +1252,7 @@ class TextInjector(FrameProcessor):
 
         if method == "sendinput":
             if not _foreground_target_guard_allows_dispatch(
-                expected_target_title,
+                target_guard,
                 phase="before_sendinput_dispatch",
             ):
                 return
@@ -935,9 +1268,14 @@ class TextInjector(FrameProcessor):
             if _paste_text(text, **paste_kwargs):
                 self._notify_injected(text)
                 return
+            if strict_target_guard:
+                logger.warning(
+                    "Guarded clipboard paste failed before dispatch; unsafe fallbacks disabled"
+                )
+                return
             logger.debug("Clipboard paste failed; trying SendInput")
             if not _foreground_target_guard_allows_dispatch(
-                expected_target_title,
+                target_guard,
                 phase="before_sendinput_fallback",
             ):
                 return
@@ -950,16 +1288,20 @@ class TextInjector(FrameProcessor):
 
         # Last resort: character-by-character typing (slow but most compatible)
         if not _foreground_target_guard_allows_dispatch(
-            expected_target_title,
+            target_guard,
             phase="before_keyboard_dispatch",
         ):
             return
         try:
+            if not _ensure_gui_modules() or keyboard is None:
+                raise RuntimeError("keyboard.write unavailable")
             keyboard.write(text, delay=0.01)  # 10ms per char
             self._notify_injected(text)
         except Exception:
             try:
                 logger.warning("keyboard.write failed, falling back to pyautogui.")
+                if not _ensure_gui_modules() or pyautogui is None:
+                    raise RuntimeError("pyautogui.write unavailable")
                 pyautogui.write(text, interval=0.01)
                 self._notify_injected(text)
             except Exception as e:

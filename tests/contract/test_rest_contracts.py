@@ -9,10 +9,15 @@ from src.core.rest_contracts import (
     REST_API_VERSION,
     RESTContractError,
     validate_audio_diagnostics_payload,
+    validate_frontend_performance_flush_request_payload,
+    validate_frontend_performance_payload,
+    validate_frontend_performance_request_payload,
     validate_frontend_ready_payload,
     validate_frontend_ready_request_payload,
     validate_health_payload,
+    validate_live_mic_stop_request_payload,
     validate_runtime_payload,
+    validate_tauri_hotkey_marker_request_payload,
 )
 from src.web_api import ScriberWebController
 
@@ -25,6 +30,7 @@ def test_runtime_and_health_payloads_match_contract(monkeypatch, tmp_path) -> No
         runtime = ctl.get_runtime_info()
         health = ctl.get_health()
         frontend_ready = ctl.get_frontend_ready()
+        frontend_performance = ctl.get_frontend_performance()
         audio_diagnostics = ctl.get_audio_diagnostics()
     finally:
         loop.close()
@@ -32,10 +38,12 @@ def test_runtime_and_health_payloads_match_contract(monkeypatch, tmp_path) -> No
     validate_runtime_payload(runtime)
     validate_health_payload(health)
     validate_frontend_ready_payload(frontend_ready)
+    validate_frontend_performance_payload(frontend_performance)
     validate_audio_diagnostics_payload(audio_diagnostics)
     assert runtime["apiVersion"] == REST_API_VERSION
     assert health["apiVersion"] == REST_API_VERSION
     assert frontend_ready["apiVersion"] == REST_API_VERSION
+    assert frontend_performance["apiVersion"] == REST_API_VERSION
     assert audio_diagnostics["apiVersion"] == REST_API_VERSION
     assert health["workerVersion"] == runtime["workerVersion"]
     assert health["runtimeMode"] == runtime["runtimeMode"]
@@ -188,6 +196,283 @@ def test_frontend_ready_request_contract_rejects_incompatible_payload() -> None:
     invalid["tauriRuntime"] = "yes"
     with pytest.raises(RESTContractError):
         validate_frontend_ready_request_payload(invalid)
+
+
+def test_tauri_hotkey_marker_contract_binds_run_sample_parent_and_qpc() -> None:
+    run_id = "7de1a48651d44f859042b7cbcb30da52"
+    sample_id = "2b3022ee3f404333a1156da089a24962"
+    qpc_ticks = 123_456_789
+    qpc_frequency = 10_000_000
+    timestamp_ns = (qpc_ticks * 1_000_000_000) // qpc_frequency
+    payload = {
+        "benchmarkHotkeyMarker": {
+            "schemaVersion": 1,
+            "marker": "hotkey_received",
+            "source": "tauri_global_shortcut",
+            "runId": run_id,
+            "sampleId": sample_id,
+            "processId": 4321,
+            "qpcTicks": qpc_ticks,
+            "qpcFrequency": qpc_frequency,
+            "timestampNs": timestamp_ns,
+        }
+    }
+
+    normalized = validate_tauri_hotkey_marker_request_payload(
+        payload,
+        configured_run_id="7de1a486-51d4-4f85-9042-b7cbcb30da52",
+        expected_parent_pid=4321,
+        now_ns=timestamp_ns + 1_000_000,
+    )
+
+    assert normalized["runId"] == run_id
+    assert normalized["sampleId"] == sample_id
+    assert normalized["processId"] == 4321
+    assert normalized["timestampNs"] == timestamp_ns
+
+    with pytest.raises(RESTContractError, match="disabled"):
+        validate_tauri_hotkey_marker_request_payload(
+            payload,
+            configured_run_id=None,
+            expected_parent_pid=4321,
+            now_ns=timestamp_ns + 1_000_000,
+        )
+    with pytest.raises(RESTContractError, match="managed backend parent"):
+        validate_tauri_hotkey_marker_request_payload(
+            payload,
+            configured_run_id=run_id,
+            expected_parent_pid=9999,
+            now_ns=timestamp_ns + 1_000_000,
+        )
+    with pytest.raises(RESTContractError, match="stale"):
+        validate_tauri_hotkey_marker_request_payload(
+            payload,
+            configured_run_id=run_id,
+            expected_parent_pid=4321,
+            now_ns=timestamp_ns + 31_000_000_000,
+        )
+
+    leaked = copy.deepcopy(payload)
+    leaked["benchmarkHotkeyMarker"]["text"] = "must never be accepted"
+    with pytest.raises(RESTContractError, match="unsupported marker fields"):
+        validate_tauri_hotkey_marker_request_payload(
+            leaked,
+            configured_run_id=run_id,
+            expected_parent_pid=4321,
+            now_ns=timestamp_ns + 1_000_000,
+        )
+
+def test_frontend_performance_contract_records_bounded_long_tasks(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    request = {
+        "apiVersion": REST_API_VERSION,
+        "sourceInstanceId": "webview-123",
+        "observerSupported": True,
+        "windowStartedAtMs": 100.0,
+        "observedAtMs": 900.0,
+        "droppedEntries": 0,
+        "heartbeatSequence": 0,
+        "entries": [
+            {"sequence": 1, "startTimeMs": 200.0, "durationMs": 225.5},
+            {"sequence": 2, "startTimeMs": 500.0, "durationMs": 300.25},
+        ],
+    }
+    validate_frontend_performance_request_payload(request)
+
+    loop = asyncio.new_event_loop()
+    try:
+        ctl = ScriberWebController(loop)
+        response = ctl.record_frontend_performance(request)
+        replayed = ctl.record_frontend_performance({**request, "droppedEntries": 1})
+        replayed = ctl.record_frontend_performance({**request, "droppedEntries": 1})
+        forged = ctl.record_frontend_performance(
+            {**request, "entries": [], "heartbeatSequence": 999}
+        )
+        assert ctl.request_frontend_performance_flush("another-webview") is None
+        flush_request = ctl.request_frontend_performance_flush("webview-123")
+        assert flush_request is not None
+        stale = ctl.record_frontend_performance(
+            {
+                **request,
+                "entries": [],
+                "heartbeatSequence": flush_request["heartbeatSequence"],
+            }
+        )
+        acknowledged = ctl.record_frontend_performance(
+            {
+                **request,
+                "observedAtMs": 1_000.0,
+                "entries": [],
+                "heartbeatSequence": flush_request["heartbeatSequence"],
+            }
+        )
+        delta = ctl.get_frontend_performance(
+            after_sequence=1,
+            source_instance_id="webview-123",
+        )
+    finally:
+        loop.close()
+
+    validate_frontend_performance_payload(response)
+    validate_frontend_performance_payload(delta)
+    assert response["window"]["count"] == 2
+    assert response["window"]["maxDurationMs"] == 300.25
+    assert replayed["window"]["cumulativeCount"] == 2
+    assert replayed["window"]["droppedEntries"] == 1
+    assert forged["window"]["heartbeatSequence"] == 0
+    assert stale["window"]["heartbeatSequence"] == 0
+    assert acknowledged["window"]["heartbeatSequence"] == flush_request["heartbeatSequence"]
+    assert acknowledged["window"]["heartbeatReceivedAtUptimeSeconds"] >= flush_request["requestedAtUptimeSeconds"]
+    assert delta["window"]["count"] == 1
+    assert delta["window"]["totalDurationMs"] == 300.25
+    assert delta["window"]["queryAfterSequence"] == 1
+
+    changed = ctl.get_frontend_performance(
+        after_sequence=1,
+        source_instance_id="another-webview",
+    )
+    validate_frontend_performance_payload(changed)
+    assert changed["available"] is False
+    assert changed["reason"] == "source_instance_changed"
+
+
+def test_frontend_performance_request_rejects_fake_or_sensitive_evidence() -> None:
+    valid = {
+        "apiVersion": REST_API_VERSION,
+        "sourceInstanceId": "webview-123",
+        "observerSupported": True,
+        "windowStartedAtMs": 100.0,
+        "observedAtMs": 900.0,
+        "droppedEntries": 0,
+        "heartbeatSequence": 0,
+        "entries": [
+            {"sequence": 1, "startTimeMs": 200.0, "durationMs": 225.5},
+        ],
+    }
+
+    for invalid in (
+        {**valid, "sourceInstanceId": "https://private.example/person"},
+        {**valid, "observerSupported": False},
+        {**valid, "heartbeatSequence": -1},
+        {
+            **valid,
+            "entries": [{"sequence": 1, "startTimeMs": 200.0, "durationMs": 200.0}],
+        },
+        {
+            **valid,
+            "entries": [
+                {"sequence": 2, "startTimeMs": 200.0, "durationMs": 225.5},
+                {"sequence": 1, "startTimeMs": 500.0, "durationMs": 250.0},
+            ],
+        },
+    ):
+        with pytest.raises(RESTContractError):
+            validate_frontend_performance_request_payload(invalid)
+
+    validate_frontend_performance_flush_request_payload(
+        {"apiVersion": REST_API_VERSION, "sourceInstanceId": "webview-123"}
+    )
+    with pytest.raises(RESTContractError):
+        validate_frontend_performance_flush_request_payload(
+            {
+                "apiVersion": REST_API_VERSION,
+                "sourceInstanceId": "https://private.example/person",
+            }
+        )
+
+
+def test_frontend_performance_drop_and_sequence_gap_counters_are_cumulative(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    request = {
+        "apiVersion": REST_API_VERSION,
+        "sourceInstanceId": "webview-gap",
+        "observerSupported": True,
+        "windowStartedAtMs": 100.0,
+        "observedAtMs": 900.0,
+        "droppedEntries": 1,
+        "heartbeatSequence": 0,
+        "entries": [
+            {"sequence": 2, "startTimeMs": 200.0, "durationMs": 225.5},
+        ],
+    }
+
+    loop = asyncio.new_event_loop()
+    try:
+        ctl = ScriberWebController(loop)
+        first = ctl.record_frontend_performance(request)
+        replay = ctl.record_frontend_performance(request)
+        second = ctl.record_frontend_performance(
+            {
+                **request,
+                "observedAtMs": 1_100.0,
+                "entries": [
+                    {"sequence": 4, "startTimeMs": 1_000.0, "durationMs": 250.0},
+                ],
+            }
+        )
+    finally:
+        loop.close()
+
+    assert first["window"]["droppedEntries"] == 1
+    assert first["window"]["sequenceGaps"] == 1
+    assert replay["window"]["droppedEntries"] == 1
+    assert replay["window"]["sequenceGaps"] == 1
+    assert second["window"]["droppedEntries"] == 1
+    assert second["window"]["sequenceGaps"] == 2
+
+
+@pytest.mark.parametrize(
+    ("stop_scheduled", "already_finalizing", "already_stopped", "finalizing"),
+    (
+        (True, False, False, True),
+        (False, True, False, True),
+        (False, False, True, False),
+    ),
+)
+def test_live_mic_stop_request_contract_accepts_each_idempotent_disposition(
+    stop_scheduled: bool,
+    already_finalizing: bool,
+    already_stopped: bool,
+    finalizing: bool,
+) -> None:
+    validate_live_mic_stop_request_payload(
+        {
+            "apiVersion": REST_API_VERSION,
+            "stopAccepted": True,
+            "stopScheduled": stop_scheduled,
+            "alreadyFinalizing": already_finalizing,
+            "alreadyStopped": already_stopped,
+            "finalizing": finalizing,
+            "sessionId": "session-1" if finalizing else None,
+        }
+    )
+
+
+def test_live_mic_stop_request_contract_rejects_conflicting_dispositions() -> None:
+    conflicting = {
+        "apiVersion": REST_API_VERSION,
+        "stopAccepted": True,
+        "stopScheduled": True,
+        "alreadyFinalizing": True,
+        "alreadyStopped": False,
+        "finalizing": True,
+        "sessionId": "session-1",
+    }
+    with pytest.raises(RESTContractError):
+        validate_live_mic_stop_request_payload(conflicting)
+
+    false_completion = {
+        **conflicting,
+        "stopScheduled": False,
+        "alreadyFinalizing": False,
+        "alreadyStopped": True,
+        "finalizing": True,
+    }
+    with pytest.raises(RESTContractError):
+        validate_live_mic_stop_request_payload(false_completion)
 
 
 def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:

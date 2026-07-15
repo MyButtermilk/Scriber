@@ -88,6 +88,7 @@ def test_desktop_stability_smoke_reports_idle_cpu_gate() -> None:
 
 def test_desktop_smoke_verifies_single_instance_and_audio_sidecar_cleanup() -> None:
     script = read_script("scripts/smoke_tauri_desktop.ps1")
+    rust = read_script("Frontend/src-tauri/src/lib.rs")
 
     assert "[switch]$VerifySingleInstance" in script
     assert "[string[]]$SingleInstanceSecondArguments = @()" in script
@@ -119,6 +120,11 @@ def test_desktop_smoke_verifies_single_instance_and_audio_sidecar_cleanup() -> N
     assert "SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_FILE" in script
     assert "shell menu smoke action show-window completed" in script
     assert "shell menu smoke action quit completed" in script
+    assert "SCRIBER_TAURI_SMOKE_QUIT_BARRIER_FILE" in script
+    assert "Request-FrontendPerformanceFlush" in script
+    assert "heartbeatAcknowledged" in script
+    assert "SHELL_MENU_SMOKE_QUIT_BARRIER_FILE_ENV" in rust
+    assert "shell menu smoke frontend performance barrier observed" in rust
     assert "Shell menu smoke Open Scriber did not leave the main window visible." in script
     assert "shellMenuSmoke = $shellMenuSmoke" in script
 

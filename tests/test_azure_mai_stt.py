@@ -17,6 +17,7 @@ from src.azure_mai_stt import (
     validate_azure_mai_region,
 )
 from src.config import Config
+from src.pipeline import ScriberPipeline
 
 
 def test_azure_mai_region_defaults_to_northeurope():
@@ -136,6 +137,65 @@ async def test_azure_mai_request_uses_explicit_frozen_model_and_vocab(monkeypatc
     assert payload["combinedPhrases"][0]["text"] == "done"
     assert '"model": "mai-transcribe-1.5"' in fields["definition"]
     assert '"phrases": ["Frozen term"]' in fields["definition"]
+
+
+@pytest.mark.asyncio
+async def test_azure_mai_raw_transport_marks_completion_before_json_parse(monkeypatch):
+    events: list[str] = []
+
+    async def raw_transport(**kwargs):
+        events.append("transport_complete")
+        assert kwargs["filename"] == "audio.mp3"
+        assert kwargs["content_type"] == "audio/mpeg"
+        assert kwargs["definition"]["enhancedMode"]["model"] == "mai-transcribe-1.5"
+        return 200, '{"combinedPhrases":[{"text":"done"}]}'
+
+    original_loads = __import__("json").loads
+
+    def observed_loads(raw):
+        events.append("json_parse")
+        return original_loads(raw)
+
+    monkeypatch.setattr("src.azure_mai_stt.json.loads", observed_loads)
+    payload = await transcribe_with_azure_mai(
+        session=object(),
+        speech_key="benchmark-only-key",
+        region="northeurope",
+        audio_source=b"mp3",
+        filename="audio.mp3",
+        content_type="audio/mpeg",
+        language="de-DE",
+        model="mai-transcribe-1.5",
+        raw_transport=raw_transport,
+        on_response_complete=lambda: events.append("response_complete_marker"),
+    )
+
+    assert payload["combinedPhrases"][0]["text"] == "done"
+    assert events == [
+        "transport_complete",
+        "response_complete_marker",
+        "json_parse",
+    ]
+
+
+def test_pipeline_wires_local_azure_transport_without_cloud_credential(monkeypatch):
+    async def raw_transport(**_kwargs):
+        return 200, '{"combinedPhrases":[{"text":"done"}]}'
+
+    marker = lambda: None
+    monkeypatch.setattr(Config, "AZURE_MAI_SPEECH_KEY", "")
+    pipeline = ScriberPipeline(
+        service_name="azure_mai",
+        azure_mai_raw_transport=raw_transport,
+        on_provider_response_complete=marker,
+    )
+
+    service = pipeline._create_stt_service(object())
+
+    assert isinstance(service, AzureMaiTranscribeSTTService)
+    assert service._speech_key == "local-replay"
+    assert service._raw_transport is raw_transport
+    assert service._on_response_complete is marker
 
 
 def test_azure_mai_transcript_payload_to_text_prefers_combined_phrases():

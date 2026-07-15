@@ -59,24 +59,152 @@ function Import-DotEnvIntoProcess {
 $repoEnvPath = Join-Path $RepoRoot ".env"
 $importedEnvNames = @(Import-DotEnvIntoProcess -Path $repoEnvPath)
 
+$pythonCommand = if ($env:SCRIBER_PYTHON) {
+    Get-Command $env:SCRIBER_PYTHON -ErrorAction SilentlyContinue
+} else {
+    Get-Command python.exe -ErrorAction SilentlyContinue
+}
+if (-not $pythonCommand) {
+    throw "AutoResearch requires Python. Set SCRIBER_PYTHON or add python.exe to PATH."
+}
+$pythonExecutable = $pythonCommand.Source
+
 $profilePath = Join-Path $RepoRoot "benchmarks\results\profile.json"
 & powershell.exe -NoProfile -ExecutionPolicy Bypass `
     -File (Join-Path $RepoRoot "benchmarks\windows\profile.ps1") `
     -OutputPath $profilePath `
-    -InstallRoot $InstallRoot | Out-Null
+    -InstallRoot $InstallRoot `
+    -Python $pythonExecutable | Out-Null
 
 $profile = Get-Content -LiteralPath $profilePath -Raw | ConvertFrom-Json
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $rawPath = Join-Path $OutputDir "$($Suite.ToLowerInvariant())-$stamp.json"
 
+function Get-FileSha256OrEmpty {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return ""
+    }
+    $stream = [System.IO.File]::OpenRead($Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace("-", "").ToUpperInvariant()
+    } finally {
+        $stream.Dispose()
+        $sha.Dispose()
+    }
+}
+
+function Invoke-RuntimeAttestationVerification {
+    $output = @(& $pythonExecutable (Join-Path $RepoRoot "scripts\perf\runtime_attestation.py") verify `
+        --repo-root $RepoRoot `
+        --install-root $InstallRoot 2>$null)
+    $exitCode = $LASTEXITCODE
+    $value = $null
+    try {
+        $value = (($output -join "`n") | ConvertFrom-Json)
+    } catch {
+        $value = $null
+    }
+    return [pscustomobject]@{
+        checked = $true
+        exitCode = $exitCode
+        ok = ($exitCode -eq 0 -and $null -ne $value -and [bool]$value.ok)
+        payload = $value
+    }
+}
+
+$rawProvenance = [ordered]@{
+    profileId = [string]$profile.profile_id
+    buildAttestationId = [string]$profile.buildAttestationId
+    sourceCommit = [string]$profile.scriberCommit
+    baselineId = [string]$profile.baselineId
+    baselineSha256 = [string]$profile.baselineSha256
+    baselinePostSha256 = ""
+    evaluatorHash = [string]$profile.evaluatorHash
+    scorerHash = [string]$profile.scorerHash
+    runtimeAttestationChecked = [bool]$profile.runtimeAttestationChecked
+    runtimeAttestationExitCode = [int]$profile.runtimeAttestationExitCode
+    runtimeAttestationValid = [bool]$profile.runtimeAttestationValid
+    runtimeAttestationId = [string]$profile.runtimeAttestationId
+    runtimeAttestationManifestSha256 = [string]$profile.runtimeAttestationManifestSha256
+    runtimeAttestationSourceContentSha256 = [string]$profile.runtimeAttestationSourceContentSha256
+    runtimeAttestationErrorCodes = @($profile.runtimeAttestationErrorCodes)
+    runtimeAttestationPreChecked = [bool]$profile.runtimeAttestationChecked
+    runtimeAttestationPreValid = [bool]$profile.runtimeAttestationValid
+    runtimeAttestationPreExitCode = [int]$profile.runtimeAttestationExitCode
+    runtimeAttestationPreId = [string]$profile.runtimeAttestationId
+    runtimeAttestationPreManifestSha256 = [string]$profile.runtimeAttestationManifestSha256
+    runtimeAttestationPreSourceContentSha256 = [string]$profile.runtimeAttestationSourceContentSha256
+    runtimeAttestationPreErrorCodes = @($profile.runtimeAttestationErrorCodes)
+    runtimeAttestationPostChecked = $false
+    runtimeAttestationPostValid = $false
+    runtimeAttestationPostExitCode = -1
+    runtimeAttestationPostId = ""
+    runtimeAttestationPostManifestSha256 = ""
+    runtimeAttestationPostSourceContentSha256 = ""
+    runtimeAttestationPostErrorCodes = @()
+    runtimeAttestationDriftDetected = $false
+    desktopSha256 = [string]$profile.desktopSha256
+    backendSha256 = [string]$profile.backendSha256
+    audioSidecarSha256 = [string]$profile.audioSidecarSha256
+}
+
+function Add-RawProvenance {
+    param([object]$Payload)
+
+    foreach ($entry in $rawProvenance.GetEnumerator()) {
+        $Payload | Add-Member -NotePropertyName ([string]$entry.Key) -NotePropertyValue $entry.Value -Force
+    }
+    return $Payload
+}
+
+function Write-RawPayload {
+    param(
+        [object]$Payload,
+        [string]$Path,
+        [int]$Depth = 8
+    )
+
+    $withProvenance = Add-RawProvenance -Payload $Payload
+    $withProvenance | ConvertTo-Json -Depth $Depth | Set-Content -LiteralPath $Path -Encoding UTF8
+}
+
+function Set-RawAttestationPhase {
+    param(
+        [ValidateSet("Pre", "Post")]
+        [string]$Phase,
+        [object]$Verification
+    )
+
+    $attestation = if ($Verification) { $Verification.payload } else { $null }
+    $rawProvenance["runtimeAttestation${Phase}Checked"] = [bool]($Verification -and $Verification.checked)
+    $rawProvenance["runtimeAttestation${Phase}Valid"] = [bool]($Verification -and $Verification.ok)
+    $rawProvenance["runtimeAttestation${Phase}ExitCode"] = if ($Verification) { [int]$Verification.exitCode } else { -1 }
+    $rawProvenance["runtimeAttestation${Phase}Id"] = if ($attestation) { [string]$attestation.attestationId } else { "" }
+    $rawProvenance["runtimeAttestation${Phase}ManifestSha256"] = if ($attestation) { [string]$attestation.manifestSha256 } else { "" }
+    $rawProvenance["runtimeAttestation${Phase}SourceContentSha256"] = if ($attestation) { [string]$attestation.sourceContentSha256 } else { "" }
+    $rawProvenance["runtimeAttestation${Phase}ErrorCodes"] = if ($attestation -and $attestation.errors) {
+        @($attestation.errors | ForEach-Object { [string]$_.code })
+    } else {
+        @()
+    }
+}
+
 function Write-UnknownMetrics {
     param([string]$Reason)
     $required = @(
         "local_wux",
+        "overlay_warm_p50_ms",
         "overlay_warm_p95_ms",
+        "overlay_cold_p50_ms",
         "overlay_cold_p95_ms",
+        "microsoft_local_tail_p50_ms",
         "microsoft_local_tail_p95_ms",
+        "soniox_local_tail_p50_ms",
         "soniox_local_tail_p95_ms",
+        "app_ux_p50_ms",
         "app_ux_p95_ms",
         "hotkey_mic_ready_p95_ms",
         "hotkey_first_audio_frame_p95_ms",
@@ -101,10 +229,15 @@ function Write-MetricPackage {
     )
     $required = @(
         "local_wux",
+        "overlay_warm_p50_ms",
         "overlay_warm_p95_ms",
+        "overlay_cold_p50_ms",
         "overlay_cold_p95_ms",
+        "microsoft_local_tail_p50_ms",
         "microsoft_local_tail_p95_ms",
+        "soniox_local_tail_p50_ms",
         "soniox_local_tail_p95_ms",
+        "app_ux_p50_ms",
         "app_ux_p95_ms",
         "hotkey_mic_ready_p95_ms",
         "hotkey_first_audio_frame_p95_ms",
@@ -141,7 +274,7 @@ if (-not $profile.runtimeAttestationValid) {
         runtimeAttestationSourceContentSha256 = $profile.runtimeAttestationSourceContentSha256
         runtimeAttestationErrorCodes = @($profile.runtimeAttestationErrorCodes)
     }
-    $payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $rawPath -Encoding UTF8
+    Write-RawPayload -Payload $payload -Path $rawPath -Depth 8
     Write-UnknownMetrics -Reason "runtime_attestation_invalid"
     exit 2
 }
@@ -160,7 +293,7 @@ if (-not $profile.binaryVersionMatchesSource) {
         desktopProductVersion = $profile.desktopProductVersion
         audioSidecarProductVersion = $profile.audioSidecarProductVersion
     }
-    $payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $rawPath -Encoding UTF8
+    Write-RawPayload -Payload $payload -Path $rawPath -Depth 8
     Write-UnknownMetrics -Reason "binary_version_mismatch"
     exit 2
 }
@@ -299,7 +432,7 @@ function Invoke-LiveProviderSuite {
             importedEnvNames = @($importedEnvNames)
             requiredEnv = @($requiredEnv)
         }
-        $payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $RawPath -Encoding UTF8
+        Write-RawPayload -Payload $payload -Path $RawPath -Depth 8
         Write-UnknownMetrics -Reason "missing_provider_credentials"
         exit 2
     }
@@ -423,7 +556,7 @@ function Invoke-LiveProviderSuite {
         metrics = $metricMap
         baselineEligible = $false
     }
-    $payload | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $RawPath -Encoding UTF8
+    Write-RawPayload -Payload $payload -Path $RawPath -Depth 10
     Write-MetricPackage -Metrics $metricMap -Reason $reason
     if ($ok) { exit 0 } else { exit 2 }
 }
@@ -479,7 +612,7 @@ if ($foreign.Count -gt 0) {
         importedEnvNames = @($importedEnvNames)
         foreignProcesses = @($foreign)
     }
-    $payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $rawPath -Encoding UTF8
+    Write-RawPayload -Payload $payload -Path $rawPath -Depth 8
     Write-UnknownMetrics -Reason "foreign_scriber_instance"
     exit 2
 }
@@ -496,7 +629,7 @@ if ($existingScriberProcesses.Count -gt 0) {
         importedEnvNames = @($importedEnvNames)
         preexistingProcesses = @($existingScriberProcesses)
     }
-    $payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $rawPath -Encoding UTF8
+    Write-RawPayload -Payload $payload -Path $rawPath -Depth 8
     Write-UnknownMetrics -Reason "preexisting_scriber_instance"
     exit 2
 }
@@ -526,7 +659,7 @@ if ($Suite -eq "Smoke") {
         smokePath = $smokePath
         smoke = $smoke
     }
-    $payload | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $rawPath -Encoding UTF8
+    Write-RawPayload -Payload $payload -Path $rawPath -Depth 12
     Write-Output "STATUS smoke_ok=$($smoke.ok)"
     Write-UnknownMetrics -Reason "smoke_only_not_baseline"
     if ($smoke.ok) { exit 0 } else { exit 2 }
@@ -534,6 +667,31 @@ if ($Suite -eq "Smoke") {
 
 if ($Suite -in @("LiveMicrosoft", "LiveSoniox")) {
     Invoke-LiveProviderSuite -SuiteName $Suite -RawPath $rawPath -Stamp $stamp
+}
+
+$endpointPreAttestation = Invoke-RuntimeAttestationVerification
+Set-RawAttestationPhase -Phase "Pre" -Verification $endpointPreAttestation
+$endpointPrePayload = $endpointPreAttestation.payload
+$endpointPreMatchesProfile = (
+    $endpointPreAttestation.ok -and
+    $null -ne $endpointPrePayload -and
+    [string]$endpointPrePayload.attestationId -eq [string]$profile.runtimeAttestationId -and
+    [string]$endpointPrePayload.manifestSha256 -eq [string]$profile.runtimeAttestationManifestSha256
+)
+if (-not $endpointPreMatchesProfile) {
+    $rawProvenance["runtimeAttestationDriftDetected"] = $true
+    $payload = [pscustomobject]@{
+        schemaVersion = 1
+        suite = $Suite
+        status = "INVALID_BUILD"
+        reason = "runtime_attestation_preflight_drift"
+        generatedAtUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        importedEnvNames = @($importedEnvNames)
+        runtimeAttestationPreErrors = if ($endpointPrePayload) { @($endpointPrePayload.errors) } else { @("attestation_output_unreadable") }
+    }
+    Write-RawPayload -Payload $payload -Path $rawPath -Depth 8
+    Write-UnknownMetrics -Reason "runtime_attestation_preflight_drift"
+    exit 2
 }
 
 $payload = [pscustomobject]@{
@@ -549,13 +707,40 @@ $payload = [pscustomobject]@{
 $endpointProbePath = Join-Path $OutputDir "endpoint-probe-$stamp.json"
 $endpointProbeWorkDir = Join-Path $RepoRoot "tmp\autoresearch-endpoint-probe-$stamp"
 $endpointProbeExit = 0
-& python (Join-Path $RepoRoot "benchmarks\windows\endpoint_probe.py") `
+& $pythonExecutable (Join-Path $RepoRoot "benchmarks\windows\endpoint_probe.py") `
     --repo-root $RepoRoot `
     --install-root $InstallRoot `
     --output $endpointProbePath `
     --work-dir $endpointProbeWorkDir `
+    --suite $Suite `
     --timeout-sec 45 | Out-Null
 $endpointProbeExit = $LASTEXITCODE
+$endpointPostAttestation = Invoke-RuntimeAttestationVerification
+Set-RawAttestationPhase -Phase "Post" -Verification $endpointPostAttestation
+$endpointPostPayload = $endpointPostAttestation.payload
+$endpointPostMatchesPre = (
+    $endpointPostAttestation.ok -and
+    $null -ne $endpointPostPayload -and
+    [string]$endpointPostPayload.attestationId -eq [string]$endpointPrePayload.attestationId -and
+    [string]$endpointPostPayload.manifestSha256 -eq [string]$endpointPrePayload.manifestSha256 -and
+    [string]$endpointPostPayload.sourceContentSha256 -eq [string]$endpointPrePayload.sourceContentSha256
+)
+$baselinePostSha256 = Get-FileSha256OrEmpty -Path (Join-Path $RepoRoot "benchmarks\results\baseline.json")
+$rawProvenance["baselinePostSha256"] = $baselinePostSha256
+$baselineDriftDetected = ([string]$profile.baselineSha256 -ne [string]$baselinePostSha256)
+if ((-not $endpointPostMatchesPre) -or $baselineDriftDetected) {
+    $rawProvenance["runtimeAttestationDriftDetected"] = (-not $endpointPostMatchesPre)
+    $payload.status = "INVALID_BUILD"
+    $payload.reason = if ($baselineDriftDetected) { "baseline_drift" } else { "runtime_attestation_drift" }
+    $payload | Add-Member -NotePropertyName endpointProbePath -NotePropertyValue $endpointProbePath -Force
+    $payload | Add-Member -NotePropertyName endpointProbeExitCode -NotePropertyValue $endpointProbeExit -Force
+    $payload | Add-Member -NotePropertyName runtimeAttestationPostErrors -NotePropertyValue $(
+        if ($endpointPostPayload) { @($endpointPostPayload.errors) } else { @("attestation_output_unreadable") }
+    ) -Force
+    Write-RawPayload -Payload $payload -Path $rawPath -Depth 8
+    Write-UnknownMetrics -Reason $payload.reason
+    exit 2
+}
 $endpointProbe = $null
 if (Test-Path -LiteralPath $endpointProbePath -PathType Leaf) {
     $endpointProbe = Get-Content -LiteralPath $endpointProbePath -Raw | ConvertFrom-Json
@@ -567,7 +752,7 @@ if ($endpointProbe) {
     $payload | Add-Member -NotePropertyName endpointProbeExitCode -NotePropertyValue $endpointProbeExit
     $payload | Add-Member -NotePropertyName endpointProbe -NotePropertyValue $endpointProbe
 }
-$payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $rawPath -Encoding UTF8
+Write-RawPayload -Payload $payload -Path $rawPath -Depth 8
 $metricMap = @{}
 if ($endpointProbe -and $endpointProbe.metrics) {
     foreach ($property in $endpointProbe.metrics.PSObject.Properties) {

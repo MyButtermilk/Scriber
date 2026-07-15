@@ -68,6 +68,13 @@ const SYNTHETIC_SIGNAL_ENV: &str = "SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL";
 const WASAPI_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_WASAPI_CAPTURE";
 const DISABLE_WASAPI_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE";
 const FRAME_PIPE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+// Handoff blocks are retained only while the replacement WASAPI client is
+// being initialized.  Keep that queue bounded without making the prewarm
+// worker wait on the capture writer.  A limit breach fails the capture
+// visibly; it must never silently turn into a successful handoff with missing
+// audio.
+const PREWARM_HANDOFF_TAIL_MIN_BYTES: usize = 8 * 1024 * 1024;
+const PREWARM_HANDOFF_TAIL_MAX_BYTES: usize = 64 * 1024 * 1024;
 const WAVE_FORMAT_IEEE_FLOAT_TAG: u16 = 3;
 const WAVE_FORMAT_EXTENSIBLE_TAG: u16 = 0xfffe;
 
@@ -687,28 +694,35 @@ impl AudioSidecarState {
     }
 
     fn start_capture(&mut self, request: CaptureRequest) -> Result<Value, String> {
-        let (mut delayed_prewarm_stop, adopted_prewarm) = if request.prewarm_id.trim().is_empty() {
-            (None, None)
-        } else {
-            let prewarm_id = request.prewarm_id.clone();
-            let Some(prewarm_session) = self.prewarm_sessions.remove(&prewarm_id) else {
-                return Err(format!("requested prewarmId was not found: {prewarm_id}"));
+        let (mut delayed_prewarm_stop, mut adopted_prewarm) =
+            if request.prewarm_id.trim().is_empty() {
+                (None, None)
+            } else {
+                let prewarm_id = request.prewarm_id.clone();
+                let Some(mut prewarm_session) = self.prewarm_sessions.remove(&prewarm_id) else {
+                    return Err(format!("requested prewarmId was not found: {prewarm_id}"));
+                };
+                let adopted = match prewarm_session.begin_handoff() {
+                    Ok(adopted) => adopted,
+                    Err(err) => {
+                        let _ = prewarm_session.stop("captureStartFailed");
+                        return Err(err);
+                    }
+                };
+                let pending_stop_payload = json!({
+                    "sidecar": SIDECAR_NAME,
+                    "stopped": false,
+                    "prewarmId": adopted.prewarm_id,
+                    "reason": "pendingCaptureReady",
+                    "source": adopted.source,
+                });
+                (Some(prewarm_session), Some((adopted, pending_stop_payload)))
             };
-            let adopted = prewarm_session.snapshot_buffer();
-            let pending_stop_payload = json!({
-                "sidecar": SIDECAR_NAME,
-                "stopped": false,
-                "prewarmId": adopted.prewarm_id,
-                "reason": "pendingCaptureReady",
-                "source": adopted.source,
-            });
-            (Some(prewarm_session), Some((adopted, pending_stop_payload)))
-        };
         let use_wasapi_capture = wasapi_capture_enabled();
-        let defer_prewarm_stop_to_capture = use_wasapi_capture
-            && adopted_prewarm
-                .as_ref()
-                .is_some_and(|(adopted, _)| !adopted.blocks.is_empty());
+        // A snapshot may be empty while the live prewarm worker is about to
+        // publish its first block. Defer every WASAPI adoption so blocks that
+        // arrive after the atomic handoff boundary cannot fall through a gap.
+        let defer_prewarm_stop_to_capture = use_wasapi_capture && adopted_prewarm.is_some();
         let deferred_prewarm_session = if defer_prewarm_stop_to_capture {
             delayed_prewarm_stop.take()
         } else {
@@ -717,6 +731,15 @@ impl AudioSidecarState {
         let result = if use_wasapi_capture {
             start_wasapi_capture_impl(request, adopted_prewarm, deferred_prewarm_session)
         } else {
+            if let Some(mut prewarm_session) = delayed_prewarm_stop.take() {
+                let (stop_payload, tail_blocks) =
+                    prewarm_session.stop_and_finish_handoff("adoptedIntoCapture");
+                let tail_blocks = tail_blocks?;
+                if let Some((adopted, pending_stop_payload)) = adopted_prewarm.as_mut() {
+                    adopted.append_tail(tail_blocks, request.block_size);
+                    *pending_stop_payload = stop_payload;
+                }
+            }
             start_synthetic_capture_impl(request, adopted_prewarm)
         };
         match result {
@@ -819,7 +842,11 @@ impl CaptureRequest {
             device_preference: bounded_string(payload, "devicePreference", "default", 96),
             port_audio_label: bounded_string(payload, "portAudioLabel", "", 160),
             native_endpoint_id_hash: bounded_string(payload, "nativeEndpointIdHash", "", 64),
-            prebuffer_ms: optional_u64(payload, "prebufferMs", 0, 2_000) as u32,
+            // Normal always-on prewarm uses a short rolling buffer. The
+            // explicit first-hotkey path may retain up to six seconds while
+            // Python lazily imports Pipecat, preventing the opening words from
+            // being lost without turning the microphone on before user intent.
+            prebuffer_ms: optional_u64(payload, "prebufferMs", 0, 6_000) as u32,
             prewarm_id: bounded_string(payload, "prewarmId", "", 96),
             capture_kind: bounded_string(payload, "captureKind", "microphone", 24),
             clock_origin: None,
@@ -1111,9 +1138,18 @@ struct PrewarmStats {
 }
 
 #[derive(Debug, Default)]
+struct PrewarmHandoffTail {
+    blocks: VecDeque<Vec<u8>>,
+    payload_bytes: usize,
+    max_payload_bytes: usize,
+    overflowed: bool,
+}
+
+#[derive(Debug, Default)]
 struct PrewarmBuffer {
     max_blocks: usize,
     blocks: VecDeque<Vec<u8>>,
+    handoff_tail: Option<PrewarmHandoffTail>,
 }
 
 impl PrewarmBuffer {
@@ -1121,25 +1157,86 @@ impl PrewarmBuffer {
         Self {
             max_blocks: max_blocks as usize,
             blocks: VecDeque::new(),
+            handoff_tail: None,
         }
     }
 
-    fn push(&mut self, payload: Vec<u8>) {
+    fn push(&mut self, payload: Vec<u8>) -> Result<(), &'static str> {
+        if let Some(handoff_tail) = self.handoff_tail.as_mut() {
+            let next_payload_bytes = handoff_tail.payload_bytes.saturating_add(payload.len());
+            if next_payload_bytes > handoff_tail.max_payload_bytes {
+                handoff_tail.overflowed = true;
+                return Err("prewarmHandoffTailOverflow");
+            }
+            handoff_tail.blocks.push_back(payload);
+            handoff_tail.payload_bytes = next_payload_bytes;
+            return Ok(());
+        }
         if self.max_blocks == 0 {
-            return;
+            return Ok(());
         }
         while self.blocks.len() >= self.max_blocks {
             self.blocks.pop_front();
         }
         self.blocks.push_back(payload);
+        Ok(())
     }
 
-    fn snapshot(&self) -> Vec<Vec<u8>> {
-        self.blocks.iter().cloned().collect()
+    fn begin_handoff(&mut self) -> Result<Vec<Vec<u8>>, &'static str> {
+        self.begin_handoff_with_limit(None)
+    }
+
+    fn begin_handoff_with_limit(
+        &mut self,
+        tail_limit_override: Option<usize>,
+    ) -> Result<Vec<Vec<u8>>, &'static str> {
+        if self.handoff_tail.is_some() {
+            return Err("prewarmHandoffAlreadyStarted");
+        }
+        let rolling_payload_bytes = self.rolling_payload_bytes();
+        let max_payload_bytes = tail_limit_override.unwrap_or_else(|| {
+            rolling_payload_bytes.saturating_mul(4).clamp(
+                PREWARM_HANDOFF_TAIL_MIN_BYTES,
+                PREWARM_HANDOFF_TAIL_MAX_BYTES,
+            )
+        });
+        self.handoff_tail = Some(PrewarmHandoffTail {
+            max_payload_bytes,
+            ..PrewarmHandoffTail::default()
+        });
+        // Transfer rather than clone the initial rolling window. From this
+        // exact lock boundary onward every producer block goes to handoff_tail,
+        // so the two collections are disjoint and preserve arrival order.
+        Ok(self.blocks.drain(..).collect())
+    }
+
+    fn finish_handoff(&mut self) -> Result<Vec<Vec<u8>>, &'static str> {
+        let handoff_tail = self.handoff_tail.take().ok_or("prewarmHandoffNotStarted")?;
+        if handoff_tail.overflowed {
+            return Err("prewarmHandoffTailOverflow");
+        }
+        Ok(handoff_tail.blocks.into_iter().collect())
+    }
+
+    fn abort_handoff(&mut self) -> (u64, u64) {
+        self.handoff_tail
+            .take()
+            .map(|tail| {
+                (
+                    tail.blocks.len() as u64,
+                    tail.payload_bytes.min(u64::MAX as usize) as u64,
+                )
+            })
+            .unwrap_or((0, 0))
     }
 
     fn block_count(&self) -> u64 {
-        self.blocks.len() as u64
+        (self.blocks.len() as u64).saturating_add(
+            self.handoff_tail
+                .as_ref()
+                .map(|tail| tail.blocks.len() as u64)
+                .unwrap_or(0),
+        )
     }
 
     fn audio_frame_count(&self, block_size: u32) -> u64 {
@@ -1147,10 +1244,23 @@ impl PrewarmBuffer {
     }
 
     fn payload_bytes(&self) -> u64 {
-        self.blocks
+        (self
+            .blocks
             .iter()
             .map(|block| block.len() as u64)
-            .sum::<u64>()
+            .sum::<u64>())
+        .saturating_add(
+            self.handoff_tail
+                .as_ref()
+                .map(|tail| tail.payload_bytes.min(u64::MAX as usize) as u64)
+                .unwrap_or(0),
+        )
+    }
+
+    fn rolling_payload_bytes(&self) -> usize {
+        self.blocks
+            .iter()
+            .fold(0_usize, |total, block| total.saturating_add(block.len()))
     }
 }
 
@@ -1185,14 +1295,20 @@ struct PrewarmSession {
     microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
 }
 
+type FinishedPrewarmHandoff = (Value, Result<Vec<Vec<u8>>, String>);
+
 impl PrewarmSession {
-    fn snapshot_buffer(&self) -> AdoptedPrewarm {
+    fn begin_handoff(&self) -> Result<AdoptedPrewarm, String> {
         let (blocks, payload_bytes) = self
             .buffer
             .lock()
-            .map(|buffer| (buffer.snapshot(), buffer.payload_bytes()))
-            .unwrap_or_else(|_| (Vec::new(), 0));
-        AdoptedPrewarm {
+            .map_err(|_| "prewarmBufferLockPoisoned".to_string())
+            .and_then(|mut buffer| {
+                let blocks = buffer.begin_handoff().map_err(str::to_string)?;
+                let payload_bytes = blocks.iter().map(|block| block.len() as u64).sum::<u64>();
+                Ok((blocks, payload_bytes))
+            })?;
+        Ok(AdoptedPrewarm {
             prewarm_id: self.prewarm_id.clone(),
             source: self.source,
             block_count: blocks.len() as u64,
@@ -1204,10 +1320,10 @@ impl PrewarmSession {
             mix_format_payload: self.mix_format_payload.clone(),
             resampler_payload: self.resampler_payload.clone(),
             microphone_channel_selection: Arc::clone(&self.microphone_channel_selection),
-        }
+        })
     }
 
-    fn stop(&mut self, reason: &str) -> Value {
+    fn stop_worker(&mut self, reason: &str) -> Value {
         let _ = self.stop_tx.send(());
         let stats = self
             .join_handle
@@ -1234,6 +1350,54 @@ impl PrewarmSession {
             "prewarmError": stats.error,
             "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         })
+    }
+
+    fn stop(&mut self, reason: &str) -> Value {
+        let mut payload = self.stop_worker(reason);
+        let (discarded_blocks, discarded_payload_bytes) = self
+            .buffer
+            .lock()
+            .map(|mut buffer| buffer.abort_handoff())
+            .unwrap_or((0, 0));
+        if let Value::Object(root) = &mut payload {
+            root.insert(
+                "discardedHandoffBlocks".to_string(),
+                Value::from(discarded_blocks),
+            );
+            root.insert(
+                "discardedHandoffPayloadBytes".to_string(),
+                Value::from(discarded_payload_bytes),
+            );
+        }
+        payload
+    }
+
+    fn stop_and_finish_handoff(&mut self, reason: &str) -> FinishedPrewarmHandoff {
+        let mut payload = self.stop_worker(reason);
+        let tail_blocks = match self.buffer.lock() {
+            Ok(mut buffer) => buffer.finish_handoff().map_err(str::to_string),
+            Err(_) => Err("prewarmBufferLockPoisoned".to_string()),
+        };
+        let (tail_block_count, tail_payload_bytes) = tail_blocks
+            .as_ref()
+            .map(|blocks| {
+                (
+                    blocks.len() as u64,
+                    blocks.iter().map(|block| block.len() as u64).sum::<u64>(),
+                )
+            })
+            .unwrap_or((0, 0));
+        if let Value::Object(root) = &mut payload {
+            root.insert(
+                "handoffTailBlocks".to_string(),
+                Value::from(tail_block_count),
+            );
+            root.insert(
+                "handoffTailPayloadBytes".to_string(),
+                Value::from(tail_payload_bytes),
+            );
+        }
+        (payload, tail_blocks)
     }
 
     fn worker_finished(&self) -> bool {
@@ -1280,6 +1444,15 @@ fn stop_deferred_prewarm_session(
         .map(|mut prewarm_session| prewarm_session.stop(reason))
 }
 
+fn finish_deferred_prewarm_handoff(
+    prewarm_session: &mut Option<PrewarmSession>,
+    reason: &str,
+) -> Option<FinishedPrewarmHandoff> {
+    prewarm_session
+        .take()
+        .map(|mut prewarm_session| prewarm_session.stop_and_finish_handoff(reason))
+}
+
 #[derive(Debug, Default)]
 struct AdoptedPrewarm {
     prewarm_id: String,
@@ -1296,6 +1469,20 @@ struct AdoptedPrewarm {
 }
 
 impl AdoptedPrewarm {
+    fn append_tail(&mut self, tail_blocks: Vec<Vec<u8>>, block_size: u32) {
+        let tail_block_count = tail_blocks.len() as u64;
+        let tail_payload_bytes = tail_blocks
+            .iter()
+            .map(|block| block.len() as u64)
+            .sum::<u64>();
+        self.block_count = self.block_count.saturating_add(tail_block_count);
+        self.audio_frame_count = self
+            .audio_frame_count
+            .saturating_add(tail_block_count.saturating_mul(u64::from(block_size)));
+        self.payload_bytes = self.payload_bytes.saturating_add(tail_payload_bytes);
+        self.blocks.extend(tail_blocks);
+    }
+
     fn to_payload(&self, stop_payload: Value) -> Value {
         json!({
             "prewarmId": self.prewarm_id,
@@ -1482,19 +1669,32 @@ fn start_wasapi_capture_impl(
         .as_ref()
         .map(|(adopted, _)| Arc::clone(&adopted.microphone_channel_selection))
         .unwrap_or_else(|| Arc::new(Mutex::new(MicrophoneChannelSelectionState::default())));
+    let adopted_native_endpoint_id_hash = adopted_prewarm
+        .as_ref()
+        .map(|(adopted, _)| adopted.native_endpoint_id_hash.clone())
+        .unwrap_or(Value::Null);
     let adopted_blocks = adopted_prewarm
         .as_mut()
         .map(|(adopted, _)| std::mem::take(&mut adopted.blocks))
         .unwrap_or_default();
-    let defer_wasapi_ready = !adopted_blocks.is_empty();
+    let defer_wasapi_ready = deferred_prewarm_session.is_some();
     let writer_deferred_prewarm_session = if defer_wasapi_ready {
         deferred_prewarm_session.take()
     } else {
         None
     };
+    // Keep a recoverable owner outside the closure until thread creation has
+    // succeeded. If Windows refuses to spawn the writer, dropping the closure
+    // must not detach the still-running prewarm worker.
+    let deferred_prewarm_holder = Arc::new(Mutex::new(writer_deferred_prewarm_session));
+    let writer_deferred_prewarm_holder = Arc::clone(&deferred_prewarm_holder);
     let join_handle = thread::Builder::new()
         .name("scriber-audio-wasapi-frame-pipe".to_string())
         .spawn(move || {
+            let writer_deferred_prewarm_session = writer_deferred_prewarm_holder
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
             run_wasapi_capture_writer(
                 pipe_handle_value as HANDLE,
                 writer_pipe_path,
@@ -1502,6 +1702,7 @@ fn start_wasapi_capture_impl(
                 stop_rx,
                 ready_tx,
                 adopted_blocks,
+                adopted_native_endpoint_id_hash,
                 defer_wasapi_ready,
                 microphone_channel_selection,
                 writer_deferred_prewarm_session,
@@ -1511,8 +1712,10 @@ fn start_wasapi_capture_impl(
             unsafe {
                 CloseHandle(pipe_handle);
             }
-            let _ =
-                stop_deferred_prewarm_session(&mut deferred_prewarm_session, "captureStartFailed");
+            let mut holder = deferred_prewarm_holder
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _ = stop_deferred_prewarm_session(&mut holder, "captureStartFailed");
             format!("WASAPI frame-pipe writer thread spawn failed: {err}")
         })?;
 
@@ -2148,7 +2351,14 @@ fn run_synthetic_prewarm_worker(
         if max_buffered_blocks > 0 {
             match buffer.lock() {
                 Ok(mut buffer) => {
-                    buffer.push(payload);
+                    if let Err(error) = buffer.push(payload) {
+                        let error = error.to_string();
+                        if let Some(ready_tx) = ready_tx.take() {
+                            let _ = ready_tx.send(Err(error.clone()));
+                        }
+                        stats.error = Some(error);
+                        break;
+                    }
                     stats.buffered_blocks = buffer.block_count();
                     stats.buffered_audio_frames = buffer.audio_frame_count(request.block_size);
                     stats.buffered_payload_bytes = buffer.payload_bytes();
@@ -2751,6 +2961,7 @@ fn run_wasapi_capture_writer(
     stop_rx: mpsc::Receiver<()>,
     ready_tx: Sender<Result<WasapiReady, String>>,
     adopted_prebuffer_blocks: Vec<Vec<u8>>,
+    adopted_native_endpoint_id_hash: Value,
     defer_ready_until_after_pipe: bool,
     microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
     mut deferred_prewarm_session: Option<PrewarmSession>,
@@ -2767,6 +2978,7 @@ fn run_wasapi_capture_writer(
         &mut stats,
         started,
         adopted_prebuffer_blocks,
+        &adopted_native_endpoint_id_hash,
         defer_ready_until_after_pipe,
         microphone_channel_selection,
         &mut deferred_prewarm_session,
@@ -2892,6 +3104,29 @@ fn is_default_device_preference(value: &str) -> bool {
     normalized.is_empty() || normalized == "default" || normalized == "none"
 }
 
+fn validate_prewarm_endpoint_continuity(
+    prewarm_endpoint_id_hash: &Value,
+    replacement_endpoint_id_hash: &Value,
+) -> Result<(), String> {
+    let prewarm_hash = prewarm_endpoint_id_hash
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let replacement_hash = replacement_endpoint_id_hash
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let (Some(prewarm_hash), Some(replacement_hash)) = (prewarm_hash, replacement_hash) {
+        if prewarm_hash != replacement_hash {
+            // Do not put either endpoint hash in the error. The caller needs
+            // only the fail-closed reason, and no prewarm block may be written
+            // once this mismatch has been observed.
+            return Err("prewarmEndpointChangedDuringHandoff".to_string());
+        }
+    }
+    Ok(())
+}
+
 fn endpoint_selection_payload(
     request: &CaptureRequest,
     selected_endpoint_id_hash: Value,
@@ -2925,6 +3160,7 @@ fn run_wasapi_capture_writer_inner(
     stats: &mut CaptureWriterStats,
     started: Instant,
     adopted_prebuffer_blocks: Vec<Vec<u8>>,
+    adopted_native_endpoint_id_hash: &Value,
     defer_ready_until_after_pipe: bool,
     microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
     deferred_prewarm_session: &mut Option<PrewarmSession>,
@@ -2933,14 +3169,6 @@ fn run_wasapi_capture_writer_inner(
     if defer_ready_until_after_pipe {
         wait_for_pipe_client(pipe_handle, stop_rx)?;
         stats.connected = true;
-        write_adopted_prebuffer_blocks(
-            pipe_handle,
-            request,
-            &adopted_prebuffer_blocks,
-            started,
-            &mut sequence,
-            stats,
-        )?;
         match stop_rx.try_recv() {
             Ok(()) | Err(TryRecvError::Disconnected) => return Ok(()),
             Err(TryRecvError::Empty) => {}
@@ -2958,6 +3186,12 @@ fn run_wasapi_capture_writer_inner(
         let selected = select_wasapi_capture_device(&enumerator, request)?;
         let device = selected.device;
         let endpoint_id_hash = selected.endpoint_id_hash.clone();
+        if defer_ready_until_after_pipe {
+            validate_prewarm_endpoint_continuity(
+                adopted_native_endpoint_id_hash,
+                &endpoint_id_hash,
+            )?;
+        }
         let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
             .map_err(|err| format!("IAudioClient activation failed: {err}"))?;
         let mix_format_ptr = unsafe { client.GetMixFormat() }
@@ -2982,12 +3216,47 @@ fn run_wasapi_capture_writer_inner(
         let capture_client: IAudioCaptureClient = unsafe { client.GetService() }
             .map_err(|err| format!("IAudioCaptureClient service unavailable: {err}"))?;
 
+        if defer_ready_until_after_pipe {
+            // Selection is now stable and its opened endpoint was verified
+            // against the prewarm source. Only now may old-source audio become
+            // visible to the consumer; a default-device A→B switch therefore
+            // fails without emitting a mixed transcript prefix.
+            write_adopted_prebuffer_blocks(
+                pipe_handle,
+                request,
+                &adopted_prebuffer_blocks,
+                started,
+                &mut sequence,
+                stats,
+            )?;
+            match stop_rx.try_recv() {
+                Ok(()) | Err(TryRecvError::Disconnected) => return Ok(()),
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+
         unsafe { client.Start() }.map_err(|err| format!("WASAPI Start failed: {err}"))?;
         let stream_started_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         let capture_result = (|| -> Result<(), String> {
             if defer_ready_until_after_pipe {
-                stats.deferred_prewarm_stop =
-                    stop_deferred_prewarm_session(deferred_prewarm_session, "adoptedIntoCapture");
+                if let Some((stop_payload, tail_blocks)) =
+                    finish_deferred_prewarm_handoff(deferred_prewarm_session, "adoptedIntoCapture")
+                {
+                    stats.deferred_prewarm_stop = Some(stop_payload);
+                    let tail_blocks = tail_blocks?;
+                    // The initial rolling window was written before the
+                    // replacement client started. Append every block produced
+                    // after that snapshot exactly once, still marked as
+                    // prebuffer, before consuming replacement-client frames.
+                    write_adopted_prebuffer_blocks(
+                        pipe_handle,
+                        request,
+                        &tail_blocks,
+                        started,
+                        &mut sequence,
+                        stats,
+                    )?;
+                }
             }
             let ready = Ok(WasapiReady {
                 endpoint_id_hash,
@@ -3024,7 +3293,7 @@ fn run_wasapi_capture_writer_inner(
                 stats,
                 stream_started_micros,
                 sequence,
-                adopted_prebuffer_blocks.is_empty(),
+                !defer_ready_until_after_pipe,
                 microphone_channel_selection,
             )
         })();
@@ -3328,7 +3597,7 @@ fn pump_wasapi_prewarm(
                 if max_buffered_blocks > 0 {
                     match buffer.lock() {
                         Ok(mut buffer) => {
-                            buffer.push(payload);
+                            buffer.push(payload).map_err(str::to_string)?;
                             stats.buffered_blocks = buffer.block_count();
                             stats.buffered_audio_frames =
                                 buffer.audio_frame_count(request.block_size);
@@ -3732,6 +4001,94 @@ mod tests {
     }
 
     #[test]
+    fn prewarm_handoff_delivers_snapshot_and_marked_tail_exactly_once_in_order() {
+        let mut buffer = PrewarmBuffer::new(8);
+        buffer.push(vec![0x11]).unwrap();
+        buffer.push(vec![0x22]).unwrap();
+
+        let snapshot = buffer.begin_handoff().unwrap();
+        buffer.push(vec![0x33]).unwrap();
+        buffer.push(vec![0x44]).unwrap();
+        buffer.push(vec![0x55]).unwrap();
+        let tail = buffer.finish_handoff().unwrap();
+
+        let markers = snapshot
+            .into_iter()
+            .chain(tail)
+            .map(|block| block[0])
+            .collect::<Vec<_>>();
+        assert_eq!(markers, vec![0x11, 0x22, 0x33, 0x44, 0x55]);
+        assert_eq!(buffer.finish_handoff(), Err("prewarmHandoffNotStarted"));
+    }
+
+    #[test]
+    fn prewarm_handoff_tail_is_bounded_and_overflow_fails_closed() {
+        let mut buffer = PrewarmBuffer::new(2);
+        buffer.push(vec![0x11]).unwrap();
+        let snapshot = buffer.begin_handoff_with_limit(Some(2)).unwrap();
+        assert_eq!(snapshot, vec![vec![0x11]]);
+        buffer.push(vec![0x22, 0x23]).unwrap();
+
+        assert_eq!(buffer.push(vec![0x33]), Err("prewarmHandoffTailOverflow"));
+        assert_eq!(buffer.block_count(), 1);
+        assert_eq!(buffer.payload_bytes(), 2);
+        assert_eq!(buffer.finish_handoff(), Err("prewarmHandoffTailOverflow"));
+        assert_eq!(buffer.block_count(), 0);
+        assert_eq!(buffer.payload_bytes(), 0);
+    }
+
+    #[test]
+    fn aborting_prewarm_handoff_releases_tail_without_replaying_it() {
+        let mut buffer = PrewarmBuffer::new(4);
+        buffer.push(vec![0x11]).unwrap();
+        let snapshot = buffer.begin_handoff().unwrap();
+        buffer.push(vec![0x22, 0x23]).unwrap();
+
+        assert_eq!(buffer.abort_handoff(), (1, 2));
+        assert_eq!(snapshot, vec![vec![0x11]]);
+        assert_eq!(buffer.block_count(), 0);
+        assert_eq!(buffer.payload_bytes(), 0);
+        assert_eq!(buffer.finish_handoff(), Err("prewarmHandoffNotStarted"));
+    }
+
+    #[test]
+    fn canceled_prewarm_session_stops_worker_and_discards_only_uncommitted_tail() {
+        let buffer = Arc::new(Mutex::new(PrewarmBuffer::new(4)));
+        buffer.lock().unwrap().push(vec![0x11]).unwrap();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let join_handle = thread::spawn(move || {
+            let _ = stop_rx.recv();
+            PrewarmStats::default()
+        });
+        let mut session = PrewarmSession {
+            prewarm_id: "cancel-test".to_string(),
+            source: "test-prewarm",
+            stop_tx,
+            join_handle: Some(join_handle),
+            started_at: Instant::now(),
+            buffer: Arc::clone(&buffer),
+            block_size: 1,
+            native_endpoint_id_hash: Value::Null,
+            endpoint_selection: Value::Null,
+            mix_format_payload: Value::Null,
+            resampler_payload: Value::Null,
+            microphone_channel_selection: Arc::new(Mutex::new(
+                MicrophoneChannelSelectionState::default(),
+            )),
+        };
+
+        let adopted = session.begin_handoff().unwrap();
+        buffer.lock().unwrap().push(vec![0x22, 0x23]).unwrap();
+        let stopped = session.stop("captureStartFailed");
+
+        assert_eq!(adopted.blocks, vec![vec![0x11]]);
+        assert_eq!(stopped["reason"], "captureStartFailed");
+        assert_eq!(stopped["discardedHandoffBlocks"], 1);
+        assert_eq!(stopped["discardedHandoffPayloadBytes"], 2);
+        assert_eq!(buffer.lock().unwrap().block_count(), 0);
+    }
+
+    #[test]
     fn sidecar_self_test_reports_protocol_and_frame_contract() {
         let _lock = audio_env_test_lock();
         let _enable_default_wasapi = set_audio_test_env(DISABLE_WASAPI_CAPTURE_ENV, "0");
@@ -4058,7 +4415,7 @@ mod tests {
             192_000
         );
         assert_eq!(response["payload"]["requestedFormat"]["channels"], 16);
-        assert_eq!(response["payload"]["requestedFormat"]["prebufferMs"], 2_000);
+        assert_eq!(response["payload"]["requestedFormat"]["prebufferMs"], 6_000);
         assert_eq!(response["payload"]["audioFrameProtocol"]["version"], 1);
         assert_eq!(
             response["payload"]["requestedFormat"]["nativeEndpointIdHash"],
@@ -4093,7 +4450,7 @@ mod tests {
             192_000
         );
         assert_eq!(response["payload"]["requestedFormat"]["channels"], 16);
-        assert_eq!(response["payload"]["requestedFormat"]["prebufferMs"], 2_000);
+        assert_eq!(response["payload"]["requestedFormat"]["prebufferMs"], 6_000);
         assert_eq!(response["payload"]["prewarmAvailable"], false);
         assert_eq!(response["payload"]["wasapiPrewarmAvailable"], false);
     }
@@ -4206,7 +4563,7 @@ mod tests {
         assert_eq!(request.sample_rate, 192_000);
         assert_eq!(request.channels, 16);
         assert_eq!(request.block_size, 16_384);
-        assert_eq!(request.prebuffer_ms, 2_000);
+        assert_eq!(request.prebuffer_ms, 6_000);
         assert_eq!(request.native_endpoint_id_hash, "");
         assert!(request
             .device_preference
@@ -4292,6 +4649,28 @@ mod tests {
         assert_eq!(payload["requestedNativeEndpointIdHash"], "endpoint-hash");
         assert_eq!(payload["selectedNativeEndpointIdHash"], "endpoint-hash");
         assert_eq!(payload["usedDefaultEndpoint"], false);
+    }
+
+    #[test]
+    fn default_prewarm_handoff_rejects_endpoint_a_to_b_switch() {
+        let prewarm_endpoint = Value::String("default-endpoint-a".to_string());
+        let replacement_endpoint = Value::String("default-endpoint-b".to_string());
+
+        assert_eq!(
+            validate_prewarm_endpoint_continuity(&prewarm_endpoint, &replacement_endpoint),
+            Err("prewarmEndpointChangedDuringHandoff".to_string())
+        );
+    }
+
+    #[test]
+    fn default_prewarm_handoff_accepts_same_opened_endpoint() {
+        let prewarm_endpoint = Value::String("default-endpoint-a".to_string());
+        let replacement_endpoint = Value::String("default-endpoint-a".to_string());
+
+        assert_eq!(
+            validate_prewarm_endpoint_continuity(&prewarm_endpoint, &replacement_endpoint),
+            Ok(())
+        );
     }
 
     #[test]
@@ -4566,7 +4945,7 @@ mod tests {
             clock_origin: None,
         };
         let (mut prewarm_session, _) = start_synthetic_prewarm_impl(prewarm_request).unwrap();
-        let adopted = prewarm_session.snapshot_buffer();
+        let adopted = prewarm_session.begin_handoff().unwrap();
         assert_eq!(adopted.block_count, 1);
         let prewarm_stop = prewarm_session.stop("adoptedIntoCapture");
 

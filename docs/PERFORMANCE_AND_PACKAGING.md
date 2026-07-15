@@ -57,6 +57,11 @@ compressed release budget.
 Startup and imports:
 
 - STT provider imports are mostly lazy in the service factory.
+- Backend startup no longer imports `sounddevice` through the device monitor or
+  default-microphone prewarm path. It is loaded once, thread-safely, only when
+  device enumeration or a selected/favorite microphone actually requires it.
+  Fresh-process measurements on 2026-07-15 reduced median `src.web_api` import
+  time from about `809 ms` to `641 ms` (roughly 21%).
 - Expensive VAD/analyzer setup uses a one-shot warmup pool. A warmed mutable
   analyzer is atomically claimed by one recording and is never reused after
   Pipecat processor cleanup. After session teardown, an enabled warmup policy
@@ -108,6 +113,13 @@ Backend/WebSocket:
   worker-thread transactions instead of blocking the aiohttp event loop. A
   started SQLite mutation is always observed through its durable boundary on
   cancellation; mutable transcript projection returns to the event-loop thread.
+- Cold File/YouTube pipeline construction is also off-loop and remains
+  cancellation-safe: an already-running constructor is observed and an
+  unstarted result is closed. The measured maximum loop stall fell from about
+  `1,837.6 ms` to a `99.4 ms` median across three fresh runs. Shutdown submits
+  persistent audio-lease release to the executor immediately; with an injected
+  250-ms SQLite release, `begin_shutdown` returned in `8.8 ms` and the measured
+  maximum loop gap was `21.0 ms` instead of `265.5 ms`.
 - YouTube circuit-breaker accounting is phase-aware: only failures during the
   actual STT provider call affect provider health. Download, media preparation,
   local diarization, and persistence failures do not poison an otherwise
@@ -163,6 +175,9 @@ I/O:
   Durable File/YouTube jobs claim and transition by SQL compare-and-swap; a
   late completion cannot overwrite cancellation or failure.
 - Settings persistence is debounced and flushed on shutdown.
+- Debounced settings writes are generation-bound. A timer/task waiting on the
+  update lock cannot persist a stale mid-burst snapshot after a newer settings
+  mutation has rescheduled the write.
 - Buffered live async audio stays in spooled files and streams through encoders
   and provider uploads rather than creating recording-sized heap copies.
 

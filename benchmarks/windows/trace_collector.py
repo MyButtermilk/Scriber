@@ -5,7 +5,6 @@ import json
 import math
 import sys
 from pathlib import Path
-from statistics import median
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -13,14 +12,28 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.perf.evaluator.local_wux import compute_local_wux, load_baseline_metrics
+from benchmarks.windows.endpoint_probe import (
+    APP_UX_EVIDENCE_CONTRACT,
+    APP_UX_SCENARIOS,
+)
 
 
-REQUIRED_MARKERS = {
-    "overlay_warm_p95_ms": ("hotkey_received", "overlay_first_visible_frame"),
-    "overlay_cold_p95_ms": ("hotkey_received", "overlay_first_visible_frame"),
-    "microsoft_local_tail_p95_ms": ("provider_response_complete", "target_text_observed"),
-    "soniox_local_tail_p95_ms": ("last_final_token_received", "target_text_observed"),
-    "app_ux_p95_ms": ("user_input_received", "first_stable_visible_frame"),
+SCENARIOS = {
+    "overlay_warm": ("overlay_warm", "hotkey_received", "overlay_first_visible_frame"),
+    "overlay_cold": ("overlay_cold", "hotkey_received", "overlay_first_visible_frame"),
+    "microsoft_local_tail": (
+        "microsoft_local",
+        "provider_response_complete",
+        "target_text_observed",
+    ),
+    "soniox_local_tail": (
+        "soniox_local",
+        "last_final_token_received",
+        "target_text_observed",
+    ),
+}
+
+READINESS = {
     "hotkey_mic_ready_p95_ms": ("hotkey_received", "mic_ready"),
     "hotkey_first_audio_frame_p95_ms": ("hotkey_received", "first_audio_frame"),
 }
@@ -48,7 +61,7 @@ def load_events(path: Path) -> list[dict[str, Any]]:
     return []
 
 
-def load_resource_metrics(paths: list[Path]) -> dict[str, float]:
+def load_guard_metrics(paths: list[Path]) -> dict[str, float]:
     merged: dict[str, float] = {}
     for path in paths:
         value = load_payload(path)
@@ -57,11 +70,105 @@ def load_resource_metrics(paths: list[Path]) -> dict[str, float]:
         source = value.get("resourceMetrics")
         if not isinstance(source, dict):
             source = value.get("metrics") if isinstance(value.get("metrics"), dict) else {}
-        for key in ("idle_cpu_pct", "working_set_mb"):
+        for key in (
+            "text_errors",
+            "focus_errors",
+            "clipboard_errors",
+            "overlay_errors",
+            "ui_long_tasks_gt_200ms",
+            "idle_cpu_pct",
+            "working_set_mb",
+        ):
             raw = source.get(key) if isinstance(source, dict) else None
             if isinstance(raw, (int, float)) and math.isfinite(float(raw)) and float(raw) >= 0:
                 merged[key] = float(raw)
     return merged
+
+
+def load_app_ux_metrics(paths: list[Path]) -> dict[str, float]:
+    """Accept App UX only from one complete endpoint-validated B7 matrix.
+
+    Generic QPC events cannot prove the nine distinct scenarios, their equal
+    sample counts, UIA artifact hashes, or post-window Long Task flushes.
+    """
+
+    eligible: list[dict[str, Any]] = []
+    for path in paths:
+        value = load_payload(path)
+        if not isinstance(value, dict):
+            continue
+        evidence = value.get("evidence") if isinstance(value.get("evidence"), dict) else {}
+        app_frame = (
+            evidence.get("appFrame")
+            if isinstance(evidence.get("appFrame"), dict)
+            else value.get("appFrame")
+        )
+        if not isinstance(app_frame, dict):
+            continue
+        metrics = app_frame.get("metrics") if isinstance(app_frame.get("metrics"), dict) else {}
+        scenarios = (
+            app_frame.get("scenarioResults")
+            if isinstance(app_frame.get("scenarioResults"), dict)
+            else {}
+        )
+        per_scenario = app_frame.get("requestedSamplesPerScenario")
+        matrix_ok = bool(
+            app_frame.get("contract") == APP_UX_EVIDENCE_CONTRACT
+            and app_frame.get("metricEligible") is True
+            and app_frame.get("externalStableFrameObserved") is True
+            and app_frame.get("scenarioOrder") == list(APP_UX_SCENARIOS)
+            and isinstance(per_scenario, int)
+            and not isinstance(per_scenario, bool)
+            and per_scenario > 0
+            and set(scenarios) == set(APP_UX_SCENARIOS)
+            and all(
+                isinstance(scenarios.get(scenario), dict)
+                and scenarios[scenario].get("metricEligible") is True
+                and scenarios[scenario].get("sampleCount") == per_scenario
+                and scenarios[scenario].get("requiredSampleCount") == per_scenario
+                for scenario in APP_UX_SCENARIOS
+            )
+            and metrics.get("app_ux_sample_count")
+            == per_scenario * len(APP_UX_SCENARIOS)
+            and isinstance(metrics.get("app_ux_p50_ms"), (int, float))
+            and math.isfinite(float(metrics["app_ux_p50_ms"]))
+            and isinstance(metrics.get("app_ux_p95_ms"), (int, float))
+            and math.isfinite(float(metrics["app_ux_p95_ms"]))
+        )
+        if matrix_ok:
+            eligible.append(app_frame)
+    if len(eligible) != 1:
+        return {}
+    app_frame = eligible[0]
+    metrics = app_frame["metrics"]
+    resource_metrics = (
+        app_frame.get("resourceMetrics")
+        if isinstance(app_frame.get("resourceMetrics"), dict)
+        else {}
+    )
+    result = {
+        "app_ux_p50_ms": float(metrics["app_ux_p50_ms"]),
+        "app_ux_p95_ms": float(metrics["app_ux_p95_ms"]),
+    }
+    for name in (
+        "ui_long_tasks_gt_200ms",
+        "idle_cpu_pct",
+        "working_set_mb",
+    ):
+        value = resource_metrics.get(name)
+        if isinstance(value, (int, float)) and math.isfinite(float(value)) and float(value) >= 0:
+            result[name] = float(value)
+    return result
+
+
+def load_baseline(path: str) -> dict[str, Any]:
+    if not path:
+        return load_baseline_metrics(REPO_ROOT)
+    value = load_payload(Path(path).resolve())
+    if not isinstance(value, dict):
+        return {}
+    metrics = value.get("metrics")
+    return metrics if isinstance(metrics, dict) else value
 
 
 def group_events(paths: list[Path]) -> dict[tuple[str, str], dict[str, int]]:
@@ -103,42 +210,39 @@ def main() -> int:
 
     paths = [Path(item).resolve() for item in args.input]
     sessions = group_events(paths)
-    resources = load_resource_metrics(paths)
+    guards = load_guard_metrics(paths)
+    app_ux = load_app_ux_metrics(paths)
     metrics: dict[str, float | str] = {}
-    scenario_prefixes = {
-        "overlay_warm_p95_ms": "overlay_warm",
-        "overlay_cold_p95_ms": "overlay_cold",
-        "microsoft_local_tail_p95_ms": "microsoft_local",
-        "soniox_local_tail_p95_ms": "soniox_local",
-        "app_ux_p95_ms": "app_ux",
-        "hotkey_mic_ready_p95_ms": "overlay_",
-        "hotkey_first_audio_frame_p95_ms": "overlay_",
-    }
-    for metric, (start, end) in REQUIRED_MARKERS.items():
+    for scenario, (prefix, start, end) in SCENARIOS.items():
         samples = collect_segment_ms(
             sessions,
-            scenario_prefixes[metric],
+            prefix,
             start,
             end,
             args.qpc_frequency,
         )
+        metrics[f"{scenario}_p50_ms"] = percentile(samples, 50.0) if samples else "unknown"
+        metrics[f"{scenario}_p95_ms"] = percentile(samples, 95.0) if samples else "unknown"
+        metrics[f"{scenario}_sample_count"] = len(samples)
+
+    metrics["app_ux_p50_ms"] = app_ux.get("app_ux_p50_ms", "unknown")
+    metrics["app_ux_p95_ms"] = app_ux.get("app_ux_p95_ms", "unknown")
+
+    for metric, (start, end) in READINESS.items():
+        samples = collect_segment_ms(sessions, "overlay_", start, end, args.qpc_frequency)
         metrics[metric] = percentile(samples, 95.0) if samples else "unknown"
 
-    metrics.update(
-        {
-            "text_errors": 0,
-            "focus_errors": 0,
-            "clipboard_errors": 0,
-            "overlay_errors": 0,
-            "ui_long_tasks_gt_200ms": 0,
-            "idle_cpu_pct": resources.get("idle_cpu_pct", "unknown"),
-            "working_set_mb": resources.get("working_set_mb", "unknown"),
-        }
-    )
-    if any(value == "unknown" for value in metrics.values()):
-        metrics["local_wux"] = "unknown"
-    else:
-        metrics["local_wux"] = compute_local_wux(metrics, load_baseline_metrics(REPO_ROOT))
+    for guard in (
+        "text_errors",
+        "focus_errors",
+        "clipboard_errors",
+        "overlay_errors",
+        "ui_long_tasks_gt_200ms",
+        "idle_cpu_pct",
+        "working_set_mb",
+    ):
+        metrics[guard] = app_ux.get(guard, guards.get(guard, "unknown"))
+    metrics["local_wux"] = compute_local_wux(metrics, load_baseline(args.baseline))
 
     for name, value in metrics.items():
         print(f"METRIC {name}={value}")

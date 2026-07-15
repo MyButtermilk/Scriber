@@ -1,6 +1,9 @@
 import asyncio
+import os
 import sys
+import time
 import types
+from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp import FormData, WSServerHandshakeError
@@ -203,6 +206,176 @@ async def test_live_mic_toggle_acknowledges_stop_without_waiting(monkeypatch, tm
     assert called["stop"] is True
     assert payload["stopAccepted"] is True
     assert payload["finalizing"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "post_process"),
+    [
+        ("/api/live-mic/start", False),
+        ("/api/live-mic/start-post-processing", True),
+        ("/api/live-mic/toggle", False),
+        ("/api/live-mic/toggle-post-processing", True),
+    ],
+)
+async def test_live_mic_start_binds_explicit_tauri_hotkey_marker_to_request(
+    monkeypatch,
+    tmp_path,
+    path: str,
+    post_process: bool,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    run_id = "7de1a48651d44f859042b7cbcb30da52"
+    monkeypatch.setenv("SCRIBER_TAURI_BENCHMARK_HOTKEY_RUN_ID", run_id)
+    timestamp_ns = time.perf_counter_ns()
+    marker = {
+        "schemaVersion": 1,
+        "marker": "hotkey_received",
+        "source": "tauri_global_shortcut",
+        "runId": run_id,
+        "sampleId": "2b3022ee3f404333a1156da089a24962",
+        "processId": os.getppid(),
+        "qpcTicks": timestamp_ns,
+        "qpcFrequency": 1_000_000_000,
+        "timestampNs": timestamp_ns,
+    }
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl.start_listening = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    client = TestClient(TestServer(web_api.create_app(ctl)))
+    await client.start_server()
+    try:
+        response = await client.post(
+            path,
+            json={"benchmarkHotkeyMarker": marker},
+        )
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 200, payload
+    if post_process:
+        ctl.start_listening.assert_awaited_once_with(
+            post_process=True,
+            tauri_hotkey_marker=marker,
+        )
+    else:
+        ctl.start_listening.assert_awaited_once_with(
+            tauri_hotkey_marker=marker,
+        )
+
+
+@pytest.mark.asyncio
+async def test_live_mic_rejects_tauri_marker_outside_explicit_benchmark_runtime(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("SCRIBER_TAURI_BENCHMARK_HOTKEY_RUN_ID", raising=False)
+    timestamp_ns = time.perf_counter_ns()
+    marker = {
+        "schemaVersion": 1,
+        "marker": "hotkey_received",
+        "source": "tauri_global_shortcut",
+        "runId": "7de1a48651d44f859042b7cbcb30da52",
+        "sampleId": "2b3022ee3f404333a1156da089a24962",
+        "processId": os.getppid(),
+        "qpcTicks": timestamp_ns,
+        "qpcFrequency": 1_000_000_000,
+        "timestampNs": timestamp_ns,
+    }
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl.start_listening = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    client = TestClient(TestServer(web_api.create_app(ctl)))
+    await client.start_server()
+    try:
+        response = await client.post(
+            "/api/live-mic/start",
+            json={"benchmarkHotkeyMarker": marker},
+        )
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 400
+    assert "disabled" in payload["message"]
+    ctl.start_listening.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_live_mic_stop_request_is_immediate_idempotent_and_never_restarts(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._is_listening = True
+    ctl._session_id = "live-session"
+    stop_entered = asyncio.Event()
+    finish_stop = asyncio.Event()
+    stop_calls = 0
+
+    async def controlled_stop():
+        nonlocal stop_calls
+        stop_calls += 1
+        ctl._is_listening = False
+        ctl._is_stopping = True
+        stop_entered.set()
+        await finish_stop.wait()
+        ctl._is_stopping = False
+
+    ctl.stop_listening = controlled_stop  # type: ignore[method-assign]
+    app = web_api.create_app(ctl)
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        first = await asyncio.wait_for(
+            client.post("/api/live-mic/stop-request"),
+            timeout=0.5,
+        )
+        first_payload = await first.json()
+        await asyncio.wait_for(stop_entered.wait(), timeout=0.5)
+
+        duplicate = await asyncio.wait_for(
+            client.post("/api/live-mic/stop-request"),
+            timeout=0.5,
+        )
+        duplicate_payload = await duplicate.json()
+
+        assert first.status == 202
+        assert first_payload["stopAccepted"] is True
+        assert first_payload["stopScheduled"] is True
+        assert first_payload["alreadyFinalizing"] is False
+        assert first_payload["alreadyStopped"] is False
+        assert first_payload["finalizing"] is True
+        assert first_payload["sessionId"] == "live-session"
+        assert duplicate.status == 202
+        assert duplicate_payload["stopAccepted"] is True
+        assert duplicate_payload["stopScheduled"] is False
+        assert duplicate_payload["alreadyFinalizing"] is True
+        assert duplicate_payload["alreadyStopped"] is False
+        assert duplicate_payload["finalizing"] is True
+        assert stop_calls == 1
+        assert ctl._pending_hotkey_toggle is False
+
+        background_stop = ctl._background_stop_task
+        assert background_stop is not None
+        finish_stop.set()
+        await asyncio.wait_for(asyncio.shield(background_stop), timeout=0.5)
+        await asyncio.sleep(0)
+
+        stopped = await client.post("/api/live-mic/stop-request")
+        stopped_payload = await stopped.json()
+        assert stopped.status == 202
+        assert stopped_payload["stopAccepted"] is True
+        assert stopped_payload["stopScheduled"] is False
+        assert stopped_payload["alreadyFinalizing"] is False
+        assert stopped_payload["alreadyStopped"] is True
+        assert stopped_payload["finalizing"] is False
+        assert stop_calls == 1
+    finally:
+        finish_stop.set()
+        await client.close()
 
 
 @pytest.mark.asyncio
@@ -592,6 +765,71 @@ async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_p
         assert frontend_ready_get.status == 200
         assert (await frontend_ready_get.json())["lastSeen"]["locationOrigin"] == "http://tauri.localhost"
 
+        frontend_performance_unauthorized = await client.get(
+            "/api/runtime/frontend-performance"
+        )
+        assert frontend_performance_unauthorized.status == 401
+        frontend_performance_flush_unauthorized = await client.post(
+            "/api/runtime/frontend-performance/flush-request",
+            json={"apiVersion": "1", "sourceInstanceId": "webview-123"},
+        )
+        assert frontend_performance_flush_unauthorized.status == 401
+
+        frontend_performance = await client.post(
+            "/api/runtime/frontend-performance",
+            headers={"X-Scriber-Token": "secret", "Origin": "http://tauri.localhost"},
+            json={
+                "apiVersion": "1",
+                "sourceInstanceId": "webview-123",
+                "observerSupported": True,
+                "windowStartedAtMs": 100.0,
+                "observedAtMs": 800.0,
+                "droppedEntries": 0,
+                "heartbeatSequence": 0,
+                "entries": [
+                    {"sequence": 1, "startTimeMs": 200.0, "durationMs": 250.0},
+                ],
+            },
+        )
+        assert frontend_performance.status == 200
+        performance_payload = await frontend_performance.json()
+        assert performance_payload["window"]["count"] == 1
+        assert performance_payload["window"]["maxDurationMs"] == 250.0
+        assert "url" not in str(performance_payload).lower()
+        assert "attribution" not in str(performance_payload).lower()
+
+        flush_request = await client.post(
+            "/api/runtime/frontend-performance/flush-request",
+            headers={"X-Scriber-Token": "secret"},
+            json={"apiVersion": "1", "sourceInstanceId": "webview-123"},
+        )
+        assert flush_request.status == 202
+        flush_payload = await flush_request.json()
+        assert flush_payload["heartbeatSequence"] == 1
+        assert flush_payload["requestedAfterFrontendUptimeMs"] == 800.0
+
+        changed_source_flush = await client.post(
+            "/api/runtime/frontend-performance/flush-request",
+            headers={"X-Scriber-Token": "secret"},
+            json={"apiVersion": "1", "sourceInstanceId": "another-webview"},
+        )
+        assert changed_source_flush.status == 409
+
+        frontend_performance_delta = await client.get(
+            "/api/runtime/frontend-performance?afterSequence=1&sourceInstanceId=webview-123",
+            headers={"X-Scriber-Token": "secret"},
+        )
+        assert frontend_performance_delta.status == 200
+        delta_payload = await frontend_performance_delta.json()
+        assert delta_payload["window"]["count"] == 0
+        assert delta_payload["window"]["maxDurationMs"] == 0.0
+
+        frontend_performance_invalid = await client.get(
+            "/api/runtime/frontend-performance?afterSequence=-1",
+            headers={"X-Scriber-Token": "secret"},
+        )
+        assert frontend_performance_invalid.status == 400
+
         support_unauthorized = await client.post("/api/runtime/support-bundle")
         assert support_unauthorized.status == 401
 
@@ -686,12 +924,14 @@ async def test_session_token_middleware_protects_live_mic_routes(monkeypatch, tm
     try:
         start_without_token = await client.post("/api/live-mic/start")
         stop_without_token = await client.post("/api/live-mic/stop")
+        stop_request_without_token = await client.post("/api/live-mic/stop-request")
         toggle_without_token = await client.post("/api/live-mic/toggle")
     finally:
         await client.close()
 
     assert start_without_token.status == 401
     assert stop_without_token.status == 401
+    assert stop_request_without_token.status == 401
     assert toggle_without_token.status == 401
 
 

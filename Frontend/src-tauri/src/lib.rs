@@ -32,6 +32,7 @@ use tauri::{
     WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use uuid::Uuid;
 #[cfg(windows)]
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
@@ -56,6 +57,8 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 #[cfg(windows)]
 use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
+#[cfg(windows)]
+use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 #[cfg(windows)]
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
@@ -92,6 +95,8 @@ const SHELL_IPC_TOKEN_ENV: &str = "SCRIBER_SHELL_IPC_TOKEN";
 const SHELL_IPC_API_VERSION_ENV: &str = "SCRIBER_SHELL_IPC_API_VERSION";
 const DISABLE_HOTKEYS_ENV: &str = "SCRIBER_DISABLE_HOTKEYS";
 const TAURI_GLOBAL_HOTKEY_ENV: &str = "SCRIBER_TAURI_GLOBAL_HOTKEY";
+const TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV: &str = "SCRIBER_TAURI_BENCHMARK_HOTKEY_RUN_ID";
+const B7_PROVIDER_REPLAY_RUN_ID_ENV: &str = "SCRIBER_B7_PROVIDER_REPLAY_RUN_ID";
 // Development builds intentionally use a separate mutex so installed Scriber
 // can remain open while the current source tree is being tested. Release builds
 // keep the stable product-wide mutex and still enforce exactly one instance.
@@ -108,7 +113,98 @@ const SHELL_MENU_SMOKE_TRIGGER_FILE_ENV: &str = "SCRIBER_TAURI_SMOKE_SHELL_MENU_
 const SHELL_MENU_SMOKE_TRIGGER_TIMEOUT_MS_ENV: &str =
     "SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_TIMEOUT_MS";
 const SHELL_MENU_SMOKE_ACTION_DELAY_MS_ENV: &str = "SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTION_DELAY_MS";
+const SHELL_MENU_SMOKE_QUIT_BARRIER_FILE_ENV: &str = "SCRIBER_TAURI_SMOKE_QUIT_BARRIER_FILE";
+const SHELL_MENU_SMOKE_QUIT_BARRIER_TIMEOUT_MS_ENV: &str =
+    "SCRIBER_TAURI_SMOKE_QUIT_BARRIER_TIMEOUT_MS";
 const HOTKEY_DISPATCH_DEBOUNCE: Duration = Duration::from_millis(250);
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BenchmarkHotkeyMarker {
+    schema_version: u8,
+    marker: &'static str,
+    source: &'static str,
+    run_id: String,
+    sample_id: String,
+    process_id: u32,
+    qpc_ticks: i64,
+    qpc_frequency: i64,
+    timestamp_ns: i64,
+}
+
+#[derive(Debug)]
+struct BenchmarkHotkeyState {
+    run_id: Option<String>,
+}
+
+impl BenchmarkHotkeyState {
+    fn from_env() -> Self {
+        Self {
+            run_id: normalize_benchmark_uuid(
+                &env::var(TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV).unwrap_or_default(),
+            ),
+        }
+    }
+
+    fn capture_callback_marker(&self) -> Option<BenchmarkHotkeyMarker> {
+        let run_id = self.run_id.as_ref()?;
+        let (qpc_ticks, qpc_frequency, timestamp_ns) = query_performance_marker()?;
+        Some(BenchmarkHotkeyMarker {
+            schema_version: 1,
+            marker: "hotkey_received",
+            source: "tauri_global_shortcut",
+            run_id: run_id.clone(),
+            sample_id: Uuid::new_v4().simple().to_string(),
+            process_id: std::process::id(),
+            qpc_ticks,
+            qpc_frequency,
+            timestamp_ns,
+        })
+    }
+}
+
+fn normalize_benchmark_uuid(raw: &str) -> Option<String> {
+    Uuid::parse_str(raw.trim())
+        .ok()
+        .filter(|value| !value.is_nil())
+        .map(|value| value.simple().to_string())
+}
+
+fn provider_replay_run_id_for_child(
+    raw: &str,
+    release_build: bool,
+    launch_kind: &str,
+) -> Option<String> {
+    if !release_build || launch_kind != "sidecar" {
+        return None;
+    }
+    normalize_benchmark_uuid(raw)
+}
+
+#[cfg(windows)]
+fn query_performance_marker() -> Option<(i64, i64, i64)> {
+    let mut ticks = 0_i64;
+    let mut frequency = 0_i64;
+    unsafe {
+        if QueryPerformanceCounter(&mut ticks) == 0
+            || QueryPerformanceFrequency(&mut frequency) == 0
+        {
+            return None;
+        }
+    }
+    if ticks <= 0 || frequency <= 0 {
+        return None;
+    }
+    let timestamp_ns = ((i128::from(ticks) * 1_000_000_000_i128) / i128::from(frequency))
+        .try_into()
+        .ok()?;
+    Some((ticks, frequency, timestamp_ns))
+}
+
+#[cfg(not(windows))]
+fn query_performance_marker() -> Option<(i64, i64, i64)> {
+    None
+}
 
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     match mutex.lock() {
@@ -614,7 +710,7 @@ impl DesktopHotkeyState {
             }
             ShortcutState::Released => {
                 if is_primary && state.mode == "push_to_talk" {
-                    Some("/api/live-mic/stop")
+                    Some("/api/live-mic/stop-request")
                 } else {
                     None
                 }
@@ -1173,6 +1269,7 @@ pub fn run() {
             }
         })
         .manage(single_instance_guard)
+        .manage(BenchmarkHotkeyState::from_env())
         .manage(DesktopHotkeyState::new())
         .manage(TrayState::default())
         .manage(NativeDeviceEventsState::new())
@@ -1685,6 +1782,16 @@ where
         Duration::from_millis(0),
         Duration::from_secs(30),
     );
+    let quit_barrier_path = env::var(SHELL_MENU_SMOKE_QUIT_BARRIER_FILE_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from);
+    let quit_barrier_timeout = env_duration_ms(
+        SHELL_MENU_SMOKE_QUIT_BARRIER_TIMEOUT_MS_ENV,
+        Duration::from_secs(10),
+        Duration::from_millis(250),
+        Duration::from_secs(60),
+    );
 
     if let Err(err) = std::thread::Builder::new()
         .name("shell-menu-smoke".to_string())
@@ -1729,6 +1836,21 @@ where
                     }
                     ShellMenuSmokeAction::OverlayHide => run_shell_menu_smoke_overlay_hide(),
                     ShellMenuSmokeAction::Quit => {
+                        if let Some(path) = quit_barrier_path.as_ref() {
+                            write_shell_log(&format!(
+                                "shell menu smoke waiting for frontend performance barrier path_hash={}",
+                                redaction::hash_sensitive_identifier(&path.display().to_string())
+                            ));
+                            if wait_for_shell_menu_smoke_trigger(path, quit_barrier_timeout) {
+                                write_shell_log(
+                                    "shell menu smoke frontend performance barrier observed",
+                                );
+                            } else {
+                                write_shell_log(
+                                    "shell menu smoke frontend performance barrier timed out",
+                                );
+                            }
+                        }
                         run_shell_menu_smoke_quit(&app);
                         break;
                     }
@@ -2554,7 +2676,7 @@ fn toggle_live_recording_from_shell<R: Runtime>(app: &AppHandle<R>) -> Result<()
 
     let current = tray_status_for_app(app);
     let (path, active, mode) = if current.recording_active {
-        ("/api/live-mic/stop", false, "transcribing")
+        ("/api/live-mic/stop-request", false, "transcribing")
     } else {
         ("/api/live-mic/start", true, "initializing")
     };
@@ -3492,6 +3614,12 @@ fn refresh_global_hotkey_for_app<R: Runtime>(
 }
 
 fn handle_global_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event_state: ShortcutState) {
+    // Capture QPC at the actual Tauri callback boundary. The marker is inert
+    // unless the explicit benchmark run-id environment contract was present
+    // when this installed process started.
+    let benchmark_marker = app
+        .try_state::<BenchmarkHotkeyState>()
+        .and_then(|state| state.capture_callback_marker());
     let Some(path) = app
         .try_state::<DesktopHotkeyState>()
         .and_then(|state| state.action_for_event(shortcut.id(), event_state, Instant::now()))
@@ -3549,13 +3677,31 @@ fn handle_global_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event_stat
             ));
         }
         let access = manager.access();
-        if let Err(err) = post_backend_path(&access, path) {
+        let benchmark_body = if should_attach_benchmark_hotkey_marker(path, recording_active) {
+            benchmark_marker
+                .as_ref()
+                .map(|marker| json!({ "benchmarkHotkeyMarker": marker }))
+        } else {
+            None
+        };
+        if let Err(err) = post_backend_path_with_body(&access, path, benchmark_body.as_ref()) {
             write_shell_log(&format!("global hotkey action failed path={path}: {err}"));
             if show_initializing_overlay {
                 let _ = native_overlay::handle_shell_command("overlayHide", &json!({}));
             }
         }
     });
+}
+
+fn should_attach_benchmark_hotkey_marker(path: &str, recording_active: bool) -> bool {
+    !recording_active
+        && matches!(
+            path,
+            "/api/live-mic/start"
+                | "/api/live-mic/start-post-processing"
+                | "/api/live-mic/toggle"
+                | "/api/live-mic/toggle-post-processing"
+        )
 }
 
 fn should_show_initializing_overlay_for_hotkey(path: &str, recording_active: bool) -> bool {
@@ -3746,7 +3892,15 @@ fn normalize_global_shortcut(hotkey: &str) -> String {
 }
 
 fn post_backend_path(access: &BackendAccess, path: &str) -> Result<Value, String> {
-    request_backend_json(access, "POST", path)
+    post_backend_path_with_body(access, path, None)
+}
+
+fn post_backend_path_with_body(
+    access: &BackendAccess,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value, String> {
+    request_backend_json_with_body(access, "POST", path, body)
 }
 
 fn request_backend_shutdown(access: &BackendAccess) -> Result<(), String> {
@@ -3933,6 +4087,17 @@ fn spawn_backend(
     command.env_remove(outlook_config::CLIENT_ID_ENV);
     if let Some(client_id) = outlook_config::configured_client_id() {
         command.env(outlook_config::CLIENT_ID_ENV, client_id);
+    }
+    // The B7 provider replay control plane is available only to an installed
+    // release sidecar. Remove the inherited value first so debug/source
+    // launches and malformed UUIDs cannot accidentally enable backend routes.
+    command.env_remove(B7_PROVIDER_REPLAY_RUN_ID_ENV);
+    if let Some(run_id) = provider_replay_run_id_for_child(
+        &env::var(B7_PROVIDER_REPLAY_RUN_ID_ENV).unwrap_or_default(),
+        !cfg!(debug_assertions),
+        &spec.launch_kind,
+    ) {
+        command.env(B7_PROVIDER_REPLAY_RUN_ID_ENV, run_id);
     }
     for (name, value) in shell_ipc_env_pairs(shell_ipc_config) {
         command.env(name, value);
@@ -4368,11 +4533,12 @@ mod tests {
         desktop_autostart_default_enabled, desktop_window_icon_image, env_duration_ms,
         env_flag_enabled, find_backend_executable, find_backend_executable_in_dirs,
         health_response_ready, is_safe_transcript_id, is_shell_menu_item,
-        managed_backend_start_timed_out, normalize_global_shortcut, normalize_hotkey_mode,
-        parse_loopback_backend_url, parse_shell_menu_smoke_actions, read_backend_response_limited,
-        recent_transcript_label, recent_transcripts_from_value, request_backend_shutdown,
-        resolve_session_token, sanitize_menu_label, shell_ipc, shell_ipc_env_pairs,
-        shortcut_id_for_hotkey, should_hide_window_instead_of_closing,
+        managed_backend_start_timed_out, normalize_benchmark_uuid, normalize_global_shortcut,
+        normalize_hotkey_mode, parse_loopback_backend_url, parse_shell_menu_smoke_actions,
+        provider_replay_run_id_for_child, read_backend_response_limited, recent_transcript_label,
+        recent_transcripts_from_value, request_backend_shutdown, resolve_session_token,
+        sanitize_menu_label, shell_ipc, shell_ipc_env_pairs, shortcut_id_for_hotkey,
+        should_attach_benchmark_hotkey_marker, should_hide_window_instead_of_closing,
         should_refresh_hotkey_after_backend_ready, should_show_initializing_overlay_for_hotkey,
         should_show_window_for_tray_click, should_wait_for_hotkey_backend, split_http_response,
         tray_icon_image, tray_icon_kind, tray_icon_size_for_scale_factor, wait_for_child_exit,
@@ -4976,7 +5142,7 @@ mod tests {
                 ShortcutState::Released,
                 now + Duration::from_millis(25)
             ),
-            Some("/api/live-mic/stop")
+            Some("/api/live-mic/stop-request")
         );
     }
 
@@ -5039,6 +5205,106 @@ mod tests {
             "/api/meetings/hotkey",
             false
         ));
+    }
+
+    #[test]
+    fn benchmark_hotkey_marker_is_limited_to_live_mic_start_requests() {
+        for path in [
+            "/api/live-mic/start",
+            "/api/live-mic/start-post-processing",
+            "/api/live-mic/toggle",
+            "/api/live-mic/toggle-post-processing",
+        ] {
+            assert!(should_attach_benchmark_hotkey_marker(path, false));
+            assert!(!should_attach_benchmark_hotkey_marker(path, true));
+        }
+        assert!(!should_attach_benchmark_hotkey_marker(
+            "/api/meetings/hotkey",
+            false
+        ));
+        assert!(!should_attach_benchmark_hotkey_marker(
+            "/api/live-mic/stop-request",
+            false
+        ));
+    }
+
+    #[test]
+    fn benchmark_hotkey_run_id_requires_a_non_nil_uuid() {
+        assert_eq!(
+            normalize_benchmark_uuid("7de1a486-51d4-4f85-9042-b7cbcb30da52"),
+            Some("7de1a48651d44f859042b7cbcb30da52".to_string())
+        );
+        assert_eq!(normalize_benchmark_uuid("not-an-id"), None);
+        assert_eq!(
+            normalize_benchmark_uuid("00000000-0000-0000-0000-000000000000"),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_replay_run_id_reaches_only_release_sidecars() {
+        let raw = "7de1a486-51d4-4f85-9042-b7cbcb30da52";
+        assert_eq!(
+            provider_replay_run_id_for_child(raw, true, "sidecar"),
+            Some("7de1a48651d44f859042b7cbcb30da52".to_string())
+        );
+        assert_eq!(
+            provider_replay_run_id_for_child(raw, false, "sidecar"),
+            None
+        );
+        assert_eq!(provider_replay_run_id_for_child(raw, true, "source"), None);
+        assert_eq!(
+            provider_replay_run_id_for_child("not-a-uuid", true, "sidecar"),
+            None
+        );
+        assert_eq!(
+            provider_replay_run_id_for_child(
+                "00000000-0000-0000-0000-000000000000",
+                true,
+                "sidecar"
+            ),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn benchmark_hotkey_callback_marker_uses_windows_qpc() {
+        let state = super::BenchmarkHotkeyState {
+            run_id: normalize_benchmark_uuid("7de1a486-51d4-4f85-9042-b7cbcb30da52"),
+        };
+        let marker = state.capture_callback_marker().expect("Windows QPC marker");
+        assert_eq!(marker.marker, "hotkey_received");
+        assert_eq!(marker.source, "tauri_global_shortcut");
+        assert_eq!(marker.process_id, std::process::id());
+        assert!(marker.qpc_ticks > 0);
+        assert!(marker.qpc_frequency > 0);
+        assert_eq!(
+            marker.timestamp_ns,
+            ((i128::from(marker.qpc_ticks) * 1_000_000_000_i128) / i128::from(marker.qpc_frequency))
+                as i64
+        );
+        let payload = serde_json::to_value(&marker).expect("serialize marker");
+        let fields = payload
+            .as_object()
+            .expect("marker object")
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            fields,
+            std::collections::BTreeSet::from([
+                "marker",
+                "processId",
+                "qpcFrequency",
+                "qpcTicks",
+                "runId",
+                "sampleId",
+                "schemaVersion",
+                "source",
+                "timestampNs",
+            ])
+        );
     }
 
     #[test]

@@ -1,6 +1,9 @@
 param(
     [string]$WindowTitle = "Scriber",
     [string[]]$ExpectedText = @(),
+    [string[]]$ForbiddenText = @(),
+    [int]$ExpectedProcessId = 0,
+    [long]$ExpectedProcessCreationTime100ns = 0,
     [string]$StartAfterPath = "",
     [double]$TimeoutSec = 10,
     [string]$OutputPath = ""
@@ -20,6 +23,16 @@ function Get-TextSha256 {
         return (($hash | ForEach-Object { $_.ToString("x2") }) -join "")
     } finally {
         $sha.Dispose()
+    }
+}
+
+function Get-ProcessCreationTime100ns {
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) { return $null }
+    try {
+        return [long](Get-Process -Id $ProcessId -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc()
+    } catch {
+        return $null
     }
 }
 
@@ -73,6 +86,10 @@ $firstNonEmptyQpcTicks = $null
 $lastSampleQpcTicks = $null
 $stableQpcTicks = $null
 $stableConfirmedQpcTicks = $null
+$observedProcessId = $null
+$observedProcessCreationTime100ns = $null
+$observedNativeWindowHandle = $null
+$observedWindowVisible = $false
 $firstTextTraversalMs = $null
 $lastTextTraversalMs = $null
 $maxTextTraversalMs = $null
@@ -83,7 +100,40 @@ if ($startGateObserved) {
             [System.Windows.Automation.AutomationElement]::NameProperty,
             $WindowTitle
         )
-        $window = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $condition)
+        $windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $condition)
+        $window = $null
+        $eligibleWindowCount = 0
+        foreach ($candidateWindow in $windows) {
+            try {
+                $candidateProcessId = [int]$candidateWindow.Current.ProcessId
+                $candidateCreationTime = Get-ProcessCreationTime100ns -ProcessId $candidateProcessId
+                $candidateBounds = $candidateWindow.Current.BoundingRectangle
+                $candidateVisible = (
+                    -not [bool]$candidateWindow.Current.IsOffscreen -and
+                    $candidateBounds.Width -gt 0 -and
+                    $candidateBounds.Height -gt 0
+                )
+                if (-not $candidateVisible) { continue }
+                if ($ExpectedProcessId -gt 0 -and $candidateProcessId -ne $ExpectedProcessId) { continue }
+                if (
+                    $ExpectedProcessCreationTime100ns -gt 0 -and
+                    $candidateCreationTime -ne $ExpectedProcessCreationTime100ns
+                ) { continue }
+                $eligibleWindowCount += 1
+                if ($eligibleWindowCount -eq 1) {
+                    $window = $candidateWindow
+                    $observedProcessId = $candidateProcessId
+                    $observedProcessCreationTime100ns = $candidateCreationTime
+                    $observedNativeWindowHandle = [int64]$candidateWindow.Current.NativeWindowHandle
+                    $observedWindowVisible = $candidateVisible
+                }
+            } catch {
+                continue
+            }
+        }
+        if ($eligibleWindowCount -ne 1) {
+            $window = $null
+        }
         if ($window) {
             $sampleTick = [System.Diagnostics.Stopwatch]::GetTimestamp()
             $sampleCount += 1
@@ -118,6 +168,12 @@ if ($startGateObserved) {
                     break
                 }
             }
+            foreach ($forbidden in $ForbiddenText) {
+                if ($forbidden -and $lastText -like "*$forbidden*") {
+                    $containsAll = $false
+                    break
+                }
+            }
             if ($containsAll) {
                 $matchingSampleCount += 1
                 if ($previousText -eq $lastText) {
@@ -145,7 +201,14 @@ $result = [pscustomobject]@{
     ok = $stable
     endpoint = "first_stable_visible_frame"
     windowTitle = $WindowTitle
-    expectedText = $ExpectedText
+    expectedTextSha256 = @($ExpectedText | ForEach-Object { Get-TextSha256 -Text ([string]$_) })
+    forbiddenTextSha256 = @($ForbiddenText | ForEach-Object { Get-TextSha256 -Text ([string]$_) })
+    expectedProcessId = if ($ExpectedProcessId -gt 0) { $ExpectedProcessId } else { $null }
+    expectedProcessCreationTime100ns = if ($ExpectedProcessCreationTime100ns -gt 0) { $ExpectedProcessCreationTime100ns } else { $null }
+    processId = $observedProcessId
+    processCreationTime100ns = $observedProcessCreationTime100ns
+    nativeWindowHandle = $observedNativeWindowHandle
+    windowVisible = $observedWindowVisible
     startAfterPath = $StartAfterPath
     observerStartedQpcTicks = $observerStartedQpcTicks
     startGateObserved = $startGateObserved

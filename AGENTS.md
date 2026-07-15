@@ -179,6 +179,24 @@ Packaging and scripts:
   session token via `scriberToken` query parameter or `X-Scriber-Token`.
 - `POST /api/runtime/frontend-ready` is the proof that the actual WebView reached
   the runtime backend.
+- The main WebView reports Long Tasks API support and only bounded monotonic
+  timing records over 200 ms through token-protected
+  `/api/runtime/frontend-performance`. Keep this event-driven and privacy
+  minimal: no polling, entry names, URLs, DOM attribution, route data, or text.
+  AutoResearch must compare one source instance and sequence-bounded windows;
+  unsupported observers, retained-ring truncation, dropped entries, or a source
+  change are `unknown`, never an invented zero. A measured zero additionally
+  requires a post-interaction flush request whose source-bound heartbeat was
+  observed by the WebView, reported after draining `PerformanceObserver`
+  records, and acknowledged after the measurement window ended. Installed
+  shell smoke Quit must wait for that bounded acknowledgement barrier.
+- AutoResearch B7 hotkey timing starts at the actual Tauri global-shortcut
+  callback. The shell emits its Windows-QPC marker only when
+  `SCRIBER_TAURI_BENCHMARK_HOTKEY_RUN_ID` contains a non-nil UUID, attaches it
+  to the exact Live Mic start/toggle request, and includes only run/sample UUIDs,
+  the shell PID, and QPC integers. The managed backend must validate its direct
+  parent PID, timestamp freshness, and the configured run before binding the
+  marker to that session; Windows key dispatch remains diagnostic-only.
 - Rust owns Windows autostart, global hotkey registration, single-instance
   startup, tray/menu shell actions, and worker crash recovery. The supervisor
   must keep the named single-instance restore event: a second launch exits
@@ -223,6 +241,11 @@ Packaging and scripts:
   live dictation output. The post-processing hotkey must dispatch only to the
   dedicated live-mic post-processing endpoint and must not affect File or
   YouTube jobs.
+- Python push-to-talk polling is replaceable lifecycle plumbing, not the owner
+  of provider finalization. On key release it must schedule the controller's
+  tracked background stop and shield that task from poller cancellation so
+  hotkey re-registration or shutdown cannot strand `_is_stopping` or lose the
+  transcript. Shutdown must continue to drain that tracked stop task.
 - Rust initializes the Tauri updater plugin, but frontend code owns update
   checks and user-facing update UX. Keep update checks non-blocking, cached,
   about weekly by default, and suppress automatic prompts while recording or
@@ -305,6 +328,12 @@ Packaging and scripts:
 - Add or update contract tests when changing payload shape.
 - Frontend REST consumers should use `Frontend/client/src/lib/api-types.ts`
   instead of ad hoc `any` boundaries.
+- Interactive Live Mic stop controls use the token-protected
+  `POST /api/live-mic/stop-request` acknowledgement path. It must return a
+  bounded `202` without awaiting provider finalization, remain idempotent for
+  repeated stops, and never arm a deferred toggle. The existing state and
+  WebSocket events remain completion authority; `/api/live-mic/stop` is kept
+  only for compatibility callers that explicitly need a synchronous result.
 - Meeting segments treat `startMs`, `endMs`, and `durationMs` as one contract.
   `durationMs` must equal `endMs - startMs` in REST and `meeting_segment`
   events; transcript and citation controls must preserve timestamp seeking.
@@ -431,10 +460,15 @@ Packaging and scripts:
   `recentEvents` lifecycle markers for pre-adoption start and post-resume
   adoption/resume/restart, not only a final healthy status snapshot. Always-on
   handoff is latency- and privacy-indicator-sensitive: when WASAPI capture
-  adopts non-empty prewarm blocks, do not stop the idle `PrewarmSession` in the
-  parent `captureStart` handler. Transfer that session into the capture writer,
-  write the adopted prebuffer, start the replacement WASAPI `IAudioClient`, and
-  stop prewarm only after `IAudioClient.Start()` succeeds. Python must likewise
+  adopts any prewarm session, including one whose initial rolling snapshot is
+  empty, do not stop the idle `PrewarmSession` in the parent `captureStart`
+  handler. `begin_handoff` atomically drains the rolling snapshot and redirects
+  later blocks into a bounded tail; overflow must fail capture visibly. Before
+  writing any adopted block, compare the actual endpoint hash opened by prewarm
+  with the replacement WASAPI client's actual endpoint hash so a Windows
+  default-device change cannot mix microphone A and B. Start the replacement
+  `IAudioClient`, stop/join the old worker, and drain that tail exactly once
+  before new live frames. Python must likewise
   keep adoption provisional until its frame reader has successfully processed
   the first non-prebuffer live frame. Prebuffer frames remain durable and are
   delivered downstream, but they must not fire `on_ready` or commit the prewarm
@@ -443,7 +477,18 @@ Packaging and scripts:
   or `captureWriterFinishedBeforePrewarmHandoff`. This keeps
   `SCRIBER_MIC_ALWAYS_ON=1` optimized for minimum hotkey latency and prevents a
   visible Windows microphone privacy-indicator off/on blink between idle
-  prewarm and live capture. The Rust prewarm path is the app default. When no
+  prewarm and live capture. When the first explicit Live Mic start encounters
+  the lazily unloaded Pipecat runtime, first confirm a temporary Rust prewarm,
+  then import Pipecat off the aiohttp event loop; do not submit both to the same
+  executor concurrently because a one-worker executor can run the heavy import
+  first. The prewarm retains up to six seconds of post-hotkey audio. This
+  capture-first buffer is never started before provider validation and explicit
+  user intent; construction failure/cancellation must retain it only under the
+  normal bounded post-recording prewarm policy. Live Mic start owns an explicit
+  generation: a second toggle, explicit stop, or shutdown cancels that exact
+  generation after ownership-changing waits finish, releases the persistent
+  audio claim, and prevents late provider activation. The Rust prewarm path is the app
+  default. When no
   favorite/non-default mic is selected, keep the request as
   `devicePreference=default` with no `nativeEndpointIdHash`; the Rust sidecar
   must open the Windows default WASAPI capture endpoint directly so the visible

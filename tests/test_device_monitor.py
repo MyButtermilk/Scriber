@@ -1,8 +1,144 @@
+from pathlib import Path
+import subprocess
+import sys
 import types
 import threading
 import time
 
 import src.device_monitor as device_monitor
+
+
+def test_importing_web_api_does_not_import_sounddevice_in_fresh_process():
+    repo_root = Path(__file__).resolve().parents[1]
+    script = (
+        "import sys\n"
+        "assert 'sounddevice' not in sys.modules\n"
+        "import src.web_api\n"
+        "assert 'sounddevice' not in sys.modules, "
+        "'src.web_api imported sounddevice eagerly'\n"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_concurrent_enumeration_imports_sounddevice_once(monkeypatch):
+    import_calls = 0
+    import_started = threading.Event()
+    release_import = threading.Event()
+
+    class _FakeSoundDevice:
+        default = types.SimpleNamespace(device=(0, None), hostapi=0)
+
+        @staticmethod
+        def query_devices():
+            return [
+                {
+                    "name": "USB Mic, MME",
+                    "max_input_channels": 1,
+                    "hostapi": 0,
+                }
+            ]
+
+        @staticmethod
+        def query_hostapis():
+            return [{"name": "MME"}]
+
+        @staticmethod
+        def check_input_settings(**_kwargs):
+            return None
+
+    fake_sounddevice = _FakeSoundDevice()
+
+    def import_sounddevice(name):
+        nonlocal import_calls
+        assert name == "sounddevice"
+        import_calls += 1
+        import_started.set()
+        assert release_import.wait(timeout=2)
+        return fake_sounddevice
+
+    monkeypatch.setattr(device_monitor, "sd", None)
+    monkeypatch.setattr(device_monitor, "HAS_SOUNDDEVICE", True)
+    monkeypatch.setattr(device_monitor, "_SOUNDDEVICE_IMPORT_ATTEMPTED", False)
+    monkeypatch.setattr(device_monitor, "import_module", import_sounddevice)
+
+    results: list[list[dict[str, str]]] = []
+    workers = [
+        threading.Thread(target=lambda: results.append(device_monitor._enumerate_microphones()))
+        for _ in range(4)
+    ]
+    for worker in workers:
+        worker.start()
+    assert import_started.wait(timeout=2)
+    release_import.set()
+    for worker in workers:
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+
+    assert import_calls == 1
+    assert len(results) == 4
+    assert all(result[1]["deviceId"] == "USB Mic, MME" for result in results)
+
+
+def test_unavailable_sounddevice_keeps_default_only_without_import(monkeypatch):
+    monkeypatch.setattr(device_monitor, "sd", None)
+    monkeypatch.setattr(device_monitor, "HAS_SOUNDDEVICE", False)
+    monkeypatch.setattr(device_monitor, "_SOUNDDEVICE_IMPORT_ATTEMPTED", False)
+    monkeypatch.setattr(
+        device_monitor,
+        "import_module",
+        lambda _name: (_ for _ in ()).throw(AssertionError("must not import")),
+    )
+
+    assert device_monitor._enumerate_microphones() == [
+        {"deviceId": "default", "label": "Default"}
+    ]
+
+
+def test_device_monitor_loads_sounddevice_on_its_worker_thread(monkeypatch):
+    imported_on: list[str] = []
+    refreshed = threading.Event()
+
+    fake_sounddevice = types.SimpleNamespace(
+        default=types.SimpleNamespace(device=(0, None), hostapi=0),
+        query_devices=lambda: [
+            {
+                "name": "Worker Mic, MME",
+                "max_input_channels": 1,
+                "hostapi": 0,
+            }
+        ],
+        query_hostapis=lambda: [{"name": "MME"}],
+        check_input_settings=lambda **_kwargs: None,
+    )
+
+    def import_sounddevice(_name):
+        imported_on.append(threading.current_thread().name)
+        return fake_sounddevice
+
+    monkeypatch.setattr(device_monitor, "sd", None)
+    monkeypatch.setattr(device_monitor, "HAS_SOUNDDEVICE", True)
+    monkeypatch.setattr(device_monitor, "_SOUNDDEVICE_IMPORT_ATTEMPTED", False)
+    monkeypatch.setattr(device_monitor, "import_module", import_sounddevice)
+    monitor = device_monitor.DeviceMonitor(poll_seconds=60)
+    monitor.on_devices_changed(lambda _devices: refreshed.set())
+
+    monitor.start()
+    try:
+        assert refreshed.wait(timeout=2)
+    finally:
+        monitor.stop()
+
+    assert imported_on == ["device-monitor"]
 
 
 def test_concurrent_monitor_start_creates_only_one_thread(monkeypatch):

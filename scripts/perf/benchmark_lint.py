@@ -9,10 +9,15 @@ from pathlib import Path
 
 REQUIRED_METRICS = [
     "local_wux",
+    "overlay_warm_p50_ms",
     "overlay_warm_p95_ms",
+    "overlay_cold_p50_ms",
     "overlay_cold_p95_ms",
+    "microsoft_local_tail_p50_ms",
     "microsoft_local_tail_p95_ms",
+    "soniox_local_tail_p50_ms",
     "soniox_local_tail_p95_ms",
+    "app_ux_p50_ms",
     "app_ux_p95_ms",
     "hotkey_mic_ready_p95_ms",
     "hotkey_first_audio_frame_p95_ms",

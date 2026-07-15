@@ -80,6 +80,19 @@ class _FakeKeyboard:
         return self.pressed
 
 
+@pytest.fixture(autouse=True)
+def _fake_live_provider_readiness(monkeypatch):
+    """Keep lifecycle stress tests independent of local provider credentials."""
+    monkeypatch.setattr(
+        ScriberWebController, "_select_available_provider", lambda _self: "openai"
+    )
+    monkeypatch.setattr(
+        ScriberWebController,
+        "_validate_live_provider_ready",
+        lambda _self, _provider: None,
+    )
+
+
 def _assert_controller_clean(ctl: ScriberWebController) -> None:
     assert ctl._is_listening is False
     assert ctl._is_stopping is False
@@ -100,8 +113,10 @@ def _assert_pipeline_invariants() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hotkey_toggle_burst_stress_end_to_end(monkeypatch):
+async def test_hotkey_toggle_burst_stress_end_to_end(monkeypatch, tmp_path):
     loop = asyncio.get_running_loop()
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     ctl = ScriberWebController(loop)
     _StressFakePipeline.instances.clear()
     _StressFakePipeline.created = 0
@@ -146,6 +161,7 @@ async def test_tauri_hotkey_start_spam_during_initializing_creates_single_record
 ):
     loop = asyncio.get_running_loop()
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setattr(Config, "MIC_ALWAYS_ON", False)
     monkeypatch.setattr(Config, "INJECT_METHOD", "paste")
 
@@ -162,8 +178,6 @@ async def test_tauri_hotkey_start_spam_during_initializing_creates_single_record
 
     with (
         patch("src.web_api.ScriberPipeline", _StressFakePipeline),
-        patch.object(ctl, "_select_available_provider", return_value="openai"),
-        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
         patch.object(ctl, "_pause_idle_mic_prewarm_for_capture", side_effect=slow_prewarm_pause),
         patch.object(ctl, "_get_overlay", return_value=None),
         patch("src.web_api.show_initializing_overlay"),
@@ -217,8 +231,10 @@ async def test_tauri_hotkey_start_spam_during_initializing_creates_single_record
 
 
 @pytest.mark.asyncio
-async def test_hotkey_ptt_press_release_burst_stress_end_to_end(monkeypatch):
+async def test_hotkey_ptt_press_release_burst_stress_end_to_end(monkeypatch, tmp_path):
     loop = asyncio.get_running_loop()
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     ctl = ScriberWebController(loop)
     _StressFakePipeline.instances.clear()
     _StressFakePipeline.created = 0
@@ -261,3 +277,59 @@ async def test_hotkey_ptt_press_release_burst_stress_end_to_end(monkeypatch):
     assert all(rec.status == "completed" for rec in ctl._history)
     assert all(rec.content.strip().startswith("stress transcript") for rec in ctl._history)
     assert paste_mock.call_count == len(ctl._history)
+
+
+@pytest.mark.asyncio
+async def test_cancelling_ptt_poller_does_not_cancel_active_finalization(
+    monkeypatch,
+    tmp_path,
+):
+    loop = asyncio.get_running_loop()
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    ctl = ScriberWebController(loop)
+    fake_keyboard = _FakeKeyboard()
+    ctl._keyboard = fake_keyboard
+    stop_entered = asyncio.Event()
+    release_stop = asyncio.Event()
+
+    class _SlowStopPipeline(_StressFakePipeline):
+        async def stop(self, **_kwargs):
+            stop_entered.set()
+            await release_stop.wait()
+            await super().stop()
+
+    monkeypatch.setattr(Config, "INJECT_METHOD", "paste")
+
+    with (
+        patch("src.web_api.ScriberPipeline", _SlowStopPipeline),
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.show_recording_overlay"),
+        patch("src.web_api.show_transcribing_overlay"),
+        patch("src.web_api.hide_recording_overlay"),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch("src.injector.HAS_GUI", True),
+        patch("src.injector._paste_text", return_value=True),
+    ):
+        ptt_task = asyncio.create_task(ctl._ptt_loop())
+        fake_keyboard.pressed = True
+        await asyncio.sleep(0.07)
+        fake_keyboard.pressed = False
+        await asyncio.wait_for(stop_entered.wait(), timeout=1.0)
+
+        background_stop = ctl._background_stop_task
+        assert background_stop is not None
+        ptt_task.cancel()
+        await asyncio.gather(ptt_task, return_exceptions=True)
+        assert background_stop.cancelled() is False
+        assert ctl._is_stopping is True
+
+        release_stop.set()
+        await asyncio.wait_for(asyncio.shield(background_stop), timeout=1.0)
+
+    _assert_controller_clean(ctl)
+    assert len(ctl._history) == 1
+    assert ctl._history[0].status == "completed"

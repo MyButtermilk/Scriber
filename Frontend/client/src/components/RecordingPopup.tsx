@@ -3,8 +3,8 @@
 import React, { useEffect, useRef, useState, memo, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Square, Loader2 } from "lucide-react";
-import { wsUrl, apiUrl } from "@/lib/backend";
-import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
+import { wsUrl } from "@/lib/backend";
+import { requestLiveMicStop } from "@/lib/live-mic-control";
 import { useToast } from "@/hooks/use-toast";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { showRecordingErrorToast } from "@/lib/recording-error-toast";
@@ -294,10 +294,7 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
 
     const handleStop = async () => {
         try {
-            await fetchWithTimeout(apiUrl("/api/live-mic/stop"), {
-                method: "POST",
-                credentials: "include",
-            }, 15_000);
+            await requestLiveMicStop();
         } catch {
             // ignore errors
         }

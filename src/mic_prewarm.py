@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+from importlib import import_module
+from importlib.util import find_spec
 import threading
 import time
 from collections import deque
@@ -21,12 +23,47 @@ from src.runtime.audio_frame_pipe import AUDIO_FRAME_HEADER_LEN, AUDIO_FRAME_VER
 from src.runtime.shell_ipc import call_shell_ipc
 
 try:
-    import sounddevice as sd  # type: ignore
-
-    HAS_SOUNDDEVICE = True
+    HAS_SOUNDDEVICE = find_spec("sounddevice") is not None
 except Exception:
-    sd = None  # type: ignore[assignment]
-    HAS_SOUNDDEVICE = False
+    # Frozen importers are allowed to defer the availability decision to the
+    # first non-default/favorite microphone selection.
+    HAS_SOUNDDEVICE = True
+sd: Any | None = None
+_SOUNDDEVICE_IMPORT_LOCK = threading.Lock()
+_SOUNDDEVICE_IMPORT_ATTEMPTED = False
+
+
+def _load_sounddevice_once() -> Any | None:
+    """Load PortAudio only when resolving a non-default microphone.
+
+    The public ``sd`` and ``HAS_SOUNDDEVICE`` globals deliberately retain their
+    historical monkeypatch behavior for unit tests and embedded runtimes.
+    """
+
+    global HAS_SOUNDDEVICE, _SOUNDDEVICE_IMPORT_ATTEMPTED, sd
+
+    current = sd
+    if current is not None:
+        return current if HAS_SOUNDDEVICE else None
+    if not HAS_SOUNDDEVICE:
+        return None
+
+    with _SOUNDDEVICE_IMPORT_LOCK:
+        current = sd
+        if current is not None:
+            return current if HAS_SOUNDDEVICE else None
+        if not HAS_SOUNDDEVICE or _SOUNDDEVICE_IMPORT_ATTEMPTED:
+            return None
+        _SOUNDDEVICE_IMPORT_ATTEMPTED = True
+        try:
+            current = import_module("sounddevice")
+        except Exception:
+            HAS_SOUNDDEVICE = False
+            sd = None
+            return None
+        sd = current
+        HAS_SOUNDDEVICE = True
+        return current
 
 
 _PREWARM_RECENT_EVENT_LIMIT = 40
@@ -168,6 +205,8 @@ class RustAudioPrewarmManager:
         self._adoption_count = 0
         self._adoption_commit_count = 0
         self._adoption_rollback_count = 0
+        self._adoption_device_identity_rejection_count = 0
+        self._last_adoption_rejection_reason = ""
         self._last_adopted_prewarm_id_hash: str | None = None
         self._last_active_capture_detach_at = 0.0
         self._last_active_capture_resume_attempt_at = 0.0
@@ -234,6 +273,10 @@ class RustAudioPrewarmManager:
                 "adoptionCount": self._adoption_count,
                 "adoptionCommitCount": self._adoption_commit_count,
                 "adoptionRollbackCount": self._adoption_rollback_count,
+                "adoptionDeviceIdentityRejectionCount": (
+                    self._adoption_device_identity_rejection_count
+                ),
+                "lastAdoptionRejectionReason": self._last_adoption_rejection_reason,
                 "lastAdoptedPrewarmIdHash": self._last_adopted_prewarm_id_hash,
                 "lastActiveCaptureDetachAgoSeconds": (
                     round(time.monotonic() - self._last_active_capture_detach_at, 3)
@@ -347,16 +390,26 @@ class RustAudioPrewarmManager:
         self._last_error_log_at = now
         logger.warning(f"Rust mic prewarm could not start: {exc}")
 
-    def start_if_enabled(self, *, temporary: bool = False) -> bool:
+    def start_if_enabled(
+        self,
+        *,
+        temporary: bool = False,
+        prebuffer_ms: int | None = None,
+    ) -> bool:
         if not Config.MIC_ALWAYS_ON and not temporary:
             self.stop(reason="disabled")
             return False
         with self._lock:
             if self._paused_for_active_capture or self._paused_for_device_refresh:
                 return False
-        return self.start(temporary=temporary)
+        return self.start(temporary=temporary, prebuffer_ms=prebuffer_ms)
 
-    def start(self, *, temporary: bool = False) -> bool:
+    def start(
+        self,
+        *,
+        temporary: bool = False,
+        prebuffer_ms: int | None = None,
+    ) -> bool:
         with self._lock:
             if self._paused_for_active_capture or self._paused_for_device_refresh:
                 return False
@@ -382,7 +435,11 @@ class RustAudioPrewarmManager:
             self._record_event_locked("start_attempt", "start")
 
         try:
-            payload = self._build_start_payload()
+            payload = (
+                self._build_start_payload()
+                if prebuffer_ms is None
+                else self._build_start_payload(prebuffer_ms=prebuffer_ms)
+            )
             shell_started = time.monotonic()
             response = self._shell_call("audioPrewarmStart", payload, timeout_seconds=2.0)
             shell_response_ms = round(max(0.0, time.monotonic() - shell_started) * 1000.0, 3)
@@ -557,11 +614,19 @@ class RustAudioPrewarmManager:
             with self._lock:
                 self._start_in_progress = False
 
-    def _build_start_payload(self) -> dict[str, Any]:
+    def _build_start_payload(self, *, prebuffer_ms: int | None = None) -> dict[str, Any]:
         sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
         channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
         block_size = max(64, int(getattr(Config, "MIC_BLOCK_SIZE", 512) or 512))
-        prebuffer_ms = max(0, min(2000, int(getattr(Config, "MIC_PREBUFFER_MS", 400) or 0)))
+        configured_prebuffer_ms = int(getattr(Config, "MIC_PREBUFFER_MS", 400) or 0)
+        requested_prebuffer_ms = (
+            configured_prebuffer_ms if prebuffer_ms is None else int(prebuffer_ms)
+        )
+        # Normal idle prewarm stays on the user's short rolling buffer. An
+        # explicit hotkey may request a longer, still tightly bounded buffer
+        # while the lazily loaded transcription runtime becomes ready. The
+        # Rust sidecar enforces the same upper bound at its IPC boundary.
+        effective_prebuffer_ms = max(0, min(6000, requested_prebuffer_ms))
         device_preference = str(getattr(Config, "MIC_DEVICE", "default") or "default")
         selection = self._device_selection_payload(
             device_preference,
@@ -575,7 +640,7 @@ class RustAudioPrewarmManager:
             "devicePreference": selection.get("devicePreference") or device_preference,
             "portAudioLabel": selection.get("portAudioLabel") or "",
             "nativeEndpointIdHash": selection.get("nativeEndpointIdHash") or None,
-            "prebufferMs": prebuffer_ms,
+            "prebufferMs": effective_prebuffer_ms,
             "frameProtocol": {
                 "magic": "SAF1",
                 "version": AUDIO_FRAME_VERSION,
@@ -603,11 +668,12 @@ class RustAudioPrewarmManager:
         if default_requested and not favorite_mic:
             result["devicePreference"] = "default"
             return result
-        if not HAS_SOUNDDEVICE or sd is None:
+        sounddevice = _load_sounddevice_once()
+        if sounddevice is None:
             return result
         try:
             resolved = resolve_input_microphone_device(
-                sd,
+                sounddevice,
                 device_name=device_preference or "default",
                 favorite_name=getattr(Config, "FAVORITE_MIC", "") or "",
                 sample_rate=sample_rate,
@@ -622,7 +688,7 @@ class RustAudioPrewarmManager:
         try:
             native_endpoints = self._collect_native_capture_endpoint_inventory()
             mappings = build_input_endpoint_mappings(
-                sd,
+                sounddevice,
                 native_endpoints=native_endpoints,
                 sample_rate=sample_rate,
                 channels=channels,
@@ -687,6 +753,41 @@ class RustAudioPrewarmManager:
                     return shell_endpoints
         return collect_native_capture_endpoint_inventory()
 
+    @staticmethod
+    def _normalized_device_preference(value: object) -> str:
+        normalized = "default" if value is None else str(value).strip()
+        return "default" if normalized in {"", "None", "default"} else normalized
+
+    @classmethod
+    def _device_identity_matches(
+        cls,
+        signature: dict[str, Any],
+        requested_selection: dict[str, Any],
+    ) -> bool:
+        """Compare capture identities without trusting mutable PortAudio indexes.
+
+        A native endpoint hash identifies a selected physical endpoint across
+        PortAudio refreshes.  If either side expects such an endpoint, both
+        hashes must be present and equal.  The only hashless identity that can
+        be adopted is the explicit Windows default endpoint; a non-default
+        capture without a native hash must take the normal fresh-capture path.
+        """
+
+        stored_hash = str(signature.get("native_endpoint_id_hash") or "").strip()
+        requested_hash = str(
+            requested_selection.get("nativeEndpointIdHash") or ""
+        ).strip()
+        if stored_hash or requested_hash:
+            return bool(stored_hash and requested_hash and stored_hash == requested_hash)
+
+        stored_preference = cls._normalized_device_preference(
+            signature.get("device_preference")
+        )
+        requested_preference = cls._normalized_device_preference(
+            requested_selection.get("devicePreference")
+        )
+        return stored_preference == requested_preference == "default"
+
     def attach_active_capture(
         self,
         _callback: Callable[[Any, int, Any, Any], None] | None = None,
@@ -696,6 +797,11 @@ class RustAudioPrewarmManager:
         block_size: int,
         device: object,
     ) -> dict[str, Any] | None:
+        # Capture the candidate under the ownership lock, but resolve Windows
+        # device identity outside it because endpoint inventory may cross the
+        # private shell IPC boundary.  We revalidate the exact candidate before
+        # leasing it so a concurrent stop/restart cannot adopt a different
+        # session with a stale identity decision.
         with self._lock:
             if not Config.MIC_ALWAYS_ON and not self._temporary_idle_prewarm:
                 return None
@@ -711,6 +817,63 @@ class RustAudioPrewarmManager:
             if int(signature.get("target_channels") or 0) != int(target_channels):
                 return None
             if int(signature.get("block_size") or 0) != int(block_size):
+                return None
+
+            candidate_prewarm_id = self._prewarm_id
+
+        requested_selection: dict[str, Any] | None = None
+        try:
+            resolved_selection = self._device_selection_payload(
+                "default" if device is None else str(device),
+                sample_rate=int(sample_rate),
+                channels=int(target_channels),
+            )
+            if (
+                isinstance(resolved_selection, dict)
+                and "devicePreference" in resolved_selection
+            ):
+                requested_selection = resolved_selection
+        except Exception:
+            pass
+
+        with self._lock:
+            if (
+                self._prewarm_id != candidate_prewarm_id
+                or self._stream_signature != signature
+                or self._paused_for_device_refresh
+                or self._active_capture_attached
+                or (not Config.MIC_ALWAYS_ON and not self._temporary_idle_prewarm)
+            ):
+                return None
+            device_identity_matches = bool(
+                requested_selection is not None
+                and self._device_identity_matches(signature, requested_selection)
+            )
+            if not device_identity_matches:
+                stored_endpoint_hash = str(
+                    signature.get("native_endpoint_id_hash") or ""
+                ).strip()
+                requested_endpoint_hash = str(
+                    (requested_selection or {}).get("nativeEndpointIdHash") or ""
+                ).strip()
+                rejection_reason = (
+                    "device_identity_mismatch"
+                    if requested_selection is not None
+                    else "device_identity_unavailable"
+                )
+                self._adoption_device_identity_rejection_count += 1
+                self._last_adoption_rejection_reason = rejection_reason
+                self._record_transition_locked(
+                    "adoption_rejected",
+                    rejection_reason,
+                )
+                self._record_event_locked(
+                    "adoption_rejected",
+                    rejection_reason,
+                    prewarmIdHash=self._hash_hint(candidate_prewarm_id),
+                    storedNativeEndpointIdHash=stored_endpoint_hash or None,
+                    requestedNativeEndpointIdHash=requested_endpoint_hash or None,
+                )
                 return None
 
             prewarm_id = self._prewarm_id
@@ -803,7 +966,12 @@ class RustAudioPrewarmManager:
             self._record_event_locked("pause_active_capture", "active_capture")
         self.stop(reason="active_capture")
 
-    def resume_after_active_capture(self, *, temporary: bool = False) -> bool:
+    def resume_after_active_capture(
+        self,
+        *,
+        temporary: bool = False,
+        prebuffer_ms: int | None = None,
+    ) -> bool:
         with self._lock:
             self._paused_for_active_capture = False
             self._active_capture_attached = False
@@ -812,7 +980,10 @@ class RustAudioPrewarmManager:
             self._last_active_capture_resume_attempt_at = time.monotonic()
             self._pending_active_capture_resume_attempt_at = self._last_active_capture_resume_attempt_at
             self._record_event_locked("resume_active_capture", "active_capture")
-        started = self.start_if_enabled(temporary=temporary)
+        started = self.start_if_enabled(
+            temporary=temporary,
+            prebuffer_ms=prebuffer_ms,
+        )
         if not started:
             with self._lock:
                 if self._pending_active_capture_resume_attempt_at:

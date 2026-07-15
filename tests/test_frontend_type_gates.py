@@ -64,6 +64,33 @@ def test_app_initial_tauri_lookup_has_deadline_and_fallback() -> None:
     assert "backendAccessRetryAfterMs" in backend_source
 
 
+def test_main_webview_reports_only_bounded_long_task_timings() -> None:
+    main_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "main.tsx"
+    ).read_text(encoding="utf-8")
+    app_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx"
+    ).read_text(encoding="utf-8")
+    performance_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "frontend-performance.ts"
+    ).read_text(encoding="utf-8")
+
+    assert "startFrontendLongTaskObserver()" in main_source
+    assert "setFrontendPerformanceReportingEnabled(isOnline)" in app_source
+    assert 'supportedEntryTypes.includes("longtask")' in performance_source
+    assert "entry.duration <= LONG_TASK_THRESHOLD_MS" in performance_source
+    assert "MAX_PENDING_ENTRIES = 64" in performance_source
+    assert "MAX_RETRY_ATTEMPTS = 5" in performance_source
+    assert "observerSupported = false" in performance_source
+    assert 'apiUrl("/api/runtime/frontend-performance")' in performance_source
+    assert "observer.takeRecords()" in performance_source
+    assert "pendingHeartbeatSequence" in performance_source
+    assert 'message.type !== "frontend_performance_flush"' in app_source
+    assert "message.heartbeatSequence" in app_source
+    for sensitive_field in ("attribution", "entry.name", "location.href", "document."):
+        assert sensitive_field not in performance_source
+
+
 def test_settings_bootstrap_cache_rejects_stale_inflight_results() -> None:
     source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "settings-bootstrap.ts"
@@ -577,7 +604,11 @@ def test_live_mic_history_uses_snippets_period_sections_and_stable_virtual_rows(
     assert "const visibleSnippet =" in page_source
     assert "item.preview" in page_source
     assert "recordingTimeLabel(item.createdAt, item.date)" in page_source
-    assert "getItemGroup={(item) => transcriptHistoryPeriod(item.createdAt)}" in page_source
+    assert "getItemGroup={getTranscriptHistoryGroup}" in page_source
+    assert "getItemGroup={(item)" not in page_source
+    assert "const getTranscriptHistoryGroup = useCallback(" in page_source
+    assert "const historyReferenceTime = useMemo(() => new Date(), [historyLocalDay]);" in page_source
+    assert "[historyReferenceTime]" in page_source
     assert 'label: "Today"' in period_source
     assert 'label: "Last week"' in period_source
     assert 'label: "Last month"' in period_source
@@ -918,6 +949,60 @@ def test_transcript_pages_do_not_duplicate_unscoped_websocket_error_toasts() -> 
         assert "onError" not in page_source[call_start:call_end], page_name
 
 
+def test_live_mic_reconciliation_polls_only_during_an_active_websocket_outage() -> None:
+    source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx"
+    ).read_text(encoding="utf-8")
+
+    effect_start = source.index(
+        "// The shared WebSocket sends an authoritative state snapshot on connect"
+    )
+    effect_end = source.index(
+        "}, [applyBackendStateSnapshot, hasActiveSession, isConnected]);",
+        effect_start,
+    )
+    effect = source[effect_start:effect_end]
+
+    assert "if (!hasActiveSession || isConnected)" in effect
+    assert "if (!hasActiveSession && !isConnected)" not in effect
+    assert "window.setTimeout(reconcileBackendState, 750)" in effect
+    assert "window.setInterval(reconcileBackendState, 2000)" in effect
+    assert "controller.abort();" in effect
+    assert "window.clearTimeout(firstCheck);" in effect
+    assert "window.clearInterval(interval);" in effect
+
+
+def test_all_interactive_live_mic_stop_controls_use_async_acknowledgement() -> None:
+    client_root = REPO_ROOT / "Frontend" / "client" / "src"
+    helper = (client_root / "lib" / "live-mic-control.ts").read_text(encoding="utf-8")
+    api_types = (client_root / "lib" / "api-types.ts").read_text(encoding="utf-8")
+    controls = (
+        client_root / "pages" / "LiveMic.tsx",
+        client_root / "components" / "NativeRecordingOverlay.tsx",
+        client_root / "components" / "RecordingPopup.tsx",
+        client_root / "components" / "CommandPalette.tsx",
+    )
+
+    assert 'LIVE_MIC_STOP_REQUEST_PATH = "/api/live-mic/stop-request"' in helper
+    assert "export function requestLiveMicStop(): Promise<Response>" in helper
+    assert "Completion is delivered by the existing state/WebSocket stream." in helper
+    assert "export interface LiveMicStopRequestResponse" in api_types
+    for field in (
+        "stopAccepted: boolean;",
+        "stopScheduled: boolean;",
+        "alreadyFinalizing: boolean;",
+        "alreadyStopped: boolean;",
+        "finalizing: boolean;",
+    ):
+        assert field in api_types
+
+    for control in controls:
+        source = control.read_text(encoding="utf-8")
+        assert 'from "@/lib/live-mic-control"' in source, control.name
+        assert "requestLiveMicStop()" in source, control.name
+        assert '"/api/live-mic/stop"' not in source, control.name
+
+
 def test_virtual_history_releases_load_guard_for_void_and_failed_loaders() -> None:
     source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "virtual-transcript-history.tsx"
@@ -994,9 +1079,9 @@ def test_live_mic_reconciles_active_state_and_websocket_reconnects() -> None:
     assert "const applyBackendStateSnapshot = useCallback" in source
     assert "applyBackendStateSnapshot(msg);" in source
     assert "const { isConnected } = useSharedWebSocket(handleWsMessage);" in source
-    assert "if (!hasActiveSession && !isConnected)" in source
-    assert "hasActiveSession ? 750 : 0" in source
-    assert "hasActiveSession ? window.setInterval(reconcileBackendState, 2000) : undefined" in source
+    assert "if (!hasActiveSession || isConnected)" in source
+    assert "window.setTimeout(reconcileBackendState, 750)" in source
+    assert "window.setInterval(reconcileBackendState, 2000)" in source
     assert "applyBackendStateSnapshot(state);" in source
     assert 'recordingState !== "finalizing"' not in source
 

@@ -14,6 +14,10 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState, type MouseEve
 import { isTauriRuntime, loadBackendBaseUrlFromTauri, setTrayRecordingState } from "@/lib/backend";
 import { withPromiseTimeout } from "@/lib/fetch-with-timeout";
 import { preloadPrimaryTabData } from "@/lib/tab-data-preload";
+import {
+  flushFrontendPerformanceReport,
+  setFrontendPerformanceReportingEnabled,
+} from "@/lib/frontend-performance";
 import { ToastAction } from "@/components/ui/toast";
 import { Download } from "lucide-react";
 import {
@@ -512,8 +516,14 @@ function RuntimeShell() {
     return preloadPrimaryTabData(queryClient);
   }, [isOnline, queryClient]);
 
+  useEffect(() => {
+    setFrontendPerformanceReportingEnabled(isOnline);
+    return () => setFrontendPerformanceReportingEnabled(false);
+  }, [isOnline]);
+
   return (
     <WebSocketProvider path="/ws" autoReconnect={true} reconnectDelay={1000} enabled={websocketEnabled}>
+      <FrontendPerformanceFlushBridge />
       <RecordingErrorToastBridge />
       <TranscriptHistoryInvalidationBridge />
       <MeetingDetectionBridge />
@@ -524,6 +534,21 @@ function RuntimeShell() {
       <Router />
     </WebSocketProvider>
   );
+}
+
+function FrontendPerformanceFlushBridge() {
+  const handleWsMessage = useCallback((message: ScriberWebSocketMessage) => {
+    if (message.type !== "frontend_performance_flush") {
+      return;
+    }
+    void flushFrontendPerformanceReport(
+      message.heartbeatSequence,
+      message.sourceInstanceId,
+    );
+  }, []);
+
+  useSharedWebSocket(handleWsMessage);
+  return null;
 }
 
 function App() {

@@ -1,7 +1,13 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.config import Config
-from src.injector import TextInjector
+from src.injector import (
+    InjectionTargetGuard,
+    TextInjector,
+    _ForegroundTargetSnapshot,
+)
 from src.runtime import shell_ipc
 
 
@@ -128,6 +134,83 @@ def test_inject_target_title_guard_allows_expected_foreground(monkeypatch):
     paste_mock.assert_called_once_with("hello ", skip_clipboard_restore=False)
     sendinput_mock.assert_not_called()
     keyboard_mock.write.assert_not_called()
+
+
+def test_injector_uses_immutable_target_generation_and_method_override(monkeypatch):
+    monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", False)
+    monkeypatch.setattr(Config, "INJECT_METHOD", "tauri")
+    monkeypatch.setattr(Config, "INJECT_TARGET_TITLE", "Unrelated global target")
+    guard = InjectionTargetGuard(
+        title="Scriber benchmark target",
+        process_id=4123,
+        process_creation_time_100ns=987654321,
+    )
+    injector = TextInjector(target_guard=guard, injection_method="paste")
+
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch(
+            "src.injector._active_foreground_target_snapshot",
+            return_value=_ForegroundTargetSnapshot(
+                title=guard.title,
+                process_id=guard.process_id,
+                process_creation_time_100ns=guard.process_creation_time_100ns,
+                window_handle=9001,
+            ),
+        ),
+        patch("src.injector._paste_text", return_value=True) as paste_mock,
+        patch("src.injector.call_shell_ipc") as ipc_mock,
+    ):
+        injector._inject_text("fixture ")
+
+    paste_mock.assert_called_once_with(
+        "fixture ",
+        skip_clipboard_restore=False,
+        target_guard=guard,
+    )
+    ipc_mock.assert_not_called()
+
+
+def test_injector_rejects_recycled_target_process_before_dispatch(monkeypatch):
+    monkeypatch.setattr(Config, "DISABLE_TEXT_INJECTION", False)
+    guard = InjectionTargetGuard(
+        title="Scriber benchmark target",
+        process_id=4123,
+        process_creation_time_100ns=987654321,
+    )
+    injector = TextInjector(target_guard=guard, injection_method="paste")
+
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch(
+            "src.injector._active_foreground_target_snapshot",
+            return_value=_ForegroundTargetSnapshot(
+                title=guard.title,
+                process_id=guard.process_id,
+                process_creation_time_100ns=guard.process_creation_time_100ns + 1,
+                window_handle=9001,
+            ),
+        ),
+        patch("src.injector._paste_text", return_value=True) as paste_mock,
+    ):
+        injector._inject_text("fixture ")
+
+    paste_mock.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"title": "target", "process_id": 1},
+        {"title": "target", "process_creation_time_100ns": 2},
+        {"title": "target", "process_id": True, "process_creation_time_100ns": 2},
+        {"title": "target", "process_id": 1, "process_creation_time_100ns": 0},
+        {"title": "", "process_id": 1, "process_creation_time_100ns": 2},
+    ],
+)
+def test_injection_target_guard_rejects_incomplete_or_invalid_generation(kwargs):
+    with pytest.raises(ValueError):
+        InjectionTargetGuard(**kwargs)
 
 
 def test_inject_method_auto_stops_fallback_after_focus_change(monkeypatch):

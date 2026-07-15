@@ -187,15 +187,9 @@ do {
             Write-ObserverReady
             $last = Get-ElementText -Element $target
             $hash = Get-Sha256Text -Text $last
-            $expectedTextSeen = $false
-            if ($PrefixSentinel -and $SuffixSentinel) {
-                $prefixIndex = $last.IndexOf($PrefixSentinel, [System.StringComparison]::Ordinal)
-                $suffixIndex = $last.IndexOf($SuffixSentinel, [System.StringComparison]::Ordinal)
-                $expectedTextSeen = $prefixIndex -ge 0 -and $suffixIndex -gt $prefixIndex
-            }
             $prefixOk = (-not $PrefixSentinel) -or $last.Contains($PrefixSentinel)
             $suffixOk = (-not $SuffixSentinel) -or $last.Contains($SuffixSentinel)
-            if ((($hash -eq $ExpectedSha256.ToLowerInvariant()) -or $expectedTextSeen) -and $prefixOk -and $suffixOk) {
+            if (($hash -eq $ExpectedSha256.ToLowerInvariant()) -and $prefixOk -and $suffixOk) {
                 $observed = $true
                 break
             }

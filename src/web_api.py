@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import copy
 import hashlib
 import hmac
@@ -46,11 +47,22 @@ from src.core.hot_path_tracer import HotPathTracer
 from src.core.logging_setup import emit_event, setup_logging
 from src.core.provider_circuit_breaker import ProviderCircuitBreaker
 from src.core.provider_errors import ProviderUserError, provider_user_error
-from src.core.rest_contracts import REST_API_VERSION, RESTContractError, validate_frontend_ready_request_payload
+from src.core.rest_contracts import (
+    REST_API_VERSION,
+    RESTContractError,
+    validate_frontend_performance_flush_request_payload,
+    validate_frontend_performance_request_payload,
+    validate_frontend_ready_request_payload,
+    validate_provider_replay_arm_request_payload,
+    validate_provider_replay_prepare_request_payload,
+    validate_provider_replay_status_query,
+    validate_tauri_hotkey_marker_request_payload,
+)
 from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
 from src.core.ws_contracts import (
     audio_level_event,
     error_event,
+    frontend_performance_flush_event,
     history_updated_event,
     input_warning_event,
     meeting_checkpoint_event,
@@ -154,6 +166,17 @@ from src.speaker_diarization import (
     format_speaker_transcript,
 )
 from src.runtime.provider_router import ProviderRouter
+from src.runtime.provider_replay import (
+    LocalSonioxReplayServer,
+    ProviderReplayCapacityError,
+    ProviderReplayConflict,
+    ProviderReplayExecution,
+    ProviderReplayError,
+    ProviderReplayNotFound,
+    ProviderReplayRegistry,
+    ProviderReplayRuntimeGate,
+    create_azure_mai_replay_transport,
+)
 from src.runtime.retry_scheduler import RetryScheduler
 from src.runtime.debug_logs import clear_debug_logs, collect_debug_logs
 from src.runtime.support_bundle import create_support_bundle, redact_text
@@ -183,29 +206,124 @@ _TRANSCRIPT_PERSIST_RETRY_DELAYS = (0.0, 0.05, 0.2)
 
 ScriberPipeline: Any | None = None
 _invalidate_mic_device_resolution_cache_impl: Callable[[], None] | None = None
+_pipeline_runtime_import_lock = threading.Lock()
+_pipeline_cache_state_lock = threading.Lock()
+_pipeline_cache_invalidation_pending = False
+
+
+def _load_scriber_pipeline_runtime() -> Any:
+    """Import Pipecat exactly once without constructing session state.
+
+    The import is intentionally separated from construction so the live-mic
+    controller can run it on a worker thread while Rust buffers audio. File and
+    Meeting callers may continue using the synchronous factory.
+    """
+
+    global ScriberPipeline, _invalidate_mic_device_resolution_cache_impl
+    global _pipeline_cache_invalidation_pending
+    if ScriberPipeline is not None:
+        return ScriberPipeline
+    with _pipeline_runtime_import_lock:
+        if ScriberPipeline is None:
+            from src.pipeline import (
+                ScriberPipeline as pipeline_class,
+                invalidate_mic_device_resolution_cache as invalidate_cache,
+            )
+
+            with _pipeline_cache_state_lock:
+                ScriberPipeline = pipeline_class
+                _invalidate_mic_device_resolution_cache_impl = invalidate_cache
+                invalidate_after_import = _pipeline_cache_invalidation_pending
+                _pipeline_cache_invalidation_pending = False
+            if invalidate_after_import:
+                invalidate_cache()
+    return ScriberPipeline
 
 
 def _create_scriber_pipeline(*args: Any, **kwargs: Any) -> Any:
     """Load the heavy Pipecat-backed pipeline only when transcription needs it."""
-    global ScriberPipeline, _invalidate_mic_device_resolution_cache_impl
-    if ScriberPipeline is None:
-        from src.pipeline import (
-            ScriberPipeline as pipeline_class,
-            invalidate_mic_device_resolution_cache as invalidate_cache,
-        )
+    pipeline_class = _load_scriber_pipeline_runtime()
+    return pipeline_class(*args, **kwargs)
 
-        ScriberPipeline = pipeline_class
-        _invalidate_mic_device_resolution_cache_impl = invalidate_cache
-    return ScriberPipeline(*args, **kwargs)
+
+async def _create_scriber_pipeline_off_loop(*args: Any, **kwargs: Any) -> Any:
+    """Construct a file-backed pipeline without blocking the aiohttp loop.
+
+    A cold Pipecat import takes seconds and a worker submitted through
+    ``asyncio.to_thread`` cannot be stopped once it has begun.  Observe that
+    worker through its real completion boundary, then clean up the constructed
+    but not-yet-started pipeline before delivering a pending cancellation.
+    """
+
+    pipeline, pending_cancel = await _await_with_delayed_cancellation(
+        asyncio.to_thread(_create_scriber_pipeline, *args, **kwargs)
+    )
+    if pending_cancel is None:
+        return pipeline
+
+    stop_pipeline = getattr(pipeline, "stop", None)
+    if callable(stop_pipeline):
+        try:
+            await _await_cleanup_barrier(stop_pipeline())
+        except BaseException as cleanup_exc:
+            logger.warning(
+                "Unstarted pipeline cleanup after cancellation failed: {}",
+                type(cleanup_exc).__name__,
+            )
+    raise pending_cancel
+
+
+async def _capture_provider_replay_injection_target(
+    *,
+    expected_process_id: int,
+    expected_creation_time_100ns: int,
+) -> Any:
+    """Capture the exact still-foreground target after the heavy import.
+
+    The same immutable guard is then revalidated by ``TextInjector`` before
+    clipboard mutation, before Ctrl+V, and after paste dispatch.
+    """
+
+    await asyncio.to_thread(_load_scriber_pipeline_runtime)
+    from src.injector import InjectionTargetGuard, _active_foreground_target_snapshot
+
+    snapshot = _active_foreground_target_snapshot()
+    if (
+        snapshot is None
+        or snapshot.process_id != int(expected_process_id)
+        or snapshot.process_creation_time_100ns
+        != int(expected_creation_time_100ns)
+        or not snapshot.title
+        or not snapshot.window_handle
+    ):
+        raise ProviderReplayConflict(
+            "provider replay target is not the active foreground generation"
+        )
+    return InjectionTargetGuard(
+        title=snapshot.title,
+        process_id=snapshot.process_id,
+        process_creation_time_100ns=snapshot.process_creation_time_100ns,
+        window_handle=snapshot.window_handle,
+    )
 
 
 def invalidate_mic_device_resolution_cache() -> None:
-    global _invalidate_mic_device_resolution_cache_impl
-    if _invalidate_mic_device_resolution_cache_impl is None:
-        from src.pipeline import invalidate_mic_device_resolution_cache as invalidate_cache
+    """Invalidate the optional pipeline cache without importing Pipecat.
 
-        _invalidate_mic_device_resolution_cache_impl = invalidate_cache
-    _invalidate_mic_device_resolution_cache_impl()
+    DeviceMonitor intentionally emits one startup refresh. Importing the heavy
+    pipeline from this event-loop callback made backend health unavailable for
+    seconds before transcription was ever requested. If the runtime is still
+    cold there is normally no cache yet; recording one pending invalidation also
+    closes the narrow race where device settings change during the lazy import.
+    """
+
+    global _pipeline_cache_invalidation_pending
+    with _pipeline_cache_state_lock:
+        invalidate_cache = _invalidate_mic_device_resolution_cache_impl
+        if invalidate_cache is None:
+            _pipeline_cache_invalidation_pending = True
+            return
+    invalidate_cache()
 
 _ALLOWED_ORIGINS_ENV = "SCRIBER_ALLOWED_ORIGINS"
 _UPLOAD_MAX_BYTES_ENV = "SCRIBER_UPLOAD_MAX_BYTES"
@@ -227,6 +345,8 @@ _LIVE_MIC_ASYNC_STOP_TIMEOUT_ENV = "SCRIBER_LIVE_MIC_ASYNC_STOP_TIMEOUT_SEC"
 _LIVE_MIC_SILENT_STOP_TIMEOUT_ENV = "SCRIBER_LIVE_MIC_SILENT_STOP_TIMEOUT_SEC"
 _LIVE_MIC_SILENCE_RMS_THRESHOLD_ENV = "SCRIBER_LIVE_MIC_SILENCE_RMS_THRESHOLD"
 _LIVE_MIC_TOGGLE_START_GRACE_ENV = "SCRIBER_LIVE_MIC_TOGGLE_START_GRACE_SEC"
+_LIVE_MIC_COLD_START_PREBUFFER_MS_ENV = "SCRIBER_LIVE_MIC_COLD_START_PREBUFFER_MS"
+_TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV = "SCRIBER_TAURI_BENCHMARK_HOTKEY_RUN_ID"
 _NATIVE_DEVICE_EVENTS_ENV = "SCRIBER_NATIVE_DEVICE_EVENTS"
 _SETTINGS_PERSIST_DEBOUNCE_ENV = "SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC"
 _FORCE_EXIT_AFTER_SHUTDOWN_ENV = "SCRIBER_FORCE_EXIT_AFTER_SHUTDOWN"
@@ -646,6 +766,33 @@ def _request_has_valid_session_token(request: web.Request, token: str | None = N
         return False
     provided = _request_session_token(request)
     return bool(provided) and hmac.compare_digest(provided, expected)
+
+
+async def _tauri_hotkey_marker_from_request(
+    request: web.Request,
+) -> dict[str, Any] | None:
+    """Read one benchmark marker without widening normal Live Mic input."""
+
+    if not request.can_read_body or request.content_length == 0:
+        return None
+    if request.content_length is not None and request.content_length > 2048:
+        raise RESTContractError("Live Mic request body exceeds the benchmark marker limit")
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise RESTContractError("Live Mic request body must be JSON") from exc
+    if not isinstance(payload, dict):
+        raise RESTContractError("Live Mic request body must be a dict")
+    if "benchmarkHotkeyMarker" not in payload:
+        # Existing clients historically sent no semantic body. Preserve that
+        # behavior while making the new benchmark field strict when present.
+        return None
+    return validate_tauri_hotkey_marker_request_payload(
+        payload,
+        configured_run_id=os.getenv(_TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV),
+        expected_parent_pid=os.getppid(),
+        now_ns=time.perf_counter_ns(),
+    )
 
 
 def _session_token_required() -> bool:
@@ -1508,7 +1655,10 @@ async def _await_with_delayed_cancellation(
     ownership, then re-raise cancellation through its normal cleanup path.
     """
 
-    worker = asyncio.create_task(awaitable)
+    # ``Awaitable`` includes both coroutine objects and already scheduled
+    # Futures (for example ``asyncio.gather``). ``create_task`` rejects the
+    # latter even though this helper's public contract accepts them.
+    worker = asyncio.ensure_future(awaitable)
     pending_cancel: asyncio.CancelledError | None = None
     while not worker.done():
         try:
@@ -2038,6 +2188,10 @@ class TranscriptPersistenceError(RuntimeError):
     """Raised when a critical transcript save cannot be confirmed."""
 
 
+class _LiveMicStartAborted(RuntimeError):
+    """Internal control flow for a user-cancelled in-flight start transition."""
+
+
 def _audio_admission_lock(controller: Any) -> asyncio.Lock:
     """Return the one process-local lock shared by every native audio claimant.
 
@@ -2203,13 +2357,30 @@ async def _claim_persistent_audio(
             return current
         raise AudioAdmissionConflict(current)
     store, controller_id = _persistent_audio_admission(controller)
-    claim = await asyncio.to_thread(
-        store.acquire,
-        owner_kind=owner_kind,
-        owner_id=owner_id,
-        controller_id=controller_id,
-        ttl_seconds=_AUDIO_ADMISSION_TTL_SECONDS,
+    claim, pending_cancel = await _await_with_delayed_cancellation(
+        asyncio.to_thread(
+            store.acquire,
+            owner_kind=owner_kind,
+            owner_id=owner_id,
+            controller_id=controller_id,
+            ttl_seconds=_AUDIO_ADMISSION_TTL_SECONDS,
+        )
     )
+    # A SQLite acquisition already running in a worker thread cannot be
+    # cancelled. Never lose the returned ownership record: if shutdown or task
+    # cancellation won the race, release the newly-created lease before
+    # propagating cancellation instead of leaving a 60-second phantom owner.
+    if pending_cancel is not None or getattr(controller, "_shutting_down", False):
+        try:
+            await _await_cleanup_barrier(asyncio.to_thread(store.release, claim))
+        except BaseException as cleanup_exc:
+            logger.warning(
+                "Persistent native-audio claim rollback failed: {}",
+                type(cleanup_exc).__name__,
+            )
+        if pending_cancel is not None:
+            raise pending_cancel
+        raise asyncio.CancelledError("Native audio claim aborted during shutdown")
     controller._persistent_audio_claim = claim
     lost_meetings = getattr(controller, "_audio_admission_lost_meetings", None)
     if isinstance(lost_meetings, set):
@@ -2247,7 +2418,43 @@ async def _release_persistent_audio(
         if task is not None and task is not asyncio.current_task() and not task.done():
             task.cancel()
     store, _controller_id = _persistent_audio_admission(controller)
-    return await asyncio.to_thread(store.release, target)
+    released, pending_cancel = await _await_with_delayed_cancellation(
+        asyncio.to_thread(store.release, target)
+    )
+    if pending_cancel is not None:
+        raise pending_cancel
+    return bool(released)
+
+
+async def _release_shutdown_audio_claim(
+    release_worker: Awaitable[Any],
+) -> bool:
+    """Release a detached shutdown claim without blocking the event loop.
+
+    SQLite work submitted to a thread cannot be interrupted safely.  If the
+    observer task is cancelled, keep observing the worker until the lease is
+    actually released, then deliver the pending cancellation.
+    """
+
+    released, pending_cancel = await _await_with_delayed_cancellation(release_worker)
+    if pending_cancel is not None:
+        raise pending_cancel
+    return bool(released)
+
+
+def _release_shutdown_audio_claim_in_thread(
+    store: Any,
+    claim: AudioAdmissionClaim,
+) -> None:
+    """No-loop fallback for synchronous teardown callers."""
+
+    try:
+        store.release(claim)
+    except Exception as exc:
+        logger.warning(
+            "Persistent native-audio admission release during shutdown failed: {}",
+            type(exc).__name__,
+        )
 
 
 async def _foreign_persistent_audio_claim(controller: Any) -> AudioAdmissionClaim | None:
@@ -2585,6 +2792,7 @@ class ScriberWebController:
 
         self._pipeline: Optional[Any] = None
         self._pipeline_task: Optional[asyncio.Task] = None
+        self._provider_replay_execution: ProviderReplayExecution | None = None
         self._ptt_task: Optional[asyncio.Task] = None
         self._toggle_hotkey_poll_task: Optional[asyncio.Task] = None
         self._active_provider: str | None = None
@@ -2679,6 +2887,10 @@ class ScriberWebController:
             self._mic_watchdog_callback_gap_seconds = 15.0
         self._pending_hotkey_toggle = False
         self._background_stop_task: asyncio.Task | None = None
+        self._live_mic_start_generation = 0
+        self._live_mic_start_in_progress_generation: int | None = None
+        self._live_mic_cancel_start_generation: int | None = None
+        self._live_mic_start_task: asyncio.Task | None = None
         self._last_hotkey_deferred_log = 0.0
         self._last_ptt_error_log = 0.0
         self._last_toggle_poll_error_log = 0.0
@@ -2716,6 +2928,9 @@ class ScriberWebController:
         self._hot_path_lock = threading.Lock()
         self._frontend_ready: dict[str, Any] | None = None
         self._frontend_ready_lock = threading.Lock()
+        self._frontend_performance: dict[str, Any] | None = None
+        self._frontend_performance_events: deque[dict[str, Any]] = deque(maxlen=256)
+        self._frontend_performance_lock = threading.Lock()
 
         self._current: Optional[TranscriptRecord] = None
         self._current_lock = threading.Lock()
@@ -2763,6 +2978,7 @@ class ScriberWebController:
         self._settings_persist_handle: asyncio.TimerHandle | None = None
         self._settings_persist_task: asyncio.Task | None = None
         self._settings_persist_pending = False
+        self._settings_persist_generation = 0
         self._settings_persist_lock = asyncio.Lock()
         self._settings_update_lock = asyncio.Lock()
         try:
@@ -2799,6 +3015,8 @@ class ScriberWebController:
         self._audio_controller_id = f"controller-{os.getpid()}-{uuid4().hex}"
         self._persistent_audio_claim: AudioAdmissionClaim | None = None
         self._audio_admission_heartbeat_task: asyncio.Task | None = None
+        self._shutdown_audio_release_task: asyncio.Task | None = None
+        self._shutdown_audio_release_thread: threading.Thread | None = None
         self._audio_admission_lost_meetings: set[str] = set()
         self._meeting_store = MeetingStore()
         self._meeting_store.initialize(
@@ -3131,35 +3349,62 @@ class ScriberWebController:
                 self._settings_persist_handle = self._loop.call_later(
                     self._settings_persist_retry_seconds,
                     self._start_settings_persist_flush,
+                    self._settings_persist_generation,
                 )
 
     def _schedule_settings_persist(self) -> None:
         """Debounce .env writes while keeping in-memory settings immediate."""
         self._settings_persist_pending = True
+        self._settings_persist_generation += 1
+        generation = self._settings_persist_generation
         self._cancel_settings_persist_timer()
         if self._settings_persist_debounce_seconds <= 0:
-            self._settings_persist_task = self._loop.create_task(self._flush_settings_persist())
+            self._settings_persist_task = self._loop.create_task(
+                self._flush_settings_persist(generation)
+            )
             self._settings_persist_task.add_done_callback(self._on_settings_persist_done)
             return
         self._settings_persist_handle = self._loop.call_later(
             self._settings_persist_debounce_seconds,
             self._start_settings_persist_flush,
+            generation,
         )
 
-    def _start_settings_persist_flush(self) -> None:
+    def _start_settings_persist_flush(self, generation: int | None = None) -> None:
+        if generation is not None and generation != self._settings_persist_generation:
+            return
         self._settings_persist_handle = None
         if self._loop.is_closed():
             return
-        self._settings_persist_task = self._loop.create_task(self._flush_settings_persist())
+        selected_generation = (
+            self._settings_persist_generation
+            if generation is None
+            else generation
+        )
+        self._settings_persist_task = self._loop.create_task(
+            self._flush_settings_persist(selected_generation)
+        )
         self._settings_persist_task.add_done_callback(self._on_settings_persist_done)
 
-    async def _flush_settings_persist(self) -> None:
+    async def _flush_settings_persist(self, generation: int | None = None) -> None:
+        selected_generation = (
+            self._settings_persist_generation
+            if generation is None
+            else generation
+        )
+        if selected_generation != self._settings_persist_generation:
+            return
         self._cancel_settings_persist_timer()
         if not self._settings_persist_pending:
             return
-        self._settings_persist_pending = False
         async with self._settings_persist_lock:
             async with self._settings_update_lock:
+                # A newer settings mutation may have rescheduled persistence
+                # while this task was waiting for either lock. Never let the
+                # stale generation write a mid-burst snapshot.
+                if selected_generation != self._settings_persist_generation:
+                    return
+                self._settings_persist_pending = False
                 try:
                     await asyncio.to_thread(Config.persist_settings_files)
                 except Exception:
@@ -3681,6 +3926,28 @@ class ScriberWebController:
         self._schedule_idle_mic_prewarm(temporary=True)
         self._schedule_post_recording_mic_prewarm_expiry(seconds)
         self._stop_mic_watchdog_if_idle()
+
+    async def _stop_unretained_mic_prewarm(self, *, reason: str) -> bool:
+        """Stop a temporary capture that no configured idle policy owns.
+
+        Normal pipeline teardown usually detaches/stops its adopted prewarm.
+        Early provider failures can happen before ``MicrophoneInput`` exists,
+        so the controller remains the only owner capable of releasing it.
+        """
+
+        if Config.MIC_ALWAYS_ON or self._post_recording_mic_prewarm_seconds() > 0:
+            return False
+        self._cancel_post_recording_mic_prewarm_timer()
+        if not self._mic_prewarm.is_active:
+            self._stop_mic_watchdog_if_idle()
+            return False
+        try:
+            await _await_cleanup_barrier(
+                asyncio.to_thread(self._mic_prewarm.stop, reason=reason)
+            )
+        finally:
+            self._stop_mic_watchdog_if_idle()
+        return True
 
     async def _sync_idle_mic_prewarm_after_settings(self) -> None:
         if not Config.MIC_ALWAYS_ON:
@@ -4686,9 +4953,17 @@ class ScriberWebController:
     def _enqueue_state_snapshot_broadcast(self) -> None:
         self._enqueue_control_broadcast(state_event(self.get_state()))
 
-    def _start_hot_path_tracer(self, session_id: str) -> None:
+    def _start_hot_path_tracer(
+        self,
+        session_id: str,
+        *,
+        tauri_hotkey_marker: dict[str, Any] | None = None,
+    ) -> None:
         tracer = HotPathTracer(session_id)
-        tracer.mark("hotkey_received")
+        if tauri_hotkey_marker is not None:
+            tracer.bind_tauri_hotkey_received(tauri_hotkey_marker)
+        else:
+            tracer.mark("hotkey_received")
         with self._hot_path_lock:
             self._hot_path_tracers[session_id] = tracer
             self._hot_path_reports_emitted.discard(session_id)
@@ -5296,6 +5571,202 @@ class ScriberWebController:
             "lastSeen": last_seen,
         }
 
+    def record_frontend_performance(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Record privacy-minimal Long Tasks API aggregates from the main WebView.
+
+        Only monotonic sequence/timing numbers cross this boundary.  The
+        frontend deliberately omits entry names, URLs, DOM attribution, text,
+        and route data.  A bounded event ring permits an AutoResearch caller to
+        calculate a real interaction delta instead of treating an unmeasured
+        guard as zero.
+        """
+
+        source_instance_id = str(payload["sourceInstanceId"])
+        received_at_uptime_seconds = max(
+            0.0,
+            time.monotonic() - self._started_at_monotonic,
+        )
+        with self._frontend_performance_lock:
+            state = self._frontend_performance
+            if state is None or state["sourceInstanceId"] != source_instance_id:
+                self._frontend_performance_events.clear()
+                state = {
+                    "sourceInstanceId": source_instance_id,
+                    "observerSupported": bool(payload["observerSupported"]),
+                    "windowStartedAtMs": float(payload["windowStartedAtMs"]),
+                    "observedAtMs": float(payload["observedAtMs"]),
+                    "receivedAtUptimeSeconds": received_at_uptime_seconds,
+                    "cumulativeCount": 0,
+                    "cumulativeTotalDurationMs": 0.0,
+                    "cumulativeMaxDurationMs": 0.0,
+                    "lastSequence": 0,
+                    "droppedEntries": 0,
+                    "sequenceGaps": 0,
+                    "heartbeatSequence": 0,
+                    "heartbeatObservedAtMs": None,
+                    "heartbeatReceivedAtUptimeSeconds": None,
+                    "lastRequestedHeartbeatSequence": 0,
+                    "lastRequestedHeartbeatAfterObservedAtMs": 0.0,
+                }
+                self._frontend_performance = state
+
+            state["observerSupported"] = bool(payload["observerSupported"])
+            observed_at_ms = float(payload["observedAtMs"])
+            state["observedAtMs"] = max(
+                float(state["observedAtMs"]),
+                observed_at_ms,
+            )
+            state["receivedAtUptimeSeconds"] = received_at_uptime_seconds
+            # The frontend reports a cumulative count so replaying a request
+            # after a lost HTTP response remains idempotent.
+            state["droppedEntries"] = max(
+                int(state["droppedEntries"]),
+                int(payload["droppedEntries"]),
+            )
+            for item in payload["entries"]:
+                sequence = int(item["sequence"])
+                if sequence <= int(state["lastSequence"]):
+                    continue
+                if sequence > int(state["lastSequence"]) + 1:
+                    state["sequenceGaps"] += sequence - int(state["lastSequence"]) - 1
+                event = {
+                    "sequence": sequence,
+                    "startTimeMs": float(item["startTimeMs"]),
+                    "durationMs": float(item["durationMs"]),
+                }
+                self._frontend_performance_events.append(event)
+                state["lastSequence"] = sequence
+                state["cumulativeCount"] += 1
+                state["cumulativeTotalDurationMs"] += event["durationMs"]
+                state["cumulativeMaxDurationMs"] = max(
+                    float(state["cumulativeMaxDurationMs"]),
+                    event["durationMs"],
+                )
+            heartbeat_sequence = int(payload["heartbeatSequence"])
+            if (
+                heartbeat_sequence > int(state["heartbeatSequence"])
+                and heartbeat_sequence
+                <= int(state["lastRequestedHeartbeatSequence"])
+                and observed_at_ms
+                > float(state["lastRequestedHeartbeatAfterObservedAtMs"])
+            ):
+                state["heartbeatSequence"] = heartbeat_sequence
+                state["heartbeatObservedAtMs"] = observed_at_ms
+                state["heartbeatReceivedAtUptimeSeconds"] = received_at_uptime_seconds
+
+        return self.get_frontend_performance()
+
+    def get_frontend_performance(
+        self,
+        *,
+        after_sequence: int | None = None,
+        source_instance_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self._frontend_performance_lock:
+            state = dict(self._frontend_performance) if self._frontend_performance else None
+            events = [dict(item) for item in self._frontend_performance_events]
+
+        if state is None:
+            return {
+                "apiVersion": _API_VERSION,
+                "available": False,
+                "reason": "not_reported",
+                "observerSupported": None,
+                "sourceInstanceId": None,
+                "window": None,
+            }
+        if source_instance_id and source_instance_id != state["sourceInstanceId"]:
+            return {
+                "apiVersion": _API_VERSION,
+                "available": False,
+                "reason": "source_instance_changed",
+                "observerSupported": bool(state["observerSupported"]),
+                "sourceInstanceId": str(state["sourceInstanceId"]),
+                "window": None,
+            }
+
+        query_after = max(0, int(after_sequence)) if after_sequence is not None else None
+        selected = (
+            [item for item in events if item["sequence"] > query_after]
+            if query_after is not None
+            else events
+        )
+        earliest_retained = int(events[0]["sequence"]) if events else None
+        truncated = bool(
+            query_after is not None
+            and earliest_retained is not None
+            and query_after < earliest_retained - 1
+        )
+        total_duration_ms = sum(float(item["durationMs"]) for item in selected)
+        max_duration_ms = max(
+            (float(item["durationMs"]) for item in selected),
+            default=0.0,
+        )
+        return {
+            "apiVersion": _API_VERSION,
+            "available": True,
+            "reason": None,
+            "observerSupported": bool(state["observerSupported"]),
+            "sourceInstanceId": str(state["sourceInstanceId"]),
+            "window": {
+                "startedAtFrontendUptimeMs": round(float(state["windowStartedAtMs"]), 3),
+                "observedAtFrontendUptimeMs": round(float(state["observedAtMs"]), 3),
+                "receivedAtUptimeSeconds": round(
+                    float(state["receivedAtUptimeSeconds"]),
+                    3,
+                ),
+                "queryAfterSequence": query_after,
+                "count": len(selected),
+                "cumulativeCount": int(state["cumulativeCount"]),
+                "maxDurationMs": round(max_duration_ms, 3),
+                "totalDurationMs": round(total_duration_ms, 3),
+                "lastSequence": int(state["lastSequence"]),
+                "droppedEntries": int(state["droppedEntries"]),
+                "sequenceGaps": int(state["sequenceGaps"]),
+                "retainedEntries": len(events),
+                "heartbeatSequence": int(state["heartbeatSequence"]),
+                "heartbeatObservedAtFrontendUptimeMs": (
+                    round(float(state["heartbeatObservedAtMs"]), 3)
+                    if state["heartbeatObservedAtMs"] is not None
+                    else None
+                ),
+                "heartbeatReceivedAtUptimeSeconds": (
+                    round(float(state["heartbeatReceivedAtUptimeSeconds"]), 3)
+                    if state["heartbeatReceivedAtUptimeSeconds"] is not None
+                    else None
+                ),
+                "truncated": truncated,
+            },
+        }
+
+    def request_frontend_performance_flush(
+        self,
+        source_instance_id: str,
+    ) -> dict[str, Any] | None:
+        requested_at = max(0.0, time.monotonic() - self._started_at_monotonic)
+        with self._frontend_performance_lock:
+            state = self._frontend_performance
+            if state is None or state["sourceInstanceId"] != source_instance_id:
+                return None
+            heartbeat_sequence = int(state["lastRequestedHeartbeatSequence"]) + 1
+            state["lastRequestedHeartbeatSequence"] = heartbeat_sequence
+            requested_after_observed_at_ms = float(state["observedAtMs"])
+            state["lastRequestedHeartbeatAfterObservedAtMs"] = (
+                requested_after_observed_at_ms
+            )
+        return {
+            "sourceInstanceId": source_instance_id,
+            "heartbeatSequence": heartbeat_sequence,
+            "requestedAfterFrontendUptimeMs": round(
+                requested_after_observed_at_ms,
+                3,
+            ),
+            # Match the precision exposed by the acknowledgement snapshot so
+            # an ACK received a few microseconds later cannot appear older
+            # merely because one side was rounded and the other was not.
+            "requestedAtUptimeSeconds": round(requested_at, 3),
+        }
+
     def get_hot_path_metrics(self, *, limit: int = 50, include_active: bool = False) -> dict[str, Any]:
         query_limit = max(1, min(500, int(limit)))
         summary, latest = self._latency_metrics_store.snapshot(limit=query_limit)
@@ -5776,9 +6247,29 @@ class ScriberWebController:
 
         async def _safe_cleanup():
             """Cleanup state with proper lock protection."""
+            replay_execution: ProviderReplayExecution | None = None
             async with self._listening_lock:
                 if task is not self._pipeline_task:
                     return
+                if (
+                    self._provider_replay_execution is not None
+                    and (
+                        self._provider_replay_execution.session_id is None
+                        or self._provider_replay_execution.session_id == session_id
+                    )
+                ):
+                    replay_execution = self._provider_replay_execution
+                    self._provider_replay_execution = None
+                # The provider may fail before MicrophoneInput is constructed.
+                # In that path the pipeline cannot release either controller
+                # admission or the temporary capture-first prewarm itself.
+                try:
+                    await _release_persistent_audio(self)
+                except BaseException as release_exc:
+                    logger.warning(
+                        "Persistent native-audio admission release after pipeline exit failed: {}",
+                        type(release_exc).__name__,
+                    )
                 self._is_listening = False
                 self._is_stopping = False
                 self._pipeline = None
@@ -5788,6 +6279,20 @@ class ScriberWebController:
                     self._session_id = None
                 self._set_recording_state(RecordingState.IDLE, context="_on_pipeline_done_cleanup")
                 self._clear_hot_path_tracer(session_id)
+            if replay_execution is not None:
+                replay_execution.fail("pipeline_failed")
+                await replay_execution.close()
+            self._overlay_audio_enabled = False
+            self._hide_recording_overlay_async(session_id=session_id)
+            try:
+                await self._stop_unretained_mic_prewarm(
+                    reason="live_mic_pipeline_ended_before_audio_cleanup"
+                )
+            except BaseException as prewarm_cleanup_exc:
+                logger.warning(
+                    "Temporary microphone prewarm cleanup after pipeline exit failed: {}",
+                    type(prewarm_cleanup_exc).__name__,
+                )
             self._resume_idle_mic_prewarm_after_capture()
         
         async def _broadcast_error(payload: dict[str, Any]):
@@ -7032,7 +7537,7 @@ class ScriberWebController:
                 outcome="started",
             )
 
-            pipeline = _create_scriber_pipeline(
+            pipeline = await _create_scriber_pipeline_off_loop(
                 service_name=provider,
                 on_status_change=None,
                 on_audio_level=None,
@@ -7411,26 +7916,26 @@ class ScriberWebController:
                 )
             )
 
-        pipeline = _create_scriber_pipeline(
-            service_name=provider,
-            on_status_change=None,
-            on_audio_level=None,
-            on_transcription=on_transcription,
-            on_progress=on_progress,
-            enable_speaker_diarization=True,
-            execution_route=route.execution_route(),
-            direct_file_expected_duration_seconds=duration_seconds,
-        )
-        transcribe_timeout = self._pipeline_transcription_timeout_seconds(
-            pipeline,
-            env_key="SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC",
-        )
-        provider_call = (
-            pipeline.transcribe_file_direct(str(file_path))
-            if supports_direct_file_upload(provider)
-            else pipeline.transcribe_file(str(file_path))
-        )
         try:
+            pipeline = await _create_scriber_pipeline_off_loop(
+                service_name=provider,
+                on_status_change=None,
+                on_audio_level=None,
+                on_transcription=on_transcription,
+                on_progress=on_progress,
+                enable_speaker_diarization=True,
+                execution_route=route.execution_route(),
+                direct_file_expected_duration_seconds=duration_seconds,
+            )
+            transcribe_timeout = self._pipeline_transcription_timeout_seconds(
+                pipeline,
+                env_key="SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC",
+            )
+            provider_call = (
+                pipeline.transcribe_file_direct(str(file_path))
+                if supports_direct_file_upload(provider)
+                else pipeline.transcribe_file(str(file_path))
+            )
             await self._await_with_artifact_lease(
                 self._await_with_timeout(
                     provider_call,
@@ -7724,23 +8229,55 @@ class ScriberWebController:
                     file_path, reason=rec.status, transcript_id=rec.id
                 )
 
-    async def start_listening(self, *, post_process: bool = False) -> ProviderUserError | None:
+    async def start_listening(
+        self,
+        *,
+        post_process: bool = False,
+        tauri_hotkey_marker: dict[str, Any] | None = None,
+        provider_replay_execution: ProviderReplayExecution | None = None,
+    ) -> ProviderUserError | None:
         # Acquire lock for entire operation - no parallel start/stop allowed
         async with _audio_admission_lock(self):
             # Don't start if already listening or if stop is in progress
             if self._is_listening or self._is_stopping:
                 return None
+
+            # Publish the start generation before the first await.  Both the
+            # durable Meeting-owner lookup and the cross-process audio lease
+            # lookup can block in SQLite; an explicit Stop arriving in either
+            # window must cancel this exact start instead of reporting that
+            # Live Mic is already stopped while startup continues.
+            start_generation = self._begin_live_mic_start_transition()
             info = await _live_mic_audio_conflict(self)
+            if self._live_mic_start_transition_cancelled(start_generation):
+                self._finish_live_mic_start_transition(start_generation)
+                return None
             if info is not None:
+                self._finish_live_mic_start_transition(start_generation)
                 await self.broadcast(self._provider_error_event_from_info(info))
                 return info
+
+            if provider_replay_execution is not None:
+                if post_process or tauri_hotkey_marker is not None:
+                    raise ProviderReplayConflict(
+                        "provider replay cannot use hotkey or post-processing overrides"
+                    )
+                if self._provider_replay_execution is not None:
+                    raise ProviderReplayConflict("another provider replay is active")
 
             self._post_processing_session_ids.clear()
 
             live_provider: str | None = None
             try:
-                live_provider = self._select_available_provider()
-                self._validate_live_provider_ready(live_provider)
+                if provider_replay_execution is not None:
+                    live_provider = (
+                        "azure_mai"
+                        if provider_replay_execution.provider == "microsoft"
+                        else "soniox"
+                    )
+                else:
+                    live_provider = self._select_available_provider()
+                    self._validate_live_provider_ready(live_provider)
             except Exception as exc:
                 provider_used = live_provider or self._active_provider or Config.DEFAULT_STT_SERVICE
                 info = self._provider_user_error(exc, provider=provider_used)
@@ -7780,6 +8317,11 @@ class ScriberWebController:
             # Let the scheduled overlay task submit shell IPC before synchronous
             # provider/pipeline setup resumes on this event-loop turn.
             await asyncio.sleep(0)
+            if self._live_mic_start_transition_cancelled(start_generation):
+                self._overlay_audio_enabled = False
+                self._hide_recording_overlay_async(session_id=session_id)
+                self._finish_live_mic_start_transition(start_generation)
+                return None
 
             # Callback to transition overlay when mic is ready
             def on_mic_ready():
@@ -7816,6 +8358,8 @@ class ScriberWebController:
                 if session_id != self._session_id:
                     return
                 logger.error(f"Pipeline error callback: {error_msg}")
+                if provider_replay_execution is not None:
+                    provider_replay_execution.fail("provider_failed")
                 provider_used = self._active_provider
                 self._record_provider_failure(provider_used or "", error_msg)
                 self._set_recording_state(RecordingState.FAILED, context="pipeline_error")
@@ -7855,6 +8399,8 @@ class ScriberWebController:
             def on_text_injected(_text: str):
                 if session_id != self._session_id:
                     return
+                if provider_replay_execution is not None:
+                    provider_replay_execution.marker("injection_callback_completed")
                 self._mark_hot_path(session_id, "first_paste")
                 self._emit_hot_path_report_once(session_id)
                 self._emit_workflow_event(
@@ -7876,29 +8422,89 @@ class ScriberWebController:
                     return
                 if marker in {"clipboard_set", "paste"}:
                     self._mark_hot_path(session_id, marker, timestamp_ns=timestamp_ns)
+                    if provider_replay_execution is not None:
+                        provider_replay_execution.marker(marker)
+                elif (
+                    provider_replay_execution is not None
+                    and marker == "target_changed_after_paste"
+                ):
+                    provider_replay_execution.fail("target_mismatch")
 
             def on_last_audio_chunk_sent():
                 self._mark_hot_path(session_id, "last_chunk_sent")
 
+            def on_audio_level(rms: float):
+                self._on_audio_level(rms, session_id=session_id)
+                if (
+                    provider_replay_execution is None
+                    or max(0.0, float(rms)) < self._mic_low_rms_clear_threshold
+                ):
+                    return
+
+                def schedule_replay_stop() -> None:
+                    if (
+                        self._provider_replay_execution
+                        is not provider_replay_execution
+                        or provider_replay_execution.auto_stop_task is not None
+                    ):
+                        return
+
+                    async def stop_after_fixture_audio() -> None:
+                        # Preserve a bounded slice of the real synthetic capture
+                        # after the first audible frame, then exercise the normal
+                        # controller/provider finalization path automatically.
+                        await asyncio.sleep(0.35)
+                        if (
+                            self._provider_replay_execution
+                            is provider_replay_execution
+                            and self._is_listening
+                            and self._session_id == session_id
+                        ):
+                            await self.stop_listening()
+
+                    provider_replay_execution.auto_stop_task = self._loop.create_task(
+                        stop_after_fixture_audio(),
+                        name="provider_replay_auto_stop",
+                    )
+
+                self._loop.call_soon_threadsafe(schedule_replay_stop)
+
             self._active_provider = live_provider
             self._cancel_post_recording_mic_prewarm_timer()
+            pipeline_runtime_was_cold = ScriberPipeline is None
             mic_prewarm_manager = (
                 self._mic_prewarm
                 if Config.MIC_ALWAYS_ON or self._mic_prewarm.is_active
                 else None
             )
-            if mic_prewarm_manager is None:
-                await self._pause_idle_mic_prewarm_for_capture()
+            try:
+                if mic_prewarm_manager is None and not pipeline_runtime_was_cold:
+                    await self._pause_idle_mic_prewarm_for_capture()
 
-            # Prewarm shutdown can block in native code. Re-read both durable
-            # Meeting ownership and the process-local device-test claim after
-            # that await and directly before scheduling native Live Mic capture.
-            info = await _live_mic_audio_conflict(self)
+                if self._live_mic_start_transition_cancelled(start_generation):
+                    raise _LiveMicStartAborted(
+                        "Live microphone start was cancelled before audio admission"
+                    )
+
+                # Prewarm shutdown can block in native code. Re-read both durable
+                # Meeting ownership and the process-local device-test claim after
+                # that await and directly before scheduling native Live Mic capture.
+                info = await _live_mic_audio_conflict(self)
+            except BaseException as admission_exc:
+                self._active_provider = None
+                self._overlay_audio_enabled = False
+                self._hide_recording_overlay_async(session_id=session_id)
+                self._resume_idle_mic_prewarm_after_capture()
+                self._finish_live_mic_start_transition(start_generation)
+                if isinstance(admission_exc, _LiveMicStartAborted):
+                    return None
+                raise
             if info is not None:
                 self._active_provider = None
                 self._overlay_audio_enabled = False
                 self._hide_recording_overlay_async(session_id=session_id)
                 self._resume_idle_mic_prewarm_after_capture()
+                self._finish_live_mic_start_transition(start_generation)
                 await self.broadcast(self._provider_error_event_from_info(info))
                 return info
 
@@ -7911,6 +8517,7 @@ class ScriberWebController:
                 self._overlay_audio_enabled = False
                 self._hide_recording_overlay_async(session_id=session_id)
                 self._resume_idle_mic_prewarm_after_capture()
+                self._finish_live_mic_start_transition(start_generation)
                 info = ProviderUserError(
                     provider="audio",
                     provider_label="Audio capture",
@@ -7922,12 +8529,58 @@ class ScriberWebController:
                 )
                 await self.broadcast(self._provider_error_event_from_info(info))
                 return info
+            except BaseException:
+                self._active_provider = None
+                self._overlay_audio_enabled = False
+                self._hide_recording_overlay_async(session_id=session_id)
+                self._resume_idle_mic_prewarm_after_capture()
+                self._finish_live_mic_start_transition(start_generation)
+                raise
 
+            cold_start_prewarm_started = False
             try:
+                # Establish native capture before submitting the expensive
+                # Pipecat import. Using the same default executor concurrently
+                # was not capture-first when only one worker was available.
+                if mic_prewarm_manager is None and pipeline_runtime_was_cold:
+                    cold_start_prebuffer_ms = _env_int(
+                        _LIVE_MIC_COLD_START_PREBUFFER_MS_ENV,
+                        6000,
+                        minimum=400,
+                        maximum=6000,
+                    )
+                    prewarm_result, prewarm_pending_cancel = await _await_with_delayed_cancellation(
+                        asyncio.to_thread(
+                            self._mic_prewarm.resume_after_active_capture,
+                            temporary=True,
+                            prebuffer_ms=cold_start_prebuffer_ms,
+                        )
+                    )
+                    cold_start_prewarm_started = bool(prewarm_result)
+                    if cold_start_prewarm_started:
+                        mic_prewarm_manager = self._mic_prewarm
+                        self._start_mic_watchdog()
+                    if prewarm_pending_cancel is not None:
+                        raise prewarm_pending_cancel
+
+                if pipeline_runtime_was_cold:
+                    _runtime_result, runtime_pending_cancel = (
+                        await _await_with_delayed_cancellation(
+                            asyncio.to_thread(_load_scriber_pipeline_runtime)
+                        )
+                    )
+                    if runtime_pending_cancel is not None:
+                        raise runtime_pending_cancel
+
+                if self._live_mic_start_transition_cancelled(start_generation):
+                    raise _LiveMicStartAborted(
+                        "Live microphone start was cancelled before provider activation"
+                    )
+
                 pipeline = _create_scriber_pipeline(
                     service_name=live_provider,
                     on_status_change=lambda status: self._set_live_pipeline_status(status, session_id=session_id),
-                    on_audio_level=lambda rms: self._on_audio_level(rms, session_id=session_id),
+                    on_audio_level=on_audio_level,
                     on_transcription=lambda text, is_final: self._on_transcription(text, is_final, session_id=session_id),
                     on_text_injected=on_text_injected,
                     on_injection_marker=on_injection_marker,
@@ -7939,15 +8592,74 @@ class ScriberWebController:
                     text_injection_enabled=not (
                         post_process and Config.POST_PROCESSING_ENABLED
                     ),
+                    execution_route=(
+                        {
+                            "language": "en-US",
+                            "model": "mai-transcribe-1.5",
+                            "custom_vocab": "",
+                        }
+                        if provider_replay_execution is not None
+                        and provider_replay_execution.provider == "microsoft"
+                        else None
+                    ),
+                    injection_target_guard=(
+                        provider_replay_execution.injection_target_guard
+                        if provider_replay_execution is not None
+                        else None
+                    ),
+                    injection_method_override=(
+                        "paste" if provider_replay_execution is not None else None
+                    ),
+                    azure_mai_raw_transport=(
+                        provider_replay_execution.azure_raw_transport
+                        if provider_replay_execution is not None
+                        else None
+                    ),
+                    on_provider_response_complete=(
+                        (
+                            lambda: provider_replay_execution.marker(
+                                "provider_response_complete"
+                            )
+                        )
+                        if provider_replay_execution is not None
+                        and provider_replay_execution.provider == "microsoft"
+                        else None
+                    ),
+                    soniox_replay_url=(
+                        provider_replay_execution.soniox_url
+                        if provider_replay_execution is not None
+                        else None
+                    ),
+                    soniox_replay_final_message_sha256=(
+                        provider_replay_execution.soniox_final_message_sha256
+                        if provider_replay_execution is not None
+                        else None
+                    ),
+                    on_soniox_last_final_token_received=(
+                        (
+                            lambda: provider_replay_execution.marker(
+                                "last_final_token_received"
+                            )
+                        )
+                        if provider_replay_execution is not None
+                        and provider_replay_execution.provider == "soniox"
+                        else None
+                    ),
+                    soniox_replay_model=(
+                        "stt-rt-v5"
+                        if provider_replay_execution is not None
+                        and provider_replay_execution.provider == "soniox"
+                        else None
+                    ),
                 )
-            except BaseException:
+            except BaseException as start_exc:
                 # Ownership is acquired before provider construction so a
                 # competing controller cannot leave an unstarted pipeline
                 # behind. Constructor cancellation/failure must return every
                 # resource claimed before it.
                 try:
                     await _release_persistent_audio(self)
-                except Exception as release_exc:
+                except BaseException as release_exc:
                     logger.warning(
                         "Native-audio claim cleanup after pipeline construction failed: {}",
                         type(release_exc).__name__,
@@ -7955,16 +8667,33 @@ class ScriberWebController:
                 self._active_provider = None
                 self._overlay_audio_enabled = False
                 self._hide_recording_overlay_async(session_id=session_id)
+                if cold_start_prewarm_started:
+                    try:
+                        await self._stop_unretained_mic_prewarm(
+                            reason="live_mic_cold_start_failed"
+                        )
+                    except BaseException as prewarm_cleanup_exc:
+                        logger.debug(
+                            "Cold-start microphone prebuffer cleanup warning: {}",
+                            type(prewarm_cleanup_exc).__name__,
+                        )
                 self._resume_idle_mic_prewarm_after_capture()
+                self._finish_live_mic_start_transition(start_generation)
+                if isinstance(start_exc, _LiveMicStartAborted):
+                    return None
                 raise
 
+            self._finish_live_mic_start_transition(start_generation)
             with self._current_lock:
                 self._current = rec
             self._session_id = session_id
             if post_process and Config.POST_PROCESSING_ENABLED:
                 self._post_processing_session_ids.add(session_id)
             self._clear_input_warning_state(session_id=session_id, broadcast=True)
-            self._start_hot_path_tracer(session_id)
+            self._start_hot_path_tracer(
+                session_id,
+                tauri_hotkey_marker=tauri_hotkey_marker,
+            )
             self._mark_hot_path(session_id, "controller_accepted")
             self._set_recording_state(RecordingState.INITIALIZING, context="start_listening")
             self._emit_workflow_event(
@@ -7979,6 +8708,7 @@ class ScriberWebController:
                 meta={"post_processing": bool(post_process and Config.POST_PROCESSING_ENABLED)},
             )
             self._pipeline = pipeline
+            self._provider_replay_execution = provider_replay_execution
             self._pipeline_task = asyncio.create_task(self._pipeline.start(), name="scriber_pipeline")
             self._pipeline_task.add_done_callback(lambda task: self._on_pipeline_done(task, session_id=session_id))
             self._is_listening = True
@@ -8098,9 +8828,142 @@ class ScriberWebController:
         except Exception as exc:
             logger.warning(f"Background live mic stop failed: {exc}")
 
+    def _begin_live_mic_start_transition(self) -> int:
+        self._live_mic_start_generation += 1
+        generation = self._live_mic_start_generation
+        self._live_mic_start_in_progress_generation = generation
+        self._live_mic_cancel_start_generation = None
+        # Rust/Windows can deliver the same physical hotkey edge more than
+        # once. Start the existing duplicate-toggle grace period at acceptance
+        # rather than only after provider construction, while keeping the
+        # explicit Stop endpoint able to cancel immediately.
+        self._arm_duplicate_start_toggle_guard()
+        current = asyncio.current_task()
+        self._live_mic_start_task = current if isinstance(current, asyncio.Task) else None
+        if isinstance(current, asyncio.Task):
+            current.add_done_callback(
+                lambda task, generation=generation: self._on_live_mic_start_task_done(
+                    task,
+                    generation,
+                )
+            )
+        return generation
+
+    def _on_live_mic_start_task_done(
+        self,
+        task: asyncio.Task,
+        generation: int,
+    ) -> None:
+        """Fail-safe cleanup for early returns and unexpected start errors."""
+
+        if self._live_mic_start_task is task:
+            self._live_mic_start_task = None
+        if self._live_mic_start_in_progress_generation == generation:
+            self._live_mic_start_in_progress_generation = None
+        if self._live_mic_cancel_start_generation == generation:
+            self._live_mic_cancel_start_generation = None
+
+    def _cancel_live_mic_start_transition(self) -> bool:
+        generation = getattr(self, "_live_mic_start_in_progress_generation", None)
+        if generation is None:
+            return False
+        self._live_mic_cancel_start_generation = generation
+        return True
+
+    def _live_mic_start_transition_cancelled(self, generation: int) -> bool:
+        return bool(
+            self._shutting_down
+            or self._live_mic_cancel_start_generation == generation
+        )
+
+    def _finish_live_mic_start_transition(self, generation: int) -> None:
+        if self._live_mic_start_in_progress_generation == generation:
+            self._live_mic_start_in_progress_generation = None
+        if self._live_mic_cancel_start_generation == generation:
+            self._live_mic_cancel_start_generation = None
+        current = asyncio.current_task()
+        if self._live_mic_start_task is current:
+            self._live_mic_start_task = None
+
+    def request_async_stop_listening(self) -> dict[str, bool]:
+        """Schedule an explicit Live Mic stop without waiting for finalization.
+
+        This path is intentionally distinct from a toggle.  A repeated stop
+        request while finalization is already running is idempotent and must
+        never arm ``_pending_hotkey_toggle`` (which would start a new session
+        after the current one finishes).
+        """
+        if self._loop.is_closed():
+            return {
+                "stopAccepted": False,
+                "stopScheduled": False,
+                "alreadyFinalizing": False,
+                "alreadyStopped": False,
+            }
+
+        background_stop_active = bool(
+            self._background_stop_task is not None
+            and not self._background_stop_task.done()
+        )
+        if background_stop_active or self._is_stopping:
+            return {
+                "stopAccepted": True,
+                "stopScheduled": False,
+                "alreadyFinalizing": True,
+                "alreadyStopped": False,
+            }
+
+        # A dedicated generation distinguishes a real Live Mic start from the
+        # shared native-audio lock being held by an unrelated claimant. Marking
+        # the generation cancelled lets capture-first cleanup finish safely but
+        # prevents provider/pipeline activation after a user's stop intent.
+        start_in_progress = bool(
+            self._live_mic_start_in_progress_generation is not None
+        )
+        if not self._is_listening and not start_in_progress:
+            return {
+                "stopAccepted": True,
+                "stopScheduled": False,
+                "alreadyFinalizing": False,
+                "alreadyStopped": True,
+            }
+
+        if start_in_progress:
+            self._cancel_live_mic_start_transition()
+
+        # stop_listening waits behind the ownership transition. When startup
+        # observes cancellation it becomes an idempotent no-op; if activation
+        # already won the race it finalizes that session normally.
+        self._background_stop_task = self._loop.create_task(
+            self.stop_listening(),
+            name="live_mic_background_stop",
+        )
+        self._background_stop_task.add_done_callback(self._on_background_stop_done)
+        return {
+            "stopAccepted": True,
+            "stopScheduled": True,
+            "alreadyFinalizing": False,
+            "alreadyStopped": False,
+        }
+
     def request_background_stop_listening(self) -> bool:
         if self._loop.is_closed():
             return False
+        if self._live_mic_start_in_progress_generation is not None:
+            self._cancel_live_mic_start_transition()
+            if (
+                self._background_stop_task is not None
+                and not self._background_stop_task.done()
+            ):
+                return True
+            self._background_stop_task = self._loop.create_task(
+                self.stop_listening(),
+                name="live_mic_background_stop",
+            )
+            self._background_stop_task.add_done_callback(
+                self._on_background_stop_done
+            )
+            return True
         if self._is_stopping:
             self._pending_hotkey_toggle = True
             now = time.monotonic()
@@ -8128,15 +8991,17 @@ class ScriberWebController:
         self._ignore_toggle_stop_until = time.monotonic() + self._live_toggle_start_grace_seconds
 
     def _should_ignore_duplicate_start_toggle(self) -> bool:
-        if not self._is_listening or self._is_stopping:
+        start_in_progress = self._live_mic_start_in_progress_generation is not None
+        if (not self._is_listening and not start_in_progress) or self._is_stopping:
             return False
         if self._ignore_toggle_stop_until <= 0:
             return False
         if time.monotonic() > self._ignore_toggle_stop_until:
             return False
-        state = self._recording_state_machine.state
-        if state not in {RecordingState.INITIALIZING, RecordingState.RECORDING}:
-            return False
+        if not start_in_progress:
+            state = self._recording_state_machine.state
+            if state not in {RecordingState.INITIALIZING, RecordingState.RECORDING}:
+                return False
         now = time.monotonic()
         if now - self._last_duplicate_start_toggle_log >= 1.0:
             self._last_duplicate_start_toggle_log = now
@@ -8161,6 +9026,12 @@ class ScriberWebController:
                 current = self._current
             session_id = self._session_id
             provider_used = self._active_provider
+            provider_replay_execution = (
+                self._provider_replay_execution
+                if self._provider_replay_execution is not None
+                and self._provider_replay_execution.session_id == session_id
+                else None
+            )
             post_processing_requested = bool(
                 session_id
                 and session_id in self._post_processing_session_ids
@@ -8229,7 +9100,13 @@ class ScriberWebController:
         is_realtime_service = (
             pipeline and 
             pipeline.service_name == "soniox" and 
-            Config.SONIOX_MODE == "realtime"
+            (
+                Config.SONIOX_MODE == "realtime"
+                or (
+                    provider_replay_execution is not None
+                    and provider_replay_execution.provider == "soniox"
+                )
+            )
             and not post_processing_requested
         )
         current_has_text = bool(current and current.content_text().strip())
@@ -8280,6 +9157,10 @@ class ScriberWebController:
             self._show_transcribing_overlay_async(session_id=session_id)
             transcribing_payload = transcribing_event(session_id=session_id)
             await self.broadcast(transcribing_payload)
+            if provider_replay_execution is not None:
+                provider_replay_execution.marker(
+                    "recording_state_transcribing_emitted"
+                )
 
         stop_error: Exception | None = None
         stop_error_info: ProviderUserError | None = None
@@ -8399,6 +9280,11 @@ class ScriberWebController:
                     session_id=session_id,
                 )
                 await self.broadcast(finished_payload)
+                if provider_replay_execution is not None:
+                    try:
+                        provider_replay_execution.marker("session_finished_emitted")
+                    except ProviderReplayError:
+                        provider_replay_execution.fail("pipeline_failed")
                 await self._broadcast_history_updated(record=current, reason="session_finished")
                 duration_ms = None
                 if current._started_at_monotonic is not None:
@@ -8426,13 +9312,24 @@ class ScriberWebController:
                 self._resume_idle_mic_prewarm_after_capture()
             if session_id:
                 self._post_processing_session_ids.discard(session_id)
+            if provider_replay_execution is not None:
+                if stop_error is not None:
+                    provider_replay_execution.fail("provider_failed")
+                await provider_replay_execution.close()
+                if self._provider_replay_execution is provider_replay_execution:
+                    self._provider_replay_execution = None
         if retrigger_hotkey_toggle:
             logger.info("Applying deferred hotkey event after stop completed.")
             await self.start_listening()
         return stop_error_info
 
     async def toggle_listening(self, *, post_process: bool = False) -> None:
-        # Quick check without lock - if operation in progress, ignore
+        if self._live_mic_start_in_progress_generation is not None:
+            if self._should_ignore_duplicate_start_toggle():
+                return
+            self.request_background_stop_listening()
+            return
+        # Quick check without lock - if finalization is in progress, ignore.
         if self._is_stopping:
             return
 
@@ -8493,6 +9390,11 @@ class ScriberWebController:
             await asyncio.sleep(0.05)
 
     async def _handle_hotkey_toggle(self) -> None:
+        if self._live_mic_start_in_progress_generation is not None:
+            if self._should_ignore_duplicate_start_toggle():
+                return
+            self.request_background_stop_listening()
+            return
         if self._is_stopping:
             self._pending_hotkey_toggle = True
             now = time.monotonic()
@@ -8508,6 +9410,11 @@ class ScriberWebController:
         await self.start_listening()
 
     async def _handle_post_processing_hotkey_toggle(self) -> None:
+        if self._live_mic_start_in_progress_generation is not None:
+            if self._should_ignore_duplicate_start_toggle():
+                return
+            self.request_background_stop_listening()
+            return
         if self._is_stopping:
             self._pending_hotkey_toggle = True
             now = time.monotonic()
@@ -8610,7 +9517,17 @@ class ScriberWebController:
                 if is_pressed and not last_state:
                     await self.start_listening()
                 elif not is_pressed and last_state:
-                    await self.stop_listening()
+                    # Keep finalization owned by the controller rather than by
+                    # this replaceable polling task. Re-registering hotkeys or
+                    # shutting the poller down may cancel ``_ptt_loop`` while a
+                    # provider stop is in flight; cancelling that stop used to
+                    # strand the controller in ``_is_stopping`` and could lose
+                    # the transcript. The tracked background task is drained
+                    # during shutdown and shielded from poller cancellation.
+                    self.request_async_stop_listening()
+                    stop_task = self._background_stop_task
+                    if stop_task is not None:
+                        await asyncio.shield(stop_task)
                 last_state = is_pressed
             except Exception as exc:
                 now = time.monotonic()
@@ -8622,6 +9539,7 @@ class ScriberWebController:
     def begin_shutdown(self) -> None:
         """Prevent cancellation handlers from turning resumable jobs terminal."""
         self._shutting_down = True
+        self._cancel_live_mic_start_transition()
         self._retry_scheduler.cancel(cancel_running=True)
         heartbeat = getattr(self, "_audio_admission_heartbeat_task", None)
         self._audio_admission_heartbeat_task = None
@@ -8632,12 +9550,58 @@ class ScriberWebController:
         if isinstance(claim, AudioAdmissionClaim):
             try:
                 store, _controller_id = _persistent_audio_admission(self)
-                store.release(claim)
             except Exception as exc:
                 logger.warning(
                     "Persistent native-audio admission release during shutdown failed: {}",
                     type(exc).__name__,
                 )
+                return
+
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+
+            if running_loop is not None:
+                # ``run_in_executor`` submits immediately. Unlike creating a
+                # task around ``to_thread``, the lease release therefore still
+                # begins when a synchronous compatibility caller returns and
+                # its test/application loop closes without another cycle.
+                release_worker = running_loop.run_in_executor(
+                    None, store.release, claim
+                )
+                release_task = running_loop.create_task(
+                    _release_shutdown_audio_claim(release_worker),
+                    name="shutdown_audio_claim_release",
+                )
+                self._shutdown_audio_release_task = release_task
+                release_task.add_done_callback(
+                    self._on_shutdown_audio_release_done
+                )
+            else:
+                # Some compatibility callers tear a controller down after its
+                # loop has stopped. Keep that path non-blocking too; a
+                # non-daemon thread preserves the release boundary at process
+                # exit instead of abandoning the lease.
+                release_thread = threading.Thread(
+                    target=_release_shutdown_audio_claim_in_thread,
+                    args=(store, claim),
+                    name="scriber-shutdown-audio-release",
+                    daemon=False,
+                )
+                self._shutdown_audio_release_thread = release_thread
+                release_thread.start()
+
+    def _on_shutdown_audio_release_done(self, task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning(
+                "Persistent native-audio admission release during shutdown failed: {}",
+                type(exc).__name__,
+            )
 
     def schedule_meeting_import(self, import_id: str) -> bool:
         if getattr(self, "_shutting_down", False):
@@ -9747,6 +10711,7 @@ class ScriberWebController:
                 self._device_change_task,
                 self._meeting_detection_task,
                 self._meeting_retention_task,
+                getattr(self, "_live_mic_start_task", None),
             )
             if task is not None
             if task is not current and not task.done()
@@ -9754,10 +10719,23 @@ class ScriberWebController:
         for task in tasks:
             task.cancel()
 
+        # The detached SQLite lease release is cleanup, not cancellable work.
+        # Observe it within the same bounded drain window without canceling it.
+        wait_tasks = set(tasks)
+        shutdown_audio_release_task = getattr(
+            self, "_shutdown_audio_release_task", None
+        )
+        if (
+            shutdown_audio_release_task is not None
+            and shutdown_audio_release_task is not current
+            and not shutdown_audio_release_task.done()
+        ):
+            wait_tasks.add(shutdown_audio_release_task)
+
         pending: set[asyncio.Task] = set()
-        if tasks:
+        if wait_tasks:
             done, pending = await asyncio.wait(
-                tasks,
+                wait_tasks,
                 timeout=max(0.0, float(timeout_seconds)),
             )
             if done:
@@ -9814,6 +10792,17 @@ class ScriberWebController:
 
     def shutdown(self) -> None:
         self.begin_shutdown()
+        replay_execution, self._provider_replay_execution = (
+            self._provider_replay_execution,
+            None,
+        )
+        if replay_execution is not None:
+            replay_execution.fail("shutdown")
+            if not self._loop.is_closed():
+                self._loop.create_task(
+                    replay_execution.close(),
+                    name="provider_replay_shutdown_cleanup",
+                )
         for task in (
             *self._running_tasks.values(), *self._summary_tasks.values(),
             *self._meeting_tasks.values(), *self._meeting_import_tasks.values(),
@@ -10319,9 +11308,6 @@ class ScriberWebController:
                 Config.YOUTUBE_API_KEY = api_keys["youtubeApiKey"].strip()
                 os.environ["YOUTUBE_API_KEY"] = Config.YOUTUBE_API_KEY
 
-        # Persist current settings to .env once rapid setting changes settle.
-        self._schedule_settings_persist()
-
         if (
             Config.HOTKEY != old_hotkey
             or Config.POST_PROCESSING_HOTKEY != old_post_processing_hotkey
@@ -10334,7 +11320,12 @@ class ScriberWebController:
             await self._sync_idle_mic_prewarm_after_settings()
 
         await self.broadcast({"type": "settings_updated"})
-        return await asyncio.to_thread(self.get_settings)
+        settings = await asyncio.to_thread(self.get_settings)
+        # Start the quiet period only after the update response snapshot is
+        # ready. Slow device/config reads must not consume the debounce window
+        # and allow a disk write to race the next sequential settings change.
+        self._schedule_settings_persist()
+        return settings
 
     async def cancel_transcript(self, transcript_id: str) -> bool:
         """Cancel a running transcription task."""
@@ -10728,6 +11719,12 @@ class ScriberWebController:
 APP_CONTROLLER: web.AppKey[ScriberWebController] = web.AppKey("controller", ScriberWebController)
 APP_HTTP_SESSION: web.AppKey[ClientSession] = web.AppKey("http_session", ClientSession)
 APP_SHUTDOWN_EVENT: web.AppKey[asyncio.Event] = web.AppKey("shutdown_event", asyncio.Event)
+APP_PROVIDER_REPLAY: web.AppKey[ProviderReplayRegistry] = web.AppKey(
+    "provider_replay",
+    ProviderReplayRegistry,
+)
+
+_PROVIDER_REPLAY_ROUTE_PREFIX = "/api/runtime/benchmark/provider-replay"
 
 
 @web.middleware
@@ -10816,8 +11813,31 @@ def _group_meeting_audio_endpoints(endpoints: Any) -> dict[str, list[dict[str, A
 
 
 def create_app(controller: ScriberWebController) -> web.Application:
-    app = web.Application(middlewares=[cors_middleware, session_token_middleware])
+    provider_replay = ProviderReplayRegistry(
+        ProviderReplayRuntimeGate.from_environment()
+    )
+
+    @web.middleware
+    async def provider_replay_visibility_middleware(request: web.Request, handler):
+        # A source build, a directly launched sidecar, an invalid run id, or a
+        # non-Scriber parent must not reveal that the benchmark control plane
+        # exists. This middleware intentionally runs before token auth.
+        if (
+            request.path == _PROVIDER_REPLAY_ROUTE_PREFIX
+            or request.path.startswith(f"{_PROVIDER_REPLAY_ROUTE_PREFIX}/")
+        ) and not provider_replay.enabled:
+            return web.json_response({"message": "Not found"}, status=404)
+        return await handler(request)
+
+    app = web.Application(
+        middlewares=[
+            provider_replay_visibility_middleware,
+            cors_middleware,
+            session_token_middleware,
+        ]
+    )
     app[APP_CONTROLLER] = controller
+    app[APP_PROVIDER_REPLAY] = provider_replay
 
     async def http_session_ctx(app_: web.Application):
         session = ClientSession(timeout=_OUTBOUND_HTTP_TIMEOUT)
@@ -10885,6 +11905,87 @@ def create_app(controller: ScriberWebController) -> web.Application:
         except RESTContractError as exc:
             return web.json_response({"message": str(exc)}, status=400)
         return web.json_response(ctl.record_frontend_ready(payload, request))
+
+    async def get_frontend_performance(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        raw_after_sequence = request.query.get("afterSequence")
+        after_sequence: int | None = None
+        if raw_after_sequence is not None:
+            try:
+                after_sequence = int(raw_after_sequence)
+            except ValueError:
+                return web.json_response(
+                    {"message": "afterSequence must be a non-negative integer"},
+                    status=400,
+                )
+            if after_sequence < 0:
+                return web.json_response(
+                    {"message": "afterSequence must be a non-negative integer"},
+                    status=400,
+                )
+        source_instance_id = request.query.get("sourceInstanceId")
+        if source_instance_id is not None and (
+            not source_instance_id
+            or len(source_instance_id) > 64
+            or not all(char.isalnum() or char in "-_" for char in source_instance_id)
+        ):
+            return web.json_response(
+                {"message": "sourceInstanceId must be a bounded opaque identifier"},
+                status=400,
+            )
+        return web.json_response(
+            ctl.get_frontend_performance(
+                after_sequence=after_sequence,
+                source_instance_id=source_instance_id,
+            )
+        )
+
+    async def post_frontend_performance(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"message": "Expected JSON payload"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"message": "Expected JSON object"}, status=400)
+        try:
+            validate_frontend_performance_request_payload(payload)
+        except RESTContractError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
+        return web.json_response(ctl.record_frontend_performance(payload))
+
+    async def request_frontend_performance_flush(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"message": "Expected JSON payload"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"message": "Expected JSON object"}, status=400)
+        try:
+            validate_frontend_performance_flush_request_payload(payload)
+        except RESTContractError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
+        flush = ctl.request_frontend_performance_flush(payload["sourceInstanceId"])
+        if flush is None:
+            return web.json_response(
+                {"message": "Frontend performance source changed"},
+                status=409,
+            )
+        await ctl.broadcast(
+            frontend_performance_flush_event(
+                flush["sourceInstanceId"],
+                flush["heartbeatSequence"],
+            )
+        )
+        return web.json_response(
+            {
+                "apiVersion": REST_API_VERSION,
+                "accepted": True,
+                **flush,
+            },
+            status=202,
+        )
 
     async def get_audio_diagnostics(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -10983,9 +12084,200 @@ def create_app(controller: ScriberWebController) -> web.Application:
         )
         return web.json_response(payload)
 
+    def _provider_replay_contract_error(exc: RESTContractError) -> web.Response:
+        status = 404 if "runId does not match this runtime" in str(exc) else 400
+        message = "Not found" if status == 404 else str(exc)
+        return web.json_response({"message": message}, status=status)
+
+    async def prepare_provider_replay(request: web.Request):
+        replay = request.app[APP_PROVIDER_REPLAY]
+        try:
+            if request.content_length is not None and request.content_length > 2048:
+                raise RESTContractError("Provider replay request body is too large")
+            payload = await request.json()
+            validated = validate_provider_replay_prepare_request_payload(
+                payload,
+                configured_run_id=replay.gate.run_id,
+            )
+            result = replay.prepare(
+                run_id=validated["runId"],
+                provider=validated["provider"],
+            )
+        except RESTContractError as exc:
+            return _provider_replay_contract_error(exc)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return web.json_response({"message": "Expected JSON object"}, status=400)
+        except ProviderReplayConflict as exc:
+            return web.json_response({"message": str(exc)}, status=409)
+        except ProviderReplayCapacityError:
+            return web.json_response(
+                {"message": "Provider replay registry is unavailable"},
+                status=503,
+            )
+        return web.json_response(result, status=201)
+
+    async def get_provider_replay_status(request: web.Request):
+        replay = request.app[APP_PROVIDER_REPLAY]
+        try:
+            if len(request.query) != 1 or len(request.query.getall("runId", [])) != 1:
+                raise RESTContractError(
+                    "GET /api/runtime/benchmark/provider-replay/{sampleId} "
+                    "requires exactly one runId"
+                )
+            validated = validate_provider_replay_status_query(
+                dict(request.query),
+                configured_run_id=replay.gate.run_id,
+            )
+            result = replay.status(
+                run_id=validated["runId"],
+                sample_id=request.match_info.get("sampleId", ""),
+            )
+        except RESTContractError as exc:
+            return _provider_replay_contract_error(exc)
+        except ProviderReplayNotFound:
+            return web.json_response({"message": "Not found"}, status=404)
+        return web.json_response(result)
+
+    async def arm_provider_replay(request: web.Request):
+        replay = request.app[APP_PROVIDER_REPLAY]
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        execution: ProviderReplayExecution | None = None
+        validated: dict[str, Any] | None = None
+        sample_id = request.match_info.get("sampleId", "")
+        arm_started = False
+        try:
+            if request.content_length is not None and request.content_length > 2048:
+                raise RESTContractError("Provider replay request body is too large")
+            payload = await request.json()
+            validated = validate_provider_replay_arm_request_payload(
+                payload,
+                configured_run_id=replay.gate.run_id,
+            )
+            if ctl._is_listening or ctl._is_stopping or ctl._pipeline_task is not None:
+                raise ProviderReplayConflict("audio controller is already active")
+            starting = replay.begin_arm(
+                run_id=validated["runId"],
+                sample_id=sample_id,
+                target_process_id=validated["targetProcessId"],
+                target_creation_time_100ns=validated[
+                    "targetCreationTime100ns"
+                ],
+            )
+            arm_started = True
+            guard = await _capture_provider_replay_injection_target(
+                expected_process_id=validated["targetProcessId"],
+                expected_creation_time_100ns=validated[
+                    "targetCreationTime100ns"
+                ],
+            )
+            provider = str(starting["provider"])
+            soniox_server: LocalSonioxReplayServer | None = None
+            azure_raw_transport = None
+            if provider == "soniox":
+                soniox_server = await LocalSonioxReplayServer().start()
+            elif provider == "microsoft":
+                azure_raw_transport = create_azure_mai_replay_transport()
+            else:  # pragma: no cover - registry contract prevents this
+                raise ProviderReplayConflict("provider replay provider is invalid")
+
+            execution = ProviderReplayExecution(
+                registry=replay,
+                run_id=validated["runId"],
+                sample_id=sample_id,
+                provider=provider,
+                injection_target_guard=guard,
+                azure_raw_transport=azure_raw_transport,
+                soniox_server=soniox_server,
+            )
+            start_error = await ctl.start_listening(
+                provider_replay_execution=execution,
+            )
+            if start_error is not None:
+                raise RuntimeError("provider replay pipeline was rejected")
+
+            # A 202 means the real PipelineTask was scheduled and survived an
+            # event-loop turn. Merely constructing provider objects is not an
+            # armed installed replay.
+            await asyncio.sleep(0)
+            pipeline_task = ctl._pipeline_task
+            session_id = ctl._session_id
+            if (
+                ctl._provider_replay_execution is not execution
+                or pipeline_task is None
+                or pipeline_task.done()
+                or session_id is None
+            ):
+                if pipeline_task is not None and pipeline_task.done():
+                    await asyncio.gather(pipeline_task, return_exceptions=True)
+                raise RuntimeError("provider replay pipeline did not start")
+            result = execution.bind_session(session_id)
+
+            async def _expire_installed_replay() -> None:
+                delay = max(0.05, float(result.get("expiresInMs", 0)) / 1000.0 - 0.1)
+                try:
+                    await asyncio.sleep(delay)
+                    if ctl._provider_replay_execution is not execution:
+                        return
+                    execution.fail("expired")
+                    await ctl._emergency_stop_pipeline(session_id=session_id)
+                    if ctl._provider_replay_execution is execution:
+                        ctl._provider_replay_execution = None
+                finally:
+                    await execution.close()
+
+            execution.watchdog_task = asyncio.create_task(
+                _expire_installed_replay(),
+                name="provider_replay_ttl_watchdog",
+            )
+        except RESTContractError as exc:
+            return _provider_replay_contract_error(exc)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return web.json_response({"message": "Expected JSON object"}, status=400)
+        except ProviderReplayNotFound:
+            return web.json_response({"message": "Not found"}, status=404)
+        except ProviderReplayConflict as exc:
+            if validated is not None and arm_started:
+                with contextlib.suppress(ProviderReplayError):
+                    replay.fail(
+                        run_id=validated["runId"],
+                        sample_id=sample_id,
+                        error_code="target_mismatch",
+                    )
+            if execution is not None:
+                await execution.close()
+            return web.json_response({"message": str(exc)}, status=409)
+        except Exception:
+            logger.exception("Installed provider replay arm failed")
+            if validated is not None and arm_started:
+                with contextlib.suppress(ProviderReplayError):
+                    replay.fail(
+                        run_id=validated["runId"],
+                        sample_id=sample_id,
+                        error_code="arm_failed",
+                    )
+            if execution is not None:
+                if ctl._provider_replay_execution is execution and ctl._session_id:
+                    await ctl._emergency_stop_pipeline(session_id=ctl._session_id)
+                    ctl._provider_replay_execution = None
+                await execution.close()
+            return web.json_response(
+                {"message": "Installed provider replay could not start"},
+                status=503,
+            )
+        return web.json_response(result, status=202)
+
+    async def provider_replay_not_found(_request: web.Request):
+        return web.json_response({"message": "Not found"}, status=404)
+
     async def start_live(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        start_error = await ctl.start_listening()
+        try:
+            tauri_hotkey_marker = await _tauri_hotkey_marker_from_request(request)
+        except RESTContractError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
+        start_error = await ctl.start_listening(
+            tauri_hotkey_marker=tauri_hotkey_marker,
+        )
         if start_error is not None:
             return web.json_response(
                 version_event_payload(ctl._provider_error_event_from_info(start_error)),
@@ -10995,7 +12287,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def start_live_post_processing(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        start_error = await ctl.start_listening(post_process=True)
+        try:
+            tauri_hotkey_marker = await _tauri_hotkey_marker_from_request(request)
+        except RESTContractError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
+        start_error = await ctl.start_listening(
+            post_process=True,
+            tauri_hotkey_marker=tauri_hotkey_marker,
+        )
         if start_error is not None:
             return web.json_response(
                 version_event_payload(ctl._provider_error_event_from_info(start_error)),
@@ -11015,8 +12314,19 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def toggle_live(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if ctl._is_listening or ctl._is_stopping:
+        if (
+            ctl._live_mic_start_in_progress_generation is not None
+            or ctl._is_listening
+            or ctl._is_stopping
+        ):
             if ctl._should_ignore_duplicate_start_toggle():
+                start_task = ctl._live_mic_start_task
+                if (
+                    start_task is not None
+                    and start_task is not asyncio.current_task()
+                    and not start_task.done()
+                ):
+                    await asyncio.shield(start_task)
                 payload = ctl.get_state()
                 payload["stopAccepted"] = False
                 payload["finalizing"] = False
@@ -11028,7 +12338,13 @@ def create_app(controller: ScriberWebController) -> web.Application:
             payload["finalizing"] = True
             return web.json_response(payload, status=202)
 
-        start_error = await ctl.start_listening()
+        try:
+            tauri_hotkey_marker = await _tauri_hotkey_marker_from_request(request)
+        except RESTContractError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
+        start_error = await ctl.start_listening(
+            tauri_hotkey_marker=tauri_hotkey_marker,
+        )
         if start_error is not None:
             return web.json_response(
                 version_event_payload(ctl._provider_error_event_from_info(start_error)),
@@ -11036,10 +12352,40 @@ def create_app(controller: ScriberWebController) -> web.Application:
             )
         return web.json_response(ctl.get_state())
 
+    async def request_stop_live(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        outcome = ctl.request_async_stop_listening()
+        payload = {
+            "apiVersion": REST_API_VERSION,
+            **outcome,
+            # This is an acceptance acknowledgement, not a completion
+            # response.  State/WebSocket events remain authoritative.
+            "finalizing": bool(
+                outcome["stopScheduled"] or outcome["alreadyFinalizing"]
+            ),
+            "sessionId": ctl._session_id,
+        }
+        status = 202 if outcome["stopAccepted"] else 503
+        return web.json_response(payload, status=status)
+
     async def toggle_live_post_processing(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if ctl._is_listening or ctl._is_stopping:
+        if (
+            ctl._live_mic_start_in_progress_generation is not None
+            or ctl._is_listening
+            or ctl._is_stopping
+        ):
             if ctl._should_ignore_duplicate_start_toggle():
+                start_task = ctl._live_mic_start_task
+                if (
+                    start_task is not None
+                    and start_task is not asyncio.current_task()
+                    and not start_task.done()
+                ):
+                    # Duplicate Rust hotkey requests return the authoritative
+                    # state of the one accepted start, not an early false idle
+                    # snapshot while that start is still awaiting native work.
+                    await asyncio.shield(start_task)
                 payload = ctl.get_state()
                 payload["stopAccepted"] = False
                 payload["finalizing"] = False
@@ -11051,7 +12397,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
             payload["finalizing"] = True
             return web.json_response(payload, status=202)
 
-        start_error = await ctl.start_listening(post_process=True)
+        try:
+            tauri_hotkey_marker = await _tauri_hotkey_marker_from_request(request)
+        except RESTContractError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
+        start_error = await ctl.start_listening(
+            post_process=True,
+            tauri_hotkey_marker=tauri_hotkey_marker,
+        )
         if start_error is not None:
             return web.json_response(
                 version_event_payload(ctl._provider_error_event_from_info(start_error)),
@@ -11916,7 +13269,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
         admission_lock = _audio_admission_lock(ctl)
         device_test_claim: AudioAdmissionClaim | None = None
         async with admission_lock:
-            if ctl._is_listening or ctl._is_stopping:
+            if (
+                getattr(ctl, "_live_mic_start_in_progress_generation", None)
+                is not None
+                or ctl._is_listening
+                or ctl._is_stopping
+            ):
                 return web.json_response(
                     {"message": "Stop Live Mic before testing meeting devices."}, status=409
                 )
@@ -15668,6 +17026,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/api/runtime", get_runtime)
     app.router.add_get("/api/runtime/frontend-ready", get_frontend_ready)
     app.router.add_post("/api/runtime/frontend-ready", post_frontend_ready)
+    app.router.add_get("/api/runtime/frontend-performance", get_frontend_performance)
+    app.router.add_post("/api/runtime/frontend-performance", post_frontend_performance)
+    app.router.add_post(
+        "/api/runtime/frontend-performance/flush-request",
+        request_frontend_performance_flush,
+    )
     app.router.add_get("/api/runtime/audio-diagnostics", get_audio_diagnostics)
     app.router.add_get("/api/runtime/post-processing-diagnostics", get_post_processing_diagnostics)
     app.router.add_get("/api/runtime/logs", get_runtime_logs)
@@ -15675,9 +17039,36 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_post("/api/runtime/shutdown", shutdown_runtime)
     app.router.add_post("/api/runtime/support-bundle", create_runtime_support_bundle)
     app.router.add_get("/api/metrics/hot-path", get_hot_path_metrics)
+    if provider_replay.enabled:
+        app.router.add_post(
+            f"{_PROVIDER_REPLAY_ROUTE_PREFIX}/prepare",
+            prepare_provider_replay,
+        )
+        app.router.add_post(
+            f"{_PROVIDER_REPLAY_ROUTE_PREFIX}/{{sampleId}}/arm",
+            arm_provider_replay,
+        )
+        app.router.add_get(
+            f"{_PROVIDER_REPLAY_ROUTE_PREFIX}/{{sampleId}}",
+            get_provider_replay_status,
+        )
+    # Keep disabled and unknown benchmark endpoints indistinguishable from a
+    # missing route. The visibility middleware ensures this stays 404 before
+    # token auth when the installed-runtime gate is closed.
+    app.router.add_route(
+        "*",
+        _PROVIDER_REPLAY_ROUTE_PREFIX,
+        provider_replay_not_found,
+    )
+    app.router.add_route(
+        "*",
+        f"{_PROVIDER_REPLAY_ROUTE_PREFIX}/{{tail:.*}}",
+        provider_replay_not_found,
+    )
     app.router.add_post("/api/live-mic/start", start_live)
     app.router.add_post("/api/live-mic/start-post-processing", start_live_post_processing)
     app.router.add_post("/api/live-mic/stop", stop_live)
+    app.router.add_post("/api/live-mic/stop-request", request_stop_live)
     app.router.add_post("/api/live-mic/toggle", toggle_live)
     app.router.add_post("/api/live-mic/toggle-post-processing", toggle_live_post_processing)
 

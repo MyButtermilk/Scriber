@@ -107,6 +107,7 @@ param(
     [string]$ShellMenuSmokeActions = "show-window,quit",
     [int]$ShellMenuSmokeTimeoutSec = 30,
     [int]$ShellMenuSmokeActionDelayMs = 250,
+    [string]$FrontendPerformanceGatePath = "",
     [string]$RealWorkflowYoutubeUrl = "https://www.youtube.com/watch?v=0wEjbSYNUM8",
     [int]$RealWorkflowFileTimeoutSec = 240,
     [int]$RealWorkflowYoutubeTimeoutSec = 420,
@@ -252,6 +253,55 @@ function Get-BackendRuntime {
         throw "Managed backend runtime did not report downloadsDir."
     }
     return $runtime
+}
+
+function Get-FrontendPerformanceDiagnostics {
+    param(
+        [int]$Port,
+        [string]$Token,
+        [Nullable[int64]]$AfterSequence = $null,
+        [string]$SourceInstanceId = ""
+    )
+
+    $headers = @{}
+    if ($Token) {
+        $headers["X-Scriber-Token"] = $Token
+    }
+    $query = @()
+    if ($null -ne $AfterSequence) {
+        $query += "afterSequence=$AfterSequence"
+    }
+    if ($SourceInstanceId) {
+        $query += "sourceInstanceId=$([Uri]::EscapeDataString($SourceInstanceId))"
+    }
+    $suffix = if ($query.Count -gt 0) { "?" + ($query -join "&") } else { "" }
+    return Invoke-RestMethod `
+        -Uri "http://127.0.0.1:$Port/api/runtime/frontend-performance$suffix" `
+        -Headers $headers `
+        -TimeoutSec 2
+}
+
+function Request-FrontendPerformanceFlush {
+    param(
+        [int]$Port,
+        [string]$Token,
+        [string]$SourceInstanceId
+    )
+
+    $headers = @{ "Content-Type" = "application/json" }
+    if ($Token) {
+        $headers["X-Scriber-Token"] = $Token
+    }
+    $body = @{
+        apiVersion = "1"
+        sourceInstanceId = $SourceInstanceId
+    } | ConvertTo-Json -Compress
+    return Invoke-RestMethod `
+        -Method Post `
+        -Uri "http://127.0.0.1:$Port/api/runtime/frontend-performance/flush-request" `
+        -Headers $headers `
+        -Body $body `
+        -TimeoutSec 2
 }
 
 function Invoke-BackendShutdown {
@@ -566,6 +616,9 @@ function Get-ScriberProcessRole {
     if ($name -eq "scriber-audio-sidecar") {
         return "audioSidecar"
     }
+    if ($name -eq "scriber-diarization-sidecar") {
+        return "diarizationSidecar"
+    }
     if ($name -like "scriber*") {
         return "scriberChild"
     }
@@ -764,6 +817,29 @@ function Test-RuntimeStability {
             $backendCpuValue = if ($null -ne $backendCpuPercent) { [double]$backendCpuPercent } else { 0.0 }
             $combinedCpuPercent = [Math]::Round($appCpuValue + $backendCpuValue, 2)
         }
+        $processTreeCpuTotal = 0.0
+        $processTreeCpuMeasured = $false
+        foreach ($metric in $currentProcessMetrics) {
+            $metricPid = [int]$metric.pid
+            $metricCpuPercent = Get-DeltaCpuPercent `
+                -PreviousSeconds $lastCpuTotals[$metricPid] `
+                -CurrentSeconds $currentCpuTotals[$metricPid] `
+                -ElapsedSeconds $cpuElapsedSec `
+                -LogicalProcessorCount $logicalProcessorCount
+            if ($null -ne $metricCpuPercent) {
+                $processTreeCpuTotal += [double]$metricCpuPercent
+                $processTreeCpuMeasured = $true
+            }
+        }
+        $processTreeCpuPercent = if ($processTreeCpuMeasured) {
+            [Math]::Round($processTreeCpuTotal, 2)
+        } else {
+            $null
+        }
+        $totalWorkingSetMb = [Math]::Round(
+            [double](($currentProcessMetrics | Measure-Object -Property workingSetMb -Sum).Sum),
+            2
+        )
         $lastCpuSampleAt = $currentCpuSampleAt
         $lastCpuTotals = $currentCpuTotals
 
@@ -776,6 +852,8 @@ function Test-RuntimeStability {
             appCpuPercent = $appCpuPercent
             backendCpuPercent = $backendCpuPercent
             combinedCpuPercent = $combinedCpuPercent
+            processTreeCpuPercent = $processTreeCpuPercent
+            totalWorkingSetMb = $totalWorkingSetMb
             healthMs = $healthProbe.elapsedMs
             stateMs = $stateProbe.elapsedMs
             audioDiagnosticsMs = if ($audioDiagnosticsProbe) { $audioDiagnosticsProbe.elapsedMs } else { $null }
@@ -809,12 +887,21 @@ function Test-RuntimeStability {
     $backendCpuMax = if ($backendCpuValues.Count) { [double](($backendCpuValues | Measure-Object -Maximum).Maximum) } else { $null }
     $combinedCpuMax = if ($combinedCpuValues.Count) { [double](($combinedCpuValues | Measure-Object -Maximum).Maximum) } else { $null }
     $combinedCpuAvg = if ($combinedCpuValues.Count) { [Math]::Round([double](($combinedCpuValues | Measure-Object -Average).Average), 2) } else { $null }
+    $processTreeCpuValues = @($samples | Where-Object { $null -ne $_.processTreeCpuPercent } | ForEach-Object { [double]$_.processTreeCpuPercent })
+    $processTreeCpuMax = if ($processTreeCpuValues.Count) { [double](($processTreeCpuValues | Measure-Object -Maximum).Maximum) } else { $null }
+    $processTreeCpuAvg = if ($processTreeCpuValues.Count) { [Math]::Round([double](($processTreeCpuValues | Measure-Object -Average).Average), 2) } else { $null }
+    $totalWorkingSetValues = @($samples | ForEach-Object { [double]$_.totalWorkingSetMb })
+    $totalWorkingSetStart = if ($totalWorkingSetValues.Count) { [double]$totalWorkingSetValues[0] } else { $null }
+    $totalWorkingSetEnd = if ($totalWorkingSetValues.Count) { [double]$totalWorkingSetValues[-1] } else { $null }
+    $totalWorkingSetMax = if ($totalWorkingSetValues.Count) { [double](($totalWorkingSetValues | Measure-Object -Maximum).Maximum) } else { $null }
+    $totalWorkingSetGrowth = if ($null -ne $totalWorkingSetStart -and $null -ne $totalWorkingSetEnd) { [Math]::Round($totalWorkingSetEnd - $totalWorkingSetStart, 2) } else { $null }
+    $totalWorkingSetPeakGrowth = if ($null -ne $totalWorkingSetStart -and $null -ne $totalWorkingSetMax) { [Math]::Round($totalWorkingSetMax - $totalWorkingSetStart, 2) } else { $null }
     $processMetricsSummary = @(Get-ProcessTreeMetricsSummary -Samples $samples)
-    if ($MaxIdleCpuPercent -gt 0 -and -not $combinedCpuValues.Count) {
+    if ($MaxIdleCpuPercent -gt 0 -and -not $processTreeCpuValues.Count) {
         throw "Stability smoke could not collect idle CPU samples."
     }
-    if ($MaxIdleCpuPercent -gt 0 -and $null -ne $combinedCpuAvg -and $combinedCpuAvg -gt $MaxIdleCpuPercent) {
-        throw "Stability smoke average idle CPU ${combinedCpuAvg}% exceeded ${MaxIdleCpuPercent}%."
+    if ($MaxIdleCpuPercent -gt 0 -and $null -ne $processTreeCpuAvg -and $processTreeCpuAvg -gt $MaxIdleCpuPercent) {
+        throw "Stability smoke process-tree average idle CPU ${processTreeCpuAvg}% exceeded ${MaxIdleCpuPercent}%."
     }
     return [pscustomobject]@{
         verified = $true
@@ -829,10 +916,17 @@ function Test-RuntimeStability {
         backendWorkingSetGrowthMb = $workingSetGrowth
         backendWorkingSetPeakGrowthMb = $workingSetPeakGrowth
         maxBackendWorkingSetGrowthMb = if ($MaxWorkingSetGrowthMB -gt 0) { $MaxWorkingSetGrowthMB } else { $null }
+        totalWorkingSetStartMb = $totalWorkingSetStart
+        totalWorkingSetEndMb = $totalWorkingSetEnd
+        totalWorkingSetMaxMb = $totalWorkingSetMax
+        totalWorkingSetGrowthMb = $totalWorkingSetGrowth
+        totalWorkingSetPeakGrowthMb = $totalWorkingSetPeakGrowth
         appCpuMaxPercent = $appCpuMax
         backendCpuMaxPercent = $backendCpuMax
         combinedCpuMaxPercent = $combinedCpuMax
         combinedCpuAvgPercent = $combinedCpuAvg
+        processTreeCpuMaxPercent = $processTreeCpuMax
+        processTreeCpuAvgPercent = $processTreeCpuAvg
         maxIdleCpuPercent = if ($MaxIdleCpuPercent -gt 0) { $MaxIdleCpuPercent } else { $null }
         processMetricsSummary = $processMetricsSummary
         samples = $samples
@@ -2466,11 +2560,26 @@ function Test-ShellMenuSmoke {
         [string]$RuntimeDataDir,
         [string]$TriggerPath,
         [string]$Actions,
-        [int]$DeadlineSec
+        [int]$DeadlineSec,
+        [int]$Port,
+        [string]$Token,
+        [string]$QuitBarrierPath,
+        [string]$MeasurementGatePath
     )
 
     $shellLogPath = Join-Path $RuntimeDataDir "logs\tauri-shell.log"
     New-Item -ItemType Directory -Force -Path (Split-Path $TriggerPath) | Out-Null
+    $frontendPerformanceBaseline = $null
+    $frontendPerformanceAfterShow = $null
+    $frontendPerformanceAfterShowQpcTicks = $null
+    $frontendPerformanceFlushRequest = $null
+    $frontendPerformanceMeasurementEndQpcTicks = $null
+    $frontendPerformanceHeartbeatAckQpcTicks = $null
+    try {
+        $frontendPerformanceBaseline = Get-FrontendPerformanceDiagnostics -Port $Port -Token $Token
+    } catch {
+        $frontendPerformanceBaseline = $null
+    }
     $triggerQpcTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
     $triggerQpcFrequency = [System.Diagnostics.Stopwatch]::Frequency
     Set-Content -LiteralPath $TriggerPath -Value "go" -Encoding ASCII
@@ -2538,8 +2647,8 @@ function Test-ShellMenuSmoke {
                 )
                 if ($candidate.Success) {
                     $hotkeyReleaseMatch = $candidate
-                    if ($candidate.Groups[2].Value -ne "push_to_talk" -or $candidate.Groups[3].Value -ne "/api/live-mic/stop" -or $candidate.Groups[4].Value -ne "true") {
-                        throw "Shell menu smoke push-to-talk release did not dispatch /api/live-mic/stop in push_to_talk mode."
+                    if ($candidate.Groups[2].Value -ne "push_to_talk" -or $candidate.Groups[3].Value -ne "/api/live-mic/stop-request" -or $candidate.Groups[4].Value -ne "true") {
+                        throw "Shell menu smoke push-to-talk release did not dispatch /api/live-mic/stop-request in push_to_talk mode."
                     }
                 }
             }
@@ -2600,6 +2709,50 @@ function Test-ShellMenuSmoke {
                     $quitMatch = $candidate
                 }
             }
+            if ($showMatch -and -not $quitMatch -and $frontendPerformanceBaseline) {
+                try {
+                    $baselineWindow = $frontendPerformanceBaseline.window
+                    if (
+                        $frontendPerformanceBaseline.available -and
+                        $frontendPerformanceBaseline.observerSupported -eq $true -and
+                        $baselineWindow
+                    ) {
+                        $measurementGateOpen = (
+                            -not $MeasurementGatePath -or
+                            (Test-Path -LiteralPath $MeasurementGatePath -PathType Leaf)
+                        )
+                        if (-not $frontendPerformanceFlushRequest -and $measurementGateOpen) {
+                            $frontendPerformanceMeasurementEndQpcTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
+                            $frontendPerformanceFlushRequest = Request-FrontendPerformanceFlush `
+                                -Port $Port `
+                                -Token $Token `
+                                -SourceInstanceId ([string]$frontendPerformanceBaseline.sourceInstanceId)
+                        }
+                        $frontendPerformanceAfterShow = Get-FrontendPerformanceDiagnostics `
+                            -Port $Port `
+                            -Token $Token `
+                            -AfterSequence ([int64]$baselineWindow.lastSequence) `
+                            -SourceInstanceId ([string]$frontendPerformanceBaseline.sourceInstanceId)
+                        $frontendPerformanceAfterShowQpcTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
+                        $afterWindow = $frontendPerformanceAfterShow.window
+                        if (
+                            $frontendPerformanceFlushRequest -and
+                            $afterWindow -and
+                            [int64]$afterWindow.heartbeatSequence -ge [int64]$frontendPerformanceFlushRequest.heartbeatSequence -and
+                            [double]$afterWindow.heartbeatObservedAtFrontendUptimeMs -ge [double]$frontendPerformanceFlushRequest.requestedAfterFrontendUptimeMs -and
+                            [double]$afterWindow.heartbeatReceivedAtUptimeSeconds -ge [double]$frontendPerformanceFlushRequest.requestedAtUptimeSeconds
+                        ) {
+                            $frontendPerformanceHeartbeatAckQpcTicks = $frontendPerformanceAfterShowQpcTicks
+                            if ($QuitBarrierPath -and -not (Test-Path -LiteralPath $QuitBarrierPath)) {
+                                Set-Content -LiteralPath $QuitBarrierPath -Value "acked" -Encoding ASCII
+                            }
+                        }
+                    }
+                } catch {
+                    # Keep polling until the bounded barrier timeout. The
+                    # benchmark treats missing acknowledgement as unknown.
+                }
+            }
             if (
                 $showMatch -and
                 $quitMatch -and
@@ -2614,7 +2767,7 @@ function Test-ShellMenuSmoke {
                 break
             }
         }
-        Start-Sleep -Milliseconds 250
+        Start-Sleep -Milliseconds 50
     } while ((Get-Date) -lt $deadline)
 
     if (-not $showMatch) {
@@ -2654,6 +2807,33 @@ function Test-ShellMenuSmoke {
         triggerPath = $TriggerPath
         triggerQpcTicks = $triggerQpcTicks
         qpcFrequency = $triggerQpcFrequency
+        frontendPerformance = [pscustomobject]@{
+            baseline = $frontendPerformanceBaseline
+            afterShow = $frontendPerformanceAfterShow
+            flushRequest = $frontendPerformanceFlushRequest
+            heartbeatAcknowledged = [bool]$frontendPerformanceHeartbeatAckQpcTicks
+            measurementEndQpcTicks = $frontendPerformanceMeasurementEndQpcTicks
+            heartbeatAckQpcTicks = $frontendPerformanceHeartbeatAckQpcTicks
+            measurementWindowMs = if ($frontendPerformanceMeasurementEndQpcTicks) {
+                [Math]::Round(
+                    (($frontendPerformanceMeasurementEndQpcTicks - $triggerQpcTicks) / $triggerQpcFrequency) * 1000.0,
+                    3
+                )
+            } else {
+                $null
+            }
+            heartbeatAckLatencyMs = if (
+                $frontendPerformanceHeartbeatAckQpcTicks -and
+                $frontendPerformanceMeasurementEndQpcTicks
+            ) {
+                [Math]::Round(
+                    (($frontendPerformanceHeartbeatAckQpcTicks - $frontendPerformanceMeasurementEndQpcTicks) / $triggerQpcFrequency) * 1000.0,
+                    3
+                )
+            } else {
+                $null
+            }
+        }
         showWindow = [pscustomobject]@{
             elapsedMs = [int]$showMatch.Groups[1].Value
             visible = ($showMatch.Groups[2].Value -eq "true")
@@ -2936,8 +3116,10 @@ if (-not $DataDir) {
 $DataDir = Convert-ToFullPath -Path $DataDir
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $shellMenuSmokeTriggerPath = $null
+$shellMenuSmokeQuitBarrierPath = $null
 if ($VerifyShellMenuSmoke) {
     $shellMenuSmokeTriggerPath = Join-Path $DataDir "shell-menu-smoke.trigger"
+    $shellMenuSmokeQuitBarrierPath = Join-Path $DataDir "shell-menu-smoke.quit-barrier"
 }
 $globalHotkeySmokeConfig = $null
 if ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManualGlobalHotkey) {
@@ -2981,6 +3163,8 @@ $oldShellMenuSmokeActions = $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTIONS
 $oldShellMenuSmokeTriggerFile = $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_FILE
 $oldShellMenuSmokeTriggerTimeout = $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_TIMEOUT_MS
 $oldShellMenuSmokeActionDelay = $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTION_DELAY_MS
+$oldShellMenuSmokeQuitBarrierFile = $env:SCRIBER_TAURI_SMOKE_QUIT_BARRIER_FILE
+$oldShellMenuSmokeQuitBarrierTimeout = $env:SCRIBER_TAURI_SMOKE_QUIT_BARRIER_TIMEOUT_MS
 $liveRecordingProviderEnvSnapshot = @{}
 
 function Set-SmokeEnvironmentVariable {
@@ -3079,6 +3263,8 @@ if ($VerifyShellMenuSmoke) {
     $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_FILE = $shellMenuSmokeTriggerPath
     $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_TIMEOUT_MS = ([Math]::Max(1, $ShellMenuSmokeTimeoutSec) * 1000).ToString()
     $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTION_DELAY_MS = ([Math]::Max(0, $ShellMenuSmokeActionDelayMs)).ToString()
+    $env:SCRIBER_TAURI_SMOKE_QUIT_BARRIER_FILE = $shellMenuSmokeQuitBarrierPath
+    $env:SCRIBER_TAURI_SMOKE_QUIT_BARRIER_TIMEOUT_MS = "10000"
 }
 
 $app = $null
@@ -3385,7 +3571,11 @@ try {
             -RuntimeDataDir $DataDir `
             -TriggerPath $shellMenuSmokeTriggerPath `
             -Actions $ShellMenuSmokeActions `
-            -DeadlineSec $ShellMenuSmokeTimeoutSec
+            -DeadlineSec $ShellMenuSmokeTimeoutSec `
+            -Port ([int]$listener.Port) `
+            -Token $SessionToken `
+            -QuitBarrierPath $shellMenuSmokeQuitBarrierPath `
+            -MeasurementGatePath $FrontendPerformanceGatePath
     }
     $result = [pscustomobject]@{
         ok = $true
@@ -3559,6 +3749,8 @@ try {
     $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_FILE = $oldShellMenuSmokeTriggerFile
     $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_TRIGGER_TIMEOUT_MS = $oldShellMenuSmokeTriggerTimeout
     $env:SCRIBER_TAURI_SMOKE_SHELL_MENU_ACTION_DELAY_MS = $oldShellMenuSmokeActionDelay
+    $env:SCRIBER_TAURI_SMOKE_QUIT_BARRIER_FILE = $oldShellMenuSmokeQuitBarrierFile
+    $env:SCRIBER_TAURI_SMOKE_QUIT_BARRIER_TIMEOUT_MS = $oldShellMenuSmokeQuitBarrierTimeout
     foreach ($name in @($liveRecordingProviderEnvSnapshot.Keys)) {
         [Environment]::SetEnvironmentVariable(
             $name,

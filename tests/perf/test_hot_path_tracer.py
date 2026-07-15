@@ -43,6 +43,35 @@ def test_hot_path_tracer_accepts_external_marker_timestamp():
     assert report["clipboard_set_to_first_paste_ms"] == 160.0
 
 
+def test_hot_path_tracer_binds_privacy_safe_tauri_callback_marker():
+    marker = {
+        "schemaVersion": 1,
+        "marker": "hotkey_received",
+        "source": "tauri_global_shortcut",
+        "runId": "7de1a48651d44f859042b7cbcb30da52",
+        "sampleId": "2b3022ee3f404333a1156da089a24962",
+        "processId": 4321,
+        "qpcTicks": 10_000_000,
+        "qpcFrequency": 10_000_000,
+        "timestampNs": 1_000_000_000,
+    }
+    tracer = HotPathTracer("s-tauri", clock_ns=lambda: 1_125_000_000)
+
+    tracer.bind_tauri_hotkey_received(marker)
+    tracer.mark("mic_ready")
+    snapshot = tracer.snapshot()
+
+    assert snapshot["tauriHotkeyReceived"] == marker
+    assert snapshot["markerNames"] == [
+        "hotkey_received",
+        "tauri_hotkey_received",
+        "mic_ready",
+    ]
+    assert snapshot["segments"]["hotkey_received_to_mic_ready_ms"] == 125.0
+    assert "token" not in str(snapshot).lower()
+    assert "transcript" not in str(snapshot).lower()
+
+
 def test_hot_path_tracer_without_enough_marks_is_empty():
     tracer = HotPathTracer("s3", clock_ns=lambda: 123)
     tracer.mark("only_one")

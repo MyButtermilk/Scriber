@@ -81,6 +81,11 @@ export type ScriberWebSocketMessage =
         updatedAt?: string;
         reason?: string;
     })
+    | (BaseWsMessage & {
+        type: "frontend_performance_flush";
+        sourceInstanceId: string;
+        heartbeatSequence: number;
+    })
     | (BaseWsMessage & { type: "transcribing" })
     | (BaseWsMessage & { type: "session_started"; session: TranscriptSession })
     | (BaseWsMessage & { type: "session_finished"; session: TranscriptSession })

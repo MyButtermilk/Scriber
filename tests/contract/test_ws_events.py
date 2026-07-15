@@ -7,6 +7,7 @@ from src.core.ws_contracts import (
     WSContractError,
     audio_level_event,
     error_event,
+    frontend_performance_flush_event,
     history_updated_event,
     input_warning_event,
     meeting_audio_level_event,
@@ -109,6 +110,7 @@ def test_ws_event_builders_match_contract():
             updated_at="2026-06-09T12:00:00",
             reason="progress",
         ),
+        frontend_performance_flush_event("webview-123", 4),
         transcribing_event(session_id="s1"),
         session_started_event({"id": "s1"}, session_id="s1"),
         session_finished_event({"id": "s1"}, session_id="s1"),
@@ -191,6 +193,16 @@ def test_ws_contract_validation_rejects_invalid_payload():
         validate_event_payload({"type": "history_updated", "apiVersion": "0"})
     with pytest.raises(WSContractError):
         validate_event_payload(version_event_payload({"type": "history_updated", "transcriptId": 123}))
+    with pytest.raises(WSContractError):
+        validate_event_payload(
+            version_event_payload(
+                {
+                    "type": "frontend_performance_flush",
+                    "sourceInstanceId": "webview-123",
+                    "heartbeatSequence": 0,
+                }
+            )
+        )
     with pytest.raises(WSContractError):
         validate_event_payload(meeting_live_status_event("meeting-1", "system", "invalid", 1))
     with pytest.raises(WSContractError):

@@ -7,10 +7,12 @@ from pipecat.frames.frames import EndFrame, TranscriptionFrame
 
 from src.config import Config
 from src.injector import (
+    InjectionTargetGuard,
     TextInjector,
     _CLIPBOARD_ACCESS_FAILED,
     _ClipboardFormatSnapshot,
     _ClipboardSnapshot,
+    _ForegroundTargetSnapshot,
     _paste_text,
     _windows_clipboard_format_is_restorable,
     _windows_clipboard_get_text,
@@ -152,6 +154,86 @@ def test_paste_text_rechecks_target_title_before_ctrl_v(monkeypatch):
     set_clip.assert_called_once_with("new text")
     restore_clip.assert_called_once()
     mock_kb.press_and_release.assert_not_called()
+
+
+def test_paste_text_rechecks_explicit_process_generation_after_ctrl_v(monkeypatch):
+    monkeypatch.setattr(Config, "PASTE_RESTORE_DELAY_MS", 0)
+    guard = InjectionTargetGuard(
+        title="Scriber benchmark target",
+        process_id=4123,
+        process_creation_time_100ns=987654321,
+    )
+    markers: list[str] = []
+
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch("src.injector.sys.platform", "win32"),
+        patch(
+            "src.injector._active_foreground_target_snapshot",
+            side_effect=[
+                _ForegroundTargetSnapshot(
+                    guard.title,
+                    guard.process_id,
+                    guard.process_creation_time_100ns,
+                    9001,
+                ),
+                _ForegroundTargetSnapshot(
+                    guard.title,
+                    guard.process_id,
+                    guard.process_creation_time_100ns,
+                    9001,
+                ),
+                _ForegroundTargetSnapshot(
+                    "Scriber benchmark target *",
+                    guard.process_id,
+                    guard.process_creation_time_100ns + 1,
+                    9001,
+                ),
+            ],
+        ),
+        patch("src.injector._get_pre_delay_for_window", return_value=0),
+        patch("src.injector._windows_clipboard_snapshot", return_value=_snapshot()),
+        patch("src.injector._windows_clipboard_set_text", return_value=True),
+        patch("src.injector._windows_clipboard_sequence_number", side_effect=[100, 100]),
+        patch("src.injector._windows_clipboard_restore_snapshot", return_value=True) as restore_clip,
+        patch("src.injector.keyboard") as mock_kb,
+    ):
+        mock_kb.press_and_release.return_value = None
+        assert (
+            _paste_text(
+                "new text",
+                on_marker=markers.append,
+                target_guard=guard,
+            )
+            is True
+        )
+
+    assert markers == ["clipboard_set", "paste", "target_changed_after_paste"]
+    mock_kb.press_and_release.assert_called_once_with("ctrl+v")
+    restore_clip.assert_called_once()
+
+
+def test_paste_text_never_retries_after_uncertain_keyboard_dispatch(monkeypatch):
+    monkeypatch.setattr(Config, "PASTE_RESTORE_DELAY_MS", 0)
+    markers: list[str] = []
+
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch("src.injector.sys.platform", "win32"),
+        patch("src.injector._get_pre_delay_for_window", return_value=0),
+        patch("src.injector._windows_clipboard_snapshot", return_value=_snapshot()),
+        patch("src.injector._windows_clipboard_set_text", return_value=True),
+        patch("src.injector._windows_clipboard_sequence_number", side_effect=[100, 100]),
+        patch("src.injector._windows_clipboard_restore_snapshot", return_value=True),
+        patch("src.injector.keyboard") as mock_keyboard,
+        patch("src.injector.pyautogui") as mock_pyautogui,
+    ):
+        mock_keyboard.press_and_release.side_effect = RuntimeError("partial dispatch")
+        assert _paste_text("new text", on_marker=markers.append) is True
+
+    assert markers == ["clipboard_set", "paste_dispatch_uncertain"]
+    mock_keyboard.press_and_release.assert_called_once_with("ctrl+v")
+    mock_pyautogui.hotkey.assert_not_called()
 
 
 def test_paste_text_restores_previous_text_when_set_fails():

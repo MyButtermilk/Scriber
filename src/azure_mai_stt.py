@@ -9,7 +9,7 @@ import json
 import tempfile
 from pathlib import Path
 from collections.abc import AsyncGenerator
-from typing import Any, BinaryIO, Callable
+from typing import Any, Awaitable, BinaryIO, Callable
 
 import aiohttp
 from loguru import logger
@@ -51,6 +51,8 @@ _AZURE_MAI_CONTENT_TYPES = {
     ".mp3": "audio/mpeg",
     ".flac": "audio/flac",
 }
+
+AzureMaiRawTransport = Callable[..., Awaitable[tuple[int, str]]]
 
 
 def azure_mai_region(region: str | None) -> str:
@@ -286,6 +288,30 @@ def _report_progress(on_progress: Callable[[str], None] | None, message: str) ->
         pass
 
 
+async def _azure_mai_http_raw_transport(
+    *,
+    session: aiohttp.ClientSession,
+    url: str,
+    audio_source: bytes | BinaryIO,
+    filename: str,
+    content_type: str,
+    definition: dict[str, Any],
+    speech_key: str,
+    timeout_secs: float,
+) -> tuple[int, str]:
+    data = aiohttp.FormData()
+    data.add_field("audio", audio_source, filename=filename, content_type=content_type)
+    data.add_field("definition", json.dumps(definition), content_type="application/json")
+    async with session.post(
+        url,
+        data=data,
+        headers={"Ocp-Apim-Subscription-Key": speech_key},
+        timeout=aiohttp.ClientTimeout(total=timeout_secs),
+    ) as resp:
+        raw = await read_response_text_limited(resp, 64 * 1024 * 1024)
+        return int(resp.status), raw
+
+
 async def transcribe_with_azure_mai(
     *,
     session: aiohttp.ClientSession,
@@ -299,6 +325,8 @@ async def transcribe_with_azure_mai(
     custom_vocab: str | None = None,
     on_progress: Callable[[str], None] | None = None,
     timeout_secs: float = 900.0,
+    raw_transport: AzureMaiRawTransport | None = None,
+    on_response_complete: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     region = validate_azure_mai_region(region)
     url = (
@@ -311,21 +339,26 @@ async def transcribe_with_azure_mai(
         custom_vocab=custom_vocab,
     )
 
-    data = aiohttp.FormData()
-    data.add_field("audio", audio_source, filename=filename, content_type=content_type)
-    data.add_field("definition", json.dumps(definition), content_type="application/json")
-
     _report_progress(on_progress, "Uploading audio...")
     _report_progress(on_progress, "Processing transcription...")
-    async with session.post(
-        url,
-        data=data,
-        headers={"Ocp-Apim-Subscription-Key": speech_key},
-        timeout=aiohttp.ClientTimeout(total=timeout_secs),
-    ) as resp:
-        raw = await read_response_text_limited(resp, 64 * 1024 * 1024)
-        if resp.status >= 400:
-            raise RuntimeError(f"Azure MAI transcription failed ({resp.status}): {raw[:500]}")
+    transport = raw_transport or _azure_mai_http_raw_transport
+    status, raw = await transport(
+        session=session,
+        url=url,
+        audio_source=audio_source,
+        filename=filename,
+        content_type=content_type,
+        definition=definition,
+        speech_key=speech_key,
+        timeout_secs=timeout_secs,
+    )
+    # This boundary is intentionally before status handling and JSON parsing:
+    # installed performance evidence measures controllable local tail latency
+    # from the instant the complete raw provider response is available.
+    if on_response_complete is not None:
+        on_response_complete()
+    if status >= 400:
+        raise RuntimeError(f"Azure MAI transcription failed ({status}): {raw[:500]}")
 
     if not raw:
         return {}
@@ -356,6 +389,8 @@ class AzureMaiTranscribeSTTService(STTService):
         session: aiohttp.ClientSession | None = None,
         on_progress: Callable[[str], None] | None = None,
         audio_passthrough: bool = True,
+        raw_transport: AzureMaiRawTransport | None = None,
+        on_response_complete: Callable[[], None] | None = None,
     ) -> None:
         language_locales = azure_mai_language_locales(language)
         selected_model = azure_mai_model(model)
@@ -377,6 +412,8 @@ class AzureMaiTranscribeSTTService(STTService):
         )
         self._session = session
         self._on_progress = on_progress
+        self._raw_transport = raw_transport
+        self._on_response_complete = on_response_complete
         self._buffer = self._create_buffer()
         self._buffer_size = 0
         self._sample_rate = 16000
@@ -416,6 +453,8 @@ class AzureMaiTranscribeSTTService(STTService):
                 custom_vocab=self._custom_vocab,
                 on_progress=self._on_progress,
                 timeout_secs=900.0,
+                raw_transport=self._raw_transport,
+                on_response_complete=self._on_response_complete,
             )
 
         if self._session:

@@ -1035,6 +1035,11 @@ def _audio_race_controller(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
     monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False)
+    # These tests exercise admission ordering once the transcription runtime is
+    # available. Keep that boundary explicit so an isolated run does not enter
+    # the separate capture-first cold-import path before reaching the gated
+    # prewarm pause below.
+    monkeypatch.setattr(web_api, "ScriberPipeline", object())
     database.init_database()
 
     controller = web_api.ScriberWebController(asyncio.get_running_loop())

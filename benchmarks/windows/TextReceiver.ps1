@@ -6,29 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-Add-Type -ReferencedAssemblies "System.Windows.Forms.dll","System.Drawing.dll" @"
-using System.Windows.Forms;
-
-public class ScriberNoActivateForm : Form
-{
-    protected override bool ShowWithoutActivation
-    {
-        get { return true; }
-    }
-
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            CreateParams cp = base.CreateParams;
-            cp.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE
-            return cp;
-        }
-    }
-}
-"@
-
-$form = New-Object ScriberNoActivateForm
+$form = New-Object System.Windows.Forms.Form
 $form.Text = $Title
 $form.Width = 900
 $form.Height = 420
@@ -47,7 +25,8 @@ $textbox.AccessibleName = $AutomationId
 
 $form.Controls.Add($textbox)
 $form.Add_Shown({
-    $form.TopMost = $false
+    $form.Activate()
+    $textbox.Focus()
 })
 
 [System.Windows.Forms.Application]::Run($form)
