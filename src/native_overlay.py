@@ -8,6 +8,8 @@ the backend, but the standard backend no longer imports or bundles PySide/Tk.
 from __future__ import annotations
 
 import os
+import threading
+import time
 from typing import Any, Callable, Optional
 
 from loguru import logger
@@ -15,6 +17,7 @@ from loguru import logger
 from src.runtime.shell_ipc import available as shell_ipc_available, call_shell_ipc
 
 _DISABLE_TAURI_OVERLAY_ENV = "SCRIBER_DISABLE_TAURI_OVERLAY"
+_OVERLAY_AUDIO_INTERVAL_SECONDS = 1.0 / 20.0
 
 
 def _tauri_overlay_enabled() -> bool:
@@ -22,9 +25,14 @@ def _tauri_overlay_enabled() -> bool:
     return raw not in {"1", "true", "yes", "on"} and shell_ipc_available()
 
 
-def _call_overlay_response(command: str, payload: dict | None = None) -> dict[str, Any]:
+def _call_overlay_response(
+    command: str,
+    payload: dict | None = None,
+    *,
+    log_failure: bool = True,
+) -> dict[str, Any]:
     response = call_shell_ipc(command, payload or {}, timeout_seconds=0.35)
-    if response.get("success") is not True:
+    if log_failure and response.get("success") is not True:
         logger.debug(
             "Tauri overlay command {} failed: {} {}",
             command,
@@ -32,6 +40,86 @@ def _call_overlay_response(command: str, payload: dict | None = None) -> dict[st
             response.get("fallbackReason"),
         )
     return response
+
+
+def _overlay_state_matches(
+    response: dict[str, Any],
+    *,
+    mode: str,
+    visible: bool,
+) -> bool:
+    if response.get("success") is not True:
+        return False
+    payload = response.get("payload")
+    return bool(
+        isinstance(payload, dict)
+        and str(payload.get("mode") or "") == mode
+        and payload.get("visible") is visible
+    )
+
+
+def _show_overlay_mode(mode: str) -> dict[str, Any]:
+    """Make a show transition durable across a transient pipe response loss.
+
+    Windows error 233 can occur after Rust has already applied the command but
+    before Python receives its response. Reconcile the authoritative native
+    state first, then retry only when the transition did not take effect.
+    """
+    response = _call_overlay_response("overlayShow", {"mode": mode})
+    if response.get("success") is True:
+        return response
+    status = _call_overlay_response("overlayStatus")
+    if _overlay_state_matches(status, mode=mode, visible=True):
+        return status
+    return _call_overlay_response("overlayShow", {"mode": mode})
+
+
+class _OverlayAudioLevelPump:
+    """Coalesce RMS updates onto a low-rate native overlay fallback channel."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._latest: float | None = None
+        self._worker: threading.Thread | None = None
+
+    def publish(self, rms: float) -> None:
+        level = max(0.0, min(1.0, float(rms)))
+        with self._lock:
+            self._latest = level
+            worker = self._worker
+            if worker is None or not worker.is_alive():
+                worker = threading.Thread(
+                    target=self._run,
+                    name="scriber-overlay-audio",
+                    daemon=True,
+                )
+                self._worker = worker
+                worker.start()
+            self._wake.set()
+
+    def _run(self) -> None:
+        last_sent_at = 0.0
+        while True:
+            self._wake.wait()
+            delay = _OVERLAY_AUDIO_INTERVAL_SECONDS - (time.monotonic() - last_sent_at)
+            if delay > 0:
+                time.sleep(delay)
+            with self._lock:
+                level = self._latest
+                self._latest = None
+                self._wake.clear()
+            if level is None:
+                continue
+            _call_overlay_response(
+                "overlayAudioLevel",
+                {"rms": level},
+                log_failure=False,
+            )
+            last_sent_at = time.monotonic()
+
+
+_audio_level_pump = _OverlayAudioLevelPump()
 
 
 class RecordingOverlay:
@@ -58,17 +146,17 @@ class RecordingOverlay:
 
     def show(self) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            return _call_overlay_response("overlayShow", {"mode": "recording"})
+            return _show_overlay_mode("recording")
         return None
 
     def show_initializing(self) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            return _call_overlay_response("overlayShow", {"mode": "initializing"})
+            return _show_overlay_mode("initializing")
         return None
 
     def show_transcribing(self) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            return _call_overlay_response("overlayShow", {"mode": "transcribing"})
+            return _show_overlay_mode("transcribing")
         return None
 
     def hide(self) -> dict[str, Any] | None:
@@ -78,9 +166,10 @@ class RecordingOverlay:
 
     def update_audio_level(self, rms: float) -> None:
         if _tauri_overlay_enabled():
-            # The Tauri overlay subscribes to the backend WebSocket for audio
-            # levels, avoiding a 60 Hz named-pipe hop.
-            return
+            # WebSocket remains the primary 60 Hz path. This coalesced 20 Hz
+            # native event is a resilient fallback while the overlay WebView is
+            # connecting or recovering, and never blocks the audio reader.
+            _audio_level_pump.publish(rms)
 
 
 _overlay: Optional[RecordingOverlay] = None

@@ -72,7 +72,7 @@ import type {
   SettingsResponse,
   SettingsUpdatePayload,
 } from "@/lib/api-types";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, OUTLOOK_SYNC_REQUEST_TIMEOUT_MS } from "@/lib/queryClient";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
@@ -1336,7 +1336,12 @@ export default function Settings() {
     mutationFn: async (action: "connect" | "sync" | "disconnect") => {
       const response = action === "disconnect"
         ? await apiRequest("DELETE", "/api/calendar/outlook")
-        : await apiRequest("POST", `/api/calendar/outlook/${action}`, action === "connect" ? { openBrowser: true } : undefined);
+        : await apiRequest(
+          "POST",
+          `/api/calendar/outlook/${action}`,
+          action === "connect" ? { openBrowser: true } : undefined,
+          action === "sync" ? { timeoutMs: OUTLOOK_SYNC_REQUEST_TIMEOUT_MS } : undefined,
+        );
       return response.json() as Promise<OutlookCalendarSyncResponse | Record<string, unknown>>;
     },
     onSuccess: (_result, action) => {
@@ -2937,7 +2942,7 @@ export default function Settings() {
       await updateSettings({ segmentSpeechWithVad: enabled });
       toast({
         title: "Saved",
-        description: enabled ? "VAD speech segmentation enabled." : "VAD speech segmentation disabled.",
+        description: enabled ? "Silero voice detection enabled." : "Silero voice detection disabled.",
         duration: 2000,
       });
     } catch (e: any) {
@@ -3669,8 +3674,8 @@ export default function Settings() {
                 </SettingLine>
 
                 <SettingLine
-                  label="Segment speech pauses"
-                  description="Use Silero VAD to split long live recordings at pauses."
+                  label="Silero voice detection"
+                  description="Optional. Detect pauses for segmented live transcription and Soniox SmartTurn. When off, Silero is not loaded and the recording is transcribed as one continuous segment."
                 >
                   <Switch checked={segmentSpeechWithVad} onCheckedChange={handleSegmentSpeechWithVadChange} />
                 </SettingLine>

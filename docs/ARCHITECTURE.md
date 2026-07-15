@@ -1025,15 +1025,16 @@ identifiers. OpenAI live dictation uses Pipecat's OpenAI Realtime STT service
 with `gpt-realtime-whisper`; full recording/file OpenAI transcription is
 exposed through the dedicated `openai_async` direct adapter.
 
-Pipecat/Silero VAD has two separate live-mic roles. It remains enabled as a
-speech gate where needed so silent recordings can be cancelled locally without
-provider finalization or audio upload. Mid-recording VAD segmentation for
-HTTP-style live STT providers is opt-in through `SCRIBER_SEGMENT_SPEECH_WITH_VAD`
-and the Settings toggle; by default Scriber opens one recording-wide segment
-and closes it when the user stops recording. When the user presses the hotkey
-while a live streaming provider is still inside an active VAD speech turn,
-Scriber pushes a final `VADUserStoppedSpeakingFrame` before pipeline shutdown so
-Deepgram and ElevenLabs can finalize/commit the last transcript. Mistral Live is
+Pipecat/Silero VAD is opt-in through `SCRIBER_SEGMENT_SPEECH_WITH_VAD` and the
+Settings toggle. When disabled, Live Mic neither loads nor attaches Silero;
+HTTP-style providers receive one synthetic recording-wide turn that closes on
+stop, and Soniox SmartTurn is disabled for that session. When enabled, Silero
+may segment HTTP-style providers at pauses, skip confirmed silent sessions, and
+provide the explicit turn boundaries required by Soniox SmartTurn. If the user
+presses the hotkey while a live streaming provider is still inside an active
+VAD speech turn, Scriber pushes a final `VADUserStoppedSpeakingFrame` before
+pipeline shutdown so Deepgram and ElevenLabs can finalize/commit the last
+transcript. Mistral Live is
 currently a segment-finalized Voxtral transcription path because the bundled
 Pipecat runtime does not expose a Mistral realtime service; if an installed
 configuration still points `SCRIBER_MISTRAL_RT_MODEL` at Mistral's

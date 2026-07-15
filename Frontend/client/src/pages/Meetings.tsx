@@ -38,7 +38,7 @@ import {
   X,
 } from "lucide-react";
 import { apiUrl } from "@/lib/backend";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, OUTLOOK_SYNC_REQUEST_TIMEOUT_MS } from "@/lib/queryClient";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import {
   meetingExportFolderName,
@@ -937,7 +937,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   });
   const outlookSyncMutation = useMutation({
     mutationFn: async () => {
-      const response = await apiRequest("POST", "/api/calendar/outlook/sync");
+      const response = await apiRequest(
+        "POST",
+        "/api/calendar/outlook/sync",
+        undefined,
+        { timeoutMs: OUTLOOK_SYNC_REQUEST_TIMEOUT_MS },
+      );
       return response.json() as Promise<OutlookCalendarSyncResponse>;
     },
     onSuccess: (status) => {

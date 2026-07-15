@@ -1393,6 +1393,29 @@ async def test_update_settings_toggles_idle_mic_prewarm(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_update_settings_disabling_vad_discards_unused_silero_warmup(
+    monkeypatch,
+    tmp_path,
+):
+    from src.pipeline import _AnalyzerCache
+
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "SEGMENT_SPEECH_WITH_VAD", True, raising=False)
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", MagicMock())
+    discard_mock = MagicMock()
+    monkeypatch.setattr(_AnalyzerCache, "discard_vad_cache", discard_mock)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    settings = await ctl.update_settings({"segmentSpeechWithVad": False})
+
+    assert settings["segmentSpeechWithVad"] is False
+    assert web_api.Config.SEGMENT_SPEECH_WITH_VAD is False
+    discard_mock.assert_called_once_with()
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_update_settings_ignores_invalid_mic_always_on_type(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")

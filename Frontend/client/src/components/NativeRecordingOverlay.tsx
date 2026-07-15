@@ -27,6 +27,8 @@ type OverlayEventPayload = {
   renderer?: string;
   mode?: string;
   visible?: boolean;
+  rms?: number;
+  lastRms?: number;
 };
 
 const WAVEFORM_CANVAS_WIDTH = 162;
@@ -358,6 +360,9 @@ export default function NativeRecordingOverlay() {
     let receivedNativeEvent = false;
     void listen<OverlayEventPayload>("scriber-overlay-state", (event) => {
       receivedNativeEvent = true;
+      if (Number.isFinite(event.payload.rms)) {
+        rmsRef.current = Math.min(1, Math.max(0, Number(event.payload.rms)));
+      }
       setMode(modeFromNativeOverlayState(event.payload));
     })
       .then(async (cleanup) => {
@@ -373,6 +378,9 @@ export default function NativeRecordingOverlay() {
         try {
           const { invoke } = await import("@tauri-apps/api/core");
           const snapshot = await invoke<OverlayEventPayload>("native_overlay_renderer_ready");
+          if (!disposed && Number.isFinite(snapshot.lastRms)) {
+            rmsRef.current = Math.min(1, Math.max(0, Number(snapshot.lastRms)));
+          }
           if (!disposed && !receivedNativeEvent) {
             setMode(modeFromNativeOverlayState(snapshot));
           }

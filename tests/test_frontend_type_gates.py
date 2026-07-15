@@ -1984,8 +1984,14 @@ def test_outlook_disconnect_and_speaker_assignments_require_explicit_confirmatio
 
 
 def test_settings_outlook_sync_refreshes_authoritative_status_and_daily_events() -> None:
+    query_client = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "queryClient.ts"
+    ).read_text(encoding="utf-8")
     settings = (
         REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+    meetings = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx"
     ).read_text(encoding="utf-8")
     mutation = settings[
         settings.index("const outlookMutation = useMutation") :
@@ -2002,6 +2008,13 @@ def test_settings_outlook_sync_refreshes_authoritative_status_and_daily_events()
     assert 'type: "active"' in sync_success
     assert "queryClient.invalidateQueries" in sync_success
     assert 'queryKey: ["/api/calendar/outlook/events"]' in sync_success
+    assert "OUTLOOK_SYNC_REQUEST_TIMEOUT_MS = 70_000" in query_client
+    assert "options.timeoutMs ?? DEFAULT_API_REQUEST_TIMEOUT_MS" in query_client
+    assert (
+        'action === "sync" ? { timeoutMs: OUTLOOK_SYNC_REQUEST_TIMEOUT_MS } : undefined'
+        in mutation
+    )
+    assert "{ timeoutMs: OUTLOOK_SYNC_REQUEST_TIMEOUT_MS }" in meetings
 
 
 def test_meeting_copy_uses_plain_outcome_focused_language() -> None:

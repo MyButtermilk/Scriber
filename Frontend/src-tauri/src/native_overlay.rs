@@ -162,6 +162,9 @@ fn show_overlay_mode(mode: String) -> Result<Value, String> {
     let event_payload = update_state(|state| {
         state.mode = mode.clone();
         state.visible = true;
+        if state.mode == "recording" {
+            state.last_rms = 0.0;
+        }
         OverlayEventPayload {
             api_version: "1",
             renderer: "tauri-webview",
@@ -237,6 +240,32 @@ fn hide_overlay() -> Result<Value, String> {
     Ok(status_payload())
 }
 
+#[cfg(not(test))]
+fn record_audio_level(payload: &Value) -> Result<Value, String> {
+    let rms = payload
+        .get("rms")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+    let event_payload = update_state(|state| {
+        state.last_rms = rms;
+        OverlayEventPayload {
+            api_version: "1",
+            renderer: "tauri-webview",
+            mode: state.mode.clone(),
+            visible: state.visible,
+            rms: Some(rms),
+        }
+    });
+    if let Ok(app) = overlay_app_handle() {
+        // The state snapshot remains authoritative even if a renderer is still
+        // mounting and cannot receive this best-effort event yet.
+        let _ = app.emit_to(OVERLAY_WINDOW_LABEL, OVERLAY_EVENT, event_payload);
+    }
+    Ok(status_payload())
+}
+
+#[cfg(test)]
 fn record_audio_level(payload: &Value) -> Result<Value, String> {
     let rms = payload
         .get("rms")

@@ -83,15 +83,17 @@ Live mic:
 - Rust/WASAPI sidecar capture is now the standard live-mic capture path.
 - Always-On-Mic uses the Rust prewarm manager and can prepend adopted sidecar
   prebuffer frames when recording starts.
-- Async/finalizing live mic providers run Pipecat Silero VAD in the input
-  pipeline and can skip provider upload/finalization when no speech was
-  detected and the RMS silence gate also stayed quiet.
+- Live mic attaches Pipecat Silero VAD only when the Settings opt-in is enabled.
+  With VAD off, HTTP-style providers receive one synthetic recording-wide turn
+  and no Silero model is loaded or replenished.
 - Device-name/favorite resolution has a short TTL cache.
 - Device refresh is deferred while a recording stream is active.
 - Audio-level UI work is throttled to about 60 Hz.
 - Live waveform uses Canvas/RAF instead of per-frame React state.
-- The recording overlay WebView is created lazily on first show instead of at
-  app startup; hidden overlays do not keep their own WebSocket connection.
+- The recording overlay is prepared hidden so the first hotkey has immediate
+  visual feedback. WebSocket audio levels remain the primary 60 Hz path; a
+  coalesced 20 Hz native event fallback keeps the waveform responsive while the
+  WebView connects or recovers without blocking the audio reader.
 - Overlay and live mic visualizers cap drawing to about 30 FPS and keep audio
   level updates out of React state where practical.
 

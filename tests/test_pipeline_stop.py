@@ -32,6 +32,8 @@ from src.pipeline import (
     SonioxAsyncProcessor,
     TranscriptionCallbackProcessor,
     _format_speaker_transcript_tokens,
+    _live_analyzer_requirements,
+    _live_recording_gate_needed,
     _ordered_live_pipeline_steps,
     direct_file_workflow_timeout_seconds,
 )
@@ -42,6 +44,46 @@ def test_microphone_transport_has_no_silently_ignored_analyzer_arguments():
 
     assert "vad_analyzer" not in parameters
     assert "turn_analyzer" not in parameters
+
+
+def test_live_analyzer_requirements_respect_disabled_vad_setting(monkeypatch):
+    monkeypatch.setattr(Config, "SEGMENT_SPEECH_WITH_VAD", False)
+    monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
+
+    assert _live_analyzer_requirements("azure_mai") == (False, False)
+    assert _live_analyzer_requirements("deepgram", segmented_service=True) == (
+        False,
+        False,
+    )
+    assert _live_analyzer_requirements("soniox") == (False, False)
+
+
+def test_live_analyzer_requirements_enable_only_requested_paths(monkeypatch):
+    monkeypatch.setattr(Config, "SEGMENT_SPEECH_WITH_VAD", True)
+    monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
+
+    assert _live_analyzer_requirements("azure_mai") == (True, False)
+    assert _live_analyzer_requirements("soniox") == (True, True)
+
+
+def test_live_recording_gate_preserves_one_turn_without_vad(monkeypatch):
+    monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
+
+    assert _live_recording_gate_needed(
+        "azure_mai",
+        segmented_service=False,
+        vad_attached=False,
+    ) is True
+    assert _live_recording_gate_needed(
+        "deepgram",
+        segmented_service=False,
+        vad_attached=True,
+    ) is False
+    assert _live_recording_gate_needed(
+        "soniox",
+        segmented_service=False,
+        vad_attached=False,
+    ) is False
 
 
 def test_analyzer_warmup_instances_are_claimed_once_per_session(monkeypatch):

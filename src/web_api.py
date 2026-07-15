@@ -11170,6 +11170,13 @@ class ScriberWebController:
         segment_speech_with_vad = _payload_bool(payload, "segmentSpeechWithVad")
         if segment_speech_with_vad is not None:
             Config.set_segment_speech_with_vad(segment_speech_with_vad)
+            if not segment_speech_with_vad:
+                # A disabled Settings switch must also release a startup warmup;
+                # otherwise Silero remains resident even though no live pipeline
+                # is allowed to attach it.
+                from src.pipeline import _AnalyzerCache
+
+                _AnalyzerCache.discard_vad_cache()
 
         debug_enabled = _payload_bool(payload, "debug")
         if debug_enabled is not None:
@@ -17528,9 +17535,15 @@ async def _background_init(controller: ScriberWebController) -> None:
     async def _prewarm_models() -> None:
         try:
             def _warm_analyzers() -> None:
-                from src.pipeline import _AnalyzerCache
+                from src.pipeline import _AnalyzerCache, _live_analyzer_requirements
 
-                _AnalyzerCache.prewarm()
+                needs_vad, uses_smart_turn = _live_analyzer_requirements(
+                    Config.DEFAULT_STT_SERVICE
+                )
+                _AnalyzerCache.prewarm(
+                    include_vad=needs_vad,
+                    include_smart_turn=uses_smart_turn,
+                )
 
             await asyncio.to_thread(_warm_analyzers)
             logger.info("One-shot ML analyzer warmup ready (first recording will start faster)")

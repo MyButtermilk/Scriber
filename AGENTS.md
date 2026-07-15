@@ -371,6 +371,11 @@ Packaging and scripts:
   delta API does not support. Validate every pagination URL, stage every page,
   and commit events plus the final delta cursor atomically so a failed or
   interrupted multi-page sync cannot expose a partial day or advance its cursor.
+- Manual Outlook refresh uses a 70-second WebView request deadline in both
+  Meetings and Settings. It must remain longer than the backend's bounded
+  60-second Graph sync plus its final credential-backed status read; do not send
+  this operation through the generic 30-second API deadline, which can report a
+  false failure while the backend successfully commits the new delta cursor.
 - `/me` is the account identity boundary. Preserve both `mail` and
   `userPrincipalName` as normalized aliases so the connected user is recognized
   even when an invitation uses the other address. Never expose access or refresh
@@ -600,13 +605,14 @@ Packaging and scripts:
   diarization. Keep `enable_speaker_diarization=False` for live pipelines so
   single-speaker dictation inserts plain text. File and YouTube jobs may enable
   diarization where the provider adapter has stable anonymous speaker output.
-- Keep Silero/Pipecat VAD speech gating separate from mid-recording speech
-  segmentation. VAD may be used by default to skip silent live recordings before
-  provider finalization/upload. Pause-based segmentation for HTTP-style
-  segmented live STT providers is opt-in via `SCRIBER_SEGMENT_SPEECH_WITH_VAD`
-  and the Settings toggle; the default live behavior is one recording-wide
-  segment flushed on stop. In Settings, keep those HTTP-style live providers in
-  the cloud async/batch group rather than a separate segmented provider group.
+- Keep Silero/Pipecat VAD opt-in through `SCRIBER_SEGMENT_SPEECH_WITH_VAD` and
+  the Settings toggle. When disabled, Live Mic must not construct, attach, or
+  replenish a Silero analyzer; HTTP-style providers use one synthetic
+  recording-wide segment flushed on stop, and Soniox SmartTurn is disabled for
+  that session. When enabled, VAD may split HTTP-style live STT at pauses and
+  provide explicit turn boundaries to Soniox SmartTurn. In Settings, keep those
+  HTTP-style live providers in the cloud async/batch group rather than a
+  separate segmented provider group.
 - Live microphone post-processing is opt-in per session through the second
   hotkey. When active, suppress pipeline raw-text injection, wait for final STT
   text after stop, run the configured LLM prompt with the `${output}` raw text

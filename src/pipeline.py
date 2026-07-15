@@ -95,14 +95,23 @@ class _AnalyzerCache:
     _refill_in_progress = False
 
     @classmethod
-    def prewarm(cls) -> None:
-        """Create at most one unclaimed analyzer of each available type."""
+    def prewarm(
+        cls,
+        *,
+        include_vad: bool = True,
+        include_smart_turn: bool = True,
+    ) -> None:
+        """Create at most one requested, unclaimed analyzer of each type."""
         with cls._lock:
             needs_vad = bool(
-                HAS_SILERO_VAD and SileroVADAnalyzer and cls._vad_analyzer is None
+                include_vad
+                and HAS_SILERO_VAD
+                and SileroVADAnalyzer
+                and cls._vad_analyzer is None
             )
             needs_smart_turn = bool(
-                HAS_SMART_TURN
+                include_smart_turn
+                and HAS_SMART_TURN
                 and LocalSmartTurnAnalyzerV3
                 and cls._smart_turn_analyzer is None
             )
@@ -126,14 +135,23 @@ class _AnalyzerCache:
                 cls._smart_turn_analyzer = smart_turn_analyzer
 
     @classmethod
-    def request_background_replenish(cls) -> bool:
+    def request_background_replenish(
+        cls,
+        *,
+        include_vad: bool = True,
+        include_smart_turn: bool = True,
+    ) -> bool:
         """Refill empty warm slots on a daemon thread after session teardown."""
         with cls._lock:
             needs_vad = bool(
-                HAS_SILERO_VAD and SileroVADAnalyzer and cls._vad_analyzer is None
+                include_vad
+                and HAS_SILERO_VAD
+                and SileroVADAnalyzer
+                and cls._vad_analyzer is None
             )
             needs_smart_turn = bool(
-                HAS_SMART_TURN
+                include_smart_turn
+                and HAS_SMART_TURN
                 and LocalSmartTurnAnalyzerV3
                 and cls._smart_turn_analyzer is None
             )
@@ -143,7 +161,10 @@ class _AnalyzerCache:
 
         def refill() -> None:
             try:
-                cls.prewarm()
+                cls.prewarm(
+                    include_vad=include_vad,
+                    include_smart_turn=include_smart_turn,
+                )
             except Exception as exc:
                 logger.debug(f"Analyzer warmup refill failed: {exc}")
             finally:
@@ -199,6 +220,13 @@ class _AnalyzerCache:
             cls._smart_turn_analyzer = None
             logger.debug("Unclaimed analyzer warmup cache cleared")
 
+    @classmethod
+    def discard_vad_cache(cls) -> None:
+        """Release an unused Silero warmup when the user disables VAD."""
+        with cls._lock:
+            cls._vad_analyzer = None
+        logger.debug("Unclaimed Silero VAD warmup cache cleared")
+
 
 def _live_service_uses_async_finalization(service_name: str) -> bool:
     normalized = str(service_name or "")
@@ -227,6 +255,42 @@ def _live_service_needs_local_vad(service_name: str) -> bool:
 
 def _live_service_uses_smart_turn(service_name: str) -> bool:
     return str(service_name or "") == "soniox" and Config.SONIOX_MODE == "realtime"
+
+
+def _live_analyzer_requirements(
+    service_name: str,
+    *,
+    segmented_service: bool = False,
+    provider_replay: bool = False,
+) -> tuple[bool, bool]:
+    """Return ``(needs_vad, uses_smart_turn)`` for one Live Mic session."""
+    vad_enabled = bool(Config.SEGMENT_SPEECH_WITH_VAD)
+    uses_smart_turn = bool(
+        vad_enabled
+        and (provider_replay or _live_service_uses_smart_turn(service_name))
+    )
+    needs_vad = bool(
+        vad_enabled
+        and (
+            segmented_service
+            or _live_service_needs_local_vad(service_name)
+            or uses_smart_turn
+        )
+    )
+    return needs_vad, uses_smart_turn
+
+
+def _live_recording_gate_needed(
+    service_name: str,
+    *,
+    segmented_service: bool,
+    vad_attached: bool,
+) -> bool:
+    """Preserve one provider turn when no local VAD processor is attached."""
+    return bool(
+        segmented_service
+        or (not vad_attached and _live_service_needs_local_vad(service_name))
+    )
 
 
 def _analyzer_warmup_enabled() -> bool:
@@ -1374,8 +1438,8 @@ class SegmentedSTTRecordingGate(FrameProcessor):
     HTTP-style Pipecat STT services such as Groq/OpenAI/ElevenLabs/Mistral use
     VADUserStarted/VADUserStopped frames to decide when to upload buffered audio. By
     default Scriber keeps one recording-wide segment so the stop hotkey
-    transcribes the whole dictation. VAD frames are still observed before this
-    gate for silent-session skips.
+    transcribes the whole dictation. When VAD is disabled, this gate creates the
+    required start/stop frames itself without loading a local analyzer.
     """
 
     def __init__(self, *, vad_segmentation_enabled: bool):
@@ -1906,7 +1970,11 @@ class ScriberPipeline:
 
     async def _flush_live_vad_finalization_turn(self) -> bool:
         """Finalize a live streaming turn when the hotkey stops while speech is active."""
-        if not self.pipeline or not _live_service_needs_local_vad(self.service_name):
+        if (
+            not self.pipeline
+            or self._vad_observer is None
+            or not _live_service_needs_local_vad(self.service_name)
+        ):
             return False
         if self._has_segmented_stt_buffers():
             return False
@@ -2498,18 +2566,15 @@ class ScriberPipeline:
                 stt_service = self._create_stt_service(session)
 
                 vad_analyzer = None
-                # VAD is needed for:
-                # 1. SegmentedSTTService silence-gating and optional mid-recording segmentation.
-                # 2. Async live providers so silent recordings can be ended locally.
-                # 3. Soniox SmartTurn, which consumes explicit Pipecat VAD boundaries.
-                uses_smart_turn = (
-                    self.soniox_replay_url is not None
-                    or _live_service_uses_smart_turn(self.service_name)
-                )
-                needs_vad = (
-                    isinstance(stt_service, SegmentedSTTService)
-                    or _live_service_needs_local_vad(self.service_name)
-                    or uses_smart_turn
+                # The Settings switch is the master opt-in for local Silero VAD.
+                # When it is off, HTTP-style services still receive one synthetic
+                # recording-wide turn from SegmentedSTTRecordingGate, while async
+                # services finalize normally on stop. Soniox SmartTurn depends on
+                # the same explicit VAD boundaries and is therefore disabled too.
+                needs_vad, uses_smart_turn = _live_analyzer_requirements(
+                    self.service_name,
+                    segmented_service=isinstance(stt_service, SegmentedSTTService),
+                    provider_replay=self.soniox_replay_url is not None,
                 )
                     
                 if needs_vad:
@@ -2613,11 +2678,20 @@ class ScriberPipeline:
                     on_provider_error=self._record_terminal_error,
                 )
 
+                # Providers that normally consume local VAD boundaries still
+                # need one deterministic turn when Silero is off. The same gate
+                # synthesizes that recording-wide start/stop pair, preserving
+                # provider finalization without loading a model.
+                needs_recording_gate = _live_recording_gate_needed(
+                    self.service_name,
+                    segmented_service=isinstance(stt_service, SegmentedSTTService),
+                    vad_attached=needs_vad,
+                )
                 segmented_gate = (
                     SegmentedSTTRecordingGate(
                         vad_segmentation_enabled=bool(Config.SEGMENT_SPEECH_WITH_VAD)
                     )
-                    if isinstance(stt_service, SegmentedSTTService)
+                    if needs_recording_gate
                     else None
                 )
 
@@ -2690,7 +2764,14 @@ class ScriberPipeline:
             # completed teardown. The cleaned session analyzers stay owned by
             # the old pipeline and are never returned to this warmup pool.
             if _analyzer_warmup_enabled():
-                _AnalyzerCache.request_background_replenish()
+                needs_vad, uses_smart_turn = _live_analyzer_requirements(
+                    self.service_name,
+                    provider_replay=self.soniox_replay_url is not None,
+                )
+                _AnalyzerCache.request_background_replenish(
+                    include_vad=needs_vad,
+                    include_smart_turn=uses_smart_turn,
+                )
             self._start_done.set()
 
     async def _cleanup_aborted_file_pipeline(
