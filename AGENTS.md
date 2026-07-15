@@ -498,7 +498,15 @@ Packaging and scripts:
 - Do not add Pipecat's `local-smart-turn` extra to the standard sidecar: in
   Pipecat 1.5 it pulls Torch, Torchaudio, and Transformers. SmartTurn remains
   optional; import `LocalSmartTurnAnalyzerV3` directly and do not couple it to
-  the removed `pipecat.processors.user_idle_processor` module. The standard
+  the removed `pipecat.processors.user_idle_processor` module. Pipecat 1.5
+  `TransportParams` does not own VAD or turn analyzers: live pipelines must wire
+  an explicit `VADProcessor`, and Soniox SmartTurn must use an explicit
+  `UserTurnProcessor` after STT so it receives audio, VAD boundaries, and final
+  transcript frames. Analyzer instances are session-owned; a startup-warmed
+  instance may be claimed once but must never return to a global cache after
+  processor cleanup. When model prewarming is enabled, replenish empty warmup
+  slots in the background only after the prior pipeline and capture have torn
+  down, using newly constructed instances. The standard
   recording path uses bundled Silero VAD and ONNX runtimes without those
   heavyweight dependencies.
 - Meeting Smart Turn is an optional microphone-preview boundary refinement. It
@@ -1137,6 +1145,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
   -SkipChecks `
   -SkipSmoke
 ```
+
+`-FastLocalStagedApp` must finish by writing
+`scriber-autoresearch-runtime-attestation.json` into the staged release root.
+The attestation binds the current Git worktree digest to the final desktop,
+backend, and audio-sidecar hashes, sizes, and native versions. FastLocal Doctor,
+profile, and scoring must fail closed when it is missing or stale. Do not
+retroactively attest an older candidate after unrelated source or binary
+changes, and do not reintroduce full local paths or hardware inventory into the
+tracked benchmark profile.
 
 Broader installed workflow smoke when provider credentials and network are
 available:

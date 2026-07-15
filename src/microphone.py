@@ -960,8 +960,6 @@ class MicrophoneInput(BaseInputTransport):
         sample_rate=16000,
         channels=1,
         block_size=512,
-        turn_analyzer=None,
-        vad_analyzer=None,
         device="default",
         keep_alive=False,
         prewarm_manager=None,
@@ -974,8 +972,6 @@ class MicrophoneInput(BaseInputTransport):
             audio_in_sample_rate=sample_rate,
             audio_in_channels=channels,
             audio_in_passthrough=True,
-            turn_analyzer=turn_analyzer,
-            vad_analyzer=vad_analyzer,
         )
         super().__init__(params=params)
         self._target_sample_rate = sample_rate

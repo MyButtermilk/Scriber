@@ -31,6 +31,7 @@ tmp/
 /artifacts/
 /oracle-cache-investigation-*/
 /benchmarks/results/raw/
+/benchmarks/results/profile.json
 /settings-layout-final-balanced.png
 /docs/*.inspect.ndjson
 /GOAL.md

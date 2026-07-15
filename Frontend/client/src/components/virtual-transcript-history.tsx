@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Loader2 } from "lucide-react";
+import {
+  calculateHistoryGridColumns,
+  calculateHistoryRowTranslateY,
+  calculateHistoryScrollMargin,
+} from "@/lib/virtual-transcript-history-layout";
 import { cn } from "@/lib/utils";
 
 type ViewMode = "list" | "grid";
@@ -43,14 +48,6 @@ type VirtualRow<TItem> =
       items: VirtualItem<TItem>[];
     };
 
-const GRID_GAP_PX = 16;
-const DEFAULT_MIN_GRID_COLUMN_WIDTH = 210;
-
-function calculateGridColumns(width: number) {
-  if (width <= 0) return 1;
-  return Math.max(1, Math.floor((width + GRID_GAP_PX) / (DEFAULT_MIN_GRID_COLUMN_WIDTH + GRID_GAP_PX)));
-}
-
 function defaultGroupHeader(group: TranscriptHistoryGroup, itemCount: number) {
   return (
     <div className="flex items-baseline gap-2 px-1 pb-3 pt-2">
@@ -83,9 +80,10 @@ export function VirtualTranscriptHistory<TItem>({
   const loadInFlightRef = useRef(false);
   const [containerWidth, setContainerWidth] = useState(0);
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
 
   const gridColumns = useMemo(
-    () => (viewMode === "grid" ? calculateGridColumns(containerWidth) : 1),
+    () => (viewMode === "grid" ? calculateHistoryGridColumns(containerWidth) : 1),
     [containerWidth, viewMode],
   );
 
@@ -134,19 +132,39 @@ export function VirtualTranscriptHistory<TItem>({
   }, [getItemGroup, gridColumns, items]);
 
   useLayoutEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    const nextScrollElement = element.closest<HTMLDivElement>("[data-app-scroll-container]");
+
     const updateLayoutMetrics = () => {
-      const element = containerRef.current;
-      if (!element) return;
-      setScrollElement(element.closest<HTMLDivElement>("[data-app-scroll-container]"));
-      setContainerWidth(element.getBoundingClientRect().width);
+      const containerRect = element.getBoundingClientRect();
+      setScrollElement(nextScrollElement);
+      setContainerWidth(containerRect.width);
+      setScrollMargin(
+        nextScrollElement
+          ? calculateHistoryScrollMargin(
+              containerRect.top,
+              nextScrollElement.getBoundingClientRect().top,
+              nextScrollElement.scrollTop,
+            )
+          : 0,
+      );
     };
 
     updateLayoutMetrics();
     window.addEventListener("resize", updateLayoutMetrics);
     const observer = new ResizeObserver(updateLayoutMetrics);
-    if (containerRef.current) {
-      observer.observe(containerRef.current);
+
+    // A shared outer scroller means the list origin moves whenever content
+    // before it changes height. Observe the ancestor chain so that origin is
+    // refreshed without doing layout work on every scroll event.
+    let layoutElement: HTMLElement | null = element;
+    while (layoutElement) {
+      observer.observe(layoutElement);
+      if (layoutElement === nextScrollElement) break;
+      layoutElement = layoutElement.parentElement;
     }
+
     return () => {
       window.removeEventListener("resize", updateLayoutMetrics);
       observer.disconnect();
@@ -162,6 +180,7 @@ export function VirtualTranscriptHistory<TItem>({
       return viewMode === "grid" ? estimateGridRowHeight : estimateListRowHeight;
     },
     overscan: 6,
+    scrollMargin,
     getItemKey: (index) => {
       const row = rows[index];
       if (!row) return index;
@@ -252,7 +271,7 @@ export function VirtualTranscriptHistory<TItem>({
                 left: 0,
                 position: "absolute",
                 top: 0,
-                transform: `translate3d(0, ${virtualRow.start}px, 0)`,
+                transform: `translate3d(0, ${calculateHistoryRowTranslateY(virtualRow.start, scrollMargin)}px, 0)`,
                 width: "100%",
               }}
             >

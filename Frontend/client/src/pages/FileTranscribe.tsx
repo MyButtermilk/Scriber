@@ -369,14 +369,6 @@ export default function FileTranscribe() {
 
   useTranscriptAutoRefresh({
     queryKey: transcriptsQueryKey,
-    onError: (message) => {
-      toast({
-        title: "Transcription Error",
-        description: message,
-        variant: "destructive",
-        duration: 6000,
-      });
-    },
   });
 
   const uploadFiles = useCallback(async (files: File[]) => {

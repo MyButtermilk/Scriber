@@ -285,7 +285,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
 
 This produces a staged `target\release\scriber-desktop.exe` plus sidecars,
 records `buildMode.artifactKind=staged-app`, and does not claim installer
-validation.
+validation. A successful staged build also creates the local AutoResearch
+runtime attestation beside the executable. Run FastLocal only against that
+unchanged staged directory: Doctor and the scorer reject missing manifests,
+source changes, or a mismatched desktop, backend, or audio sidecar, even when
+the stale component reports the same semantic version.
 
 Default real YouTube smoke URL:
 

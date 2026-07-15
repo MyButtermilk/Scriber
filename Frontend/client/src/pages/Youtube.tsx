@@ -297,7 +297,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
 });
 
 export default function Youtube() {
-  const [, setLocation] = useLocation();
+  const [location, setLocation] = useLocation();
   const { toast } = useToast();
   const [query, setQuery] = useUrlQueryState("search", "", {
     parse: (raw) => raw ?? "",
@@ -392,14 +392,6 @@ export default function Youtube() {
 
   useTranscriptAutoRefresh({
     queryKey: transcriptsQueryKey,
-    onError: (message) => {
-      toast({
-        title: "Transcription Error",
-        description: message,
-        variant: "destructive",
-        duration: 6000,
-      });
-    },
   });
 
   // Helper to detect if input is a YouTube URL
@@ -508,7 +500,12 @@ export default function Youtube() {
             query.queryKey[0] === "/api/transcripts" &&
             (query.queryKey[1] as { type?: string })?.type === "youtube",
         });
-        setLocation(`/transcript/${rec.id}`);
+        // Stay out of the user's way if they intentionally switched tabs while
+        // the async YouTube start request was still running.
+        const currentPath = typeof window !== "undefined" ? window.location.pathname : location;
+        if (currentPath === "/youtube") {
+          setLocation(`/transcript/${rec.id}`);
+        }
       }
     } catch (e: any) {
       const msg = friendlyError(e, "Failed to start transcription.");

@@ -1,6 +1,7 @@
 import asyncio
 import gc
 import io
+import inspect
 import weakref
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -14,19 +15,194 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
+from pipecat.turns.user_start import VADUserTurnStartStrategy
+from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 from pipecat.transcriptions.language import Language
 from websockets.protocol import State
 
 from src.config import Config
+from src.microphone import MicrophoneInput
+import src.pipeline as pipeline_module
 from src.pipeline import (
+    _AnalyzerCache,
+    _create_soniox_smart_turn_processor,
     PipecatVadSpeechObserver,
     ScriberPipeline,
     SegmentedSTTRecordingGate,
     SonioxAsyncProcessor,
     TranscriptionCallbackProcessor,
     _format_speaker_transcript_tokens,
+    _ordered_live_pipeline_steps,
     direct_file_workflow_timeout_seconds,
 )
+
+
+def test_microphone_transport_has_no_silently_ignored_analyzer_arguments():
+    parameters = inspect.signature(MicrophoneInput.__init__).parameters
+
+    assert "vad_analyzer" not in parameters
+    assert "turn_analyzer" not in parameters
+
+
+def test_analyzer_warmup_instances_are_claimed_once_per_session(monkeypatch):
+    created_vad: list[object] = []
+    created_smart_turn: list[object] = []
+
+    def create_vad():
+        analyzer = object()
+        created_vad.append(analyzer)
+        return analyzer
+
+    def create_smart_turn():
+        analyzer = object()
+        created_smart_turn.append(analyzer)
+        return analyzer
+
+    _AnalyzerCache.clear_cache()
+    monkeypatch.setattr(pipeline_module, "HAS_SILERO_VAD", True)
+    monkeypatch.setattr(pipeline_module, "HAS_SMART_TURN", True)
+    monkeypatch.setattr(pipeline_module, "SileroVADAnalyzer", create_vad)
+    monkeypatch.setattr(pipeline_module, "LocalSmartTurnAnalyzerV3", create_smart_turn)
+
+    try:
+        _AnalyzerCache.prewarm()
+        first_vad = _AnalyzerCache.acquire_vad_analyzer()
+        first_smart_turn = _AnalyzerCache.acquire_smart_turn_analyzer()
+        second_vad = _AnalyzerCache.acquire_vad_analyzer()
+        second_smart_turn = _AnalyzerCache.acquire_smart_turn_analyzer()
+    finally:
+        _AnalyzerCache.clear_cache()
+
+    assert first_vad is created_vad[0]
+    assert second_vad is created_vad[1]
+    assert first_vad is not second_vad
+    assert first_smart_turn is created_smart_turn[0]
+    assert second_smart_turn is created_smart_turn[1]
+    assert first_smart_turn is not second_smart_turn
+
+
+def test_analyzer_warmup_refills_with_new_unclaimed_instances(monkeypatch):
+    created_vad: list[object] = []
+    created_smart_turn: list[object] = []
+
+    def create_vad():
+        analyzer = object()
+        created_vad.append(analyzer)
+        return analyzer
+
+    def create_smart_turn():
+        analyzer = object()
+        created_smart_turn.append(analyzer)
+        return analyzer
+
+    class _ImmediateThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def start(self):
+            self.target()
+
+    _AnalyzerCache.clear_cache()
+    monkeypatch.setattr(pipeline_module, "HAS_SILERO_VAD", True)
+    monkeypatch.setattr(pipeline_module, "HAS_SMART_TURN", True)
+    monkeypatch.setattr(pipeline_module, "SileroVADAnalyzer", create_vad)
+    monkeypatch.setattr(pipeline_module, "LocalSmartTurnAnalyzerV3", create_smart_turn)
+    monkeypatch.setattr(pipeline_module.threading, "Thread", _ImmediateThread)
+
+    try:
+        _AnalyzerCache.prewarm()
+        used_vad = _AnalyzerCache.acquire_vad_analyzer()
+        used_smart_turn = _AnalyzerCache.acquire_smart_turn_analyzer()
+
+        assert _AnalyzerCache.request_background_replenish() is True
+
+        next_vad = _AnalyzerCache.acquire_vad_analyzer()
+        next_smart_turn = _AnalyzerCache.acquire_smart_turn_analyzer()
+    finally:
+        _AnalyzerCache.clear_cache()
+
+    assert next_vad is created_vad[1]
+    assert next_smart_turn is created_smart_turn[1]
+    assert next_vad is not used_vad
+    assert next_smart_turn is not used_smart_turn
+
+
+def test_soniox_smart_turn_uses_explicit_pipecat_1_5_strategies(monkeypatch):
+    analyzer = object()
+    monkeypatch.setattr(
+        _AnalyzerCache,
+        "acquire_smart_turn_analyzer",
+        classmethod(lambda _cls: analyzer),
+    )
+
+    processor = _create_soniox_smart_turn_processor()
+
+    assert processor is not None
+    strategies = processor._user_turn_controller._user_turn_strategies
+    assert len(strategies.start) == 1
+    assert isinstance(strategies.start[0], VADUserTurnStartStrategy)
+    assert len(strategies.stop) == 1
+    assert isinstance(strategies.stop[0], TurnAnalyzerUserTurnStopStrategy)
+    assert strategies.stop[0]._turn_analyzer is analyzer
+    assert strategies.stop[0].wait_for_transcript is True
+
+
+def test_live_processor_order_keeps_segment_gate_before_http_stt_and_smart_turn_after_soniox():
+    audio_input = object()
+    vad_processor = object()
+    vad_observer = object()
+    segmented_gate = object()
+    stt_service = object()
+    smart_turn_processor = object()
+    error_handler = object()
+    transcript_callback = object()
+    text_injector = object()
+
+    segmented_steps = _ordered_live_pipeline_steps(
+        audio_input=audio_input,
+        vad_processor=vad_processor,
+        vad_observer=vad_observer,
+        segmented_gate=segmented_gate,
+        stt_service=stt_service,
+        smart_turn_processor=None,
+        error_handler=error_handler,
+        transcript_callback=transcript_callback,
+        text_injector=text_injector,
+    )
+    soniox_steps = _ordered_live_pipeline_steps(
+        audio_input=audio_input,
+        vad_processor=vad_processor,
+        vad_observer=vad_observer,
+        segmented_gate=None,
+        stt_service=stt_service,
+        smart_turn_processor=smart_turn_processor,
+        error_handler=error_handler,
+        transcript_callback=transcript_callback,
+        text_injector=text_injector,
+    )
+
+    assert segmented_steps == [
+        audio_input,
+        vad_processor,
+        vad_observer,
+        segmented_gate,
+        stt_service,
+        error_handler,
+        transcript_callback,
+        text_injector,
+    ]
+    assert soniox_steps == [
+        audio_input,
+        vad_processor,
+        vad_observer,
+        stt_service,
+        smart_turn_processor,
+        error_handler,
+        transcript_callback,
+        text_injector,
+    ]
 
 
 def test_soniox_token_formatter_preserves_speaker_zero_and_numbers_by_first_appearance():
@@ -609,6 +785,10 @@ async def test_pipecat_1_5_live_factories_match_runtime_signatures(
     service = ScriberPipeline(service_name=service_name)._create_stt_service(object())
     try:
         assert type(service).__name__ == expected_class_name
+        if service_name == "soniox":
+            # SmartTurn sits after Soniox and relies on Pipecat's default audio
+            # passthrough to receive the same InputAudioRawFrames.
+            assert service._audio_passthrough is True
     finally:
         cleanup = getattr(service, "cleanup", None)
         if callable(cleanup):
@@ -1302,6 +1482,27 @@ async def test_pipecat_vad_observer_counts_audio_frames():
     assert snapshot["speechStartedCount"] == 0
     assert snapshot["speechObserved"] is False
     assert len(pushed) == 2
+
+
+@pytest.mark.asyncio
+async def test_pipecat_vad_observer_ignores_upstream_turn_broadcast_duplicates():
+    observer = PipecatVadSpeechObserver(enabled=True)
+    observer.push_frame = AsyncMock()
+
+    await observer.process_frame(
+        VADUserStartedSpeakingFrame(),
+        FrameDirection.DOWNSTREAM,
+    )
+    await observer.process_frame(
+        VADUserStartedSpeakingFrame(),
+        FrameDirection.UPSTREAM,
+    )
+
+    snapshot = observer.snapshot()
+
+    assert snapshot["speechStartedCount"] == 1
+    assert snapshot["speechObserved"] is True
+    assert observer.push_frame.await_count == 2
 
 
 @pytest.mark.asyncio

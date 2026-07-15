@@ -74,6 +74,34 @@ def test_settings_bootstrap_cache_rejects_stale_inflight_results() -> None:
     assert "inflightBootstrap === request" in source
 
 
+def test_settings_put_commits_the_server_response_to_the_global_query_cache() -> None:
+    source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+    update_section = source[
+        source.index("const updateSettings = async") : source.index(
+            "const saveCustomVocabulary"
+        )
+    ]
+
+    parsed_response = (
+        "const updatedSettings = (await res.json()) as SettingsResponse;"
+    )
+    cache_write = (
+        'queryClient.setQueryData<SettingsResponse>(["/api/settings"], updatedSettings);'
+    )
+    bootstrap_invalidation = "invalidateSettingsBootstrap();"
+    returned_response = "return updatedSettings;"
+
+    assert parsed_response in update_section
+    assert cache_write in update_section
+    assert bootstrap_invalidation in update_section
+    assert returned_response in update_section
+    assert update_section.index(parsed_response) < update_section.index(cache_write)
+    assert update_section.index(cache_write) < update_section.index(bootstrap_invalidation)
+    assert update_section.index(bootstrap_invalidation) < update_section.index(returned_response)
+
+
 def test_history_and_command_requests_are_abortable_and_deadlined() -> None:
     history_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-transcript-history-query.ts"
@@ -554,7 +582,10 @@ def test_live_mic_history_uses_snippets_period_sections_and_stable_virtual_rows(
     assert 'label: "Last week"' in period_source
     assert 'label: "Last month"' in period_source
     assert 'label: "Older"' in period_source
-    assert "translate3d(0, ${virtualRow.start}px, 0)" in virtual_source
+    assert (
+        "translate3d(0, ${calculateHistoryRowTranslateY(virtualRow.start, scrollMargin)}px, 0)"
+        in virtual_source
+    )
     assert "layoutId=" not in virtual_source
     assert "AnimatePresence" not in virtual_source
 
@@ -764,6 +795,28 @@ def test_youtube_sorting_and_failed_retry_use_client_state_and_source_url() -> N
     assert "void retryYoutubeTranscription();" in detail_source
 
 
+def test_youtube_async_start_only_navigates_while_the_user_is_still_on_youtube() -> None:
+    source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Youtube.tsx"
+    ).read_text(encoding="utf-8")
+    start_section = source[
+        source.index("const startTranscription = async") : source.index(
+            "const deleteTranscript"
+        )
+    ]
+
+    assert "const [location, setLocation] = useLocation();" in source
+    assert (
+        'const currentPath = typeof window !== "undefined" ? '
+        "window.location.pathname : location;"
+    ) in start_section
+    assert (
+        'if (currentPath === "/youtube") {\n'
+        "          setLocation(`/transcript/${rec.id}`);\n"
+        "        }"
+    ) in start_section
+
+
 def test_file_upload_progress_uses_route_persistent_store_before_server_processing() -> None:
     page_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "FileTranscribe.tsx").read_text(
         encoding="utf-8"
@@ -835,6 +888,36 @@ def test_page_refresh_hook_does_not_duplicate_global_history_refetches() -> None
     assert "queryClient.invalidateQueries" in source
 
 
+def test_transcript_pages_do_not_duplicate_unscoped_websocket_error_toasts() -> None:
+    hook_source = (
+        REPO_ROOT
+        / "Frontend"
+        / "client"
+        / "src"
+        / "hooks"
+        / "use-transcript-auto-refresh.ts"
+    ).read_text(encoding="utf-8")
+    app_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "useWebSocketContext" in hook_source
+    assert "useSharedWebSocket" not in hook_source
+    assert "onError" not in hook_source
+    assert 'msg.type === "error"' not in hook_source
+    assert "function RecordingErrorToastBridge()" in app_source
+    assert 'if (msg.type === "error") {' in app_source
+    assert "showRecordingErrorToast(toast, msg);" in app_source
+
+    for page_name in ("FileTranscribe.tsx", "Youtube.tsx", "TranscriptDetail.tsx"):
+        page_source = (
+            REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page_name
+        ).read_text(encoding="utf-8")
+        call_start = page_source.index("useTranscriptAutoRefresh({")
+        call_end = page_source.index("});", call_start)
+        assert "onError" not in page_source[call_start:call_end], page_name
+
+
 def test_virtual_history_releases_load_guard_for_void_and_failed_loaders() -> None:
     source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "virtual-transcript-history.tsx"
@@ -850,6 +933,22 @@ def test_virtual_history_releases_load_guard_for_void_and_failed_loaders() -> No
     assert "const { items, total } = useMemo(" in query_source
     assert "}), [query.data]);" in query_source
     assert "[gridColumns, items.length, rows.length, viewMode, virtualizer]" in source
+
+
+def test_virtual_history_uses_outer_scroller_coordinates_without_scroll_time_layout_work() -> None:
+    source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "virtual-transcript-history.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert 'element.closest<HTMLDivElement>("[data-app-scroll-container]")' in source
+    assert "calculateHistoryScrollMargin(" in source
+    assert "nextScrollElement.scrollTop" in source
+    assert "scrollMargin," in source
+    assert "calculateHistoryRowTranslateY(virtualRow.start, scrollMargin)" in source
+    assert "while (layoutElement)" in source
+    assert "observer.observe(layoutElement);" in source
+    assert "overscan: 6" in source
+    assert 'window.addEventListener("scroll", updateLayoutMetrics)' not in source
 
 
 def test_transcript_history_refreshes_after_websocket_reconnect() -> None:
@@ -1771,6 +1870,27 @@ def test_outlook_disconnect_and_speaker_assignments_require_explicit_confirmatio
     assert "Outlook email addresses are not sent." in assignments
     assert "Every suggestion stays unconfirmed until you approve it." in assignments
     assert "Confirmed mappings improve speaker names in the transcript." in assignments
+
+
+def test_settings_outlook_sync_refreshes_authoritative_status_and_daily_events() -> None:
+    settings = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+    mutation = settings[
+        settings.index("const outlookMutation = useMutation") :
+        settings.index("const outlookCredentialStatusUnavailable")
+    ]
+    sync_success = mutation[
+        mutation.index('if (action === "sync")') :
+        mutation.index("} else {")
+    ]
+
+    assert "queryClient.setQueryData" not in sync_success
+    assert "queryClient.refetchQueries" in sync_success
+    assert 'queryKey: ["/api/calendar/outlook/status"]' in sync_success
+    assert 'type: "active"' in sync_success
+    assert "queryClient.invalidateQueries" in sync_success
+    assert 'queryKey: ["/api/calendar/outlook/events"]' in sync_success
 
 
 def test_meeting_copy_uses_plain_outcome_focused_language() -> None:

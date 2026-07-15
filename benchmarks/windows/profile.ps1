@@ -47,6 +47,20 @@ function Get-JsonHash {
     }
 }
 
+function Get-NormalizedFileVersion {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return "" }
+    $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
+    $candidate = [string]$versionInfo.ProductVersion
+    if (-not $candidate) {
+        $candidate = [string]$versionInfo.FileVersion
+    }
+    if ($candidate -match "^(\d+\.\d+\.\d+)") {
+        return $Matches[1]
+    }
+    return $candidate.Trim()
+}
+
 $os = Get-CimInstance Win32_OperatingSystem
 $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
 $gpu = @(Get-CimInstance Win32_VideoController | ForEach-Object {
@@ -104,10 +118,48 @@ $nodeVersion = Get-CommandText @("node", "--version")
 $desktopExe = Join-Path $InstallRoot "scriber-desktop.exe"
 $backendExe = Join-Path $InstallRoot "backend\scriber-backend.exe"
 $audioSidecarExe = Join-Path $InstallRoot "scriber-audio-sidecar.exe"
+$packageJsonPath = Join-Path $RepoRoot "Frontend\package.json"
+$expectedAppVersion = ""
+if (Test-Path -LiteralPath $packageJsonPath -PathType Leaf) {
+    $expectedAppVersion = [string]((Get-Content -LiteralPath $packageJsonPath -Raw | ConvertFrom-Json).version)
+}
+$desktopProductVersion = Get-NormalizedFileVersion -Path $desktopExe
+$backendProductVersion = Get-NormalizedFileVersion -Path $backendExe
+$audioSidecarProductVersion = Get-NormalizedFileVersion -Path $audioSidecarExe
+$binaryVersionMatchesSource = (
+    [bool]$expectedAppVersion -and
+    $desktopProductVersion -eq $expectedAppVersion -and
+    $audioSidecarProductVersion -eq $expectedAppVersion
+)
+$attestationScript = Join-Path $RepoRoot "scripts\perf\runtime_attestation.py"
+$runtimeAttestation = $null
+$runtimeAttestationExitCode = -1
+$pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+if ($pythonCommand -and (Test-Path -LiteralPath $attestationScript -PathType Leaf)) {
+    $attestationOutput = @(& $pythonCommand.Source $attestationScript verify `
+        --repo-root $RepoRoot `
+        --install-root $InstallRoot 2>$null)
+    $runtimeAttestationExitCode = $LASTEXITCODE
+    try {
+        $runtimeAttestation = (($attestationOutput -join "`n") | ConvertFrom-Json)
+    } catch {
+        $runtimeAttestation = $null
+    }
+}
+$runtimeAttestationValid = (
+    $runtimeAttestationExitCode -eq 0 -and
+    $null -ne $runtimeAttestation -and
+    [bool]$runtimeAttestation.ok
+)
+$runtimeAttestationErrorCodes = @()
+if ($runtimeAttestation -and $runtimeAttestation.errors) {
+    $runtimeAttestationErrorCodes = @($runtimeAttestation.errors | ForEach-Object { [string]$_.code })
+}
 $evaluatorFiles = @(
     (Join-Path $RepoRoot "scripts\perf\run.ps1"),
     (Join-Path $RepoRoot "scripts\perf\benchmark_lint.py"),
     (Join-Path $RepoRoot "scripts\perf\doctor.py"),
+    (Join-Path $RepoRoot "scripts\perf\runtime_attestation.py"),
     (Join-Path $RepoRoot "benchmarks\windows\profile.ps1")
 )
 $evaluatorHashSource = @($evaluatorFiles | ForEach-Object { Get-FileHashOrEmpty -Path $_ }) -join "|"
@@ -141,7 +193,16 @@ $payloadNoId = [ordered]@{
     tauriVersion = ""
     webview2Version = ""
     scriberCommit = $commit
-    installRoot = (Resolve-Path -LiteralPath $InstallRoot -ErrorAction SilentlyContinue).Path
+    expectedAppVersion = $expectedAppVersion
+    desktopProductVersion = $desktopProductVersion
+    backendProductVersion = $backendProductVersion
+    audioSidecarProductVersion = $audioSidecarProductVersion
+    binaryVersionMatchesSource = [bool]$binaryVersionMatchesSource
+    runtimeAttestationValid = [bool]$runtimeAttestationValid
+    runtimeAttestationId = if ($runtimeAttestation) { [string]$runtimeAttestation.attestationId } else { "" }
+    runtimeAttestationManifestSha256 = if ($runtimeAttestation) { [string]$runtimeAttestation.manifestSha256 } else { "" }
+    runtimeAttestationSourceContentSha256 = if ($runtimeAttestation) { [string]$runtimeAttestation.sourceContentSha256 } else { "" }
+    runtimeAttestationErrorCodes = @($runtimeAttestationErrorCodes)
     desktopSha256 = Get-FileHashOrEmpty -Path $desktopExe
     backendSha256 = Get-FileHashOrEmpty -Path $backendExe
     audioSidecarSha256 = Get-FileHashOrEmpty -Path $audioSidecarExe

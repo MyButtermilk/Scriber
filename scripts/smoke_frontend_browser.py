@@ -3465,6 +3465,18 @@ async def exercise_meeting_identity_settings(
     if (!disconnect) return { ok: false, waiting: 'outlook-disconnect' };
     disconnect.click();
     window.__scriberMeetingIdentityStage = 11;
+    return { ok: false, waiting: 'outlook-disconnect-confirmation' };
+  }
+  if (stage === 11) {
+    const dialog = Array.from(document.querySelectorAll('[role="alertdialog"]'))
+      .find((node) => (node.textContent || '').includes('Disconnect Outlook?'));
+    const confirm = Array.from(dialog?.querySelectorAll('button') || [])
+      .find((node) => (node.textContent || '').trim() === 'Disconnect Outlook');
+    if (!dialog || !confirm || confirm.disabled) {
+      return { ok: false, waiting: 'outlook-disconnect-confirmation' };
+    }
+    confirm.click();
+    window.__scriberMeetingIdentityStage = 12;
     return { ok: false, waiting: 'outlook-disconnected' };
   }
   return {

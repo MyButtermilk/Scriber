@@ -17,6 +17,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
+from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.services.stt_service import SegmentedSTTService, STTService
 from pipecat.frames.frames import (
     InputAudioRawFrame,
@@ -33,6 +34,10 @@ from pipecat.frames.frames import (
     ErrorFrame,
 )
 from pipecat.transcriptions.language import Language
+from pipecat.turns.user_start import VADUserTurnStartStrategy
+from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+from pipecat.turns.user_turn_processor import UserTurnProcessor
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.utils.time import time_now_iso8601
 
 from src.runtime.media_tools import find_media_tool
@@ -70,50 +75,129 @@ except Exception:
 
 
 # ============================================================================
-# Analyzer Cache for faster pipeline start
-# Caches heavy ML-based analyzers (VAD, SmartTurn) to avoid reloading models
+# One-shot analyzer warmup cache for faster first-pipeline start
 # ============================================================================
 import threading
 
 class _AnalyzerCache:
-    """Thread-safe cache for expensive analyzers (VAD, SmartTurn).
-    
-    These analyzers load ML models that take 200-500ms to initialize.
-    By caching them, subsequent recording sessions start faster.
+    """Thread-safe, one-shot warmup pool for expensive analyzer instances.
+
+    Pipecat analyzers contain mutable audio buffers, recurrent model state, and
+    per-session executors. A processor cleans its analyzer at pipeline teardown,
+    so returning that same instance to a later recording is unsafe. Startup may
+    pre-create one unused instance of each analyzer; ``acquire_*`` atomically
+    removes it from the pool and ownership transfers permanently to that
+    recording. Later recordings receive newly constructed instances.
     """
     _lock = threading.Lock()
     _vad_analyzer = None
     _smart_turn_analyzer = None
-    
+    _refill_in_progress = False
+
     @classmethod
-    def get_vad_analyzer(cls):
-        """Get or create a cached Silero VAD analyzer."""
+    def prewarm(cls) -> None:
+        """Create at most one unclaimed analyzer of each available type."""
+        with cls._lock:
+            needs_vad = bool(
+                HAS_SILERO_VAD and SileroVADAnalyzer and cls._vad_analyzer is None
+            )
+            needs_smart_turn = bool(
+                HAS_SMART_TURN
+                and LocalSmartTurnAnalyzerV3
+                and cls._smart_turn_analyzer is None
+            )
+
+        # Model construction stays outside the lock. A hotkey arriving during
+        # background refill creates its own session instance instead of waiting
+        # hundreds of milliseconds for the warm slot.
+        vad_analyzer = None
+        smart_turn_analyzer = None
+        if needs_vad:
+            logger.info("Prewarming one-shot Silero VAD analyzer")
+            vad_analyzer = SileroVADAnalyzer()
+        if needs_smart_turn:
+            logger.info("Prewarming one-shot SmartTurn V3 analyzer")
+            smart_turn_analyzer = LocalSmartTurnAnalyzerV3()
+
+        with cls._lock:
+            if vad_analyzer is not None and cls._vad_analyzer is None:
+                cls._vad_analyzer = vad_analyzer
+            if smart_turn_analyzer is not None and cls._smart_turn_analyzer is None:
+                cls._smart_turn_analyzer = smart_turn_analyzer
+
+    @classmethod
+    def request_background_replenish(cls) -> bool:
+        """Refill empty warm slots on a daemon thread after session teardown."""
+        with cls._lock:
+            needs_vad = bool(
+                HAS_SILERO_VAD and SileroVADAnalyzer and cls._vad_analyzer is None
+            )
+            needs_smart_turn = bool(
+                HAS_SMART_TURN
+                and LocalSmartTurnAnalyzerV3
+                and cls._smart_turn_analyzer is None
+            )
+            if cls._refill_in_progress or not (needs_vad or needs_smart_turn):
+                return False
+            cls._refill_in_progress = True
+
+        def refill() -> None:
+            try:
+                cls.prewarm()
+            except Exception as exc:
+                logger.debug(f"Analyzer warmup refill failed: {exc}")
+            finally:
+                with cls._lock:
+                    cls._refill_in_progress = False
+
+        try:
+            threading.Thread(
+                target=refill,
+                name="scriber-analyzer-warmup",
+                daemon=True,
+            ).start()
+        except Exception as exc:
+            with cls._lock:
+                cls._refill_in_progress = False
+            logger.debug(f"Could not schedule analyzer warmup refill: {exc}")
+            return False
+        return True
+
+    @classmethod
+    def acquire_vad_analyzer(cls):
+        """Claim a prewarmed Silero analyzer or create a fresh session instance."""
         if not HAS_SILERO_VAD or not SileroVADAnalyzer:
             return None
         with cls._lock:
-            if cls._vad_analyzer is None:
-                logger.info("Initializing Silero VAD analyzer (cached for future use)")
-                cls._vad_analyzer = SileroVADAnalyzer()
-            return cls._vad_analyzer
-    
+            analyzer = cls._vad_analyzer
+            cls._vad_analyzer = None
+        if analyzer is not None:
+            logger.debug("Claimed prewarmed Silero VAD analyzer for one recording")
+            return analyzer
+        logger.info("Initializing per-session Silero VAD analyzer")
+        return SileroVADAnalyzer()
+
     @classmethod
-    def get_smart_turn_analyzer(cls):
-        """Get or create a cached SmartTurn analyzer."""
-        if not HAS_SMART_TURN:
+    def acquire_smart_turn_analyzer(cls):
+        """Claim a prewarmed SmartTurn analyzer or create a fresh session instance."""
+        if not HAS_SMART_TURN or not LocalSmartTurnAnalyzerV3:
             return None
         with cls._lock:
-            if cls._smart_turn_analyzer is None:
-                logger.info("Initializing SmartTurn V3 analyzer (cached for future use)")
-                cls._smart_turn_analyzer = LocalSmartTurnAnalyzerV3()
-            return cls._smart_turn_analyzer
-    
+            analyzer = cls._smart_turn_analyzer
+            cls._smart_turn_analyzer = None
+        if analyzer is not None:
+            logger.debug("Claimed prewarmed SmartTurn V3 analyzer for one recording")
+            return analyzer
+        logger.info("Initializing per-session SmartTurn V3 analyzer")
+        return LocalSmartTurnAnalyzerV3()
+
     @classmethod
     def clear_cache(cls):
-        """Clear cached analyzers (useful for testing or config changes)."""
+        """Discard only unclaimed warmup instances."""
         with cls._lock:
             cls._vad_analyzer = None
             cls._smart_turn_analyzer = None
-            logger.debug("Analyzer cache cleared")
+            logger.debug("Unclaimed analyzer warmup cache cleared")
 
 
 def _live_service_uses_async_finalization(service_name: str) -> bool:
@@ -145,8 +229,13 @@ def _live_service_uses_smart_turn(service_name: str) -> bool:
     return str(service_name or "") == "soniox" and Config.SONIOX_MODE == "realtime"
 
 
+def _analyzer_warmup_enabled() -> bool:
+    explicit = os.getenv("SCRIBER_PREWARM_MODELS_ON_STARTUP", "").strip().lower()
+    return bool(Config.MIC_ALWAYS_ON) or explicit in {"1", "true", "yes", "on"}
+
+
 def _create_vad_analyzer(*, quiet_mic: bool = False):
-    vad_analyzer = _AnalyzerCache.get_vad_analyzer()
+    vad_analyzer = _AnalyzerCache.acquire_vad_analyzer()
     if not vad_analyzer:
         return None
     if quiet_mic and VADParams:
@@ -164,6 +253,62 @@ def _create_vad_analyzer(*, quiet_mic: bool = False):
         except Exception as exc:
             logger.debug(f"VAD param override failed: {exc}")
     return vad_analyzer
+
+
+def _create_soniox_smart_turn_processor() -> UserTurnProcessor | None:
+    """Create a session-owned Pipecat 1.5 SmartTurn processor.
+
+    ``TransportParams`` no longer accepts analyzers. SmartTurn must run after
+    Soniox STT so its stop strategy sees both passthrough audio/VAD events and
+    Soniox's finalized transcript. Explicit strategies also avoid Pipecat's
+    implicit defaults and their optional dependency path.
+    """
+    analyzer = _AnalyzerCache.acquire_smart_turn_analyzer()
+    if analyzer is None:
+        return None
+    return UserTurnProcessor(
+        user_turn_strategies=UserTurnStrategies(
+            start=[VADUserTurnStartStrategy()],
+            stop=[
+                TurnAnalyzerUserTurnStopStrategy(
+                    turn_analyzer=analyzer,
+                    wait_for_transcript=True,
+                )
+            ],
+        )
+    )
+
+
+def _ordered_live_pipeline_steps(
+    *,
+    audio_input: FrameProcessor,
+    vad_processor: FrameProcessor | None,
+    vad_observer: FrameProcessor | None,
+    segmented_gate: FrameProcessor | None,
+    stt_service: FrameProcessor,
+    smart_turn_processor: FrameProcessor | None,
+    error_handler: FrameProcessor,
+    transcript_callback: FrameProcessor | None,
+    text_injector: FrameProcessor,
+) -> list[FrameProcessor]:
+    """Return the canonical Pipecat 1.5 live-microphone processor order."""
+    steps: list[FrameProcessor] = [audio_input]
+    if vad_processor is not None:
+        steps.append(vad_processor)
+    if vad_observer is not None:
+        steps.append(vad_observer)
+    if segmented_gate is not None:
+        # The gate observes/suppresses VAD boundaries before HTTP-style STT.
+        steps.append(segmented_gate)
+    steps.append(stt_service)
+    if smart_turn_processor is not None:
+        # SmartTurn needs STT audio passthrough plus finalized transcripts.
+        steps.append(smart_turn_processor)
+    steps.append(error_handler)
+    if transcript_callback is not None:
+        steps.append(transcript_callback)
+    steps.append(text_injector)
+    return steps
 
 
 def _env_float(name: str, default: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
@@ -1182,7 +1327,10 @@ class PipecatVadSpeechObserver(FrameProcessor):
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
 
-        if self.enabled:
+        # Pipecat broadcasts turn frames in both directions. Count only the
+        # canonical downstream VAD path so a downstream UserTurnProcessor's
+        # generic frames cannot double the diagnostics on their upstream leg.
+        if self.enabled and direction == FrameDirection.DOWNSTREAM:
             now = time.monotonic()
             if isinstance(frame, InputAudioRawFrame):
                 self._audio_frame_count += 1
@@ -2269,23 +2417,18 @@ class ScriberPipeline:
         try:
             async with aiohttp.ClientSession() as session:
                 stt_service = self._create_stt_service(session)
-                
-                # SmartTurn is only needed for Soniox realtime. Async/finalizing providers
-                # use Pipecat VAD below so short silent recordings can skip provider finalization.
-                smart_turn = (
-                    _AnalyzerCache.get_smart_turn_analyzer()
-                    if _live_service_uses_smart_turn(self.service_name)
-                    else None
-                )
 
                 vad_analyzer = None
                 # VAD is needed for:
                 # 1. SegmentedSTTService silence-gating and optional mid-recording segmentation.
                 # 2. Async live providers so silent recordings can be ended locally.
-                # Note: For Soniox RT, we use SmartTurn V3 exclusively for turn detection.
-                # Using both VAD and SmartTurn causes double UserStoppedSpeakingFrame events,
-                # which triggers duplicate text injection.
-                needs_vad = isinstance(stt_service, SegmentedSTTService) or _live_service_needs_local_vad(self.service_name)
+                # 3. Soniox SmartTurn, which consumes explicit Pipecat VAD boundaries.
+                uses_smart_turn = _live_service_uses_smart_turn(self.service_name)
+                needs_vad = (
+                    isinstance(stt_service, SegmentedSTTService)
+                    or _live_service_needs_local_vad(self.service_name)
+                    or uses_smart_turn
+                )
                     
                 if needs_vad:
                     vad_analyzer = _create_vad_analyzer(
@@ -2296,6 +2439,22 @@ class ScriberPipeline:
                     )
                     if not vad_analyzer:
                         logger.warning("VAD analyzer required but not available; transcripts may not finalize properly.")
+
+                vad_processor = (
+                    VADProcessor(vad_analyzer=vad_analyzer)
+                    if vad_analyzer is not None
+                    else None
+                )
+                smart_turn_processor = None
+                if uses_smart_turn:
+                    if vad_processor is None:
+                        logger.warning(
+                            "SmartTurn V3 disabled for this recording because Silero VAD is unavailable"
+                        )
+                    else:
+                        smart_turn_processor = _create_soniox_smart_turn_processor()
+                        if smart_turn_processor is None:
+                            logger.warning("SmartTurn V3 is unavailable for this recording")
 
                 prewarm_active = bool(
                     self.mic_prewarm_manager is not None
@@ -2308,8 +2467,6 @@ class ScriberPipeline:
                     sample_rate=Config.SAMPLE_RATE,
                     channels=Config.CHANNELS,
                     block_size=Config.MIC_BLOCK_SIZE,
-                    turn_analyzer=smart_turn,
-                    vad_analyzer=vad_analyzer,
                     device=_resolve_mic_device(Config.MIC_DEVICE),
                     keep_alive=use_prewarm_for_capture,
                     prewarm_manager=self.mic_prewarm_manager,
@@ -2372,16 +2529,19 @@ class ScriberPipeline:
                     else None
                 )
 
-                steps = [self.audio_input]
-                if vad_analyzer is not None:
+                if vad_processor is not None:
                     self._vad_observer = PipecatVadSpeechObserver(enabled=True)
-                    steps.append(self._vad_observer)
-                if segmented_gate is not None:
-                    steps.append(segmented_gate)
-                steps.extend([stt_service, error_handler])
-                if transcript_cb:
-                    steps.append(transcript_cb)
-                steps.append(text_injector)
+                steps = _ordered_live_pipeline_steps(
+                    audio_input=self.audio_input,
+                    vad_processor=vad_processor,
+                    vad_observer=self._vad_observer,
+                    segmented_gate=segmented_gate,
+                    stt_service=stt_service,
+                    smart_turn_processor=smart_turn_processor,
+                    error_handler=error_handler,
+                    transcript_callback=transcript_cb,
+                    text_injector=text_injector,
+                )
 
                 self.pipeline = Pipeline(steps)
                 self.task = PipelineTask(
@@ -2429,6 +2589,11 @@ class ScriberPipeline:
             # Ensure stop() can always unblock, even if start() exits due to an error or cancellation.
             self.is_active = False
             await self._cleanup_audio_input()
+            # Refill only after the Pipecat runner and physical capture have
+            # completed teardown. The cleaned session analyzers stay owned by
+            # the old pipeline and are never returned to this warmup pool.
+            if _analyzer_warmup_enabled():
+                _AnalyzerCache.request_background_replenish()
             self._start_done.set()
 
     async def _cleanup_aborted_file_pipeline(

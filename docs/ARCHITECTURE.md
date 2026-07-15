@@ -1058,7 +1058,15 @@ Pipecat's `local-smart-turn` extra is intentionally not installed because its
 Torch/Torchaudio/Transformers dependency chain conflicts with the standard
 ONNX-only local-runtime footprint. The lightweight bundled ONNX
 `LocalSmartTurnAnalyzerV3` import stays available without the removed
-`UserIdleProcessor`; Silero remains the bundled VAD path.
+`UserIdleProcessor`; Silero remains the bundled VAD path. Pipecat 1.5 analyzers
+are processors rather than transport parameters: live input runs through an
+explicit `VADProcessor`, the optional segmented-HTTP gate remains between VAD
+and STT, and Soniox SmartTurn runs in an explicit `UserTurnProcessor` after STT
+so it sees passthrough audio plus final transcript frames. Startup warming keeps
+at most one unclaimed analyzer of each type; claiming transfers it permanently
+to one recording, and cleaned mutable analyzers are never reused. When warming
+is enabled, session teardown schedules a background refill with brand-new
+instances so later hotkeys retain the warm-start benefit.
 
 The Settings page has a dedicated Meetings section. It snapshots the selected
 final STT provider, analysis model, Smart Turn, AEC3, automatic-analysis, and

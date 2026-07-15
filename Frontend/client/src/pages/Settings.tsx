@@ -1339,14 +1339,25 @@ export default function Settings() {
         : await apiRequest("POST", `/api/calendar/outlook/${action}`, action === "connect" ? { openBrowser: true } : undefined);
       return response.json() as Promise<OutlookCalendarSyncResponse | Record<string, unknown>>;
     },
-    onSuccess: (result, action) => {
+    onSuccess: (_result, action) => {
       if (action === "sync") {
-        queryClient.setQueryData(
-          ["/api/calendar/outlook/status"],
-          result as OutlookCalendarSyncResponse,
-        );
+        // A successful sync changes both the lightweight connection status and
+        // every cached day view. Read status back from its authoritative
+        // endpoint instead of assuming every compatible backend returns the
+        // complete status object in the mutation response.
+        void queryClient.refetchQueries({
+          queryKey: ["/api/calendar/outlook/status"],
+          exact: true,
+          type: "active",
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ["/api/calendar/outlook/events"],
+        });
       } else {
-        void queryClient.invalidateQueries({ queryKey: ["/api/calendar/outlook/status"] });
+        void queryClient.invalidateQueries({
+          queryKey: ["/api/calendar/outlook/status"],
+          exact: true,
+        });
         queryClient.removeQueries({ queryKey: ["/api/calendar/outlook/events"] });
       }
       if (action === "disconnect") setOutlookDisconnectOpen(false);
@@ -1843,8 +1854,10 @@ export default function Settings() {
         const text = await res.text();
         throw new Error(text || res.statusText);
       }
+      const updatedSettings = (await res.json()) as SettingsResponse;
+      queryClient.setQueryData<SettingsResponse>(["/api/settings"], updatedSettings);
       invalidateSettingsBootstrap();
-      return (await res.json()) as SettingsResponse;
+      return updatedSettings;
     });
     settingsUpdateQueueRef.current = request.then(
       () => undefined,

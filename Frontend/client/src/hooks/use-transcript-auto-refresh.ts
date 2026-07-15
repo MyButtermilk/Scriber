@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
+import { useWebSocketContext } from "@/contexts/WebSocketContext";
 
 type TranscriptType = "mic" | "file" | "youtube";
 
@@ -8,14 +8,12 @@ interface UseTranscriptAutoRefreshOptions {
   type?: TranscriptType;
   transcriptId?: string;
   queryKey?: readonly unknown[];
-  onError?: (message: string) => void;
 }
 
 export function useTranscriptAutoRefresh({
   type,
   transcriptId,
   queryKey,
-  onError,
 }: UseTranscriptAutoRefreshOptions = {}) {
   const queryClient = useQueryClient();
   const queryScope = queryKey?.[1];
@@ -55,17 +53,9 @@ export function useTranscriptAutoRefresh({
     });
   }, [effectiveType, queryClient, queryKey, transcriptId]);
 
-  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
-    if (!msg || typeof msg !== "object") {
-      return;
-    }
-
-    if (msg.type === "error" && onError) {
-      onError(msg.message || "An error occurred.");
-    }
-  }, [onError]);
-
-  const { isConnected, send } = useSharedWebSocket(handleWsMessage);
+  // The app-global recording-error toast is owned by RecordingErrorToastBridge.
+  // Transcript pages only need connection state and explicit refresh support.
+  const { isConnected, send } = useWebSocketContext();
 
   return {
     isWsConnected: isConnected,

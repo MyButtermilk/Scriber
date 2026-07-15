@@ -35,6 +35,9 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "yt_dlp_ejs" in required_modules
     assert "sherpa_onnx" not in required_modules
     assert "pipecat.audio.vad.silero" in required_modules
+    assert "pipecat.processors.audio.vad_processor" in required_modules
+    assert "pipecat.turns.user_turn_processor" in required_modules
+    assert "pipecat.turns.user_turn_strategies" in required_modules
     assert "pipecat.audio.turn.smart_turn.local_smart_turn_v3" in required_modules
     assert "pipecat.processors.user_idle_processor" not in required_modules
     assert "src.web_api" in required_modules

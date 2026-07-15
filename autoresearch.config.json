@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "sessionName": "Scriber Windows Perceived Performance",
   "repo": "MyButtermilk/Scriber",
-  "segment": "B5-readiness-inclusive-baseline",
+  "segment": "B6-binary-version-attested-baseline",
   "sessionMode": "foreground",
   "primaryMetric": "local_wux",
   "direction": "lower",
@@ -11,7 +11,7 @@
     "status": "accepted",
     "value": 1.0,
     "accepted": true,
-    "reason": "Segment B5 readiness-inclusive composite-score baseline seeded from FastLocal package benchmarks/results/raw/fastlocal-20260624-083431.json. The baseline metrics are recorded in benchmarks/results/baseline.json; local_wux now weights hotkey_mic_ready_p95_ms and hotkey_first_audio_frame_p95_ms from Always-On Mic Microsoft/Soniox overlay probes."
+    "reason": "Segment B6 binary-version-attested baseline seeded from exact v0.5.17 commit dd90452 in benchmarks/results/raw/fastlocal-20260715-025458.json. The profile proves source, desktop, and audio-sidecar version 0.5.17 before scoring; component metrics are recorded in benchmarks/results/baseline.json."
   },
   "benchmarkCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\autoresearch.ps1 -Suite FastLocal",
   "checksCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\autoresearch.checks.ps1",

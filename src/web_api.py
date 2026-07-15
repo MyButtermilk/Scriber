@@ -16139,11 +16139,10 @@ async def _background_init(controller: ScriberWebController) -> None:
             def _warm_analyzers() -> None:
                 from src.pipeline import _AnalyzerCache
 
-                _AnalyzerCache.get_smart_turn_analyzer()
-                _AnalyzerCache.get_vad_analyzer()
+                _AnalyzerCache.prewarm()
 
             await asyncio.to_thread(_warm_analyzers)
-            logger.info("ML model cache warmed (first recording will start faster)")
+            logger.info("One-shot ML analyzer warmup ready (first recording will start faster)")
         except Exception as e:
             logger.debug(f"Cache prewarm skipped: {e}")
 

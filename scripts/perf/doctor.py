@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from ctypes import wintypes
 
-from benchmark_lint import lint
+try:
+    from .benchmark_lint import lint
+    from .runtime_attestation import read_windows_file_version, verify_attestation
+except ImportError:
+    from benchmark_lint import lint
+    from runtime_attestation import read_windows_file_version, verify_attestation
 
 
 REQUIRED_ROOT_FILES = [
@@ -54,20 +61,72 @@ def load_json(path: Path) -> dict[str, Any]:
 def list_scriber_processes() -> list[dict[str, Any]]:
     if os.name != "nt":
         return []
-    ps = (
-        "Get-CimInstance Win32_Process | "
-        "Where-Object { $_.Name -match 'scriber' } | "
-        "Select-Object ProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Depth 4"
-    )
-    result = run_capture(["powershell.exe", "-NoProfile", "-Command", ps], Path.cwd(), timeout=30)
-    if result.returncode != 0 or not result.stdout.strip():
+
+    class ProcessEntry32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
+    kernel32.Process32FirstW.restype = wintypes.BOOL
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
+    kernel32.Process32NextW.restype = wintypes.BOOL
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+    if snapshot == wintypes.HANDLE(-1).value:
         return []
-    parsed = json.loads(result.stdout)
-    if isinstance(parsed, dict):
-        return [parsed]
-    if isinstance(parsed, list):
-        return [item for item in parsed if isinstance(item, dict)]
-    return []
+    processes: list[dict[str, Any]] = []
+    try:
+        entry = ProcessEntry32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        has_entry = bool(kernel32.Process32FirstW(snapshot, ctypes.byref(entry)))
+        while has_entry:
+            name = str(entry.szExeFile)
+            if "scriber" in name.casefold():
+                executable_path = ""
+                process = kernel32.OpenProcess(0x1000, False, entry.th32ProcessID)
+                if process:
+                    try:
+                        capacity = wintypes.DWORD(32768)
+                        buffer = ctypes.create_unicode_buffer(capacity.value)
+                        if kernel32.QueryFullProcessImageNameW(process, 0, buffer, ctypes.byref(capacity)):
+                            executable_path = buffer.value
+                    finally:
+                        kernel32.CloseHandle(process)
+                processes.append(
+                    {
+                        "ProcessId": int(entry.th32ProcessID),
+                        "Name": name,
+                        "ExecutablePath": executable_path,
+                    }
+                )
+            has_entry = bool(kernel32.Process32NextW(snapshot, ctypes.byref(entry)))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return processes
 
 
 def normalize_path(path: str) -> str:
@@ -83,6 +142,9 @@ def detect_foreign_scriber_instances(repo_root: Path, install_root: Path) -> lis
     for proc in list_scriber_processes():
         exe = str(proc.get("ExecutablePath") or "")
         if not exe:
+            # A Scriber-named process whose image cannot be queried cannot be
+            # proven to belong to the selected benchmark runtime.
+            foreign.append(proc)
             continue
         normalized = normalize_path(exe)
         if not any(normalized.startswith(root) for root in allowed_roots):
@@ -109,10 +171,50 @@ def check_static(repo_root: Path, install_root: Path) -> list[dict[str, Any]]:
             findings.append({"level": "block", "code": "missing_protected_path", "message": f"Missing protected path {rel}"})
     desktop = install_root / "scriber-desktop.exe"
     backend = install_root / "backend" / "scriber-backend.exe"
+    audio_sidecar = install_root / "scriber-audio-sidecar.exe"
     if not desktop.is_file():
         findings.append({"level": "block", "code": "missing_desktop_binary", "message": f"Missing {desktop}"})
     if not backend.is_file():
         findings.append({"level": "block", "code": "missing_backend_binary", "message": f"Missing {backend}"})
+    if not audio_sidecar.is_file():
+        findings.append({"level": "block", "code": "missing_audio_sidecar_binary", "message": f"Missing {audio_sidecar}"})
+    package_json = repo_root / "Frontend" / "package.json"
+    if desktop.is_file() and package_json.is_file() and os.name == "nt":
+        expected_version = str(load_json(package_json).get("version") or "")
+        actual_version = read_windows_file_version(desktop)
+        if not actual_version:
+            findings.append(
+                {
+                    "level": "block",
+                    "code": "unreadable_desktop_version",
+                    "message": f"Could not read the PE file version from {desktop}.",
+                }
+            )
+        elif actual_version != expected_version:
+            findings.append(
+                {
+                    "level": "block",
+                    "code": "binary_version_mismatch",
+                    "message": (
+                        f"Benchmark desktop is version {actual_version}, but the current source version is "
+                        f"{expected_version}. Rebuild or select the matching release before measuring."
+                    ),
+                    "expectedVersion": expected_version,
+                    "actualVersion": actual_version,
+                }
+            )
+    attestation = verify_attestation(repo_root, install_root)
+    if not attestation.get("ok"):
+        findings.append(
+            {
+                "level": "block",
+                "code": "runtime_attestation_invalid",
+                "message": "The benchmark runtime does not match its explicit post-build attestation.",
+                "manifestPresent": bool(attestation.get("manifestPresent")),
+                "manifestSha256": str(attestation.get("manifestSha256") or ""),
+                "errors": attestation.get("errors", []),
+            }
+        )
     if os.name != "nt":
         findings.append({"level": "block", "code": "not_windows", "message": "Windows benchmark contract requires native Windows."})
     foreign = detect_foreign_scriber_instances(repo_root, install_root)
@@ -128,7 +230,17 @@ def check_static(repo_root: Path, install_root: Path) -> list[dict[str, Any]]:
     return findings
 
 
-def check_benchmark(repo_root: Path) -> list[dict[str, Any]]:
+def check_benchmark(repo_root: Path, install_root: Path) -> list[dict[str, Any]]:
+    attestation = verify_attestation(repo_root, install_root)
+    if not attestation.get("ok"):
+        return [
+            {
+                "level": "block",
+                "code": "runtime_attestation_invalid",
+                "message": "FastLocal was not started because the runtime attestation is invalid.",
+                "errors": attestation.get("errors", []),
+            }
+        ]
     result = run_capture(
         [
             "powershell.exe",
@@ -139,6 +251,8 @@ def check_benchmark(repo_root: Path) -> list[dict[str, Any]]:
             str(repo_root / "autoresearch.ps1"),
             "-Suite",
             "FastLocal",
+            "-InstallRoot",
+            str(install_root),
         ],
         repo_root,
         timeout=180,
@@ -177,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             findings.append({"level": "block", "code": "invalid_config", "message": str(exc)})
     if args.check_benchmark:
-        findings.extend(check_benchmark(repo_root))
+        findings.extend(check_benchmark(repo_root, install_root))
 
     blocked = [item for item in findings if item.get("level") == "block"]
     payload = {

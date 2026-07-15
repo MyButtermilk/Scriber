@@ -5,6 +5,9 @@ import math
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -13,6 +16,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.perf.benchmark_lint import REQUIRED_METRICS, lint
 from scripts.perf.evaluator.local_wux import compute_local_wux
+
+PERF_ROOT = REPO_ROOT / "scripts" / "perf"
+if str(PERF_ROOT) not in sys.path:
+    sys.path.insert(0, str(PERF_ROOT))
+from scripts.perf import doctor
+from scripts.perf import runtime_attestation
 
 
 def test_required_autoresearch_files_exist():
@@ -27,6 +36,7 @@ def test_required_autoresearch_files_exist():
         "scripts/perf/run.ps1",
         "scripts/perf/benchmark_lint.py",
         "scripts/perf/doctor.py",
+        "scripts/perf/runtime_attestation.py",
         "benchmarks/windows/profile.ps1",
         "benchmarks/windows/overlay_observer.py",
         "benchmarks/windows/TextReceiver.ps1",
@@ -120,6 +130,185 @@ def test_profile_script_writes_profile_json():
     assert profile["profile_id"]
     assert profile["scriberCommit"]
     assert profile["evaluatorHash"]
+    assert profile["expectedAppVersion"]
+    assert "desktopProductVersion" in profile
+    assert "audioSidecarProductVersion" in profile
+    assert isinstance(profile["binaryVersionMatchesSource"], bool)
+    assert isinstance(profile["runtimeAttestationValid"], bool)
+    assert "runtimeAttestationManifestSha256" in profile
+    assert "runtimeAttestationSourceContentSha256" in profile
+    assert "installRoot" not in profile
+
+
+def _git(repo_root: Path, *args: str) -> None:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _runtime_fixture(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    install_root = tmp_path / "install"
+    (repo_root / "Frontend").mkdir(parents=True)
+    (repo_root / "Frontend" / "package.json").write_text('{"version":"1.2.3"}\n', encoding="utf-8")
+    (repo_root / "source.txt").write_text("candidate source\n", encoding="utf-8")
+    _git(repo_root, "init")
+    _git(repo_root, "add", ".")
+    _git(
+        repo_root,
+        "-c",
+        "user.name=Scriber Tests",
+        "-c",
+        "user.email=tests@example.invalid",
+        "commit",
+        "-m",
+        "fixture",
+    )
+
+    (install_root / "backend").mkdir(parents=True)
+    (install_root / "scriber-desktop.exe").write_bytes(b"desktop-current")
+    (install_root / "backend" / "scriber-backend.exe").write_bytes(b"backend-current")
+    (install_root / "scriber-audio-sidecar.exe").write_bytes(b"audio-current")
+
+    def version_reader(path: Path) -> str:
+        if path.name in {"scriber-desktop.exe", "scriber-audio-sidecar.exe"}:
+            return "1.2.3"
+        return ""
+
+    runtime_attestation.write_attestation(repo_root, install_root, version_reader=version_reader)
+    return repo_root, install_root, version_reader
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "scriber-desktop.exe",
+        "backend/scriber-backend.exe",
+        "scriber-audio-sidecar.exe",
+    ],
+)
+def test_runtime_attestation_rejects_stale_same_version_component(tmp_path, relative_path):
+    repo_root, install_root, version_reader = _runtime_fixture(tmp_path)
+    component = install_root.joinpath(*relative_path.split("/"))
+    component.write_bytes(component.read_bytes() + b"-stale")
+
+    result = runtime_attestation.verify_attestation(
+        repo_root,
+        install_root,
+        version_reader=version_reader,
+    )
+
+    assert result["ok"] is False
+    assert any(error["code"] == "component_hash_mismatch" for error in result["errors"])
+
+
+def test_runtime_attestation_rejects_source_change_after_write(tmp_path):
+    repo_root, install_root, version_reader = _runtime_fixture(tmp_path)
+    (repo_root / "source.txt").write_text("changed after build\n", encoding="utf-8")
+
+    result = runtime_attestation.verify_attestation(
+        repo_root,
+        install_root,
+        version_reader=version_reader,
+    )
+
+    assert result["ok"] is False
+    assert any(error["code"] == "source_content_mismatch" for error in result["errors"])
+
+
+def test_runtime_attestation_rejects_missing_audio_sidecar(tmp_path):
+    repo_root, install_root, version_reader = _runtime_fixture(tmp_path)
+    (install_root / "scriber-audio-sidecar.exe").unlink()
+
+    result = runtime_attestation.verify_attestation(
+        repo_root,
+        install_root,
+        version_reader=version_reader,
+    )
+
+    assert result["ok"] is False
+    assert any(
+        error["code"] == "missing_component" and error.get("component") == "audioSidecar"
+        for error in result["errors"]
+    )
+
+
+def test_runtime_attestation_ignores_generated_benchmark_results(tmp_path):
+    repo_root, install_root, version_reader = _runtime_fixture(tmp_path)
+    generated = repo_root / "benchmarks" / "results" / "raw" / "measurement.json"
+    generated.parent.mkdir(parents=True)
+    generated.write_text('{"generated":true}\n', encoding="utf-8")
+
+    result = runtime_attestation.verify_attestation(
+        repo_root,
+        install_root,
+        version_reader=version_reader,
+    )
+
+    assert result["ok"] is True
+
+
+def test_doctor_blocks_a_desktop_binary_from_an_older_source_version(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    install_root = tmp_path / "install"
+    (repo_root / "Frontend").mkdir(parents=True)
+    install_root.mkdir()
+    (repo_root / "Frontend" / "package.json").write_text('{"version":"0.5.16"}', encoding="utf-8")
+    (install_root / "scriber-desktop.exe").write_bytes(b"desktop")
+    (install_root / "backend").mkdir()
+    (install_root / "backend" / "scriber-backend.exe").write_bytes(b"backend")
+    monkeypatch.setattr(doctor, "read_windows_file_version", lambda _path: "0.5.11")
+    monkeypatch.setattr(doctor, "detect_foreign_scriber_instances", lambda *_args: [])
+
+    findings = doctor.check_static(repo_root, install_root)
+
+    mismatch = next(item for item in findings if item.get("code") == "binary_version_mismatch")
+    assert mismatch["expectedVersion"] == "0.5.16"
+    assert mismatch["actualVersion"] == "0.5.11"
+
+
+def test_doctor_passes_explicit_install_root_to_fastlocal(monkeypatch, tmp_path):
+    captured: list[str] = []
+    metric_output = "\n".join(
+        f"METRIC {name}={1 if name == 'local_wux' else 0}"
+        for name in REQUIRED_METRICS
+    )
+
+    def fake_run_capture(args, _cwd, timeout=120):
+        captured.extend(args)
+        return SimpleNamespace(returncode=0, stdout=metric_output, stderr="")
+
+    monkeypatch.setattr(doctor, "run_capture", fake_run_capture)
+    monkeypatch.setattr(doctor, "verify_attestation", lambda *_args: {"ok": True, "errors": []})
+    install_root = tmp_path / "chosen release"
+
+    findings = doctor.check_benchmark(tmp_path, install_root)
+
+    assert findings[0]["code"] == "benchmark_contract"
+    index = captured.index("-InstallRoot")
+    assert captured[index + 1] == str(install_root)
+
+
+def test_doctor_process_inventory_uses_native_windows_api_not_inline_powershell():
+    source = (REPO_ROOT / "scripts" / "perf" / "doctor.py").read_text(encoding="utf-8")
+    assert "CreateToolhelp32Snapshot" in source
+    assert "QueryFullProcessImageNameW" in source
+    assert "Get-CimInstance Win32_Process" not in source
+    assert '"-Command"' not in source
+
+
+def test_fastlocal_staged_build_writes_runtime_attestation_after_build():
+    build_script = (REPO_ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
+    assert 'Invoke-Checked -Label "FastLocal runtime attestation"' in build_script
+    assert "scripts\\perf\\runtime_attestation.py write" in build_script
+    assert "--install-root $targetRelease" in build_script
+    assert 'if ($LASTEXITCODE -ne 0)' in build_script
+    assert 'runtimeAttested = [bool]$runtimeAttestationPath' in build_script
 
 
 def test_trace_collector_keeps_missing_endpoint_metrics_unknown(tmp_path):
@@ -375,6 +564,8 @@ def test_fastlocal_and_doctor_prefer_current_release_build_when_available():
     assert 'Frontend\\src-tauri\\target\\release' in run_script
     assert "release_root = repo_root / \"Frontend\" / \"src-tauri\" / \"target\" / \"release\"" in doctor
     assert "default_install_root(repo_root)" in doctor
+    assert '"-InstallRoot"' in doctor
+    assert "binary_version_mismatch" in run_script
 
 
 def test_recommend_next_ignores_instrumentation_only_keeps_as_product_champions():

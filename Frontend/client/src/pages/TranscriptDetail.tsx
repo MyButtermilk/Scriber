@@ -336,14 +336,6 @@ export default function TranscriptDetail() {
   const queryClient = useQueryClient();
   const { isWsConnected } = useTranscriptAutoRefresh({
     transcriptId: id,
-    onError: (message) => {
-      toast({
-        title: "Error",
-        description: message,
-        variant: "destructive",
-        duration: 6000,
-      });
-    },
   });
 
   const transcriptQuery = useQuery<TranscriptDetailResponse>({

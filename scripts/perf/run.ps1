@@ -127,6 +127,44 @@ function Write-MetricPackage {
     }
 }
 
+if (-not $profile.runtimeAttestationValid) {
+    $payload = [pscustomobject]@{
+        schemaVersion = 1
+        suite = $Suite
+        status = "INVALID_BUILD"
+        reason = "runtime_attestation_invalid"
+        generatedAtUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        profileId = $profile.profile_id
+        importedEnvNames = @($importedEnvNames)
+        runtimeAttestationId = $profile.runtimeAttestationId
+        runtimeAttestationManifestSha256 = $profile.runtimeAttestationManifestSha256
+        runtimeAttestationSourceContentSha256 = $profile.runtimeAttestationSourceContentSha256
+        runtimeAttestationErrorCodes = @($profile.runtimeAttestationErrorCodes)
+    }
+    $payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $rawPath -Encoding UTF8
+    Write-UnknownMetrics -Reason "runtime_attestation_invalid"
+    exit 2
+}
+
+if (-not $profile.binaryVersionMatchesSource) {
+    $payload = [pscustomobject]@{
+        schemaVersion = 1
+        suite = $Suite
+        status = "INVALID_BUILD"
+        reason = "binary_version_mismatch"
+        generatedAtUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        profileId = $profile.profile_id
+        installRoot = $InstallRoot
+        importedEnvNames = @($importedEnvNames)
+        expectedAppVersion = $profile.expectedAppVersion
+        desktopProductVersion = $profile.desktopProductVersion
+        audioSidecarProductVersion = $profile.audioSidecarProductVersion
+    }
+    $payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $rawPath -Encoding UTF8
+    Write-UnknownMetrics -Reason "binary_version_mismatch"
+    exit 2
+}
+
 function Get-RequiredEnvPresence {
     param([string[]]$Names)
 

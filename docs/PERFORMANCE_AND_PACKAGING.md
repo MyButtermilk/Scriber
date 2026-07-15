@@ -57,7 +57,10 @@ compressed release budget.
 Startup and imports:
 
 - STT provider imports are mostly lazy in the service factory.
-- Expensive VAD/analyzer setup is cached.
+- Expensive VAD/analyzer setup uses a one-shot warmup pool. A warmed mutable
+  analyzer is atomically claimed by one recording and is never reused after
+  Pipecat processor cleanup. After session teardown, an enabled warmup policy
+  replenishes empty slots in the background with fresh analyzer instances.
 - Startup ML analyzer and STT provider prewarm follow Always-On-Mic by default:
   with `SCRIBER_MIC_ALWAYS_ON=1`, Silero VAD/SmartTurn analyzer setup and the
   selected STT provider import are warmed during startup so the hotkey path does
@@ -506,6 +509,15 @@ This builds/copies the sidecars, runs `tauri build --no-bundle`, writes
 `buildMode.artifactKind=staged-app`, and runs the media-preparation and runtime
 dependency footprint checks. It is dev-only and intentionally does not validate
 NSIS install, upgrade, shortcut, or uninstall behavior.
+
+At the end of a successful staged build, the wrapper also writes
+`scriber-autoresearch-runtime-attestation.json` beside the desktop executable.
+The manifest binds the current Git worktree digest to the final desktop,
+backend, and audio-sidecar hashes, sizes, and native versions. FastLocal Doctor,
+profiling, and scoring fail closed when the manifest is absent or any source or
+runtime component has changed. Generated benchmark results are excluded from
+the source digest, and committed benchmark profiles no longer contain a local
+installation path or machine inventory.
 
 Release workflow:
 

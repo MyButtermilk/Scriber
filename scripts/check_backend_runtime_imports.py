@@ -23,6 +23,9 @@ CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pipecat.frames.frames", "Pipecat startup dependency"),
     ("pipecat.audio.vad.vad_analyzer", "Pipecat VAD startup dependency"),
     ("pipecat.audio.vad.silero", "Silero VAD startup dependency"),
+    ("pipecat.processors.audio.vad_processor", "Pipecat VAD processor dependency"),
+    ("pipecat.turns.user_turn_processor", "Pipecat user-turn processor dependency"),
+    ("pipecat.turns.user_turn_strategies", "Pipecat user-turn strategy dependency"),
     (
         "pipecat.audio.turn.smart_turn.local_smart_turn_v3",
         "Pipecat 1.5 local Smart Turn startup dependency",

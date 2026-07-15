@@ -1,11 +1,30 @@
 {
   "schemaVersion": 1,
   "metric": "local_wux",
-  "baselineId": "readiness-inclusive-20260624-083431",
-  "source": "benchmarks/results/raw/fastlocal-20260624-083431.json",
-  "doctorSource": "benchmarks/results/raw/fastlocal-20260624-083431.json",
-  "previousBaseline": "provider-observer-ready-20260624-004127",
-  "notes": "Segment B5 readiness-inclusive baseline. local_wux now includes the user-visible hotkey-to-mic-ready and hotkey-to-first-audio-frame measurements, both collected with Always-On Mic enabled in the Microsoft MAI and Soniox overlay hotkey probes. Provider local tails still start after the UI Automation text observer is ready.",
+  "baselineId": "binary-attested-20260715-025458",
+  "source": "benchmarks/results/raw/fastlocal-20260715-025458.json",
+  "doctorSource": "benchmarks/results/raw/fastlocal-20260715-025458.json",
+  "previousBaseline": "readiness-inclusive-20260624-083431",
+  "notes": "Segment B6 binary-version-attested baseline from exact released commit dd90452 / v0.5.17. The runtime profile proves expected source, desktop PE, and audio-sidecar PE version 0.5.17 before measurement. The raw package local_wux=0.27524 was scored against the superseded B5 component baseline; B6 normalizes the accepted component metrics below to local_wux=1.0.",
+  "evidence": {
+    "sourceCommit": "dd90452cded988684d1dbfc110e3558d3aece43d",
+    "appVersion": "0.5.17",
+    "baselineRawPackage": {
+      "path": "benchmarks/results/raw/fastlocal-20260715-025458.json",
+      "sha256": "8feb34a305d2aff6d9d35b8fc730650ab38f6f78c04cb58f17ec1985a9623239",
+      "profileId": "d2282cd083ef031ea80e7a4cc6af613a38f25258fad278fd0f3ba3f4eb4339b2"
+    },
+    "confirmationRawPackage": {
+      "path": "benchmarks/results/raw/fastlocal-20260715-025725.json",
+      "sha256": "51e97dc5fa0788c7719c24447755b527b6bc97952207c199ae2b188c82493d1c",
+      "profileId": "58f4aed1adb85cae0f83aaa7561fd293b9b4fd663e1e87dddb57c19c24316e34"
+    },
+    "runtimeComponents": {
+      "desktopSha256": "53184b9499aff758fc1a4638d9f555b299ea993d4758aff59da717a2fa9a5e11",
+      "backendSha256": "690a6ce0c3255e8e1f5c518c1023df9cafdef66dad50a485e7cf1e3dca2f7479",
+      "audioSidecarSha256": "e363cbe0b54b0fbd1d0ae57cae5f78f1278f662580de224c8cc09425b56a1447"
+    }
+  },
   "weights": {
     "overlay_warm_p95_ms": 0.1,
     "overlay_cold_p95_ms": 0.05,
@@ -17,20 +36,20 @@
   },
   "metrics": {
     "local_wux": 1.0,
-    "overlay_warm_p95_ms": 127.184,
-    "overlay_cold_p95_ms": 143.899,
-    "microsoft_local_tail_p95_ms": 62.24,
-    "soniox_local_tail_p95_ms": 59.909,
-    "app_ux_p95_ms": 615.66,
-    "hotkey_mic_ready_p95_ms": 960.604,
-    "hotkey_first_audio_frame_p95_ms": 959.424,
+    "overlay_warm_p95_ms": 97.349,
+    "overlay_cold_p95_ms": 123.5,
+    "microsoft_local_tail_p95_ms": 38.427,
+    "soniox_local_tail_p95_ms": 37.766,
+    "app_ux_p95_ms": 719.631,
+    "hotkey_mic_ready_p95_ms": 64.095,
+    "hotkey_first_audio_frame_p95_ms": 54.608,
     "hotkey_first_audible_audio_frame_p95_ms": "unknown",
     "text_errors": 0,
     "focus_errors": 0,
     "clipboard_errors": 0,
     "overlay_errors": 0,
     "ui_long_tasks_gt_200ms": 0,
-    "idle_cpu_pct": 0.0,
-    "working_set_mb": 87.57
+    "idle_cpu_pct": 0.05,
+    "working_set_mb": 169.31
   }
 }

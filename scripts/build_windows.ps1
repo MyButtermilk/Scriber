@@ -1318,6 +1318,27 @@ try {
         }
     }
 
+    $runtimeAttestationPath = $null
+    if ($FastLocalStagedApp) {
+        Invoke-Checked -Label "FastLocal runtime attestation" -Command {
+            Push-Location $RepoRoot
+            try {
+                & $releasePython scripts\perf\runtime_attestation.py write `
+                    --repo-root $RepoRoot `
+                    --install-root $targetRelease
+                if ($LASTEXITCODE -ne 0) {
+                    throw "FastLocal runtime attestation failed."
+                }
+            } finally {
+                Pop-Location
+            }
+        }
+        $runtimeAttestationPath = Join-Path $targetRelease "scriber-autoresearch-runtime-attestation.json"
+        if (-not (Test-Path -LiteralPath $runtimeAttestationPath -PathType Leaf)) {
+            throw "FastLocal runtime attestation did not write its expected manifest."
+        }
+    }
+
     $buildMode = [ordered]@{
         artifactKind = if ($FastLocalStagedApp) { "staged-app" } else { "installer" }
         devOnly = [bool]($FastLocalInstaller -or $FastLocalStagedApp -or $LocalPyInstallerNoClean)
@@ -1334,6 +1355,7 @@ try {
         nsisCompression = if ($NsisCompression) { $NsisCompression } else { "tauri-default" }
         localPyInstallerNoClean = [bool]$LocalPyInstallerNoClean
         rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
+        runtimeAttested = [bool]$runtimeAttestationPath
     }
     $sidecarMetadataPath = Join-Path $targetRelease "backend\sidecar-build-metadata.json"
     $buildTimingPath = Write-BuildTimingReport -MetadataDir $metadataDir -SidecarMetadataPath $sidecarMetadataPath -BuildMode $buildMode
@@ -1349,6 +1371,7 @@ try {
         sizeReport = Join-Path $metadataDir "size-report.json"
         buildTiming = $buildTimingPath
         buildMode = $buildMode
+        runtimeAttestation = $runtimeAttestationPath
         mediaPreparationSmoke = $mediaPreparationSmoke
         runtimeDependencyFootprint = $runtimeDependencyFootprint
         diarizationWorkerStagedSmoke = $diarizationWorkerStagedSmokePath
