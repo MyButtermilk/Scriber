@@ -938,6 +938,11 @@ Rust audio:
   idle-prewarm implementation. It keeps `audioPrewarmStart` alive during idle,
   hands the `prewarmId` to the next Rust capture, and records redacted adoption
   diagnostics.
+- On process startup, persisted Always-on prewarm waits for DeviceMonitor's
+  forced initial PortAudio refresh callback, including favorite-device
+  resolution, and then starts against the final device inventory. A
+  three-second bounded fallback starts prewarm even if initial device discovery
+  cannot report completion. Normal hotplug callback ordering remains unchanged.
 - The passive Rust WASAPI probe and active Rust capture path share the same
   redacted SHA-256/16-hex native endpoint hash contract, so selected-device
   probe evidence is comparable with selected-device capture evidence.

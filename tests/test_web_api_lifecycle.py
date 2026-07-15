@@ -1341,6 +1341,70 @@ async def test_startup_idle_mic_prewarm_sync_retries_after_initial_attempt(monke
 
 
 @pytest.mark.asyncio
+async def test_controller_defers_persisted_prewarm_until_startup_device_refresh(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("SCRIBER_DISABLE_DEVICE_MONITOR", raising=False)
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
+    monkeypatch.setattr(web_api.DeviceMonitor, "start", lambda self: None)
+    monkeypatch.setattr(
+        web_api.DeviceMonitor,
+        "last_devices_changed_reason",
+        lambda self: "startup",
+    )
+    _FakeRustMicPrewarmManager.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    manager = _FakeRustMicPrewarmManager.instances[-1]
+
+    await asyncio.sleep(0)
+    assert manager.resume_calls == 0
+    assert manager.active is False
+
+    ctl._on_devices_changed([{"deviceId": "default", "label": "Default"}])
+    for _ in range(100):
+        task = ctl._device_change_task
+        if ctl._device_monitor_startup_ready.is_set() and (task is None or task.done()):
+            break
+        await asyncio.sleep(0.01)
+
+    assert ctl._device_monitor_startup_ready.is_set()
+    assert manager.resume_calls == 1
+    assert manager.active is True
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_startup_prewarm_falls_back_when_device_refresh_never_arrives(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("SCRIBER_DISABLE_DEVICE_MONITOR", raising=False)
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(web_api, "RustAudioPrewarmManager", _FakeRustMicPrewarmManager)
+    monkeypatch.setattr(web_api.DeviceMonitor, "start", lambda self: None)
+    _FakeRustMicPrewarmManager.instances.clear()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    manager = _FakeRustMicPrewarmManager.instances[-1]
+
+    active = await ctl._sync_startup_idle_mic_prewarm(
+        device_refresh_timeout_seconds=0.01
+    )
+
+    assert active is True
+    assert manager.resume_calls == 1
+    assert manager.active is True
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_controller_uses_rust_idle_prewarm_manager_for_rust_audio_engine(
     monkeypatch,
     tmp_path,

@@ -422,6 +422,12 @@ Packaging and scripts:
   With active native events, polling is only a sparse safety net; faster polling
   is fallback-only when native events are unavailable.
 - Device refresh is recording-aware and can be deferred until idle.
+- Persisted `SCRIBER_MIC_ALWAYS_ON=1` prewarm starts only after DeviceMonitor's
+  initial PortAudio refresh callback has completed. Startup keeps a bounded
+  fallback when initial device discovery cannot finish; do not reintroduce a
+  prewarm/refresh race that leaves the Windows microphone indicator off until
+  first recording. Preserve normal hotplug callback ordering so restored
+  favorite-device selection is applied before idle prewarm resumes.
 - Physical microphone matrix evidence is native-event-first. Use
   `-RequireDeviceRefreshEvidence` for Rust-promotion gates so artifacts prove
   native events, sparse safety polling, and zero forced per-poll refreshes.

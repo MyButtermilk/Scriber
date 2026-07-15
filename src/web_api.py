@@ -2789,6 +2789,7 @@ class ScriberWebController:
         self._device_change_task: asyncio.Task | None = None
         self._pending_device_change_devices: list[dict[str, str]] | None = None
         self._pending_device_change_reason = ""
+        self._device_monitor_startup_ready = asyncio.Event()
 
         self._pipeline: Optional[Any] = None
         self._pipeline_task: Optional[asyncio.Task] = None
@@ -3093,7 +3094,9 @@ class ScriberWebController:
                 self._mic_prewarm.resume_after_device_refresh,
             )
             self._device_monitor.start()
-        self._schedule_idle_mic_prewarm()
+        else:
+            self._device_monitor_startup_ready.set()
+            self._schedule_idle_mic_prewarm()
         self._start_mic_watchdog()
         if os.name == "nt" and shell_ipc_available():
             self._meeting_detection_task = self._loop.create_task(
@@ -3949,17 +3952,48 @@ class ScriberWebController:
             self._stop_mic_watchdog_if_idle()
         return True
 
-    async def _sync_idle_mic_prewarm_after_settings(self) -> None:
+    async def _sync_idle_mic_prewarm_after_settings(self) -> bool:
         if not Config.MIC_ALWAYS_ON:
             self._cancel_post_recording_mic_prewarm_timer()
             await asyncio.to_thread(self._mic_prewarm.stop, reason="settings_disabled")
             self._stop_mic_watchdog_if_idle()
-            return
+            return False
+        active = False
         if self._is_listening or self._is_stopping or self._meeting_store.active() is not None:
             await asyncio.to_thread(self._mic_prewarm.pause_for_active_capture)
         else:
-            await asyncio.to_thread(self._mic_prewarm.resume_after_active_capture)
+            active = bool(
+                await asyncio.to_thread(self._mic_prewarm.resume_after_active_capture)
+            )
         self._start_mic_watchdog()
+        return bool(active or self._mic_prewarm.is_active)
+
+    async def _sync_startup_idle_mic_prewarm(
+        self,
+        *,
+        device_refresh_timeout_seconds: float = 3.0,
+    ) -> bool:
+        """Start persisted Always-on capture after initial device discovery.
+
+        DeviceMonitor intentionally refreshes PortAudio once during startup.
+        Starting prewarm before that refresh completes lets the quiesce path
+        invalidate the new sidecar session. Wait for the startup callback, with
+        a bounded fallback when device discovery fails, then converge once.
+        """
+        if Config.MIC_ALWAYS_ON and self._device_monitor_enabled:
+            try:
+                await asyncio.wait_for(
+                    self._device_monitor_startup_ready.wait(),
+                    timeout=max(0.01, float(device_refresh_timeout_seconds)),
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Initial microphone device refresh timed out; starting idle prewarm anyway"
+                )
+        if Config.MIC_ALWAYS_ON and self._mic_prewarm.is_active:
+            self._start_mic_watchdog()
+            return True
+        return await self._sync_idle_mic_prewarm_after_settings()
 
     @staticmethod
     def _trace_id_for(value: str | None) -> str | None:
@@ -4009,6 +4043,9 @@ class ScriberWebController:
                 raise
             except Exception as exc:
                 logger.warning(f"Devices-changed handler failed: {exc}")
+            finally:
+                if reason == "startup":
+                    self._device_monitor_startup_ready.set()
 
     def _on_device_change_task_done(self, task: asyncio.Task) -> None:
         if self._device_change_task is task:
@@ -17559,8 +17596,11 @@ async def _background_init(controller: ScriberWebController) -> None:
 
     async def _sync_idle_mic_prewarm() -> None:
         try:
-            await controller._sync_idle_mic_prewarm_after_settings()
-            logger.info("Startup idle microphone prewarm synchronized")
+            active = await controller._sync_startup_idle_mic_prewarm()
+            logger.info(
+                "Startup idle microphone prewarm synchronized "
+                f"(active={active}, configured={bool(Config.MIC_ALWAYS_ON)})"
+            )
         except Exception as e:
             logger.debug(f"Startup idle microphone prewarm sync skipped: {e}")
 
