@@ -93,6 +93,8 @@ def provider_user_error(provider: str | None, error: Exception | str) -> Provide
         specific = _classify_deepgram(normalized_provider, label, combined, status, code)
     elif family == "openai":
         specific = _classify_openai(normalized_provider, label, combined, status, code)
+    elif family == "modulate":
+        specific = _classify_modulate(normalized_provider, label, combined, status, code)
     else:
         specific = None
 
@@ -182,6 +184,8 @@ def _normalize_provider(provider: str | None, raw: str) -> str:
         "azure_mai_transcribe": "azure_mai",
         "deepgram": "deepgram",
         "openai": "openai",
+        "modulate": "modulate",
+        "modulate_async": "modulate_async",
         "onnx_local": "onnx_local",
     }
     if normalized in aliases:
@@ -202,6 +206,8 @@ def _normalize_provider(provider: str | None, raw: str) -> str:
         return "deepgram"
     if "openai" in text:
         return "openai"
+    if "modulate" in text or "velma-2-stt" in text:
+        return "modulate_async" if "batch" in text or "async" in text else "modulate"
     if "onnx_local" in text or "onnx local" in text:
         return "onnx_local"
     return normalized
@@ -216,6 +222,8 @@ def _provider_family(provider: str) -> str:
         return "mistral"
     if provider in {"smallest", "smallest_async"}:
         return "smallest"
+    if provider in {"modulate", "modulate_async"}:
+        return "modulate"
     return provider
 
 
@@ -530,4 +538,84 @@ def _classify_openai(provider: str, label: str, text: str, status: int | None, c
         return _make_error(provider, label, ErrorCategory.AUDIO_INVALID, "OpenAI could not process this audio. Use a supported audio format and retry.", code=code or str(status or ""))
     if status in {400, 422} or _has(text, "badrequesterror", "invalid_request_error"):
         return _make_error(provider, label, ErrorCategory.CONFIG_INVALID, "OpenAI rejected the transcription request. Check the model and settings.", code=code or str(status or ""))
+    return None
+
+
+def _classify_modulate(
+    provider: str,
+    label: str,
+    text: str,
+    status: int | None,
+    code: str,
+) -> ProviderUserError | None:
+    if status in {401, 403} or _has(
+        text,
+        "4001",
+        "4003",
+        "auth failure",
+        "invalid api key",
+        "missing model access",
+        "not permitted",
+    ):
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.AUTH_INVALID,
+            "Modulate rejected the API key or model access. Check the Modulate key in Settings.",
+            code=code or str(status or "4001"),
+        )
+    if status in {402, 429} or _has(
+        text,
+        "4029",
+        "insufficient credits",
+        "concurrent-connection limit",
+        "concurrent connection limit",
+        "rate limit",
+        "too many requests",
+    ):
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.PROVIDER_LIMIT,
+            "Modulate credits or connection limits were reached. Wait briefly or check the Modulate plan.",
+            code=code or str(status or "4029"),
+        )
+    if _is_audio_error(text, status, code) or status == 422 or _has(
+        text,
+        "1003",
+        "unsupported audio_format",
+        "unsupported format",
+        "invalid sample_rate",
+        "invalid num_channels",
+        "100mb batch upload limit",
+    ):
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.AUDIO_INVALID,
+            "Modulate could not process this audio. Use a supported format and keep batch files at or below 100 MB.",
+            code=code or str(status or ""),
+        )
+    if _is_5xx(status) or _has(
+        text,
+        "internal server error",
+        "service unavailable",
+        "bad gateway",
+        "gateway timeout",
+    ):
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.TRANSIENT_PROVIDER,
+            "Modulate is temporarily unavailable. Please retry shortly.",
+            code=code or str(status or ""),
+        )
+    if _has(text, "websocket", "connection", "timeout", "timed out"):
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.TRANSIENT_NETWORK,
+            "Could not keep the Modulate connection open. Check your network and retry.",
+            code=code,
+        )
     return None

@@ -60,6 +60,201 @@ def test_transcription_mode_is_first_class_and_validated(store: MeetingStore):
         store.create(MeetingCreate(title="Invalid mode", transcription_mode="minute_chunks"))
 
 
+def test_full_reprocess_reservation_is_atomic_and_preserves_canonical_rows(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request(final_provider="soniox_async"))
+    store.replace_segments(
+        meeting["id"],
+        "canonical",
+        [
+            {
+                "id": "canonical-before-reprocess",
+                "source": "system",
+                "startMs": 100,
+                "endMs": 900,
+                "text": "Existing canonical result",
+                "speakerLabel": "Remote",
+            }
+        ],
+    )
+    store.transition(meeting["id"], "finalizing")
+    store.transition(meeting["id"], "ready")
+
+    reserved = store.reserve_full_reprocess(
+        meeting["id"],
+        final_provider="deepgram",
+        analysis_model="gpt-5-mini",
+        voice_library_enabled=True,
+    )
+
+    assert reserved["state"] == "finalizing"
+    assert reserved["finalProvider"] == "deepgram"
+    assert reserved["analysisModel"] == "gpt-5-mini"
+    assert reserved["voiceLibraryEnabled"] is True
+    assert reserved["captureMetadata"]["reprocessKind"] == "full_transcript"
+    assert reserved["captureMetadata"]["reprocessPreviousProvider"] == "soniox_async"
+    assert store.detail(meeting["id"])["segments"][0]["text"] == (
+        "Existing canonical result"
+    )
+    with pytest.raises(MeetingConflict, match="completed Meeting"):
+        store.reserve_full_reprocess(
+            meeting["id"],
+            final_provider="soniox_async",
+            analysis_model="",
+            voice_library_enabled=False,
+        )
+
+
+def test_full_reprocess_can_restart_after_analysis_failure(store: MeetingStore):
+    meeting = store.create(create_request(final_provider="soniox_async"))
+    store.transition(meeting["id"], "finalizing")
+    store.transition(meeting["id"], "analyzing")
+    store.transition(
+        meeting["id"],
+        "analysis_failed",
+        error_code="meeting_analysis_failed",
+        error_message="Summary provider unavailable",
+    )
+
+    reserved = store.reserve_full_reprocess(
+        meeting["id"],
+        final_provider="deepgram",
+        final_model="nova-3",
+        analysis_model="gpt-5-mini",
+        voice_library_enabled=False,
+    )
+
+    assert reserved["state"] == "finalizing"
+    assert reserved["errorCode"] == ""
+    assert reserved["errorMessage"] == ""
+    assert reserved["captureMetadata"]["reprocessPreviousState"] == "analysis_failed"
+    assert reserved["captureMetadata"]["reprocessFinalModel"] == "nova-3"
+
+
+def test_changed_full_reprocess_transcript_marks_existing_outputs_stale_once(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    initial = [{
+        "id": "canonical-initial",
+        "source": "system",
+        "speakerLabel": "Speaker 1",
+        "startMs": 0,
+        "endMs": 1_000,
+        "text": "Original transcript",
+        "alignmentQuality": "exact_word",
+        "sequence": 0,
+    }]
+    store.replace_segments(meeting["id"], "canonical", initial)
+    store.save_output(
+        meeting["id"],
+        kind="analysis",
+        payload={"executiveSummary": "Original summary", "actionItems": []},
+    )
+
+    replacement = [{
+        **initial[0],
+        "id": "canonical-reprocessed",
+        "text": "Improved transcript",
+    }]
+    store.replace_segments(
+        meeting["id"],
+        "canonical",
+        replacement,
+        advance_transcript_version_on_change=True,
+    )
+    first = store.detail(meeting["id"])
+
+    assert first["transcriptEditVersion"] == 1
+    assert first["outputs"][0]["transcriptEditVersion"] == 0
+
+    # Retrying the same already-committed canonical result must not make the
+    # stale boundary advance repeatedly.
+    store.replace_segments(
+        meeting["id"],
+        "canonical",
+        replacement,
+        advance_transcript_version_on_change=True,
+    )
+    assert store.get(meeting["id"])["transcriptEditVersion"] == 1
+
+
+def test_canonical_detail_hides_speakers_left_only_in_previous_or_live_revision(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    store.add_segments(meeting["id"], [{
+        "id": "live-old",
+        "revision": "live",
+        "source": "system",
+        "speakerLabel": "Old live speaker",
+        "startMs": 0,
+        "endMs": 1_000,
+        "text": "Preview",
+    }])
+    store.replace_segments(meeting["id"], "canonical", [{
+        "id": "canonical-old",
+        "source": "system",
+        "speakerLabel": "Old canonical speaker",
+        "startMs": 0,
+        "endMs": 1_000,
+        "text": "Old result",
+    }])
+    store.replace_segments(meeting["id"], "canonical", [{
+        "id": "canonical-new",
+        "source": "system",
+        "speakerLabel": "New canonical speaker",
+        "startMs": 0,
+        "endMs": 1_000,
+        "text": "New result",
+    }])
+
+    detail = store.detail(meeting["id"])
+
+    assert [speaker["displayName"] for speaker in detail["speakers"]] == [
+        "New canonical speaker"
+    ]
+
+
+def test_changed_full_reprocess_requires_speaker_participant_reconfirmation(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    first = store.replace_segments(meeting["id"], "canonical", [{
+        "id": "canonical-before",
+        "source": "system",
+        "speakerLabel": "Speaker 1",
+        "startMs": 0,
+        "endMs": 1_000,
+        "text": "Before",
+    }])[0]
+    store.assign_speaker_participant(
+        meeting["id"],
+        first["speakerId"],
+        {"name": "Ada Example", "address": "ada@example.com"},
+    )
+
+    store.replace_segments(
+        meeting["id"],
+        "canonical",
+        [{
+            "id": "canonical-after",
+            "source": "system",
+            "speakerLabel": "Speaker 1",
+            "startMs": 0,
+            "endMs": 1_200,
+            "text": "After",
+        }],
+        advance_transcript_version_on_change=True,
+        reset_speaker_identity_on_change=True,
+    )
+    speaker = store.detail(meeting["id"])["speakers"][0]
+
+    assert speaker["displayName"] == "Speaker 1"
+    assert speaker["confirmedAttendee"] is None
+
+
 def test_existing_meetings_migrate_to_live_and_final_mode(monkeypatch, tmp_path):
     database._close_all_connections()
     target = tmp_path / "legacy-transcription-mode.db"
@@ -358,6 +553,78 @@ def test_final_provider_retry_change_is_normalized_recoverable_and_rollbackable(
     )
     assert replaced == "deepgram_async"
     assert store.get(meeting_id)["finalProvider"] == "soniox_async"
+
+
+def test_full_reprocess_provider_retry_switches_and_restores_frozen_model(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request(final_provider="soniox_async"))
+    store.transition(meeting["id"], "finalizing")
+    store.transition(meeting["id"], "analyzing")
+    store.transition(meeting["id"], "ready")
+    store.reserve_full_reprocess(
+        meeting["id"],
+        final_provider="soniox_async",
+        final_model="stt-async-v4",
+        analysis_model="gpt-5-mini",
+        voice_library_enabled=True,
+    )
+    store.transition(meeting["id"], "finalization_failed")
+
+    previous = store.change_final_provider_for_retry(
+        meeting["id"],
+        "deepgram_async",
+        expected_state="finalization_failed",
+        expected_final_provider="soniox_async",
+        allowed_providers={"soniox_async", "deepgram_async"},
+        final_model="nova-3",
+    )
+    switched = store.get(meeting["id"])
+    assert previous == "soniox_async"
+    assert switched["finalProvider"] == "deepgram_async"
+    assert switched["captureMetadata"]["reprocessFinalModel"] == "nova-3"
+
+    replaced = store.change_final_provider_for_retry(
+        meeting["id"],
+        previous,
+        expected_state="finalization_failed",
+        expected_final_provider="deepgram_async",
+        allowed_providers={"soniox_async", "deepgram_async"},
+        final_model="stt-async-v4",
+    )
+    restored = store.get(meeting["id"])
+    assert replaced == "deepgram_async"
+    assert restored["finalProvider"] == "soniox_async"
+    assert restored["captureMetadata"]["reprocessFinalModel"] == "stt-async-v4"
+
+
+def test_full_reprocess_provider_retry_rejects_switch_without_frozen_model(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request(final_provider="soniox_async"))
+    store.transition(meeting["id"], "finalizing")
+    store.transition(meeting["id"], "ready")
+    store.reserve_full_reprocess(
+        meeting["id"],
+        final_provider="soniox_async",
+        final_model="stt-async-v4",
+        analysis_model="gpt-5-mini",
+        voice_library_enabled=True,
+    )
+    store.transition(meeting["id"], "finalization_failed")
+
+    with pytest.raises(ValueError, match="requires its frozen model"):
+        store.change_final_provider_for_retry(
+            meeting["id"],
+            "deepgram_async",
+            expected_state="finalization_failed",
+            expected_final_provider="soniox_async",
+            allowed_providers={"soniox_async", "deepgram_async"},
+        )
+
+    unchanged = store.get(meeting["id"])
+    assert unchanged["finalProvider"] == "soniox_async"
+    assert unchanged["captureMetadata"]["reprocessFinalModel"] == "stt-async-v4"
 
 
 def test_final_provider_retry_change_rejects_stale_provider_and_state(
@@ -1478,6 +1745,167 @@ def test_voice_profile_can_be_named_and_updates_confident_linked_speakers(store:
     detail = store.detail(meeting["id"])
     assert detail["speakers"][0]["displayName"] == "Ada Lovelace"
     assert detail["segments"][0]["speakerLabel"] == "Ada Lovelace"
+
+
+def test_voice_reprocess_creates_neutral_microphone_speaker_and_safe_preselection(
+    store: MeetingStore,
+):
+    vector = [1.0] + [0.0] * 255
+    enrolled = store.enroll_speaker_profile("Alexander Immler", vector)
+    meeting = store.create(create_request(title="Historical local microphone"))
+    store.replace_segments(
+        meeting["id"],
+        "canonical",
+        [
+            {
+                "id": "unlabeled-microphone",
+                "revision": "canonical",
+                "source": "microphone",
+                "sequence": 0,
+                "startMs": 0,
+                "endMs": 4_000,
+                "text": "Canonical text stays unchanged.",
+            }
+        ],
+    )
+    virtual_speaker_id = hashlib.sha256(
+        f"{meeting['id']}\0canonical\0microphone\0you".encode("utf-8")
+    ).hexdigest()[:32]
+
+    result = store.rematch_speaker_embeddings(
+        meeting["id"],
+        [
+            {
+                "speakerId": virtual_speaker_id,
+                "speakerLabel": "You",
+                "segmentId": "unlabeled-microphone",
+                "source": "microphone",
+                "embedding": vector,
+                "quality": 1.0,
+            }
+        ],
+    )
+
+    assert result["processedSpeakerCount"] == 1
+    detail = store.detail(meeting["id"])
+    assert detail["segments"][0]["speakerId"] == virtual_speaker_id
+    assert detail["segments"][0]["speakerLabel"] == "You"
+    assert detail["segments"][0]["text"] == "Canonical text stays unchanged."
+    speaker = detail["speakers"][0]
+    assert speaker["profileId"] == enrolled["id"]
+    assert speaker["displayName"] == "You"
+    assert speaker["voiceMatch"] == {
+        "profileId": enrolled["id"],
+        "displayName": "Alexander Immler",
+        "confidence": pytest.approx(1.0),
+        "evidenceCount": 1,
+        "matchState": "suggested",
+        "canPreselect": True,
+        "requiresConfirmation": True,
+    }
+
+
+def test_voice_reprocess_rolls_back_virtual_speaker_when_segment_changed(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    store.replace_segments(
+        meeting["id"],
+        "canonical",
+        [
+            {
+                "id": "actual-segment",
+                "source": "microphone",
+                "startMs": 0,
+                "endMs": 3_000,
+                "text": "Keep me untouched",
+            }
+        ],
+    )
+    virtual_speaker_id = hashlib.sha256(
+        f"{meeting['id']}\0canonical\0microphone\0you".encode("utf-8")
+    ).hexdigest()[:32]
+
+    with pytest.raises(ValueError, match="changed"):
+        store.rematch_speaker_embeddings(
+            meeting["id"],
+            [
+                {
+                    "speakerId": virtual_speaker_id,
+                    "speakerLabel": "You",
+                    "segmentId": "missing-segment",
+                    "source": "microphone",
+                    "embedding": [1.0] + [0.0] * 255,
+                }
+            ],
+        )
+
+    detail = store.detail(meeting["id"])
+    assert detail["speakers"] == []
+    assert detail["segments"][0]["speakerId"] is None
+    assert detail["segments"][0]["speakerLabel"] == ""
+    assert detail["segments"][0]["text"] == "Keep me untouched"
+
+
+def test_learned_voice_preview_candidate_is_bounded_and_never_exposes_a_path(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    segment = store.replace_segments(
+        meeting["id"],
+        "canonical",
+        [
+            {
+                "id": "preview-segment",
+                "source": "system",
+                "speakerLabel": "Remote",
+                "startMs": 1_000,
+                "endMs": 21_000,
+                "text": "A long enough sample",
+            }
+        ],
+    )[0]
+    learned = store.register_speaker_embedding(
+        meeting["id"],
+        segment["speakerId"],
+        segment["id"],
+        [1.0] + [0.0] * 255,
+    )
+    store.transition(meeting["id"], "finalizing")
+    store.transition(meeting["id"], "ready")
+    with database._get_connection() as conn:
+        conn.execute(
+            """INSERT INTO meeting_audio_assets
+               (id,meeting_id,kind,relative_path,codec,sample_rate,channels,
+                duration_ms,byte_size,sha256,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "preview-asset",
+                meeting["id"],
+                "playback_system",
+                f"{meeting['id']}/final/system.opus",
+                "opus",
+                16_000,
+                1,
+                21_000,
+                128,
+                "a" * 64,
+                "2026-07-15T10:00:00Z",
+            ),
+        )
+        conn.commit()
+
+    candidate = store.speaker_profile_preview_candidates()[learned["profileId"]]
+
+    assert candidate == {
+        "profileId": learned["profileId"],
+        "meetingId": meeting["id"],
+        "source": "system",
+        "startMs": 7_000,
+        "endMs": 15_000,
+        "durationMs": 8_000,
+    }
+    assert not any("path" in key.casefold() for key in candidate)
 
 
 def test_explicit_voice_enrollment_creates_named_privacy_minimal_profile(

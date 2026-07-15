@@ -578,8 +578,15 @@ def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:
     assert 'historyStatus === "summary_failed"' in source
     assert "TranscriptSummaryRetryButton" in source
     assert "onSummaryRetryComplete" in source
+    assert 'historyStatus === "failed"' in source
+    assert 'onTranscriptionRetry(event, item)' in source
+    assert '"Retry transcription"' in source
+    assert 'apiUrl("/api/youtube/transcribe")' in source
+    assert 'description: "No source URL is available for this video.",' in source
+    assert 'description: `A new transcription attempt for “${item.title}” has been queued.`,' in source
+    assert 'isRetryingTranscription={retryingTranscriptId === item.id}' in source
     assert 'item.summaryStatus === "pending" ? "Summarizing…"' in source
-    assert "text-red-600 border-red-200 bg-red-50" in source
+    assert "border-red-200 bg-red-50/95" in source
     assert "const isProcessing = isVisiblyProcessing(item);" not in source
     assert "youtubePreferCaptions" in api_types
     settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
@@ -826,6 +833,19 @@ def test_youtube_sorting_and_failed_retry_use_client_state_and_source_url() -> N
     assert "title: transcript?.title," in detail_source
     assert 'setLocation(`/transcript/${rec.id}`);' in detail_source
     assert "void retryYoutubeTranscription();" in detail_source
+
+
+def test_transcript_detail_keeps_failed_retry_actions_contextual_and_single() -> None:
+    detail_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx"
+    ).read_text(encoding="utf-8")
+
+    # Failed YouTube transcription and summary retries belong beside their
+    # respective error explanations, not duplicated in the global toolbar.
+    assert detail_source.count("void retryYoutubeTranscription();") == 1
+    assert detail_source.count('label="Retry Summary"') == 1
+    assert 'const showHeaderSummaryAction =' in detail_source
+    assert '!isSummaryFailed;' in detail_source
 
 
 def test_youtube_async_start_only_navigates_while_the_user_is_still_on_youtube() -> None:
@@ -1453,6 +1473,41 @@ def test_settings_model_choices_require_saved_api_keys() -> None:
     assert 'OpenRouter: hasValue(keys.openrouter)' in settings_source
 
 
+def test_settings_exposes_modulate_final_text_only_realtime_and_batch() -> None:
+    settings_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+    api_types = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts"
+    ).read_text(encoding="utf-8")
+    modulate_icon = (
+        REPO_ROOT / "Frontend" / "client" / "public" / "provider-icons" / "modulate.svg"
+    ).read_text(encoding="utf-8")
+
+    assert 'modulate?: string;' in api_types
+    assert 'value: "modulate-realtime"' in settings_source
+    assert 'value: "modulate-async"' in settings_source
+    assert 'label: "Modulate.AI Multilingual Realtime"' in settings_source
+    assert 'label: "Modulate.AI Multilingual Batch"' in settings_source
+    assert 'detail: "Final text only · no partials or enrichment signals"' in settings_source
+    assert 'detail: "One final transcript · no enrichment signals"' in settings_source
+    assert 'defaultSttService: "modulate"' in settings_source
+    assert 'defaultSttService: "modulate_async"' in settings_source
+    assert 'apiKeys.modulate = modulateKey;' in settings_source
+    assert 'setModulateKey(keys.modulate || "");' in settings_source
+    assert '"Modulate.AI": hasValue(keys.modulate)' in settings_source
+    assert 'provider="Modulate.AI" icon="modulate"' in settings_source
+    assert 'show={showModulateKey}' in settings_source
+    assert 'onShowChange={setShowModulateKey}' in settings_source
+    assert 'helpKey="modulate"' in settings_source
+    assert 'speaker_diarization' not in settings_source
+    assert 'emotion_signal' not in settings_source
+    assert 'accent_signal' not in settings_source
+    assert 'deepfake_signal' not in settings_source
+    assert 'pii_phi_tagging' not in settings_source
+    assert 'fill="#285FEB"' in modulate_icon
+
+
 def test_settings_custom_vocabulary_autosaves_without_manual_button() -> None:
     settings_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
@@ -1780,7 +1835,12 @@ def test_meeting_workspace_scopes_drafts_playback_and_imports_to_durable_state()
     assert "meetingImportsQuery.data?.items.find" in meetings
     assert 'job.meetingId' in meetings
     assert 'queryKey: ["/api/meetings/speaker-profiles"]' in settings
-    assert "const speakerProfilesQuery" not in meetings
+    # The Meeting workspace now intentionally reads the same local Voice
+    # Library query as Settings so a matched generic voice can be previewed and
+    # renamed in context. Keep it lazy: Meetings without a profile link must
+    # not fetch the biometric-library metadata.
+    assert "const speakerProfilesQuery" in meetings
+    assert "enabled: Boolean(detail?.speakers.some((speaker) => speaker.profileId))" in meetings
     assert 'onClick={() => setVoiceLibraryDeleteOpen(true)}' in settings
     assert "Delete all saved voice data?" in settings
     assert "Delete this saved speaker?" in settings
@@ -2159,13 +2219,17 @@ def test_meeting_export_uses_native_save_as_and_visible_follow_up_actions() -> N
     assert "Open file" in meetings
     assert "Open folder" in meetings
     assert "Save email draft" in meetings
+    assert "Save compressed audio" in meetings
     assert 'invoke<NativeSavedMeetingExport | null>("save_meeting_export"' in export_client
+    assert 'invoke<NativeSavedMeetingExport | null>("save_meeting_audio_export"' in export_client
     assert 'invoke("open_meeting_export"' in export_client
     assert 'invoke("reveal_meeting_export"' in export_client
     assert ".blocking_save_file()" in export_shell
     assert "write_export_atomically" in export_shell
+    assert "write_export_stream_atomically" in export_shell
     assert "MAX_RECENT_EXPORTS" in export_shell
     assert "export_dialog::save_meeting_export" in shell
+    assert "export_dialog::save_meeting_audio_export" in shell
 
 
 def test_meeting_workspace_guards_async_state_and_touch_delete_controls() -> None:

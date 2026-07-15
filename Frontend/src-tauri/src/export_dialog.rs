@@ -2,20 +2,24 @@ use serde::Serialize;
 use std::{
     collections::{HashMap, VecDeque},
     fs::OpenOptions,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::Mutex,
+    time::Duration,
 };
 use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
+use crate::BackendManager;
+
 const MAX_EXPORT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_STREAMED_AUDIO_EXPORT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RECENT_EXPORTS: usize = 16;
 const MAX_FILENAME_UTF8_BYTES: usize = 180;
 const MAX_FILENAME_UTF16_UNITS: usize = 180;
-const ALLOWED_EXTENSIONS: &[&str] = &["json", "md", "pdf", "docx", "eml"];
+const ALLOWED_EXTENSIONS: &[&str] = &["json", "md", "pdf", "docx", "eml", "opus"];
 
 #[derive(Default)]
 struct MeetingExportRegistryInner {
@@ -178,6 +182,7 @@ fn export_filter_label(extension: &str) -> &'static str {
         "pdf" => "PDF document",
         "docx" => "Word document",
         "eml" => "Email draft",
+        "opus" => "Compressed meeting audio",
         _ => "Meeting export",
     }
 }
@@ -206,6 +211,63 @@ fn write_export_atomically(destination: &Path, bytes: &[u8]) -> io::Result<()> {
         file.sync_all()?;
         drop(file);
         replace_file(&temporary, destination)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn write_export_stream_atomically(
+    destination: &Path,
+    reader: &mut impl Read,
+    max_bytes: u64,
+) -> io::Result<u64> {
+    let parent = destination.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "export destination has no parent",
+        )
+    })?;
+    let filename = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("meeting-audio");
+    let temporary = parent.join(format!(
+        ".{filename}.{}.scriber-export.tmp",
+        Uuid::new_v4().simple()
+    ));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)?;
+        let mut total = 0u64;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            total = total.saturating_add(read as u64);
+            if total > max_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "compressed meeting audio exceeds the export limit",
+                ));
+            }
+            file.write_all(&buffer[..read])?;
+        }
+        if total == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "compressed meeting audio was empty",
+            ));
+        }
+        file.sync_all()?;
+        drop(file);
+        replace_file(&temporary, destination)?;
+        Ok(total)
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&temporary);
@@ -302,6 +364,119 @@ pub async fn save_meeting_export(
     }))
 }
 
+fn valid_meeting_export_id(meeting_id: &str) -> bool {
+    !meeting_id.is_empty()
+        && meeting_id.len() <= 128
+        && meeting_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+#[tauri::command]
+pub async fn save_meeting_audio_export(
+    window: WebviewWindow,
+    manager: State<'_, BackendManager>,
+    registry: State<'_, MeetingExportRegistry>,
+    meeting_id: String,
+    filename: String,
+) -> Result<Option<SavedMeetingExport>, String> {
+    if !valid_meeting_export_id(&meeting_id) {
+        return Err("That meeting audio export address is not allowed.".to_string());
+    }
+    let extension = "opus";
+    let filename = sanitize_filename(&filename, extension);
+    let selected = window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_title("Save compressed meeting audio")
+        .set_file_name(&filename)
+        .add_filter(export_filter_label(extension), &[extension])
+        .blocking_save_file();
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    let destination = ensure_extension(
+        selected
+            .into_path()
+            .map_err(|_| "That save location cannot be used on this device.".to_string())?,
+        extension,
+    );
+    let access = manager.access();
+    let url = format!(
+        "{}/api/meetings/{meeting_id}/export/audio",
+        access.base_url.trim_end_matches('/')
+    );
+    let session_token = access.session_token;
+    let destination_for_write = destination.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(300))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| "Scriber could not prepare the audio export.".to_string())?;
+        let mut request = client.get(url);
+        if !session_token.is_empty() {
+            request = request.header("X-Scriber-Token", session_token);
+        }
+        let mut response = request
+            .send()
+            .map_err(|_| "Scriber could not read the compressed meeting audio.".to_string())?;
+        if !response.status().is_success() {
+            return Err(if response.status().as_u16() == 404 {
+                "Compressed meeting audio is not ready yet.".to_string()
+            } else {
+                format!(
+                    "Scriber could not export the compressed meeting audio ({}).",
+                    response.status().as_u16()
+                )
+            });
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_STREAMED_AUDIO_EXPORT_BYTES)
+        {
+            return Err("The compressed meeting audio is too large to export.".to_string());
+        }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !content_type.starts_with("audio/") {
+            return Err("The meeting audio export returned an unexpected file type.".to_string());
+        }
+        write_export_stream_atomically(
+            &destination_for_write,
+            &mut response,
+            MAX_STREAMED_AUDIO_EXPORT_BYTES,
+        )
+        .map_err(|error| format!("Scriber could not save the audio file ({error})."))?;
+        Ok(())
+    })
+    .await
+    .map_err(|_| "The meeting audio export stopped unexpectedly.".to_string())??;
+
+    let token = registry.remember(destination.clone())?;
+    let filename = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(&filename)
+        .to_string();
+    let directory = destination
+        .parent()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(Some(SavedMeetingExport {
+        token,
+        path: destination.to_string_lossy().into_owned(),
+        directory,
+        filename,
+    }))
+}
+
 fn saved_export_path(registry: &MeetingExportRegistry, token: &str) -> Result<PathBuf, String> {
     let path = registry.resolve(token)?;
     if !path.is_file() {
@@ -362,7 +537,16 @@ mod tests {
     #[test]
     fn unsupported_formats_are_rejected() {
         assert_eq!(normalize_extension(".PDF").unwrap(), "pdf");
+        assert_eq!(normalize_extension(".OPUS").unwrap(), "opus");
         assert!(normalize_extension("exe").is_err());
+    }
+
+    #[test]
+    fn meeting_audio_export_ids_are_strictly_scoped() {
+        assert!(valid_meeting_export_id("meeting_123-abc"));
+        assert!(!valid_meeting_export_id(""));
+        assert!(!valid_meeting_export_id("../meeting"));
+        assert!(!valid_meeting_export_id(&"a".repeat(129)));
     }
 
     #[test]
@@ -407,6 +591,32 @@ mod tests {
 
         assert!(write_export_atomically(&destination, b"new").is_err());
         assert!(destination.is_dir());
+        assert!(root.read_dir().unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains(".tmp")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn streamed_audio_writer_is_atomic_and_bounded() {
+        let root = std::env::temp_dir().join(format!(
+            "scriber-streamed-audio-export-test-{}",
+            Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let destination = root.join("meeting.opus");
+        let mut source = io::Cursor::new(b"OggS-opus-audio".to_vec());
+        assert_eq!(
+            write_export_stream_atomically(&destination, &mut source, 64).unwrap(),
+            15
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), b"OggS-opus-audio");
+
+        let mut oversized = io::Cursor::new(vec![1u8; 9]);
+        assert!(write_export_stream_atomically(&destination, &mut oversized, 8).is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"OggS-opus-audio");
         assert!(root.read_dir().unwrap().all(|entry| !entry
             .unwrap()
             .file_name()

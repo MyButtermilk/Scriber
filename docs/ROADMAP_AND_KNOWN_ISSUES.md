@@ -119,10 +119,13 @@ Meetings:
 - The start check can run an explicit 1.5-second mic/loopback/AEC route test;
   it returns only level/activity statistics and never persists or uploads audio.
 - Post-meeting progress, Overview and Notes views, independent track mute
-  controls, all four exports, and preview-confirmed webhook delivery are exposed
-  in the workspace. Desktop exports use native Save As; Open file/Open folder
-  resolve only the bounded opaque token returned by that save, while browser
-  builds download normally.
+  controls, document/data exports, compressed Opus audio sharing, and
+  preview-confirmed webhook delivery are exposed in the workspace. Outlook EML
+  drafts preserve the selected PDF/DOCX/Markdown MIME attachment and use the
+  transcript/analysis language for their subject, body, and document labels.
+  Desktop exports use native Save As; long audio is streamed instead of copied
+  through the WebView, and Open file/Open folder resolve only the bounded opaque
+  token returned by that save. Browser builds download normally.
 - The pre-React boot shell resolves the stored/system theme synchronously and
   uses the high-contrast dark Scriber mark before the application bundle mounts;
   the real-browser smoke freezes and screenshots this exact dark startup frame.
@@ -917,28 +920,43 @@ recoverable and an edit must immediately drive search and new exports.
 
 #### `UX-MTG-04` - Retranscribe/reprocess from canonical audio
 
+**Status:** core implemented. The Meeting workspace offers separate local
+speaker refresh and full retranscription modes for both `ready` and
+`analysis_failed` Meetings. Availability is derived from retained, bounded
+audio evidence, Voice Library readiness, provider credentials, model duration
+limits, and exact playback metadata. Full retranscription freezes the current
+Settings provider/model and keeps the existing transcript readable until the
+new canonical artifact commits. A retry after an artifact/projection crash
+reuses that committed provider result rather than paying for transcription
+again. Speaker refresh verifies retained playback before local inference and
+makes no paid STT request. Retry recovery requires an exact frozen
+workload/source/provider/model/language match; provider switches, rollbacks, and
+model-specific duration checks use one consistent provider/model pair.
+
 **Problem**
 
-A wrong language, STT model, or diarization choice currently forces a duplicate
-import or rerecording even when verified canonical audio is retained.
+A wrong language, STT model, or diarization choice should not require a
+duplicate import or rerecording while verified canonical audio is retained.
 
 **Interaction specification**
 
-- Add `Retranscribe` to Models used and the Meeting overflow. The dialog exposes
-  profile/provider/model, language, native/local diarization, local/cloud data
-  handling, estimated cost when knowable, and why an option is unavailable.
-- Run a durable background job with stage progress, cancel/retry, and a run
-  history. Compare old/new transcript revisions, then explicitly activate one.
-  Offer analysis regeneration as a separate confirmed step.
+- The shipped Process again dialog exposes the selected provider/model, local
+  versus cloud handling, destructive transcript implications, and a precise
+  reason when either mode is unavailable.
+- Remaining enhancement: expose a durable run-history/compare surface and
+  explicit activation between successful transcript revisions. Current full
+  retranscription activates its newly committed canonical artifact directly;
+  failures keep the prior canonical transcript intact.
 
 **Backend/data and tests**
 
-Persist immutable transcription runs keyed by audio digest and a frozen route
-snapshot, with parent run, progress, result digest, and error. Reuse canonical
-FLAC/provider derivatives; never overwrite the active revision on failure.
-Cover idempotent same-route retry, crash resume, cancel, missing credentials,
-purged audio, native versus fallback diarization, and activation driving Search,
-Ask, export, and playback citations.
+Continue to persist immutable transcription attempts keyed by audio digest and
+a frozen route snapshot. Reuse canonical FLAC/provider derivatives; never
+overwrite the active Meeting projection on provider failure. Remaining gates
+are an explicit user cancellation contract and revision compare/activation UI;
+automated coverage already includes missing credentials, malformed/purged
+audio evidence, provider/model freezing, and speaker-only versus full mode
+admission.
 
 #### `UX-MTG-05` - Explicit calendar event and participant snapshot
 

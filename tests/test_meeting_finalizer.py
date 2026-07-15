@@ -8,7 +8,7 @@ import threading
 import wave
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 
@@ -28,6 +28,43 @@ class FakePipeline:
 
     async def transcribe_file_direct(self, _path: str):
         self.on_transcription(self.source_text, True)
+
+
+@pytest.mark.parametrize("provider", ["modulate", "modulate_async"])
+def test_modulate_meeting_route_uses_bounded_webm_derivative(tmp_path, provider):
+    finalizer = MeetingFinalizer(
+        SimpleNamespace(),
+        tmp_path,
+        lambda **_kwargs: None,
+        lambda *_args, **_kwargs: None,
+        artifact_store=SimpleNamespace(),
+    )
+
+    route = finalizer._frozen_meeting_route(
+        {
+            "finalProvider": provider,
+            "language": "auto",
+            "captureMetadata": {},
+        }
+    )
+
+    assert route.transport == "webm_opus_task_derivative"
+    assert route.response_shape == "final_text"
+    assert route.timestamp_mode == "estimated"
+
+
+def test_voice_reprocess_temp_cleanup_is_bounded_to_runtime_directory(tmp_path):
+    audio_root = tmp_path / "meetings"
+    stale = audio_root / ".runtime" / "voice-reprocess" / "interrupted"
+    stale.mkdir(parents=True)
+    (stale / "sample.wav").write_bytes(b"private-pcm")
+    retained = audio_root / "meeting-1" / "final" / "meeting.flac"
+    retained.parent.mkdir(parents=True)
+    retained.write_bytes(b"retained-audio")
+
+    assert MeetingFinalizer.cleanup_stale_voice_reprocess_temp(audio_root) == 1
+    assert not (audio_root / ".runtime" / "voice-reprocess").exists()
+    assert retained.read_bytes() == b"retained-audio"
 
 
 @pytest.mark.asyncio
@@ -132,6 +169,21 @@ def test_provider_change_does_not_recover_an_attempt_frozen_to_old_route(tmp_pat
     assert attempt.state == AttemptState.TRANSCRIBING
     assert artifacts.persisted_route.provider == "deepgram_async"
     assert execution_route["model"] == "nova-3"
+
+
+def test_recoverable_meeting_route_requires_the_same_frozen_model():
+    expected = SimpleNamespace(
+        workload="meeting",
+        source_track="meeting_tracks",
+        provider="mistral_async",
+        model="voxtral-mini-2602",
+        language="de",
+    )
+    exact = SimpleNamespace(**vars(expected))
+    old_model = SimpleNamespace(**{**vars(expected), "model": "voxtral-mini-2507"})
+
+    assert MeetingFinalizer._route_snapshot_matches(exact, expected) is True
+    assert MeetingFinalizer._route_snapshot_matches(old_model, expected) is False
 
 
 def _write_meeting_wav(
@@ -866,7 +918,13 @@ async def test_finalizer_uses_local_diarization_when_claimed_native_response_has
         calls = 0
 
         def status(self):
-            return {"installed": True}
+            return {
+                "installed": True,
+                "engine": "sherpa-onnx",
+                "version": "1.12.11",
+                "segmentationModel": "pyannote-segmentation-3.0-int8",
+                "workerVersion": "1.0.0",
+            }
 
         async def transcribe_with_fallback_speakers(self, **_kwargs):
             self.calls += 1
@@ -900,6 +958,9 @@ async def test_finalizer_uses_local_diarization_when_claimed_native_response_has
     derivations = finalizer.artifact_store.list_track_derivations(artifact.attempt_id)
     assert len(derivations) == 1
     assert derivations[0].derivation_kind == "local_speaker_diarization"
+    assert derivations[0].evidence["engineVersion"] == "1.12.11"
+    assert derivations[0].evidence["model"] == "pyannote-segmentation-3.0-int8"
+    assert derivations[0].evidence["workerVersion"] == "1.0.0"
     input_kinds = {
         row[0]
         for row in finalizer.artifact_store._connect().execute(
@@ -1217,6 +1278,351 @@ async def test_lossless_work_tracks_bound_full_pcm_to_one_source_and_preserve_ch
 
 
 @pytest.mark.asyncio
+async def test_speaker_identity_reprocess_extracts_every_window_before_atomic_store_swap(
+    monkeypatch, tmp_path
+):
+    meeting_id = "meeting-voice-refresh"
+    final_dir = tmp_path / meeting_id / "final"
+    final_dir.mkdir(parents=True)
+    microphone_path = final_dir / "microphone.opus"
+    microphone_path.write_bytes(b"retained-opus")
+    microphone_sha256 = hashlib.sha256(microphone_path.read_bytes()).hexdigest()
+    committed = []
+
+    class Store:
+        @staticmethod
+        def speaker_library_enabled():
+            return True
+
+        @staticmethod
+        def detail(_meeting_id):
+            assert _meeting_id == meeting_id
+            return {
+                "state": "ready",
+                "audioAssets": [{
+                    "kind": "playback_microphone",
+                    "relativePath": f"{meeting_id}/final/microphone.opus",
+                    "byteSize": microphone_path.stat().st_size,
+                    "sha256": microphone_sha256,
+                }],
+                "segments": [
+                    {
+                        "id": "mic-without-provider-speaker",
+                        "source": "microphone",
+                        "speakerId": None,
+                        "speakerLabel": "",
+                        "startMs": 2_000,
+                        "endMs": 6_000,
+                    }
+                ],
+            }
+
+        @staticmethod
+        def rematch_speaker_embeddings(_meeting_id, observations):
+            committed.append((_meeting_id, observations))
+            return {
+                "meetingId": _meeting_id,
+                "processedSpeakerCount": 1,
+                "processedSegmentCount": len(observations),
+            }
+
+    class Model:
+        @staticmethod
+        def status():
+            return {"installed": True}
+
+        @staticmethod
+        async def extract(path, start_ms, end_ms):
+            assert path.is_file()
+            assert (start_ms, end_ms) == (0, 4_000)
+            assert committed == []
+            return [1.0] + [0.0] * 255
+
+    class Process:
+        returncode = 0
+
+    async def create_process(*args, **_kwargs):
+        target = Path(args[-1])
+        target.write_bytes(b"RIFF" + b"\0" * 64)
+        return Process()
+
+    monkeypatch.setattr("src.meeting_finalizer.require_media_tool", lambda _name: "ffmpeg")
+    monkeypatch.setattr(
+        "src.meeting_finalizer.asyncio.create_subprocess_exec", create_process
+    )
+    monkeypatch.setattr(
+        "src.meeting_finalizer.communicate_or_kill_on_cancel",
+        AsyncMock(return_value=(None, b"")),
+    )
+    finalizer = MeetingFinalizer(
+        Store(),
+        tmp_path,
+        lambda **_kwargs: None,
+        lambda *_args, **_kwargs: None,
+        speaker_model=Model(),
+        artifact_store=SimpleNamespace(),
+    )
+
+    result = await finalizer.reprocess_speaker_identity(meeting_id)
+
+    assert result["processedSegmentCount"] == 1
+    assert committed[0][0] == meeting_id
+    observation = committed[0][1][0]
+    assert observation["source"] == "microphone"
+    assert observation["speakerLabel"] == "You"
+    assert observation["speakerId"] == hashlib.sha256(
+        f"{meeting_id}\0canonical\0microphone\0you".encode("utf-8")
+    ).hexdigest()[:32]
+    assert not list(final_dir.glob(".voice-reprocess-*.wav"))
+
+
+@pytest.mark.asyncio
+async def test_speaker_identity_reprocess_rejects_same_size_audio_tamper_before_inference(
+    tmp_path,
+):
+    meeting_id = "meeting-voice-integrity"
+    final_dir = tmp_path / meeting_id / "final"
+    final_dir.mkdir(parents=True)
+    microphone_path = final_dir / "microphone.opus"
+    microphone_path.write_bytes(b"trusted-audio")
+    trusted_sha256 = hashlib.sha256(microphone_path.read_bytes()).hexdigest()
+    microphone_path.write_bytes(b"tamperd-audio")
+    assert len(b"trusted-audio") == len(b"tamperd-audio")
+    inference_called = False
+    commit_called = False
+
+    class Store:
+        @staticmethod
+        def speaker_library_enabled():
+            return True
+
+        @staticmethod
+        def detail(_meeting_id):
+            return {
+                "state": "ready",
+                "audioAssets": [{
+                    "kind": "playback_microphone",
+                    "relativePath": f"{meeting_id}/final/microphone.opus",
+                    "byteSize": microphone_path.stat().st_size,
+                    "sha256": trusted_sha256,
+                }],
+                "segments": [{
+                    "id": "segment-1",
+                    "source": "microphone",
+                    "speakerId": None,
+                    "speakerLabel": "",
+                    "startMs": 0,
+                    "endMs": 4_000,
+                }],
+            }
+
+        @staticmethod
+        def rematch_speaker_embeddings(*_args):
+            nonlocal commit_called
+            commit_called = True
+
+    class Model:
+        @staticmethod
+        def status():
+            return {"installed": True}
+
+        @staticmethod
+        async def extract(*_args):
+            nonlocal inference_called
+            inference_called = True
+            return [1.0] + [0.0] * 255
+
+    finalizer = MeetingFinalizer(
+        Store(),
+        tmp_path,
+        lambda **_kwargs: None,
+        lambda *_args, **_kwargs: None,
+        speaker_model=Model(),
+        artifact_store=SimpleNamespace(),
+    )
+
+    with pytest.raises(ValueError, match="integrity check"):
+        await finalizer.reprocess_speaker_identity(meeting_id)
+
+    assert inference_called is False
+    assert commit_called is False
+
+
+def test_full_reprocess_recovers_only_attempts_started_after_the_request():
+    meeting = {
+        "captureMetadata": {
+            "reprocessKind": "full_transcript",
+            "reprocessRequestedAt": "2026-07-15T10:00:00+00:00",
+        }
+    }
+
+    assert MeetingFinalizer._attempt_belongs_to_current_reprocess(
+        meeting,
+        SimpleNamespace(created_at="2026-07-15T09:59:59+00:00"),
+    ) is False
+    assert MeetingFinalizer._attempt_belongs_to_current_reprocess(
+        meeting,
+        SimpleNamespace(created_at="2026-07-15T10:00:01+00:00"),
+    ) is True
+    assert MeetingFinalizer._attempt_belongs_to_current_reprocess(
+        {"captureMetadata": {}},
+        SimpleNamespace(created_at="2020-01-01T00:00:00+00:00"),
+    ) is True
+
+
+def test_full_reprocess_reuses_current_completed_canonical_artifact(tmp_path):
+    meeting_id = "meeting-crash-after-artifact-commit"
+    meeting = {
+        "id": meeting_id,
+        "finalProvider": "onnx_local",
+        "language": "de",
+        "captureMetadata": {
+            "reprocessKind": "full_transcript",
+            "reprocessRequestedAt": "2026-07-15T10:00:00+00:00",
+            "reprocessFinalModel": "whisper-large-v3-turbo",
+        },
+    }
+    artifact = SimpleNamespace(
+        id="artifact-new",
+        transcript_id=meeting_id,
+        attempt_id="attempt-new",
+        route_snapshot_id="route-new",
+        segments=("already-paid-segment",),
+    )
+    attempt = SimpleNamespace(
+        id="attempt-new",
+        state=AttemptState.COMPLETED,
+        canonical_artifact_id="artifact-new",
+        created_at="2026-07-15T10:00:01+00:00",
+    )
+    route = SimpleNamespace(
+        id="route-new",
+        workload="meeting",
+        source_track="meeting_tracks",
+        provider="onnx_local",
+        model="whisper-large-v3-turbo",
+        language="de",
+    )
+    artifacts = SimpleNamespace(
+        get_head=lambda _meeting_id: SimpleNamespace(artifact_id="artifact-new"),
+        get_artifact=lambda _artifact_id: artifact,
+        get_attempt=lambda _attempt_id: attempt,
+        get_route_snapshot=lambda _attempt_id: route,
+    )
+    finalizer = MeetingFinalizer(
+        SimpleNamespace(),
+        tmp_path,
+        lambda **_kwargs: None,
+        lambda *_args, **_kwargs: None,
+        artifact_store=artifacts,
+    )
+
+    assert finalizer._completed_artifact_for_current_reprocess(meeting) == (
+        "already-paid-segment",
+    )
+
+    attempt.created_at = "2026-07-15T09:59:59+00:00"
+    assert finalizer._completed_artifact_for_current_reprocess(meeting) is None
+
+
+@pytest.mark.asyncio
+async def test_full_reprocess_projects_committed_artifact_without_calling_provider_again(
+    monkeypatch, tmp_path
+):
+    meeting_id = "meeting-recover-projection"
+    meeting = {
+        "id": meeting_id,
+        "finalProvider": "onnx_local",
+        "captureMetadata": {"reprocessKind": "full_transcript"},
+    }
+    track = PreparedMeetingTrack(
+        path=tmp_path / "microphone.work.flac",
+        duration_ms=3_000,
+        timeline_origin_ms=0,
+        sample_count=48_000,
+        pcm_sha256="c" * 64,
+    )
+    track.path.write_bytes(b"lossless-working-track")
+    finalizer = MeetingFinalizer(
+        SimpleNamespace(get=lambda _meeting_id: meeting),
+        tmp_path,
+        lambda **_kwargs: None,
+        lambda *_args, **_kwargs: None,
+        artifact_store=SimpleNamespace(),
+    )
+    monkeypatch.setattr(finalizer, "_validated_chunks", lambda *_args: [])
+    monkeypatch.setattr(
+        finalizer,
+        "_prepare_tracks_from_retained_archive",
+        AsyncMock(return_value={"microphone": track}),
+    )
+    monkeypatch.setattr(finalizer, "_ensure_transcript_parent", lambda _meeting: None)
+    monkeypatch.setattr(
+        finalizer,
+        "_completed_artifact_for_current_reprocess",
+        lambda _meeting: ("committed-segment",),
+    )
+    begin = AsyncMock(side_effect=AssertionError("provider attempt must not start"))
+    monkeypatch.setattr(finalizer, "_begin_artifact_attempt_async", begin)
+    publish = AsyncMock(return_value={"id": meeting_id, "state": "ready"})
+    monkeypatch.setattr(finalizer, "_publish_committed_segments_and_analysis", publish)
+
+    result = await finalizer._run_impl(meeting_id, AsyncMock())
+
+    assert result["state"] == "ready"
+    begin.assert_not_awaited()
+    publish.assert_awaited_once_with(
+        meeting,
+        {"microphone": track},
+        ("committed-segment",),
+        ANY,
+    )
+
+
+@pytest.mark.asyncio
+async def test_retranscription_reads_archive_without_rewriting_audio_assets(
+    monkeypatch, tmp_path
+):
+    meeting_id = "meeting-retained-source-is-read-only"
+    track = PreparedMeetingTrack(
+        path=tmp_path / "microphone.work.flac",
+        duration_ms=4_000,
+        timeline_origin_ms=0,
+        sample_count=64_000,
+        pcm_sha256="a" * 64,
+    )
+    track.path.write_bytes(b"working-copy")
+    store = SimpleNamespace(get=lambda _meeting_id: {
+        "id": meeting_id,
+        "finalProvider": "soniox_async",
+        "captureMetadata": {"reprocessKind": "full_transcript"},
+    })
+    finalizer = MeetingFinalizer(
+        store,
+        tmp_path,
+        lambda **_kwargs: None,
+        lambda *_args, **_kwargs: None,
+        artifact_store=SimpleNamespace(),
+    )
+    monkeypatch.setattr(finalizer, "_validated_chunks", lambda *_args: [])
+    prepare = AsyncMock(return_value={"microphone": track})
+    consolidate = AsyncMock()
+    monkeypatch.setattr(finalizer, "_prepare_tracks_from_retained_archive", prepare)
+    monkeypatch.setattr(finalizer, "_consolidate_audio_assets", consolidate)
+
+    def stop_after_read_only_boundary(_meeting):
+        raise RuntimeError("stop-after-read-only-boundary")
+
+    monkeypatch.setattr(finalizer, "_ensure_transcript_parent", stop_after_read_only_boundary)
+
+    with pytest.raises(RuntimeError, match="stop-after-read-only-boundary"):
+        await finalizer._run_impl(meeting_id, AsyncMock())
+
+    prepare.assert_awaited_once_with(meeting_id)
+    consolidate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_failed_lossless_work_track_preserves_prior_flac_and_retry_wav(
     monkeypatch, tmp_path
 ):
@@ -1293,7 +1699,7 @@ async def test_finalizer_offloads_chunk_validation_from_event_loop(monkeypatch, 
     async def progress(_status, _amount):
         return None
 
-    with pytest.raises(ValueError, match="No durable meeting audio"):
+    with pytest.raises(ValueError, match="lossless Meeting audio"):
         await finalizer.run(meeting["id"], progress)
 
     assert observed_threads

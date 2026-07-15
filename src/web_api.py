@@ -139,6 +139,7 @@ from src.meeting_export import (
     build_meeting_transcript_text,
     format_offset as format_meeting_offset,
     meeting_duration_ms,
+    meeting_export_labels,
 )
 from src.meeting_live_stt import (
     LiveMeetingSegment,
@@ -153,6 +154,7 @@ from src.transcript_artifacts import (
     duration_label_to_ms,
     freeze_caption_route,
     freeze_provider_route,
+    provider_batch_model,
     stage_units_from_captions,
     stage_units_from_local_segments,
     stage_units_from_provider,
@@ -203,12 +205,92 @@ SummaryStatus = Literal["idle", "pending", "completed", "failed"]
 TranscriptDeleteStatus = Literal["deleted", "not_found", "busy", "persistence_error"]
 _TRANSCRIPT_PREVIEW_WORDS = 16
 _TRANSCRIPT_PERSIST_RETRY_DELAYS = (0.0, 0.05, 0.2)
+_TRANSCRIPT_ARTIFACT_LEASE_TTL_SECONDS = 90.0
+_TRANSCRIPT_ARTIFACT_LEASE_HEARTBEAT_SECONDS = 30.0
+_TRANSCRIPT_ARTIFACT_LEASE_RETRY_DELAYS_SECONDS = (0.0, 0.1, 0.5)
+_SPEAKER_PROFILE_PREVIEW_TTL_SECONDS = 15 * 60
+_SPEAKER_PROFILE_PREVIEW_MAX_GRANTS = 256
+_SPEAKER_PROFILE_PREVIEW_MAX_BYTES = 384 * 1024
 
 ScriberPipeline: Any | None = None
 _invalidate_mic_device_resolution_cache_impl: Callable[[], None] | None = None
 _pipeline_runtime_import_lock = threading.Lock()
 _pipeline_cache_state_lock = threading.Lock()
 _pipeline_cache_invalidation_pending = False
+
+
+@dataclass(frozen=True)
+class SpeakerProfilePreviewGrant:
+    """Process-local capability for one bounded local speaker sample."""
+
+    profile_id: str
+    meeting_id: str
+    source: str
+    start_ms: int
+    duration_ms: int
+    expires_at: float
+
+
+async def _render_speaker_profile_preview(
+    grant: SpeakerProfilePreviewGrant,
+) -> bytes:
+    """Decode only the granted interval; never persist another voice sample."""
+
+    if grant.source not in {"microphone", "system"}:
+        raise ValueError("Unsupported speaker preview source.")
+    if not re.fullmatch(r"[0-9a-f]{32}", grant.meeting_id):
+        raise ValueError("Invalid speaker preview meeting capability.")
+    if not (2_000 <= grant.duration_ms <= 8_000) or grant.start_ms < 0:
+        raise ValueError("Invalid speaker preview interval.")
+    source_name = (
+        "microphone.opus" if grant.source == "microphone" else "system.opus"
+    )
+    meeting_root = (data_dir() / "meetings").resolve()
+    source_path = (meeting_root / grant.meeting_id / "final" / source_name).resolve()
+    expected_parent = (meeting_root / grant.meeting_id / "final").resolve()
+    if (
+        expected_parent.parent.parent != meeting_root
+        or source_path.parent != expected_parent
+        or not source_path.is_file()
+    ):
+        raise FileNotFoundError("Speaker preview audio is unavailable.")
+
+    ffmpeg = require_media_tool("ffmpeg")
+    process = await asyncio.create_subprocess_exec(
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-ss",
+        f"{grant.start_ms / 1000.0:.3f}",
+        "-i",
+        str(source_path),
+        "-t",
+        f"{grant.duration_ms / 1000.0:.3f}",
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_s16le",
+        "-f",
+        "wav",
+        "pipe:1",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        **hidden_subprocess_kwargs(),
+    )
+    stdout, _stderr = await communicate_or_kill_on_cancel(
+        process,
+        max_stdout_bytes=_SPEAKER_PROFILE_PREVIEW_MAX_BYTES,
+        max_stderr_bytes=64 * 1024,
+    )
+    audio = bytes(stdout or b"")
+    if process.returncode != 0 or len(audio) < 44 or not audio.startswith(b"RIFF"):
+        raise RuntimeError("Speaker preview decoding failed.")
+    return audio
 
 
 def _load_scriber_pipeline_runtime() -> Any:
@@ -495,6 +577,9 @@ _PROVIDER_AUDIO_UPLOAD_LIMITS: dict[str, dict[str, Any]] = {
     "deepgram_async": {"max_bytes": 2_000_000_000, "label": "2GB"},
     # OpenAI audio transcriptions accept relatively small direct uploads.
     "openai_async": {"max_bytes": 25 * 1024 * 1024, "label": "25MB"},
+    # Modulate multilingual batch accepts complete files up to 100 MB.
+    "modulate": {"max_bytes": 100 * 1024 * 1024, "label": "100MB"},
+    "modulate_async": {"max_bytes": 100 * 1024 * 1024, "label": "100MB"},
 }
 
 _MEETING_FIVE_HOUR_ROUTE_REASONS: dict[str, str] = {
@@ -508,6 +593,7 @@ _MEETING_FIVE_HOUR_ROUTE_REASONS: dict[str, str] = {
     "onnx_local": "Local ONNX transcription does not require a cloud file upload.",
     "gladia": "Gladia pre-recorded transcription is limited to 135 minutes per request.",
     "gladia_async": "Gladia pre-recorded transcription is limited to 135 minutes per request.",
+    "modulate_async": "Scriber's 64-kbit/s meeting derivative targets up to three hours within Modulate's 100-MB batch limit; five hours are not supported by this route.",
 }
 _MEETING_FIVE_HOUR_UNSUPPORTED_REASON = (
     "The current whole-track final transcription route is not yet verified for a five-hour source."
@@ -516,6 +602,7 @@ _MEETING_FINAL_STT_PROVIDERS = frozenset({
     "soniox_async", "assemblyai", "mistral_async", "deepgram_async",
     "gladia_async", "smallest_async", "speechmatics_async", "openai_async",
     "gemini_stt", "azure_mai", "onnx_local", "groq",
+    "modulate_async",
 })
 _MEETING_TRANSCRIPTION_MODES = frozenset({"live_final", "final_only"})
 _MEETING_PRICING_UPDATED_AT = "2026-07-12"
@@ -568,6 +655,12 @@ _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
         "systemDiarizationHourUsd": 0.0,
         "pricingUrl": "https://developers.openai.com/api/docs/models/gpt-4o-mini-transcribe",
         "estimateKind": "token_estimate",
+    },
+    "modulate_async": {
+        "perTrackHourUsd": 0.03,
+        "systemDiarizationHourUsd": 0.0,
+        "pricingUrl": "https://www.modulate.ai/api/speech-to-text",
+        "estimateKind": "published_hourly",
     },
     "gemini_stt": {
         "perTrackHourUsd": 0.15,
@@ -1691,6 +1784,7 @@ def _render_transcript_export(
     summary: str,
     date: str,
     duration: str,
+    document_labels: dict[str, str] | None = None,
 ) -> tuple[bytes, str, str]:
     from src.export import export_to_docx, export_to_pdf
 
@@ -1702,6 +1796,7 @@ def _render_transcript_export(
                 summary=summary,
                 date=date,
                 duration=duration,
+                labels=document_labels,
             ),
             "application/pdf",
             "pdf",
@@ -1713,6 +1808,7 @@ def _render_transcript_export(
             summary=summary,
             date=date,
             duration=duration,
+            labels=document_labels,
         ),
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "docx",
@@ -1727,6 +1823,7 @@ async def _render_transcript_export_async(
     summary: str,
     date: str,
     duration: str,
+    document_labels: dict[str, str] | None = None,
 ) -> tuple[bytes, str, str]:
     return await asyncio.to_thread(
         _render_transcript_export,
@@ -1736,6 +1833,7 @@ async def _render_transcript_export_async(
         summary=summary,
         date=date,
         duration=duration,
+        document_labels=document_labels,
     )
 
 
@@ -1881,6 +1979,7 @@ def _live_pipeline_uses_async_finalization(pipeline: Any | None) -> bool:
             "openai",
             "soniox_async",
             "smallest_async",
+            "modulate_async",
             "azure_mai",
             "assemblyai",
         }
@@ -2526,6 +2625,495 @@ def _meeting_live_preview_metadata(
     }
 
 
+def _nonnegative_processing_count(value: Any) -> int:
+    """Normalize local processing counters without trusting persisted JSON."""
+
+    try:
+        return min(2_147_483_647, max(0, int(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _meeting_smart_turn_session_evidence(
+    live_snapshot: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Project one live snapshot to privacy-minimal Smart Turn evidence."""
+
+    streams = live_snapshot.get("streams")
+    microphone = streams.get("microphone") if isinstance(streams, Mapping) else None
+    smart_turn = (
+        microphone.get("smartTurn")
+        if isinstance(microphone, Mapping)
+        else None
+    )
+    if not isinstance(smart_turn, Mapping):
+        return None
+    return {
+        "enabled": bool(smart_turn.get("enabled")),
+        "engine": str(smart_turn.get("engine") or "").strip()[:80],
+        "model": str(smart_turn.get("model") or "").strip()[:80],
+        "analyses": _nonnegative_processing_count(smart_turn.get("analyses")),
+        "incompleteTurns": _nonnegative_processing_count(
+            smart_turn.get("incompleteTurns")
+        ),
+        "failures": _nonnegative_processing_count(smart_turn.get("failures")),
+    }
+
+
+def _merge_meeting_live_processing_aggregate(
+    capture_metadata: dict[str, Any],
+    live_snapshot: Mapping[str, Any],
+) -> None:
+    """Keep all-session Smart Turn usage when detailed sessions are trimmed.
+
+    The aggregate deliberately excludes audio, transcript text, probabilities,
+    latency samples, timestamps, and participant data.  It exists solely so a
+    long pause/resume Meeting cannot later claim that a model was not used just
+    because the oldest detailed session aged out of the bounded list.
+    """
+
+    evidence = _meeting_smart_turn_session_evidence(live_snapshot)
+    if evidence is None:
+        return
+    current = capture_metadata.get("liveProcessingAggregate")
+    smart_turn = current.get("smartTurn") if isinstance(current, Mapping) else None
+    if not isinstance(smart_turn, Mapping):
+        smart_turn = {}
+    capture_metadata["liveProcessingAggregate"] = {
+        "schemaVersion": 1,
+        "smartTurn": {
+            "enabledSeen": bool(smart_turn.get("enabledSeen"))
+            or bool(evidence["enabled"]),
+            "engine": str(smart_turn.get("engine") or evidence["engine"])[:80],
+            "model": str(smart_turn.get("model") or evidence["model"])[:80],
+            "analyses": _nonnegative_processing_count(
+                _nonnegative_processing_count(smart_turn.get("analyses"))
+                + evidence["analyses"]
+            ),
+            "incompleteTurns": _nonnegative_processing_count(
+                _nonnegative_processing_count(smart_turn.get("incompleteTurns"))
+                + evidence["incompleteTurns"]
+            ),
+            "failures": _nonnegative_processing_count(
+                _nonnegative_processing_count(smart_turn.get("failures"))
+                + evidence["failures"]
+            ),
+        },
+    }
+
+
+def _meeting_processing_components(
+    detail: dict[str, Any],
+    *,
+    final_route: dict[str, Any] | None = None,
+    track_results: Sequence[Any] = (),
+    track_derivations: Sequence[Any] = (),
+) -> dict[str, dict[str, Any]]:
+    """Describe components that actually processed this Meeting.
+
+    Settings express intent; the durable live-session snapshots and canonical
+    artifact evidence express what really happened.  Technical details must
+    never turn a requested-but-unavailable model into a claimed processing
+    step.
+    """
+
+    local_derivation = next(
+        (
+            item
+            for item in track_derivations
+            if str(getattr(item, "derivation_kind", ""))
+            == "local_speaker_diarization"
+        ),
+        None,
+    )
+    local_diarization = local_derivation is not None
+    native_diarization = any(
+        bool(
+            (getattr(item, "evidence", {}) or {}).get("nativeSpeakerEvidence")
+        )
+        for item in track_results
+        if isinstance(getattr(item, "evidence", {}), dict)
+    )
+    if local_diarization:
+        local_evidence = getattr(local_derivation, "evidence", {})
+        if not isinstance(local_evidence, dict):
+            local_evidence = {}
+        engine = str(local_evidence.get("engine") or "Sherpa-ONNX")
+        if engine.casefold() == "sherpa-onnx":
+            engine = "Sherpa-ONNX"
+        engine_version = str(local_evidence.get("engineVersion") or "").strip()
+        diarization = {
+            "used": True,
+            "engine": f"{engine} {engine_version}".strip(),
+            "model": str(local_evidence.get("model") or "Model not recorded"),
+            "mode": "local_fallback",
+        }
+    elif native_diarization:
+        diarization = {
+            "used": True,
+            "engine": str((final_route or {}).get("provider") or detail.get("finalProvider") or "Provider"),
+            "model": str((final_route or {}).get("model") or "Provider diarization"),
+            "mode": "provider_native",
+        }
+    else:
+        diarization = {
+            "used": False,
+            "engine": "",
+            "model": "",
+            "mode": "not_used",
+        }
+
+    vad_used = False
+    vad_engine = ""
+    vad_model = ""
+    for item in track_results:
+        evidence = getattr(item, "evidence", {})
+        if not isinstance(evidence, dict):
+            continue
+        processing = evidence.get("processingComponents")
+        vad = processing.get("vad") if isinstance(processing, dict) else None
+        if bool(evidence.get("sileroVadUsed")):
+            vad_used = True
+            vad_engine = "Silero"
+            vad_model = str(evidence.get("sileroVadModel") or "Silero VAD")
+            break
+        if isinstance(vad, dict) and bool(vad.get("used")):
+            vad_used = True
+            vad_engine = str(vad.get("engine") or "Voice activity detector")
+            vad_model = str(vad.get("model") or "Model not recorded")
+            break
+    vad = {
+        "used": vad_used,
+        "engine": vad_engine if vad_used else "",
+        "model": vad_model if vad_used else "",
+        "mode": "audio_segmentation" if vad_used else "not_used",
+    }
+
+    requested_turn = bool(
+        detail.get("smartTurnEnabled")
+        and detail.get("transcriptionMode") == "live_final"
+        and detail.get("origin") != "imported"
+    )
+    analyses = 0
+    failures = 0
+    analyzer_seen = False
+    turn_engine = ""
+    turn_model = ""
+    metadata = detail.get("captureMetadata")
+    aggregate = (
+        metadata.get("liveProcessingAggregate")
+        if isinstance(metadata, dict)
+        else None
+    )
+    smart_turn_aggregate = (
+        aggregate.get("smartTurn")
+        if isinstance(aggregate, dict)
+        and aggregate.get("schemaVersion") == 1
+        else None
+    )
+    if isinstance(smart_turn_aggregate, dict):
+        analyzer_seen = bool(smart_turn_aggregate.get("enabledSeen"))
+        turn_engine = str(smart_turn_aggregate.get("engine") or "")
+        turn_model = str(smart_turn_aggregate.get("model") or "")
+        analyses = _nonnegative_processing_count(
+            smart_turn_aggregate.get("analyses")
+        )
+        failures = _nonnegative_processing_count(
+            smart_turn_aggregate.get("failures")
+        )
+    sessions = metadata.get("liveTranscriptionSessions") if isinstance(metadata, dict) else None
+    if not isinstance(smart_turn_aggregate, dict) and isinstance(sessions, list):
+        for session in sessions:
+            streams = session.get("streams") if isinstance(session, dict) else None
+            if not isinstance(streams, dict):
+                continue
+            microphone = streams.get("microphone")
+            smart_turn = microphone.get("smartTurn") if isinstance(microphone, dict) else None
+            if not isinstance(smart_turn, dict):
+                continue
+            analyzer_seen = analyzer_seen or bool(smart_turn.get("enabled"))
+            if not turn_engine:
+                turn_engine = str(smart_turn.get("engine") or "")
+            if not turn_model:
+                turn_model = str(smart_turn.get("model") or "")
+            analyses += _nonnegative_processing_count(smart_turn.get("analyses"))
+            failures += _nonnegative_processing_count(smart_turn.get("failures"))
+    smart_turn_used = analyses > 0
+    if smart_turn_used:
+        turn_mode = "live_preview_boundaries"
+    elif not requested_turn:
+        turn_mode = "not_requested"
+    elif failures > 0:
+        turn_mode = "failed_or_unavailable"
+    elif analyzer_seen:
+        turn_mode = "ready_no_completed_turns"
+    else:
+        turn_mode = "no_live_session_evidence"
+    turn_detection = {
+        "used": smart_turn_used,
+        "engine": (
+            turn_engine or ("Engine not recorded" if smart_turn_used else "")
+        ),
+        "model": (
+            turn_model or ("Version not recorded" if smart_turn_used else "")
+        ),
+        "mode": turn_mode,
+        "analysisCount": analyses,
+        "failureCount": failures,
+    }
+    return {
+        "diarization": diarization,
+        "vad": vad,
+        "turnDetection": turn_detection,
+    }
+
+
+async def _speaker_library_runtime_status(
+    controller: Any,
+) -> tuple[bool, str]:
+    """Return the current durable Voice Library readiness without trusting UI state."""
+
+    if not bool(Config.VOICEPRINT_LIBRARY_OPT_IN):
+        return False, "Turn on Voice Library in Meeting settings first."
+    store = getattr(controller, "_meeting_store", None)
+    durable_gate = getattr(store, "speaker_library_enabled", None)
+    if not callable(durable_gate):
+        return False, "Voice Library storage is unavailable in this Scriber copy."
+    try:
+        if not bool(await asyncio.to_thread(durable_gate)):
+            return False, "Turn on Voice Library in Meeting settings first."
+    except Exception:
+        return False, "Voice Library storage could not be checked."
+    model = getattr(controller, "_speaker_model", None)
+    status = getattr(model, "status", None)
+    if not callable(status):
+        return False, "Install the local Voice Library model in Meeting settings first."
+    try:
+        model_status = await asyncio.to_thread(status)
+    except Exception:
+        return False, "The local Voice Library model could not be checked."
+    if not isinstance(model_status, dict) or not bool(model_status.get("installed")):
+        return False, "Install the local Voice Library model in Meeting settings first."
+    return True, ""
+
+
+def _meeting_audio_asset_is_present(
+    detail: Mapping[str, Any],
+    asset: Mapping[str, Any] | None,
+) -> bool:
+    """Validate a persisted Meeting asset path without accepting a frontend path."""
+
+    if not isinstance(asset, Mapping):
+        return False
+    meeting_id = str(detail.get("id") or "").strip()
+    relative_path = str(asset.get("relativePath") or "").strip()
+    if not meeting_id or not relative_path:
+        return False
+    try:
+        meetings_root = (data_dir() / "meetings").resolve()
+        meeting_root = (meetings_root / meeting_id).resolve()
+        candidate = (meetings_root / Path(relative_path)).resolve()
+        candidate.relative_to(meeting_root)
+        stat = candidate.stat()
+        expected_bytes = int(asset.get("byteSize") or 0)
+        return candidate.is_file() and stat.st_size > 0 and (
+            expected_bytes <= 0 or stat.st_size == expected_bytes
+        )
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _meeting_playback_asset_is_present(
+    detail: Mapping[str, Any],
+    asset: Mapping[str, Any] | None,
+) -> bool:
+    """Require complete persisted integrity metadata for speaker playback.
+
+    The capability response is only an admission hint; the finalizer still
+    recomputes the SHA-256 immediately before local inference.  Requiring the
+    canonical digest shape and exact byte size here prevents the UI from
+    advertising speaker refresh for legacy or incomplete asset rows.
+    """
+
+    if not isinstance(asset, Mapping):
+        return False
+    try:
+        byte_size = int(asset.get("byteSize") or 0)
+    except (TypeError, ValueError):
+        return False
+    digest = str(asset.get("sha256") or "").strip().lower()
+    return (
+        byte_size > 0
+        and bool(re.fullmatch(r"[0-9a-f]{64}", digest))
+        and _meeting_audio_asset_is_present(detail, asset)
+    )
+
+
+def _lossless_meeting_manifest_durations(
+    archive: Mapping[str, Any] | None,
+) -> list[int]:
+    """Validate the minimum immutable FLAC stream evidence needed to reopen it."""
+
+    if not isinstance(archive, Mapping):
+        return []
+    manifest = archive.get("trackManifest")
+    if not isinstance(manifest, list) or not manifest:
+        return []
+    durations: list[int] = []
+    stream_indexes: set[int] = set()
+    supported_sources = {"microphone", "mic_clean", "system"}
+    for item in manifest:
+        if not isinstance(item, dict):
+            return []
+        try:
+            stream_index = int(item.get("streamIndex"))
+            duration_ms = int(item.get("durationMs"))
+            sample_count = int(item.get("sampleCount"))
+        except (TypeError, ValueError):
+            return []
+        if (
+            stream_index < 0
+            or stream_index in stream_indexes
+            or duration_ms <= 0
+            or sample_count <= 0
+            or str(item.get("source") or "") not in supported_sources
+            or str(item.get("codec") or "").strip().lower() != "flac"
+            or not bool(item.get("equalityVerified"))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(item.get("pcmSha256") or ""))
+        ):
+            return []
+        stream_indexes.add(stream_index)
+        durations.append(duration_ms)
+    return durations
+
+
+async def _meeting_reprocessing_capabilities(
+    controller: Any,
+    detail: dict[str, Any],
+) -> dict[str, Any]:
+    """Compute truthful, mode-specific capabilities from durable local evidence."""
+
+    selected_provider = str(Config.MEETING_FINAL_PROVIDER or "").strip().lower()
+    selected_model = provider_batch_model(selected_provider)
+    meeting_id = str(detail.get("id") or "")
+    task_registry = getattr(controller, "_meeting_tasks", {})
+    active_task = (
+        task_registry.get(meeting_id)
+        if isinstance(task_registry, Mapping) and meeting_id
+        else None
+    )
+    processing_running = bool(
+        active_task is not None
+        and callable(getattr(active_task, "done", None))
+        and not active_task.done()
+    )
+    try:
+        active_task_name = (
+            str(active_task.get_name())
+            if processing_running and callable(getattr(active_task, "get_name", None))
+            else ""
+        )
+    except Exception:
+        active_task_name = ""
+    speaker_identity_running = (
+        processing_running
+        and active_task_name.startswith("meeting-speaker-refresh-")
+    )
+    state_reason = (
+        (
+            "Speaker matches are already being refreshed."
+            if speaker_identity_running
+            else "This meeting is already being processed."
+        )
+        if processing_running
+        else (
+            "Finish the current Meeting processing first."
+            if str(detail.get("state") or "") not in {"ready", "analysis_failed"}
+            else ""
+        )
+    )
+    assets = {
+        str(item.get("kind") or ""): item
+        for item in detail.get("audioAssets", [])
+        if isinstance(item, dict)
+    }
+
+    archive = assets.get("multitrack_flac")
+    archive_track_durations = _lossless_meeting_manifest_durations(archive)
+    archive_present = bool(
+        archive
+        and bool(archive.get("equalityVerified"))
+        and re.fullmatch(r"[0-9a-f]{64}", str(archive.get("sha256") or ""))
+        and archive_track_durations
+        and _meeting_audio_asset_is_present(detail, archive)
+    )
+    full_reason = state_reason
+    if not full_reason and not archive_present:
+        full_reason = "The original lossless recording is no longer retained."
+    if not full_reason and selected_provider not in _MEETING_FINAL_STT_PROVIDERS:
+        full_reason = "Choose a supported final transcription provider in Settings."
+    if not full_reason:
+        full_reason = _provider_readiness_error(selected_provider) or ""
+    if not full_reason and isinstance(archive, dict):
+        longest_track_ms = max(archive_track_durations)
+        duration_limit = meeting_max_duration_seconds(
+            selected_provider,
+            selected_model,
+        )
+        if duration_limit is not None and longest_track_ms > duration_limit * 1_000:
+            full_reason = (
+                f"{_service_label(selected_provider)} accepts recordings up to "
+                f"{duration_limit // 60} minutes with the selected model."
+            )
+
+    voice_runtime_ready, voice_reason = await _speaker_library_runtime_status(
+        controller
+    )
+    available_sources = {
+        source
+        for source, kind in (
+            ("microphone", "playback_microphone"),
+            ("system", "playback_system"),
+        )
+        if _meeting_playback_asset_is_present(detail, assets.get(kind))
+    }
+    has_eligible_speaker_audio = any(
+        str(segment.get("revision") or "canonical") == "canonical"
+        and str(segment.get("source") or "") in available_sources
+        and (
+            str(segment.get("source") or "") == "microphone"
+            or bool(str(segment.get("speakerId") or "").strip())
+        )
+        and int(segment.get("endMs") or 0) - int(segment.get("startMs") or 0)
+        >= 2_000
+        for segment in detail.get("segments", [])
+        if isinstance(segment, dict)
+    )
+    speaker_reason = state_reason or voice_reason
+    if not speaker_reason and not available_sources:
+        speaker_reason = "Retained speaker playback audio is unavailable."
+    if not speaker_reason and not has_eligible_speaker_audio:
+        speaker_reason = "No speech segment is long enough for local speaker matching."
+
+    speaker_available = not speaker_reason
+    full_available = not full_reason
+    shared_reason = state_reason
+    if not shared_reason and not speaker_available and not full_available:
+        shared_reason = full_reason or speaker_reason
+    return {
+        "speakerIdentityAvailable": speaker_available,
+        "speakerIdentityUnavailableReason": speaker_reason,
+        "fullTranscriptAvailable": full_available,
+        "fullTranscriptUnavailableReason": full_reason,
+        "unavailableReason": shared_reason,
+        "selectedFinalProvider": selected_provider,
+        "selectedFinalModel": selected_model,
+        "voiceLibraryEnabledForRun": voice_runtime_ready,
+        "processingRunning": processing_running,
+        "speakerIdentityRunning": speaker_identity_running,
+    }
+
+
 async def _start_meeting_live_preview_best_effort(
     controller: Any,
     meeting: dict[str, Any],
@@ -3034,6 +3622,14 @@ class ScriberWebController:
         self._outlook_calendar = OutlookCalendarService(call_shell_ipc, Config.OUTLOOK_CLIENT_ID)
         self._speaker_model = WeSpeakerModel()
         self._speaker_diarizer = SherpaOnnxDiarizer()
+        stale_voice_temp = MeetingFinalizer.cleanup_stale_voice_reprocess_temp(
+            data_dir() / "meetings"
+        )
+        if stale_voice_temp:
+            logger.info(
+                "Removed {} stale local Meeting voice-processing temp directorie(s)",
+                stale_voice_temp,
+            )
         quarantined_meeting_chunks = MeetingAudioRecorder.quarantine_orphaned_partials(
             data_dir() / "meetings"
         )
@@ -6718,7 +7314,7 @@ class ScriberWebController:
                 recovered.attempt.id,
                 owner=owner,
                 expected_version=recovered.attempt.state_version,
-                ttl_seconds=90,
+                ttl_seconds=_TRANSCRIPT_ARTIFACT_LEASE_TTL_SECONDS,
             )
             if claimed.stage_result.units and claimed.stage_result.transcript_text.strip():
                 return claimed.attempt, owner, claimed
@@ -6747,7 +7343,7 @@ class ScriberWebController:
             attempt.id,
             owner=owner,
             expected_version=attempt.state_version,
-            ttl_seconds=90,
+            ttl_seconds=_TRANSCRIPT_ARTIFACT_LEASE_TTL_SECONDS,
         )
         for expected, target in (
             (AttemptState.QUEUED, AttemptState.RESOLVING_SOURCE),
@@ -6815,21 +7411,66 @@ class ScriberWebController:
         async def heartbeat() -> None:
             while True:
                 try:
-                    await asyncio.wait_for(stop.wait(), timeout=30.0)
+                    await asyncio.wait_for(
+                        stop.wait(),
+                        timeout=_TRANSCRIPT_ARTIFACT_LEASE_HEARTBEAT_SECONDS,
+                    )
                     return
                 except asyncio.TimeoutError:
                     pass
-                try:
-                    await asyncio.to_thread(
-                        self._transcript_artifacts.renew_attempt_lease,
-                        attempt.id,
-                        owner=owner,
-                        expected_version=attempt.state_version,
-                        ttl_seconds=90,
-                    )
-                except Exception as exc:
-                    logger.error("Transcript attempt lease heartbeat failed: {}", exc)
-                    return
+                renewed = False
+                for retry_index, delay_seconds in enumerate(
+                    _TRANSCRIPT_ARTIFACT_LEASE_RETRY_DELAYS_SECONDS
+                ):
+                    if delay_seconds:
+                        await asyncio.sleep(delay_seconds)
+                    try:
+                        # Provider completion changes ``state_version`` when its
+                        # durable result enters ``provider_result_ready``. Fetch
+                        # the live record on every renewal so one heartbeat can
+                        # protect source preparation, provider work, and local
+                        # post-processing across that transition.
+                        current = await asyncio.to_thread(
+                            self._transcript_artifacts.require_attempt,
+                            attempt.id,
+                        )
+                        if current.lease_owner != owner or current.state in {
+                            AttemptState.COMPLETED,
+                            AttemptState.SUPERSEDED,
+                            AttemptState.FAILED,
+                            AttemptState.CANCELED,
+                        }:
+                            return
+                        await asyncio.to_thread(
+                            self._transcript_artifacts.renew_attempt_lease,
+                            attempt.id,
+                            owner=owner,
+                            expected_version=current.state_version,
+                            ttl_seconds=_TRANSCRIPT_ARTIFACT_LEASE_TTL_SECONDS,
+                        )
+                        renewed = True
+                        break
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        remaining = (
+                            len(_TRANSCRIPT_ARTIFACT_LEASE_RETRY_DELAYS_SECONDS)
+                            - retry_index
+                            - 1
+                        )
+                        log = logger.warning if remaining else logger.error
+                        log(
+                            "Transcript attempt lease heartbeat failed "
+                            "({} retries remain): {}: {}",
+                            remaining,
+                            type(exc).__name__,
+                            exc,
+                        )
+                if not renewed:
+                    # A transient SQLite/CAS race should not permanently turn
+                    # off protection. The next interval remains inside the
+                    # normal lease window and retries from fresh state.
+                    continue
 
         heartbeat_task = asyncio.create_task(
             heartbeat(), name=f"artifact_lease_{attempt.id}"
@@ -6839,6 +7480,32 @@ class ScriberWebController:
         finally:
             stop.set()
             await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+    def _start_transcript_artifact_lease_guard(
+        self,
+        *,
+        attempt: AttemptRecord,
+        owner: str,
+    ) -> tuple[asyncio.Event, asyncio.Task[Any]]:
+        """Protect one attempt continuously across all long workflow phases."""
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            self._await_with_artifact_lease(
+                stop.wait(),
+                attempt=attempt,
+                owner=owner,
+            ),
+            name=f"artifact_lease_guard_{attempt.id}",
+        )
+        return stop, task
+
+    @staticmethod
+    async def _stop_transcript_artifact_lease_guard(
+        stop: asyncio.Event,
+        task: asyncio.Task[Any],
+    ) -> None:
+        stop.set()
+        await asyncio.gather(task, return_exceptions=True)
 
     def _terminate_artifact_attempt_before_result(
         self,
@@ -7466,6 +8133,10 @@ class ScriberWebController:
                 source="audio",
             )
             return
+        lease_guard_stop, lease_guard_task = self._start_transcript_artifact_lease_guard(
+            attempt=attempt,
+            owner=owner,
+        )
         workflow_phase = {"value": "downloading"}
         rec.step = "Downloading audio..."
         rec.updated_at = datetime.now().isoformat()
@@ -7615,25 +8286,17 @@ class ScriberWebController:
             )
             if supports_direct_file_upload(provider):
                 workflow_phase["value"] = "provider"
-                await self._await_with_artifact_lease(
-                    self._await_with_timeout(
-                        pipeline.transcribe_file_direct(str(audio_path)),
-                        timeout_seconds=transcribe_timeout,
-                        timeout_label="YouTube transcription",
-                    ),
-                    attempt=attempt,
-                    owner=owner,
+                await self._await_with_timeout(
+                    pipeline.transcribe_file_direct(str(audio_path)),
+                    timeout_seconds=transcribe_timeout,
+                    timeout_label="YouTube transcription",
                 )
             else:
                 workflow_phase["value"] = "provider"
-                await self._await_with_artifact_lease(
-                    self._await_with_timeout(
-                        pipeline.transcribe_file(str(audio_path)),
-                        timeout_seconds=transcribe_timeout,
-                        timeout_label="YouTube transcription",
-                    ),
-                    attempt=attempt,
-                    owner=owner,
+                await self._await_with_timeout(
+                    pipeline.transcribe_file(str(audio_path)),
+                    timeout_seconds=transcribe_timeout,
+                    timeout_label="YouTube transcription",
                 )
 
             provider_text = rec.content_text()
@@ -7690,12 +8353,20 @@ class ScriberWebController:
                 source="audio",
             )
         except asyncio.CancelledError:
+            await self._stop_transcript_artifact_lease_guard(
+                lease_guard_stop,
+                lease_guard_task,
+            )
             await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=True
             )
             raise
         except (ValueError, ImportError) as exc:
             logger.warning("YouTube transcription rejected: {}", exc)
+            await self._stop_transcript_artifact_lease_guard(
+                lease_guard_stop,
+                lease_guard_task,
+            )
             await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=False
             )
@@ -7720,6 +8391,10 @@ class ScriberWebController:
                 meta={"error": str(exc)},
             )
         except TimeoutError as exc:
+            await self._stop_transcript_artifact_lease_guard(
+                lease_guard_stop,
+                lease_guard_task,
+            )
             await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=False
             )
@@ -7744,6 +8419,10 @@ class ScriberWebController:
                 meta={"error": str(exc)},
             )
         except YouTubeDownloadError as exc:
+            await self._stop_transcript_artifact_lease_guard(
+                lease_guard_stop,
+                lease_guard_task,
+            )
             await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=False
             )
@@ -7767,6 +8446,10 @@ class ScriberWebController:
                 meta={"error": str(exc)},
             )
         except TranscriptPersistenceError as exc:
+            await self._stop_transcript_artifact_lease_guard(
+                lease_guard_stop,
+                lease_guard_task,
+            )
             await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=False
             )
@@ -7789,6 +8472,10 @@ class ScriberWebController:
             )
         except Exception as exc:
             logger.exception("YouTube transcription failed")
+            await self._stop_transcript_artifact_lease_guard(
+                lease_guard_stop,
+                lease_guard_task,
+            )
             await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=False
             )
@@ -7813,6 +8500,10 @@ class ScriberWebController:
                 meta={"error": str(exc)},
             )
         finally:
+            await self._stop_transcript_artifact_lease_guard(
+                lease_guard_stop,
+                lease_guard_task,
+            )
             if rec.status == "completed":
                 self._emit_workflow_event(
                     message="YouTube job completed",
@@ -7956,6 +8647,10 @@ class ScriberWebController:
                 evidence=recovery.stage_result.evidence,
                 source_asset_id=source_asset_id,
             )
+        lease_guard_stop, lease_guard_task = self._start_transcript_artifact_lease_guard(
+            attempt=attempt,
+            owner=owner,
+        )
 
         def on_transcription(text: str, is_final: bool) -> None:
             if not is_final:
@@ -7996,70 +8691,102 @@ class ScriberWebController:
                 if supports_direct_file_upload(provider)
                 else pipeline.transcribe_file(str(file_path))
             )
-            await self._await_with_artifact_lease(
-                self._await_with_timeout(
-                    provider_call,
-                    timeout_seconds=transcribe_timeout,
-                    timeout_label="File transcription",
-                ),
-                attempt=attempt,
-                owner=owner,
+            await self._await_with_timeout(
+                provider_call,
+                timeout_seconds=transcribe_timeout,
+                timeout_label="File transcription",
             )
         except asyncio.CancelledError:
+            await self._stop_transcript_artifact_lease_guard(
+                lease_guard_stop,
+                lease_guard_task,
+            )
             await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=True
             )
             raise
         except Exception:
+            await self._stop_transcript_artifact_lease_guard(
+                lease_guard_stop,
+                lease_guard_task,
+            )
             await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=False
             )
             raise
 
-        provider_text = rec.content_text()
-        provider_units, evidence = stage_units_from_provider(
-            provider=provider,
-            payload=getattr(pipeline, "last_structured_transcript_payload", None),
-            text=provider_text,
-            duration_ms=(
-                max(1, round(duration_seconds * 1_000))
-                if duration_seconds > 0.0
-                else duration_label_to_ms(rec.duration)
-            ),
-        )
-        attempt = await self._persist_provider_stage_before_local_diarization_async(
-            attempt=attempt,
-            owner=owner,
-            transcript_text=provider_text,
-            units=provider_units,
-            evidence=evidence,
-        )
-        local_segments = await self._apply_speaker_diarization_fallback(
-            rec,
-            provider=provider,
-            pipeline=pipeline,
-            audio_path=file_path,
-        )
-        units = (
-            stage_units_from_local_segments(local_segments)
-            if local_segments
-            else provider_units
-        )
-        if local_segments:
-            evidence = {
-                **evidence,
-                "localDiarizationApplied": True,
-                "localSpeakerIntervals": len(units),
-            }
-        return await self._commit_transcript_artifact_async(
-            rec,
-            attempt=attempt,
-            owner=owner,
-            transcript_text=provider_text,
-            units=units,
-            evidence=evidence,
-            source_asset_id=source_asset_id,
-        )
+        try:
+            provider_text = rec.content_text()
+            provider_units, evidence = stage_units_from_provider(
+                provider=provider,
+                payload=getattr(pipeline, "last_structured_transcript_payload", None),
+                text=provider_text,
+                duration_ms=(
+                    max(1, round(duration_seconds * 1_000))
+                    if duration_seconds > 0.0
+                    else duration_label_to_ms(rec.duration)
+                ),
+            )
+            attempt = await self._persist_provider_stage_before_local_diarization_async(
+                attempt=attempt,
+                owner=owner,
+                transcript_text=provider_text,
+                units=provider_units,
+                evidence=evidence,
+            )
+            local_segments = await self._apply_speaker_diarization_fallback(
+                rec,
+                provider=provider,
+                pipeline=pipeline,
+                audio_path=file_path,
+            )
+            units = (
+                stage_units_from_local_segments(local_segments)
+                if local_segments
+                else provider_units
+            )
+            if local_segments:
+                evidence = {
+                    **evidence,
+                    "localDiarizationApplied": True,
+                    "localSpeakerIntervals": len(units),
+                }
+            return await self._commit_transcript_artifact_async(
+                rec,
+                attempt=attempt,
+                owner=owner,
+                transcript_text=provider_text,
+                units=units,
+                evidence=evidence,
+                source_asset_id=source_asset_id,
+            )
+        except asyncio.CancelledError:
+            await self._stop_transcript_artifact_lease_guard(
+                lease_guard_stop,
+                lease_guard_task,
+            )
+            await self._terminate_artifact_attempt_before_result_async(
+                attempt,
+                owner=owner,
+                canceled=True,
+            )
+            raise
+        except Exception:
+            await self._stop_transcript_artifact_lease_guard(
+                lease_guard_stop,
+                lease_guard_task,
+            )
+            await self._terminate_artifact_attempt_before_result_async(
+                attempt,
+                owner=owner,
+                canceled=False,
+            )
+            raise
+        finally:
+            await self._stop_transcript_artifact_lease_guard(
+                lease_guard_stop,
+                lease_guard_task,
+            )
 
     async def _run_file_transcription(self, rec: TranscriptRecord, file_path: Path, *, provider: str) -> None:
         """Run transcription on an uploaded file."""
@@ -10255,6 +10982,115 @@ class ScriberWebController:
         task.add_done_callback(forget)
         return True
 
+    def schedule_meeting_speaker_reprocessing(
+        self, meeting_id: str, *, start_gate: asyncio.Event | None = None
+    ) -> bool:
+        """Reserve the per-Meeting worker lane for a local Voice rematch."""
+
+        existing = self._meeting_tasks.get(meeting_id)
+        if existing is not None and not existing.done():
+            return False
+
+        async def run() -> dict[str, Any]:
+            if start_gate is not None:
+                await start_gate.wait()
+            try:
+                return await self._run_meeting_speaker_reprocessing(meeting_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("Meeting speaker reprocessing failed")
+                return {
+                    "meetingId": meeting_id,
+                    "errorCode": type(exc).__name__,
+                }
+
+        task = self._loop.create_task(
+            run(), name=f"meeting-speaker-refresh-{meeting_id[:8]}"
+        )
+        self._meeting_tasks[meeting_id] = task
+
+        def forget(done: asyncio.Task, key: str = meeting_id) -> None:
+            if self._meeting_tasks.get(key) is done:
+                self._meeting_tasks.pop(key, None)
+
+        task.add_done_callback(forget)
+        return True
+
+    async def _run_meeting_speaker_reprocessing(
+        self, meeting_id: str
+    ) -> dict[str, Any]:
+        from src.summarization import generate_text_with_model
+
+        await self.broadcast(
+            meeting_progress_event(
+                meeting_id,
+                "analysis",
+                0.05,
+                "Reading retained speaker samples locally",
+            )
+        )
+        finalizer = MeetingFinalizer(
+            self._meeting_store,
+            data_dir() / "meetings",
+            _create_scriber_pipeline,
+            generate_text_with_model,
+            self._speaker_model,
+            self._speaker_diarizer,
+            getattr(self, "_transcript_artifacts", None),
+        )
+        try:
+            result = await finalizer.reprocess_speaker_identity(meeting_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            current_task = asyncio.current_task()
+            task_registry = getattr(self, "_meeting_tasks", None)
+            if isinstance(task_registry, dict) and task_registry.get(meeting_id) is current_task:
+                task_registry.pop(meeting_id, None)
+            try:
+                await self.broadcast(
+                    meeting_progress_event(
+                        meeting_id,
+                        "analysis",
+                        1.0,
+                        "Speaker matches could not be refreshed",
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Meeting speaker refresh failure progress could not be broadcast"
+                )
+            try:
+                current = await asyncio.to_thread(
+                    self._meeting_store.get,
+                    meeting_id,
+                )
+                await self.broadcast(meeting_state_event(current))
+            except Exception:
+                logger.warning(
+                    "Meeting speaker refresh terminal state could not be broadcast"
+                )
+            raise
+        current_task = asyncio.current_task()
+        task_registry = getattr(self, "_meeting_tasks", None)
+        if isinstance(task_registry, dict) and task_registry.get(meeting_id) is current_task:
+            # Release the in-memory lane before the terminal event. The WebView
+            # immediately refetches capabilities on that event and must not
+            # cache a stale "still processing" result after work has finished.
+            task_registry.pop(meeting_id, None)
+        current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+        await self.broadcast(
+            meeting_progress_event(
+                meeting_id,
+                "analysis",
+                1.0,
+                "Speaker matches refreshed",
+            )
+        )
+        await self.broadcast(meeting_state_event(current))
+        return result
+
     async def _run_meeting_analysis(self, meeting_id: str) -> None:
         from src.meeting_analysis import MEETING_ANALYSIS_SCHEMA_VERSION, analyze_meeting
         from src.summarization import generate_text_with_model
@@ -10306,6 +11142,7 @@ class ScriberWebController:
                 model=detail["analysisModel"], generate=generate_text_with_model,
                 cache_get=cache_get, cache_put=cache_put,
                 on_progress=analysis_progress,
+                fallback_language=str(detail.get("language") or ""),
             )
             await asyncio.to_thread(
                 self._meeting_store.save_output, meeting_id, kind="analysis",
@@ -11152,6 +11989,7 @@ class ScriberWebController:
                 "gladia": Config.GLADIA_API_KEY or "",
                 "groq": Config.GROQ_API_KEY or "",
                 "speechmatics": Config.SPEECHMATICS_API_KEY or "",
+                "modulate": getattr(Config, "MODULATE_API_KEY", "") or "",
                 "elevenlabs": Config.ELEVENLABS_API_KEY or "",
                 "googleApiKey": getattr(Config, "GOOGLE_API_KEY", "") or "",
                 "googleApplicationCredentials": Config.GOOGLE_APPLICATION_CREDENTIALS or "",
@@ -11208,6 +12046,7 @@ class ScriberWebController:
                 "soniox_async", "assemblyai", "mistral_async", "deepgram_async",
                 "gladia_async", "smallest_async", "speechmatics_async",
                 "openai_async", "gemini_stt", "azure_mai", "onnx_local", "groq",
+                "modulate_async",
             }
             if candidate not in allowed_meeting_final_providers:
                 raise ValueError("Unsupported final meeting transcription provider.")
@@ -11405,6 +12244,7 @@ class ScriberWebController:
                 "gladia": ("gladia", lambda v: Config.set_api_key("gladia", v)),
                 "groq": ("groq", lambda v: Config.set_api_key("groq", v)),
                 "speechmatics": ("speechmatics", lambda v: Config.set_api_key("speechmatics", v)),
+                "modulate": ("modulate", lambda v: Config.set_api_key("modulate", v)),
                 "elevenlabs": ("elevenlabs", lambda v: Config.set_api_key("elevenlabs", v)),
             }
             for key, (_, setter) in mapping.items():
@@ -11964,6 +12804,21 @@ def create_app(controller: ScriberWebController) -> web.Application:
     )
     app[APP_CONTROLLER] = controller
     app[APP_PROVIDER_REPLAY] = provider_replay
+    speaker_preview_grants: dict[str, SpeakerProfilePreviewGrant] = {}
+
+    def prune_speaker_preview_grants(now: float) -> None:
+        for token in [
+            token
+            for token, grant in speaker_preview_grants.items()
+            if grant.expires_at <= now
+        ]:
+            speaker_preview_grants.pop(token, None)
+        overflow = len(speaker_preview_grants) - _SPEAKER_PROFILE_PREVIEW_MAX_GRANTS
+        if overflow > 0:
+            for token, _grant in sorted(
+                speaker_preview_grants.items(), key=lambda item: item[1].expires_at
+            )[:overflow]:
+                speaker_preview_grants.pop(token, None)
 
     async def http_session_ctx(app_: web.Application):
         session = ClientSession(timeout=_OUTBOUND_HTTP_TIMEOUT)
@@ -13633,6 +14488,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 "diarization": True,
                 "recommendation": "Native labeled batch diarization.",
             },
+            "modulate_async": {
+                "label": "Modulate Multilingual",
+                "model": "velma-2-stt-batch",
+                "diarization": False,
+                "recommendation": "Final transcript only; uses the optional local Sherpa-ONNX speaker fallback.",
+            },
             "openai_async": {
                 "label": "OpenAI Batch",
                 "model": Config.OPENAI_STT_MODEL,
@@ -13970,18 +14831,21 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 revision=request.query.get("revision", "canonical"),
             )
             artifact_store = getattr(ctl, "_transcript_artifacts", None)
+            final_route: dict[str, Any] | None = None
+            track_results: Sequence[Any] = ()
+            track_derivations: Sequence[Any] = ()
             if artifact_store is not None:
-                def final_route_snapshot() -> dict[str, Any] | None:
+                def final_route_snapshot() -> tuple[dict[str, Any] | None, str]:
                     head = artifact_store.get_head(meeting_id)
                     if head is None:
-                        return None
+                        return None, ""
                     artifact = artifact_store.get_artifact(head.artifact_id)
                     if artifact is None:
-                        return None
+                        return None, ""
                     snapshot = artifact_store.get_route_snapshot(artifact.attempt_id)
                     if snapshot is None:
-                        return None
-                    return {
+                        return None, ""
+                    route = {
                         "provider": snapshot.provider,
                         "model": snapshot.model,
                         "transport": snapshot.transport,
@@ -13989,9 +14853,37 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         "timestampMode": snapshot.timestamp_mode,
                         "diarizationMode": snapshot.diarization_mode,
                     }
+                    return route, str(artifact.attempt_id)
 
                 try:
-                    detail["finalRoute"] = await asyncio.to_thread(final_route_snapshot)
+                    final_route, attempt_id = await asyncio.to_thread(
+                        final_route_snapshot
+                    )
+                    detail["finalRoute"] = final_route
+                    if attempt_id:
+                        try:
+                            list_results = getattr(
+                                artifact_store, "list_track_stage_results", None
+                            )
+                            list_derivations = getattr(
+                                artifact_store, "list_track_derivations", None
+                            )
+                            if callable(list_results):
+                                track_results = await asyncio.to_thread(
+                                    list_results, attempt_id
+                                )
+                            if callable(list_derivations):
+                                track_derivations = await asyncio.to_thread(
+                                    list_derivations, attempt_id
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                "Meeting processing evidence unavailable for {}: {}",
+                                meeting_id,
+                                type(exc).__name__,
+                            )
+                            track_results = ()
+                            track_derivations = ()
                 except Exception as exc:
                     # Historical transcript metadata is informative, not a
                     # prerequisite for opening the meeting.  A damaged or
@@ -14003,6 +14895,16 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         type(exc).__name__,
                     )
                     detail["finalRoute"] = None
+            detail["processingComponents"] = _meeting_processing_components(
+                detail,
+                final_route=final_route,
+                track_results=track_results,
+                track_derivations=track_derivations,
+            )
+            detail["reprocessing"] = await _meeting_reprocessing_capabilities(
+                ctl,
+                detail,
+            )
             detail["apiVersion"] = REST_API_VERSION
             return web.json_response(detail)
         except MeetingNotFound:
@@ -15267,6 +16169,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
             if live_transcriber is not None:
                 await live_transcriber.stop()
                 live_snapshot = live_transcriber.snapshot()
+                _merge_meeting_live_processing_aggregate(
+                    capture_metadata,
+                    live_snapshot,
+                )
                 live_sessions = capture_metadata.get("liveTranscriptionSessions")
                 if not isinstance(live_sessions, list):
                     live_sessions = []
@@ -15622,6 +16528,125 @@ def create_app(controller: ScriberWebController) -> web.Application:
         ctl.schedule_meeting_finalization(meeting_id)
         return web.json_response({**finalizing, "apiVersion": REST_API_VERSION}, status=202)
 
+    async def reprocess_meeting(request: web.Request):
+        """Refresh Voice matches or create a new canonical transcript safely."""
+
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        meeting_id = request.match_info.get("id", "")
+        try:
+            raw = await request.json()
+        except Exception:
+            return web.json_response({"message": "Expected JSON payload"}, status=400)
+        if not isinstance(raw, dict):
+            return web.json_response({"message": "Expected JSON object"}, status=400)
+        mode = str(raw.get("mode") or "").strip().lower()
+        if mode not in {"speaker_identity", "full_transcript"}:
+            return web.json_response(
+                {"message": "Choose speaker_identity or full_transcript."}, status=400
+            )
+
+        try:
+            detail = await asyncio.to_thread(ctl._meeting_store.detail, meeting_id)
+        except MeetingNotFound:
+            return web.json_response({"message": "Meeting not found"}, status=404)
+        capabilities = await _meeting_reprocessing_capabilities(ctl, detail)
+
+        if mode == "speaker_identity":
+            if not capabilities["speakerIdentityAvailable"]:
+                return web.json_response(
+                    {
+                        "message": capabilities["speakerIdentityUnavailableReason"]
+                        or "Speaker matching is unavailable for this Meeting."
+                    },
+                    status=409,
+                )
+            start_gate = asyncio.Event()
+            if not ctl.schedule_meeting_speaker_reprocessing(
+                meeting_id, start_gate=start_gate
+            ):
+                return web.json_response(
+                    {"message": "Meeting processing is already running."}, status=409
+                )
+            task = ctl._meeting_tasks.get(meeting_id)
+            if task is None:
+                return web.json_response(
+                    {"message": "Speaker matching could not be started."}, status=503
+                )
+            start_gate.set()
+            meeting = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
+            return web.json_response(
+                {
+                    "apiVersion": REST_API_VERSION,
+                    "meeting": meeting,
+                    "mode": mode,
+                },
+                status=202,
+            )
+
+        if not capabilities["fullTranscriptAvailable"]:
+            return web.json_response(
+                {
+                    "message": capabilities["fullTranscriptUnavailableReason"]
+                    or "Full Meeting retranscription is unavailable."
+                },
+                status=409,
+            )
+
+        start_gate = asyncio.Event()
+        reserved_task: asyncio.Task | None = None
+        if not ctl.schedule_meeting_finalization(meeting_id, start_gate=start_gate):
+            return web.json_response(
+                {"message": "Meeting processing is already running."}, status=409
+            )
+        reserved_task = ctl._meeting_tasks.get(meeting_id)
+        if reserved_task is None:
+            return web.json_response(
+                {"message": "Meeting retranscription could not be started."}, status=503
+            )
+        try:
+            finalizing, pending_cancel = await _await_with_delayed_cancellation(
+                asyncio.to_thread(
+                    ctl._meeting_store.reserve_full_reprocess,
+                    meeting_id,
+                    final_provider=capabilities["selectedFinalProvider"],
+                    final_model=capabilities["selectedFinalModel"],
+                    analysis_model=(
+                        Config.MEETING_ANALYSIS_MODEL
+                        or Config.DEFAULT_SUMMARIZATION_MODEL
+                    ),
+                    voice_library_enabled=bool(
+                        capabilities["voiceLibraryEnabledForRun"]
+                    ),
+                )
+            )
+            # The durable state owns this work from here. Open the gate before
+            # delivering a pending request cancellation so a Meeting cannot be
+            # stranded in ``finalizing`` by a closed WebView.
+            start_gate.set()
+            if pending_cancel is not None:
+                raise pending_cancel
+            await ctl.broadcast(meeting_state_event(finalizing))
+            return web.json_response(
+                {
+                    "apiVersion": REST_API_VERSION,
+                    "meeting": finalizing,
+                    "mode": mode,
+                },
+                status=202,
+            )
+        except asyncio.CancelledError:
+            raise
+        except MeetingNotFound:
+            return web.json_response({"message": "Meeting not found"}, status=404)
+        except (InvalidMeetingTransition, MeetingConflict) as exc:
+            return web.json_response({"message": str(exc)}, status=409)
+        except ValueError as exc:
+            return web.json_response({"message": str(exc)}, status=400)
+        finally:
+            if not start_gate.is_set() and reserved_task is not None:
+                reserved_task.cancel()
+                await asyncio.gather(reserved_task, return_exceptions=True)
+
     async def retry_meeting_finalization(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         meeting_id = request.match_info.get("id", "")
@@ -15640,6 +16665,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         original_state = ""
         retry_state = ""
         previous_final_provider = ""
+        previous_reprocess_final_model: str | None = None
         changed_final_provider = ""
         try:
             current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
@@ -15661,11 +16687,25 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 readiness_error = _provider_readiness_error(requested_final_provider)
                 if readiness_error:
                     return web.json_response({"message": readiness_error}, status=409)
+                current_provider = str(current.get("finalProvider") or "").strip().lower()
+                capture_metadata = current.get("captureMetadata")
+                is_full_reprocess = bool(
+                    isinstance(capture_metadata, dict)
+                    and capture_metadata.get("reprocessKind") == "full_transcript"
+                )
+                if is_full_reprocess:
+                    previous_reprocess_final_model = str(
+                        capture_metadata.get("reprocessFinalModel") or ""
+                    ).strip()
+                retry_final_model = (
+                    previous_reprocess_final_model
+                    if requested_final_provider == current_provider
+                    and previous_reprocess_final_model is not None
+                    else provider_batch_model(requested_final_provider)
+                )
                 provider_duration_limit = meeting_max_duration_seconds(
                     requested_final_provider,
-                    Config.MISTRAL_ASYNC_MODEL
-                    if requested_final_provider == "mistral_async"
-                    else None,
+                    retry_final_model,
                 )
                 if provider_duration_limit is not None:
                     durable_timeline_ms = max(
@@ -15695,7 +16735,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
                             },
                             status=409,
                         )
-                current_provider = str(current.get("finalProvider") or "").strip().lower()
                 if requested_final_provider != current_provider:
                     previous_final_provider = await asyncio.to_thread(
                         ctl._meeting_store.change_final_provider_for_retry,
@@ -15704,6 +16743,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         expected_state=original_state,
                         expected_final_provider=current_provider,
                         allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
+                        final_model=retry_final_model,
                     )
                     changed_final_provider = requested_final_provider
             import_job = await asyncio.to_thread(
@@ -15724,6 +16764,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         expected_state=original_state,
                         expected_final_provider=changed_final_provider,
                         allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
+                        final_model=previous_reprocess_final_model,
                     )
                     changed_final_provider = ""
                 return web.json_response({"message": "Meeting processing is already running."}, status=409)
@@ -15809,6 +16850,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                             expected_state=str(persisted["state"]),
                             expected_final_provider=changed_final_provider,
                             allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
+                            final_model=previous_reprocess_final_model,
                         )
                 except Exception:
                     logger.exception("Meeting retry provider reservation could not be rolled back")
@@ -16007,18 +17049,43 @@ def create_app(controller: ScriberWebController) -> web.Application:
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         meeting_id = request.match_info.get("id", "")
         export_format = request.match_info.get("format", "json").lower()
-        if export_format not in {"json", "md", "pdf", "docx"}:
-            return web.json_response({"message": "Meeting export supports json, md, pdf, or docx"}, status=400)
+        if export_format not in {"json", "md", "pdf", "docx", "audio"}:
+            return web.json_response(
+                {"message": "Meeting export supports json, md, pdf, docx, or compressed audio"},
+                status=400,
+            )
         try:
             detail = await asyncio.to_thread(ctl._meeting_store.detail, meeting_id)
         except MeetingNotFound:
             return web.json_response({"message": "Meeting not found"}, status=404)
         safe_title = re.sub(r"[^A-Za-z0-9 _-]", "", detail["title"]).strip()[:60] or "meeting"
+        if export_format == "audio":
+            # Finalization already creates this bounded 64-kbit/s mono Opus mix
+            # for playback. Reuse that verified derivative instead of encoding
+            # a second share copy or exposing lossless/raw meeting tracks.
+            path = data_dir() / "meetings" / meeting_id / "final" / "playback.opus"
+            if not path.is_file():
+                return web.json_response(
+                    {"message": "Compressed meeting audio is not ready"}, status=404
+                )
+            return web.FileResponse(
+                path,
+                headers={
+                    "Accept-Ranges": "bytes",
+                    "Cache-Control": "private, no-store",
+                    "Content-Type": "audio/ogg",
+                    "Content-Disposition": _attachment_content_disposition(
+                        f"{safe_title} - audio.opus"
+                    ),
+                },
+            )
         if export_format == "json":
             body = json.dumps(detail, ensure_ascii=False, indent=2).encode("utf-8")
             content_type, extension = "application/json", "json"
         else:
-            markdown = build_meeting_markdown(detail)
+            markdown = build_meeting_markdown(
+                detail, fallback_language=Config.LANGUAGE
+            )
             if export_format == "md":
                 body = markdown.encode("utf-8")
                 content_type, extension = "text/markdown", "md"
@@ -16026,10 +17093,17 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 body, content_type, extension = await _render_transcript_export_async(
                     export_format=export_format,
                     title=detail["title"],
-                    content=build_meeting_transcript_text(detail),
-                    summary=build_meeting_summary_markdown(detail),
+                    content=build_meeting_transcript_text(
+                        detail, fallback_language=Config.LANGUAGE
+                    ),
+                    summary=build_meeting_summary_markdown(
+                        detail, fallback_language=Config.LANGUAGE
+                    ),
                     date=detail.get("startedAt") or detail.get("createdAt") or "",
                     duration=format_meeting_offset(meeting_duration_ms(detail)),
+                    document_labels=meeting_export_labels(
+                        detail, fallback_language=Config.LANGUAGE
+                    ),
                 )
         return web.Response(
             body=body,
@@ -16045,7 +17119,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
             )
         except MeetingNotFound:
             return web.json_response({"message": "Meeting not found"}, status=404)
-        return web.json_response({"apiVersion": REST_API_VERSION, **build_meeting_email(detail)})
+        return web.json_response({
+            "apiVersion": REST_API_VERSION,
+            **build_meeting_email(detail, fallback_language=Config.LANGUAGE),
+        })
 
     async def export_meeting_email(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -16062,7 +17139,9 @@ def create_app(controller: ScriberWebController) -> web.Application:
         attachment_name = ""
         attachment_type = "application/octet-stream"
         if attachment_format:
-            markdown = build_meeting_markdown(detail)
+            markdown = build_meeting_markdown(
+                detail, fallback_language=Config.LANGUAGE
+            )
             if attachment_format == "md":
                 attachment = markdown.encode("utf-8")
                 attachment_name = f"{safe_title}.md"
@@ -16071,10 +17150,17 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 attachment, attachment_type, extension = await _render_transcript_export_async(
                     export_format=attachment_format,
                     title=detail["title"],
-                    content=build_meeting_transcript_text(detail),
-                    summary=build_meeting_summary_markdown(detail),
+                    content=build_meeting_transcript_text(
+                        detail, fallback_language=Config.LANGUAGE
+                    ),
+                    summary=build_meeting_summary_markdown(
+                        detail, fallback_language=Config.LANGUAGE
+                    ),
                     date=detail.get("startedAt") or detail.get("createdAt") or "",
                     duration=format_meeting_offset(meeting_duration_ms(detail)),
+                    document_labels=meeting_export_labels(
+                        detail, fallback_language=Config.LANGUAGE
+                    ),
                 )
                 attachment_name = f"{safe_title}.{extension}"
         body = build_eml_draft(
@@ -16082,6 +17168,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             attachment=attachment,
             attachment_name=attachment_name,
             attachment_type=attachment_type,
+            fallback_language=Config.LANGUAGE,
         )
         return web.Response(
             body=body,
@@ -16222,7 +17309,35 @@ def create_app(controller: ScriberWebController) -> web.Application:
             )
             if not changed:
                 return web.json_response({"message": "Speaker not found"}, status=404)
-            return web.json_response({"apiVersion": REST_API_VERSION, "success": True})
+            detail, profiles = await asyncio.gather(
+                asyncio.to_thread(ctl._meeting_store.detail, meeting_id),
+                asyncio.to_thread(ctl._meeting_store.speaker_profiles),
+            )
+            speaker = next(
+                (
+                    item
+                    for item in detail.get("speakers", [])
+                    if str(item.get("id") or "") == speaker_id
+                ),
+                None,
+            )
+            profile_id = str((speaker or {}).get("profileId") or "")
+            profile = next(
+                (
+                    item
+                    for item in profiles
+                    if str(item.get("id") or "") == profile_id
+                ),
+                None,
+            )
+            return web.json_response(
+                {
+                    "apiVersion": REST_API_VERSION,
+                    "success": True,
+                    "speaker": speaker,
+                    "profile": profile,
+                }
+            )
         except MeetingNotFound:
             return web.json_response({"message": "Meeting not found"}, status=404)
         except ValueError as exc:
@@ -16400,13 +17515,125 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def list_speaker_profiles(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        items = await asyncio.to_thread(ctl._meeting_store.speaker_profiles)
+        preview_candidates_fn = getattr(
+            ctl._meeting_store, "speaker_profile_preview_candidates", None
+        )
+        if callable(preview_candidates_fn):
+            items, preview_candidates = await asyncio.gather(
+                asyncio.to_thread(ctl._meeting_store.speaker_profiles),
+                asyncio.to_thread(preview_candidates_fn),
+            )
+        else:
+            items = await asyncio.to_thread(ctl._meeting_store.speaker_profiles)
+            preview_candidates = {}
+        items = [dict(item) for item in items]
+        now = time.monotonic()
+        prune_speaker_preview_grants(now)
+        for item in items:
+            candidate = preview_candidates.get(str(item.get("id") or ""))
+            if not isinstance(candidate, dict):
+                item["preview"] = None
+                continue
+            source = str(candidate.get("source") or "")
+            meeting_id = str(candidate.get("meetingId") or "")
+            source_name = (
+                "microphone.opus" if source == "microphone" else "system.opus"
+            )
+            source_path = data_dir() / "meetings" / meeting_id / "final" / source_name
+            if (
+                source not in {"microphone", "system"}
+                or not re.fullmatch(r"[0-9a-f]{32}", meeting_id)
+                or not source_path.is_file()
+            ):
+                item["preview"] = None
+                continue
+            duration_ms = max(
+                0, min(8_000, int(candidate.get("durationMs") or 0))
+            )
+            if duration_ms < 2_000:
+                item["preview"] = None
+                continue
+            token = uuid4().hex
+            speaker_preview_grants[token] = SpeakerProfilePreviewGrant(
+                profile_id=str(item.get("id") or ""),
+                meeting_id=meeting_id,
+                source=source,
+                start_ms=max(0, int(candidate.get("startMs") or 0)),
+                duration_ms=duration_ms,
+                expires_at=now + _SPEAKER_PROFILE_PREVIEW_TTL_SECONDS,
+            )
+            item["preview"] = {
+                "token": token,
+                "url": f"/api/meetings/speaker-profile-preview/{token}",
+                "startMs": 0,
+                "endMs": duration_ms,
+                "durationMs": duration_ms,
+                "source": source,
+                "expiresInSeconds": _SPEAKER_PROFILE_PREVIEW_TTL_SECONDS,
+            }
+        prune_speaker_preview_grants(now)
         model_status = ctl._speaker_model.status()
         return web.json_response(
             {"apiVersion": REST_API_VERSION,
              "enabled": bool(Config.VOICEPRINT_LIBRARY_OPT_IN and model_status["installed"]),
              "items": items,
              "message": "Voice Library is local and opt-in; embeddings are excluded from this response."}
+        )
+
+    async def speaker_profile_preview(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        now = time.monotonic()
+        prune_speaker_preview_grants(now)
+        token = str(request.match_info.get("token") or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", token):
+            return web.json_response(
+                {"message": "Speaker preview not found"}, status=404
+            )
+        grant = speaker_preview_grants.get(token)
+        if grant is None or grant.expires_at <= now:
+            speaker_preview_grants.pop(token, None)
+            return web.json_response(
+                {"message": "Speaker preview not found"}, status=404
+            )
+
+        # Deleting a profile or purging its retained Meeting audio immediately
+        # revokes every previously minted process-local capability.
+        candidates_fn = getattr(
+            ctl._meeting_store, "speaker_profile_preview_candidates", None
+        )
+        current_candidates = (
+            await asyncio.to_thread(candidates_fn)
+            if callable(candidates_fn)
+            else {}
+        )
+        if grant.profile_id not in current_candidates:
+            speaker_preview_grants.pop(token, None)
+            return web.json_response(
+                {"message": "Speaker preview not found"}, status=404
+            )
+        try:
+            audio = await _render_speaker_profile_preview(grant)
+        except FileNotFoundError:
+            speaker_preview_grants.pop(token, None)
+            return web.json_response(
+                {"message": "Speaker preview not found"}, status=404
+            )
+        except Exception as exc:
+            logger.warning(
+                "Local Voice Library preview failed: {}", type(exc).__name__
+            )
+            return web.json_response(
+                {"message": "The local speaker preview could not be played."},
+                status=503,
+            )
+        return web.Response(
+            body=audio,
+            content_type="audio/wav",
+            headers={
+                "Cache-Control": "private, no-store",
+                "Content-Disposition": "inline",
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     async def enroll_speaker_profile(request: web.Request):
@@ -17227,6 +18454,9 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/api/meetings/detection", get_meeting_detection)
     app.router.add_post("/api/meetings/detection/dismiss", dismiss_meeting_detection)
     app.router.add_get("/api/meetings/speaker-profiles", list_speaker_profiles)
+    app.router.add_get(
+        "/api/meetings/speaker-profile-preview/{token}", speaker_profile_preview
+    )
     app.router.add_post("/api/meetings/speaker-profiles/enroll", enroll_speaker_profile)
     app.router.add_post("/api/meetings/speaker-profiles/merge", merge_speaker_profiles)
     app.router.add_delete("/api/meetings/speaker-profiles/{profileId}", delete_speaker_profile)
@@ -17252,6 +18482,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_post("/api/meetings/{id}/pause", pause_meeting)
     app.router.add_post("/api/meetings/{id}/resume", resume_meeting)
     app.router.add_post("/api/meetings/{id}/stop", stop_meeting)
+    app.router.add_post("/api/meetings/{id}/reprocess", reprocess_meeting)
     app.router.add_post("/api/meetings/{id}/finalize", retry_meeting_finalization)
     app.router.add_post("/api/meetings/{id}/retry", retry_meeting_finalization)
     app.router.add_post("/api/meetings/{id}/analyze", analyze_meeting_again)
@@ -17751,6 +18982,8 @@ def _prewarm_stt_service(service_name: str) -> None:
             from src.mistral_stt import MistralRealtimeSTTService, MistralAsyncProcessor  # noqa: F401
         elif service_name in {"smallest", "smallest_async"}:
             from src.smallest_stt import SmallestRealtimeSTTService, SmallestAsyncProcessor  # noqa: F401
+        elif service_name in {"modulate", "modulate_async"}:
+            from src.modulate_stt import ModulateAsyncProcessor, ModulateRealtimeSTTService  # noqa: F401
         elif service_name == "azure_mai":
             from src.azure_mai_stt import AzureMaiTranscribeSTTService  # noqa: F401
     except ImportError as e:

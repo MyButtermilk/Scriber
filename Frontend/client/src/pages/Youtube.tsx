@@ -1,4 +1,4 @@
-import { ArrowRight, Clock, PlayCircle, Youtube as YoutubeIcon, Loader2, CheckCircle2, ThumbsUp, Eye, Square, X } from "lucide-react";
+import { Search, Clock, PlayCircle, Youtube as YoutubeIcon, Loader2, CheckCircle2, ThumbsUp, Eye, RotateCcw, Square, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -110,8 +110,10 @@ interface YoutubeVideoCardProps {
   viewMode: "list" | "grid";
   isDeleting: boolean;
   isCopying: boolean;
+  isRetryingTranscription: boolean;
   onDelete: (e: React.MouseEvent, id: string) => void;
   onCopy: (e: React.MouseEvent, id: string) => void;
+  onTranscriptionRetry: (e: React.MouseEvent, item: TranscriptHistoryItem) => void;
   onSummaryRetryComplete: (id: string) => void;
   onNavigate: (id: string) => void;
   onHover?: (id: string) => void;
@@ -122,8 +124,10 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
   viewMode,
   isDeleting,
   isCopying,
+  isRetryingTranscription,
   onDelete,
   onCopy,
+  onTranscriptionRetry,
   onSummaryRetryComplete,
   onNavigate,
   onHover,
@@ -175,7 +179,24 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     {item.summaryStatus === "pending" ? "Summarizing…" : item.step || "Processing"}
                   </Badge>
                 ) : historyStatus === "failed" ? (
-                  <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px] shrink-0">Failed</Badge>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="min-h-7 shrink-0 gap-1.5 rounded-full border-red-200 bg-red-50/95 px-2.5 text-[10px] font-semibold text-red-700 dark:border-red-800 dark:bg-red-950/75 dark:text-red-300"
+                    onClick={(event) => onTranscriptionRetry(event, item)}
+                    disabled={isRetryingTranscription}
+                    aria-busy={isRetryingTranscription}
+                    aria-label={`${isRetryingTranscription ? "Retrying" : "Retry"} transcription for ${item.title}`}
+                    title={isRetryingTranscription ? "Restarting transcription" : "Transcription failed. Try again"}
+                  >
+                    {isRetryingTranscription ? (
+                      <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                    ) : (
+                      <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                    )}
+                    <span>{isRetryingTranscription ? "Retrying…" : "Retry transcription"}</span>
+                  </Button>
                 ) : historyStatus === "summary_failed" ? (
                   <TranscriptSummaryRetryButton
                     transcriptId={item.id}
@@ -234,7 +255,24 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     {item.summaryStatus === "pending" ? "Summarizing…" : "Processing"}
                   </Badge>
                 ) : historyStatus === "failed" ? (
-                  <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50/90 text-[10px]">Failed</Badge>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="min-h-7 gap-1.5 rounded-full border-red-200 bg-red-50/95 px-2.5 text-[10px] font-semibold text-red-700 dark:border-red-800 dark:bg-red-950/75 dark:text-red-300"
+                    onClick={(event) => onTranscriptionRetry(event, item)}
+                    disabled={isRetryingTranscription}
+                    aria-busy={isRetryingTranscription}
+                    aria-label={`${isRetryingTranscription ? "Retrying" : "Retry"} transcription for ${item.title}`}
+                    title={isRetryingTranscription ? "Restarting transcription" : "Transcription failed. Try again"}
+                  >
+                    {isRetryingTranscription ? (
+                      <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                    ) : (
+                      <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                    )}
+                    <span>{isRetryingTranscription ? "Retrying…" : "Retry transcription"}</span>
+                  </Button>
                 ) : historyStatus === "summary_failed" ? (
                   <TranscriptSummaryRetryButton
                     transcriptId={item.id}
@@ -318,10 +356,12 @@ export default function Youtube() {
   const [startingVideoId, setStartingVideoId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
+  const [retryingTranscriptId, setRetryingTranscriptId] = useState<string | null>(null);
   const searchRequestInFlightRef = useRef(false);
   const startRequestInFlightRef = useRef<string | null>(null);
   const deletingRef = useRef<string | null>(null);
   const copyingRef = useRef<string | null>(null);
+  const retryingTranscriptRef = useRef<string | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
   const [sortBy, setSortBy] = useUrlQueryState<SortOption>("sort", "date", {
     parse: (raw) => (raw === "likes" || raw === "views" ? raw : "date"),
@@ -616,6 +656,68 @@ export default function Youtube() {
     });
   }, [queryClient]);
 
+  const retryYoutubeTranscription = useCallback(async (event: React.MouseEvent, item: TranscriptHistoryItem) => {
+    event.stopPropagation();
+    if (retryingTranscriptRef.current) return;
+
+    const sourceUrl = String(item.sourceUrl || "").trim();
+    if (!sourceUrl) {
+      toast({
+        title: "Retry unavailable",
+        description: "No source URL is available for this video.",
+        variant: "destructive",
+        duration: 5000,
+      });
+      return;
+    }
+
+    retryingTranscriptRef.current = item.id;
+    setRetryingTranscriptId(item.id);
+    try {
+      const response = await fetchWithTimeout(apiUrl("/api/youtube/transcribe"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          url: sourceUrl,
+          title: item.title,
+          channelTitle: item.channel || item.channelTitle,
+          thumbnailUrl: item.thumbnailUrl,
+          duration: item.duration,
+        }),
+      }, 15_000);
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response));
+      }
+
+      const retry = (await response.json()) as TranscriptHistoryItem;
+      if (!retry?.id) {
+        throw new Error("Retry started, but no transcript ID was returned.");
+      }
+
+      toast({
+        title: "Retry started",
+        description: `A new transcription attempt for “${item.title}” has been queued.`,
+        duration: 3000,
+      });
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === "/api/transcripts" &&
+          (query.queryKey[1] as { type?: string })?.type === "youtube",
+      });
+    } catch (error) {
+      toast({
+        title: "Retry failed",
+        description: friendlyError(error, "Scriber could not restart this transcription."),
+        variant: "destructive",
+        duration: 5000,
+      });
+    } finally {
+      retryingTranscriptRef.current = null;
+      setRetryingTranscriptId(null);
+    }
+  }, [queryClient, toast]);
+
   // Preload TranscriptDetail page and data on hover for instant navigation
   const preloadTranscript = useCallback((id: string) => {
     import("@/pages/TranscriptDetail");
@@ -668,16 +770,17 @@ export default function Youtube() {
               ) : null}
             </div>
             <Button
-              className="group h-11 w-11 shrink-0 rounded-[12px] px-0 shadow-[0_12px_28px_-18px_hsl(var(--primary))] transition-transform duration-200 active:scale-[0.97] sm:w-auto sm:px-4"
+              size="sm"
+              className="h-10 w-10 shrink-0 rounded-lg px-0 text-[12px] font-semibold active:scale-[0.98] sm:w-auto sm:min-w-[112px] sm:px-4"
               disabled={!query.trim() || isSearching}
               type="submit"
               aria-label={isSearching ? "Searching YouTube" : "Find video"}
               aria-busy={isSearching}
             >
               {isSearching ? (
-                <Loader2 className="h-[17px] w-[17px] animate-spin" aria-hidden="true" />
+                <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
               ) : (
-                <ArrowRight className="h-[17px] w-[17px] stroke-[1.7px] transition-transform duration-200 group-hover:translate-x-0.5" aria-hidden="true" />
+                <Search className="h-4 w-4 stroke-[1.7px]" aria-hidden="true" />
               )}
               <span className="hidden sm:inline">{isSearching ? "Searching" : "Find video"}</span>
             </Button>
@@ -906,8 +1009,10 @@ export default function Youtube() {
                   viewMode={viewMode}
                   isDeleting={deletingId === item.id}
                   isCopying={copyingId === item.id}
+                  isRetryingTranscription={retryingTranscriptId === item.id}
                   onDelete={deleteTranscript}
                   onCopy={copyTranscript}
+                  onTranscriptionRetry={retryYoutubeTranscription}
                   onSummaryRetryComplete={refreshAfterSummaryRetry}
                   onNavigate={navigateToTranscript}
                   onHover={preloadTranscript}

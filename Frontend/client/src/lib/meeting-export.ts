@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { apiUrl, isTauriRuntime } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import {
+  meetingAudioExportMeetingId,
   meetingExportApiPath,
   meetingExportExtension,
   meetingExportFilename,
@@ -63,8 +64,18 @@ export async function saveMeetingExport(
   fallbackName: string,
 ): Promise<MeetingExportResult> {
   const desktop = isTauriRuntime();
+  const safePath = meetingExportApiPath(path);
+  const audioMeetingId = meetingAudioExportMeetingId(safePath);
+  if (desktop && audioMeetingId) {
+    const saved = await invoke<NativeSavedMeetingExport | null>("save_meeting_audio_export", {
+      meetingId: audioMeetingId,
+      filename: fallbackName,
+    });
+    if (!saved) return { status: "cancelled" };
+    return { status: "saved", desktop: true, ...saved };
+  }
   const response = await fetchWithTimeout(
-    apiUrl(meetingExportApiPath(path)),
+    apiUrl(safePath),
     { credentials: "include" },
     EXPORT_TIMEOUT_MS,
   );

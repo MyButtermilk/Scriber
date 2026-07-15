@@ -153,6 +153,27 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         supports_batch_diarization=True,
         supports_word_timestamps=True,
     ),
+    "modulate": ProviderCapabilities(
+        supports_live_streaming=True,
+        supports_direct_file_upload=True,
+        # The adapter requests no partials and emits each provider-final text
+        # segment immediately without retaining utterance metadata.
+        injects_immediately_in_live_mode=True,
+        supports_batch_diarization=False,
+        supports_word_timestamps=False,
+        # Meeting finalization creates a 64-kbit/s WebM/Opus derivative. Three
+        # hours remain safely below Modulate's documented 100-MB file limit.
+        meeting_max_duration_seconds=10_800,
+    ),
+    "modulate_async": ProviderCapabilities(
+        supports_live_streaming=False,
+        supports_direct_file_upload=True,
+        injects_immediately_in_live_mode=False,
+        # Scriber deliberately discards Modulate utterance-level output.
+        supports_batch_diarization=False,
+        supports_word_timestamps=False,
+        meeting_max_duration_seconds=10_800,
+    ),
     "openai": ProviderCapabilities(
         supports_live_streaming=True,
         supports_direct_file_upload=False,

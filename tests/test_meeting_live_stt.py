@@ -621,6 +621,8 @@ async def test_smart_turn_merges_incomplete_provider_endpoints_for_microphone():
     assert analyzer.audio
     assert snapshot["smartTurn"] == {
         "enabled": True,
+        "engine": "Pipecat local",
+        "model": "Smart Turn V3",
         "analyses": 2,
         "incompleteTurns": 1,
         "failures": 0,

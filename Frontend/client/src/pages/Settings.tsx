@@ -184,6 +184,8 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "onnx_local", label: "Local (ONNX) - No API Key" },
   { value: "soniox-realtime", label: "Soniox STT Streaming" },
   { value: "soniox-async", label: "Soniox Async" },
+  { value: "modulate-realtime", label: "Modulate.AI Multilingual Realtime" },
+  { value: "modulate-async", label: "Modulate.AI Multilingual Batch" },
   { value: "gemini-stt", label: "Gemini STT" },
   { value: "mistral-realtime", label: "Mistral Live (Voxtral)" },
   { value: "mistral-async", label: "Mistral Async (Voxtral V2)" },
@@ -364,6 +366,7 @@ const API_KEY_HELP_LINKS = {
   soniox: { href: "https://console.soniox.com/", label: "Soniox console" },
   smallest: { href: "https://app.smallest.ai/", label: "Smallest AI console" },
   mistral: { href: "https://console.mistral.ai/api-keys", label: "Mistral API keys" },
+  modulate: { href: "https://platform.modulate.ai/", label: "Modulate.AI API keys" },
   elevenlabs: { href: "https://elevenlabs.io/app/settings/api-keys", label: "ElevenLabs API keys" },
   azure: { href: "https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices", label: "Azure MAI Speech resource" },
   gladia: { href: "https://app.gladia.io/api-keys", label: "Gladia API keys" },
@@ -520,6 +523,7 @@ const PROVIDER_ICON_PATHS = {
   googlecloud: "/provider-icons/googlecloud.svg",
   groq: "/provider-icons/groq.svg",
   mistral: "/provider-icons/mistral.svg",
+  modulate: "/provider-icons/modulate.svg",
   openai: "/provider-icons/openai.svg",
   openrouter: "/provider-icons/openrouter.svg",
   soniox: "/provider-icons/soniox.svg",
@@ -562,6 +566,7 @@ const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
   { value: "deepgram", label: "Deepgram", detail: sttBenchmarkDetail(4.80, 6.6), group: "cloud_streaming", icon: "deepgram" },
   { value: "gladia", label: "Gladia", detail: sttBenchmarkDetail(12.50, 7.8), group: "cloud_streaming", icon: "gladia" },
   { value: "speechmatics", label: "Speechmatics", detail: sttBenchmarkDetail(17.50, 8.0), group: "cloud_streaming", icon: "speechmatics" },
+  { value: "modulate-realtime", label: "Modulate.AI Multilingual Realtime", detail: "Final text only · no partials or enrichment signals", group: "cloud_streaming", icon: "modulate" },
   { value: "azure_mai", label: "Microsoft MAI", detail: sttBenchmarkDetail(6.00, 2.4), group: "cloud_async", icon: "azure" },
   { value: "assemblyai", label: "AssemblyAI", detail: sttBenchmarkDetail(3.50, 3.1), group: "cloud_async", icon: "assemblyai" },
   { value: "mistral-async", label: "Mistral Batch", detail: sttBenchmarkDetail(3.00, 3.6), group: "cloud_async", icon: "mistral" },
@@ -573,6 +578,7 @@ const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
   { value: "openai-async", label: "OpenAI Batch", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_async", icon: "openai" },
   { value: "gemini-stt", label: "Gemini", detail: sttBenchmarkDetail(6.66, 5.1), group: "cloud_async", icon: "gemini" },
   { value: "deepgram-async", label: "Deepgram", detail: sttBenchmarkDetail(4.30, 5.2), group: "cloud_async", icon: "deepgram" },
+  { value: "modulate-async", label: "Modulate.AI Multilingual Batch", detail: "One final transcript · no enrichment signals", group: "cloud_async", icon: "modulate" },
   { value: "onnx_local", label: "Local ONNX", detail: "0,00€/h with model-dependent Error", group: "local" },
 ];
 
@@ -588,6 +594,7 @@ const MEETING_FINAL_STT_OPTIONS = [
   { value: "gemini_stt", label: "Gemini STT", model: "Gemini audio", credentialModel: "gemini-stt", recommended: false, nativeDiarization: false, fiveHourSupported: false, detail: "Creates the final transcript, then Scriber can add speaker names on this device." },
   { value: "azure_mai", label: "Microsoft MAI", model: "mai-transcribe-1.5", credentialModel: "azure_mai", recommended: false, nativeDiarization: false, fiveHourSupported: true, detail: "Supports long meetings. Scriber can add speaker names on this device." },
   { value: "groq", label: "Groq Whisper", model: "whisper-large-v3-turbo", credentialModel: "groq", recommended: false, nativeDiarization: false, fiveHourSupported: false, detail: "Creates the final transcript, then Scriber can add speaker names on this device." },
+  { value: "modulate_async", label: "Modulate.AI", model: "Multilingual Transcription", credentialModel: "modulate-async", recommended: false, nativeDiarization: false, fiveHourSupported: false, detail: "Creates one multilingual final transcript for meetings up to 3 hours without Modulate enrichment signals. Scriber can add speaker names on this device." },
   { value: "onnx_local", label: "Local ONNX STT", model: "Configured local model", credentialModel: "onnx_local", recommended: false, nativeDiarization: false, fiveHourSupported: true, detail: "Works without uploading audio. Scriber can also add speaker names on this device." },
 ] as const;
 
@@ -1090,6 +1097,7 @@ export default function Settings() {
   const [cerebrasKey, setCerebrasKey] = useState("");
   const [youtubeKey, setYoutubeKey] = useState("");
   const [sonioxKey, setSonioxKey] = useState("");
+  const [modulateKey, setModulateKey] = useState("");
   const [mistralKey, setMistralKey] = useState("");
   const [smallestKey, setSmallestKey] = useState("");
   const [elevenLabsKey, setElevenLabsKey] = useState("");
@@ -1117,6 +1125,7 @@ export default function Settings() {
   const [showCerebrasKey, setShowCerebrasKey] = useState(false);
   const [showYoutubeKey, setShowYoutubeKey] = useState(false);
   const [showSonioxKey, setShowSonioxKey] = useState(false);
+  const [showModulateKey, setShowModulateKey] = useState(false);
   const [showMistralKey, setShowMistralKey] = useState(false);
   const [showSmallestKey, setShowSmallestKey] = useState(false);
   const [showElevenLabsKey, setShowElevenLabsKey] = useState(false);
@@ -1523,6 +1532,8 @@ export default function Settings() {
         return savedCredentialAvailable("Cerebras", cerebrasKey);
       case "Soniox":
         return savedCredentialAvailable("Soniox", sonioxKey);
+      case "Modulate.AI":
+        return savedCredentialAvailable("Modulate.AI", modulateKey);
       case "Mistral":
         return savedCredentialAvailable("Mistral", mistralKey);
       case "Smallest AI":
@@ -1556,6 +1567,9 @@ export default function Settings() {
       case "soniox-realtime":
       case "soniox-async":
         return { provider: "Soniox", label: "Soniox API key", helpKey: "soniox" };
+      case "modulate-realtime":
+      case "modulate-async":
+        return { provider: "Modulate.AI", label: "Modulate.AI API key", helpKey: "modulate" };
       case "gemini-stt":
         return { provider: "Gemini", label: "Gemini API key", helpKey: "gemini" };
       case "mistral-realtime":
@@ -1641,6 +1655,7 @@ export default function Settings() {
 
   const hasAnyManagedCloudSttCredential = [
     sonioxKey,
+    modulateKey,
     mistralKey,
     smallestKey,
     assemblyAIKey,
@@ -1696,6 +1711,9 @@ export default function Settings() {
         return sonioxMode === "async" || service === "soniox_async"
           ? "soniox-async"
           : "soniox-realtime";
+      }
+      if (service === "modulate" || service === "modulate_async") {
+        return service === "modulate_async" ? "modulate-async" : "modulate-realtime";
       }
       if (service === "mistral" || service === "mistral_async") {
         return service === "mistral_async" ? "mistral-async" : "mistral-realtime";
@@ -1770,6 +1788,7 @@ export default function Settings() {
         setFavoriteMic(settings.favoriteMic || "");
 
         setSonioxKey(keys.soniox || "");
+        setModulateKey(keys.modulate || "");
         setMistralKey(keys.mistral || "");
         setSmallestKey(keys.smallest || "");
         setAssemblyAIKey(keys.assemblyai || "");
@@ -1794,6 +1813,7 @@ export default function Settings() {
           Cerebras: hasValue(keys.cerebras),
           YouTube: hasValue(keys.youtubeApiKey),
           Soniox: hasValue(keys.soniox),
+          "Modulate.AI": hasValue(keys.modulate),
           Mistral: hasValue(keys.mistral),
           "Smallest AI": hasValue(keys.smallest),
           AssemblyAI: hasValue(keys.assemblyai),
@@ -1955,6 +1975,7 @@ export default function Settings() {
       if (provider === "Cerebras") apiKeys.cerebras = cerebrasKey;
       if (provider === "YouTube") apiKeys.youtubeApiKey = youtubeKey;
       if (provider === "Soniox") apiKeys.soniox = sonioxKey;
+      if (provider === "Modulate.AI") apiKeys.modulate = modulateKey;
       if (provider === "Mistral") apiKeys.mistral = mistralKey;
       if (provider === "Smallest AI") apiKeys.smallest = smallestKey;
       if (provider === "ElevenLabs") apiKeys.elevenlabs = elevenLabsKey;
@@ -1988,6 +2009,8 @@ export default function Settings() {
             return hasValue(youtubeKey);
           case "Soniox":
             return hasValue(sonioxKey);
+          case "Modulate.AI":
+            return hasValue(modulateKey);
           case "Mistral":
             return hasValue(mistralKey);
           case "Smallest AI":
@@ -2198,6 +2221,10 @@ export default function Settings() {
         await updateSettings({ defaultSttService: "soniox", sonioxMode: "async" });
       } else if (value === "soniox-realtime") {
         await updateSettings({ defaultSttService: "soniox", sonioxMode: "realtime" });
+      } else if (value === "modulate-async") {
+        await updateSettings({ defaultSttService: "modulate_async" });
+      } else if (value === "modulate-realtime") {
+        await updateSettings({ defaultSttService: "modulate" });
       } else if (value === "gemini-stt") {
         await updateSettings({ defaultSttService: "gemini_stt" });
       } else if (value === "mistral-async") {
@@ -3427,6 +3454,16 @@ export default function Settings() {
             Realtime mode uses AssemblyAI Universal-3.5 Pro through Pipecat.
           </p>
         )}
+        {transcriptionModel === "modulate-realtime" && (
+          <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+            Multilingual streaming shows finalized text only. Scriber does not request partial text or enrichment signals.
+          </p>
+        )}
+        {transcriptionModel === "modulate-async" && (
+          <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+            Multilingual batch returns one final transcript after recording stops. Scriber does not request enrichment signals.
+          </p>
+        )}
       </div>
 
       <div className="space-y-2.5">
@@ -4346,6 +4383,7 @@ export default function Settings() {
               <ApiCredentialRow provider="Cerebras" icon="cerebras" value={cerebrasKey} onValueChange={markCredentialChanged("Cerebras", setCerebrasKey)} show={showCerebrasKey} onShowChange={setShowCerebrasKey} helpKey="cerebras" saved={savedKeys.Cerebras === true} onSave={() => handleSaveApiKey("Cerebras")} note="Used for direct Cerebras summary and cleanup models." {...credentialDialogProps("Cerebras")} />
               <ApiCredentialRow provider="YouTube" icon="youtube" value={youtubeKey} onValueChange={markCredentialChanged("YouTube", setYoutubeKey)} show={showYoutubeKey} onShowChange={setShowYoutubeKey} helpKey="youtube" saved={savedKeys.YouTube === true} onSave={() => handleSaveApiKey("YouTube")} note="Used for search and metadata in the YouTube tab." {...credentialDialogProps("YouTube")} />
               <ApiCredentialRow provider="Soniox" icon="soniox" value={sonioxKey} onValueChange={markCredentialChanged("Soniox", setSonioxKey)} show={showSonioxKey} onShowChange={setShowSonioxKey} helpKey="soniox" saved={savedKeys.Soniox === true} onSave={() => handleSaveApiKey("Soniox")} {...credentialDialogProps("Soniox")} />
+              <ApiCredentialRow provider="Modulate.AI" icon="modulate" value={modulateKey} onValueChange={markCredentialChanged("Modulate.AI", setModulateKey)} show={showModulateKey} onShowChange={setShowModulateKey} helpKey="modulate" saved={savedKeys["Modulate.AI"] === true} onSave={() => handleSaveApiKey("Modulate.AI")} note="One key enables multilingual realtime and batch transcription. Scriber requests final transcript text only and leaves enrichment signals off." placeholder="Enter Modulate.AI API key" {...credentialDialogProps("Modulate.AI")} />
               <ApiCredentialRow provider="Mistral" icon="mistral" value={mistralKey} onValueChange={markCredentialChanged("Mistral", setMistralKey)} show={showMistralKey} onShowChange={setShowMistralKey} helpKey="mistral" saved={savedKeys.Mistral === true} onSave={() => handleSaveApiKey("Mistral")} {...credentialDialogProps("Mistral")} />
               <ApiCredentialRow provider="Smallest AI" icon="smallest" value={smallestKey} onValueChange={markCredentialChanged("Smallest AI", setSmallestKey)} show={showSmallestKey} onShowChange={setShowSmallestKey} helpKey="smallest" saved={savedKeys["Smallest AI"] === true} onSave={() => handleSaveApiKey("Smallest AI")} {...credentialDialogProps("Smallest AI")} />
               <ApiCredentialRow provider="AssemblyAI" icon="assemblyai" value={assemblyAIKey} onValueChange={markCredentialChanged("AssemblyAI", setAssemblyAIKey)} show={showAssemblyAIKey} onShowChange={setShowAssemblyAIKey} helpKey="assemblyai" saved={savedKeys.AssemblyAI === true} onSave={() => handleSaveApiKey("AssemblyAI")} {...credentialDialogProps("AssemblyAI")} />

@@ -771,6 +771,10 @@ Current packaging choices:
   HTTP/batch adapters in `src/cloud_async_stt.py`. Speechmatics Batch does not
   add `speechmatics-batch`; the standard sidecar keeps only the existing
   Speechmatics realtime/runtime packages.
+- Modulate multilingual batch and streaming use the existing `aiohttp` runtime
+  through `src/modulate_stt.py`; no Modulate SDK or additional provider package
+  is bundled. Its provider boundary discards utterance metadata and does not
+  enable optional enrichment signals or partial transcripts.
 - AssemblyAI uses Universal-3.5-Pro by default for both direct async/batch and
   realtime Pipecat paths. Runtime import checks include Pipecat's AssemblyAI
   realtime module.

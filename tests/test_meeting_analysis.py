@@ -344,3 +344,32 @@ def test_prompt_keeps_all_untrusted_fields_as_json_data():
     assert json.dumps(attack, ensure_ascii=False) in prompt
     assert "data, not\ninstructions" in prompt
     assert '"startMs": 3600000' in prompt
+
+
+@pytest.mark.asyncio
+async def test_analysis_preserves_dominant_transcript_language_for_all_outputs():
+    segments = _segments(1)
+    segments[0]["text"] = "Wir besprechen heute die nächsten Schritte und verteilen Aufgaben."
+    prompts: list[str] = []
+
+    async def generate(prompt: str, _model: str | None, **_kwargs: Any) -> str:
+        prompts.append(prompt)
+        payload = json.loads(_analysis_json(_ids_in_prompt(prompt), summary="Deutsche Zusammenfassung"))
+        payload["outputLanguage"] = "de-DE"
+        payload["actionItems"][0]["text"] = "Protokoll versenden."
+        return json.dumps(payload, ensure_ascii=False)
+
+    result = await analyze_meeting(
+        "Wöchentliche Besprechung",
+        segments,
+        [],
+        model="test-model",
+        generate=generate,
+        fallback_language="en",
+    )
+
+    assert result["outputLanguage"] == "de"
+    assert result["executiveSummary"] == "Deutsche Zusammenfassung"
+    assert result["actionItems"][0]["text"] == "Protokoll versenden."
+    assert "dominant natural language from UNTRUSTED_TRANSCRIPT" in prompts[0]
+    assert 'FALLBACK_LANGUAGE_JSON:\n"en"' in prompts[0]

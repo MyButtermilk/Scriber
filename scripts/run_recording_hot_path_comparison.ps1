@@ -320,6 +320,13 @@ function Invoke-BaselineWithEnvironment {
 }
 
 $RepoRoot = (Resolve-Path $RepoRoot).Path
+$ProjectPython = @(
+    (Join-Path $RepoRoot "venv\Scripts\python.exe"),
+    (Join-Path $RepoRoot ".venv\Scripts\python.exe")
+) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+if (-not $ProjectPython) {
+    throw "Scriber project Python was not found under venv or .venv."
+}
 if (-not $OutputDir) {
     $OutputDir = Join-Path $RepoRoot "tmp\hybrid-baseline"
 } else {
@@ -415,7 +422,7 @@ $plan = [pscustomobject]@{
         },
         [pscustomobject]@{
             name = "comparisonValidation"
-            command = "python " + (Convert-ToDisplayCommand -CommandArgs $comparisonArgs)
+            command = $ProjectPython + " " + (Convert-ToDisplayCommand -CommandArgs $comparisonArgs)
         }
     )
 }
@@ -435,7 +442,7 @@ if (-not (Test-Path -LiteralPath $RustHotPathReport -PathType Leaf)) {
     throw "Rust recording hot-path report was not found: $RustHotPathReport"
 }
 
-python @comparisonArgs
+& $ProjectPython @comparisonArgs
 if ($LASTEXITCODE -ne 0) {
     throw "Recording hot-path Python/Rust comparison validation failed with exit code $LASTEXITCODE."
 }

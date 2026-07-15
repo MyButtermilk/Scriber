@@ -216,9 +216,19 @@ export interface MeetingDetail extends MeetingSummary {
     meetingId: string;
     label: string;
     displayName: string;
+    displayNameSource?: string;
     sourceHint: string;
     profileId: string | null;
     confidence: number | null;
+    voiceMatch?: {
+      profileId: string;
+      displayName: string;
+      confidence: number | null;
+      evidenceCount: number;
+      matchState: string;
+      canPreselect: boolean;
+      requiresConfirmation: true;
+    } | null;
     createdAt: string;
     updatedAt: string;
   }>;
@@ -245,6 +255,32 @@ export interface MeetingDetail extends MeetingSummary {
     timestampMode: string;
     diarizationMode: string;
   } | null;
+  reprocessing?: {
+    speakerIdentityAvailable: boolean;
+    speakerIdentityUnavailableReason?: string;
+    fullTranscriptAvailable: boolean;
+    fullTranscriptUnavailableReason?: string;
+    unavailableReason: string;
+    selectedFinalProvider: string;
+    selectedFinalModel: string;
+    voiceLibraryEnabledForRun?: boolean;
+    processingRunning: boolean;
+    speakerIdentityRunning: boolean;
+  };
+  processingComponents?: {
+    diarization: MeetingProcessingComponent;
+    vad: MeetingProcessingComponent;
+    turnDetection: MeetingProcessingComponent;
+  };
+}
+
+export interface MeetingProcessingComponent {
+  used: boolean;
+  engine: string;
+  model: string;
+  mode: string;
+  analysisCount?: number;
+  failureCount?: number;
 }
 
 export interface MeetingTranscriptSearchResponse {
@@ -477,6 +513,10 @@ export interface MeetingSpeakerAssignment {
     profileId: string;
     displayName: string;
     confidence: number | null;
+    /** Newer backends explain whether a match is safe to preselect. */
+    matchState?: string;
+    canPreselect?: boolean;
+    evidenceCount?: number;
   } | null;
   suggestions: MeetingSpeakerSuggestion[];
   confirmedAttendee: OutlookCalendarContact | null;
@@ -518,6 +558,16 @@ export interface SpeakerProfileSummary {
   enrolledAt: string;
   createdAt: string;
   updatedAt: string;
+  /** Optional short, token-protected sample; embeddings never leave the backend. */
+  preview?: {
+    token: string;
+    url: string;
+    startMs: number;
+    endMs: number;
+    durationMs: number;
+    source: string;
+    expiresInSeconds?: number;
+  } | null;
 }
 
 export interface SpeakerProfilesResponse {
@@ -882,6 +932,7 @@ export interface FileUploadLimits {
 
 export interface SettingsApiKeys {
   soniox?: string;
+  modulate?: string;
   mistral?: string;
   smallest?: string;
   assemblyai?: string;

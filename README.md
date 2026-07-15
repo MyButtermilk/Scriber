@@ -137,7 +137,7 @@ Use completed-audio processing for long recordings, file imports, and providers 
 
 Download supported ONNX models from Settings and transcribe locally without an STT API key. Scriber uses prepared model artifacts rather than asking end users to install or run NeMo and Torch.
 
-Current provider coverage includes Soniox, AssemblyAI, Microsoft Azure MAI, OpenAI, OpenRouter, Deepgram, Mistral, Gladia, Groq, Speechmatics, Smallest AI, ElevenLabs, Gemini, Google Cloud, and ONNX.
+Current provider coverage includes Soniox, Modulate.AI, AssemblyAI, Microsoft Azure MAI, OpenAI, OpenRouter, Deepgram, Mistral, Gladia, Groq, Speechmatics, Smallest AI, ElevenLabs, Gemini, Google Cloud, and ONNX.
 
 ## 🔑 Credentials and AI behavior stay understandable
 
@@ -267,10 +267,9 @@ Run the backend and frontend separately when you are working on one layer:
 
 ```powershell
 cd Scriber
-python -m venv venv
-.\venv\Scripts\activate
-pip install -r requirements.txt
-python -m src.web_api
+py -3.13 -m venv venv
+venv\Scripts\python.exe -m pip install -r requirements.txt
+scripts\project-python.cmd -m src.web_api
 ```
 
 ```powershell
@@ -297,7 +296,7 @@ Frontend\src-tauri\target\release\bundle\nsis\
 ### Test
 
 ```powershell
-python -m pytest
+scripts\project-python.cmd -m pytest
 ```
 
 ```powershell
@@ -314,7 +313,7 @@ cargo test
 Run the real-browser frontend smoke against its privacy-safe synthetic backend:
 
 ```powershell
-python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json
+scripts\project-python.cmd scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json
 ```
 
 ### Active documentation

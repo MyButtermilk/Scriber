@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
   ChevronDown,
+  CirclePlay,
   Loader2,
   Mail,
   ShieldCheck,
@@ -17,6 +18,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { apiRequest } from "@/lib/queryClient";
+import {
+  initialMeetingParticipantId,
+  meetingContactId,
+  meetingContactIdentityKeys,
+  meetingContactsMatch,
+} from "@/lib/meeting-speaker-selection";
 import type {
   MeetingSpeakerAssignment,
   MeetingSpeakerAssignmentConfirmationResponse,
@@ -33,16 +40,6 @@ const SUGGESTION_PRIORITY: Record<MeetingSpeakerSuggestion["source"], number> = 
   llm: 2,
 };
 
-function contactId(contact: OutlookCalendarContact): string {
-  return contact.participantId || contact.address.trim().toLocaleLowerCase();
-}
-
-function contactIdentityKeys(contact: OutlookCalendarContact): string[] {
-  return [contact.address, ...(contact.aliases ?? []), contact.participantId ?? ""]
-    .map((value) => value.trim().toLocaleLowerCase())
-    .filter(Boolean);
-}
-
 async function fetchAssignments(meetingId: string, signal?: AbortSignal): Promise<MeetingSpeakerAssignmentsResponse> {
   const response = await fetchWithTimeout(apiUrl(`/api/meetings/${meetingId}/speaker-assignments`), {
     credentials: "include",
@@ -57,20 +54,11 @@ function attendeeOptions(event: OutlookCalendarEvent): OutlookCalendarContact[] 
   const seen = new Set<string>();
   return [event.organizer, ...event.participants, event.currentUser ?? null].filter((contact): contact is OutlookCalendarContact => {
     if (!contact || contact.type === "resource") return false;
-    const keys = contactIdentityKeys(contact);
+    const keys = meetingContactIdentityKeys(contact);
     if (keys.length === 0 || keys.some((key) => seen.has(key))) return false;
     keys.forEach((key) => seen.add(key));
     return true;
   });
-}
-
-function attendeeIdForContact(attendees: OutlookCalendarContact[], contact: OutlookCalendarContact | null): string {
-  if (!contact) return "";
-  const keys = new Set(contactIdentityKeys(contact));
-  const attendee = attendees.find((candidate) => (
-    contactIdentityKeys(candidate).some((key) => keys.has(key))
-  ));
-  return attendee ? contactId(attendee) : "";
 }
 
 function bestSuggestion(item: MeetingSpeakerAssignment): MeetingSpeakerSuggestion | null {
@@ -79,6 +67,17 @@ function bestSuggestion(item: MeetingSpeakerAssignment): MeetingSpeakerSuggestio
     if (sourceDifference !== 0) return sourceDifference;
     return (right.confidence ?? -1) - (left.confidence ?? -1);
   })[0] ?? null;
+}
+
+function preselectableSuggestion(item: MeetingSpeakerAssignment): MeetingSpeakerSuggestion | null {
+  const suggestion = bestSuggestion(item);
+  // Missing metadata means an older backend whose unique match behavior was
+  // already safe. A newer backend can explicitly keep ambiguous local matches
+  // visible without selecting them for the user.
+  if (suggestion?.source === "voice_profile" && item.profileMatch?.canPreselect === false) {
+    return null;
+  }
+  return suggestion;
 }
 
 function suggestionLabel(source: MeetingSpeakerSuggestion["source"]): string {
@@ -100,19 +99,29 @@ function confidenceLabel(confidence: number | null): string {
   return `${Math.round(Math.max(0, Math.min(1, confidence)) * 100)}% match`;
 }
 
-function suggestionForAttendee(item: MeetingSpeakerAssignment, participantId: string): MeetingSpeakerSuggestion | null {
+function suggestionForAttendee(
+  item: MeetingSpeakerAssignment,
+  participantId: string,
+  attendees: readonly OutlookCalendarContact[],
+): MeetingSpeakerSuggestion | null {
+  const attendee = attendees.find((candidate) => meetingContactId(candidate) === participantId);
+  if (!attendee) return null;
   return item.suggestions
-    .filter((suggestion) => contactId(suggestion.attendee) === participantId)
+    .filter((suggestion) => meetingContactsMatch(attendee, suggestion.attendee))
     .sort((left, right) => SUGGESTION_PRIORITY[left.source] - SUGGESTION_PRIORITY[right.source])[0] ?? null;
 }
 
 export function SpeakerAttendeeAssignments({
   meetingId,
   calendarEvent,
+  playableSpeakerIds,
+  onPlaySpeaker,
   onAssignmentsChanged,
 }: {
   meetingId: string;
   calendarEvent: OutlookCalendarEvent | null;
+  playableSpeakerIds: ReadonlySet<string>;
+  onPlaySpeaker: (speakerId: string) => void;
   onAssignmentsChanged: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -134,12 +143,17 @@ export function SpeakerAttendeeAssignments({
       const next: Record<string, string> = {};
       for (const item of items) {
         const currentId = current[item.speakerId];
-        const stillAvailable = currentId && attendees.some((attendee) => contactId(attendee) === currentId);
-        next[item.speakerId] = stillAvailable
-          ? currentId
-          : attendeeIdForContact(attendees, item.confirmedAttendee)
-            || (bestSuggestion(item) ? contactId(bestSuggestion(item)!.attendee) : "")
-            || "";
+        const suggestedAttendee = preselectableSuggestion(item)?.attendee ?? null;
+        // Suggestions are serialized independently from the frozen Outlook
+        // attendee list. Map them through aliases/email instead of assuming
+        // both payloads use the same participant id, otherwise a valid local
+        // Voice Library match can render as an empty Select value.
+        next[item.speakerId] = initialMeetingParticipantId(
+          attendees,
+          currentId,
+          item.confirmedAttendee,
+          suggestedAttendee,
+        );
       }
       return next;
     });
@@ -236,8 +250,8 @@ export function SpeakerAttendeeAssignments({
             <div className="divide-y divide-border/60 rounded-xl border border-border/65 bg-background/40">
               {assignmentsQuery.data?.items.map((item) => {
                 const selectedParticipantId = selectedParticipantIds[item.speakerId] ?? "";
-                const selectedAttendee = attendees.find((attendee) => contactId(attendee) === selectedParticipantId) ?? null;
-                const selectedSuggestion = suggestionForAttendee(item, selectedParticipantId);
+                const selectedAttendee = attendees.find((attendee) => meetingContactId(attendee) === selectedParticipantId) ?? null;
+                const selectedSuggestion = suggestionForAttendee(item, selectedParticipantId, attendees);
                 const suggested = bestSuggestion(item);
                 const pendingThisSpeaker = confirmMutation.isPending && confirmMutation.variables?.speakerId === item.speakerId;
                 return (
@@ -248,9 +262,20 @@ export function SpeakerAttendeeAssignments({
                         {item.confirmedAttendee && <Badge variant="outline" className="border-emerald-500/40 text-[10px] text-emerald-700 dark:text-emerald-300"><Check className="mr-1 h-3 w-3" />Confirmed</Badge>}
                       </div>
                       <p className="mt-1 text-[11px] text-muted-foreground">{item.sourceHint === "microphone" ? "Your microphone" : "Meeting audio"}</p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="mt-1 h-7 px-2 text-[11px]"
+                        disabled={!playableSpeakerIds.has(item.speakerId)}
+                        onClick={() => onPlaySpeaker(item.speakerId)}
+                        title={playableSpeakerIds.has(item.speakerId) ? "Play up to 8 seconds from this speaker" : "No saved audio sample is available"}
+                      >
+                        <CirclePlay className="mr-1.5 h-3.5 w-3.5" />Play sample
+                      </Button>
                       {!item.confirmedAttendee && item.profileMatch && (
                         <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
-                          Local voice profile · {item.profileMatch.displayName}{confidenceLabel(item.profileMatch.confidence) ? ` · ${confidenceLabel(item.profileMatch.confidence)}` : ""}
+                          Local voice profile · {item.profileMatch.displayName}{confidenceLabel(item.profileMatch.confidence) ? ` · ${confidenceLabel(item.profileMatch.confidence)}` : ""}{item.profileMatch.evidenceCount ? ` · ${item.profileMatch.evidenceCount} saved ${item.profileMatch.evidenceCount === 1 ? "sample" : "samples"}` : ""}{item.profileMatch.canPreselect === false ? " · review manually" : ""}
                         </p>
                       )}
                       {!item.confirmedAttendee && suggested && (
@@ -268,8 +293,8 @@ export function SpeakerAttendeeAssignments({
                         </SelectTrigger>
                         <SelectContent>
                           {attendees.map((attendee) => {
-                            const attendeeId = contactId(attendee);
-                            const suggestion = suggestionForAttendee(item, attendeeId);
+                            const attendeeId = meetingContactId(attendee);
+                            const suggestion = suggestionForAttendee(item, attendeeId, attendees);
                             return (
                               <SelectItem key={attendeeId} value={attendeeId}>
                                 {attendee.name || attendee.address}{attendeeQualifier(attendee)}{suggestion ? ` · ${suggestionLabel(suggestion.source)}` : ""}
@@ -279,6 +304,12 @@ export function SpeakerAttendeeAssignments({
                         </SelectContent>
                       </Select>
                       {selectedAttendee && <p className="mt-1.5 flex min-w-0 items-center gap-1.5 truncate text-[11px] text-muted-foreground"><Mail className="h-3 w-3 shrink-0" />{selectedAttendee.address}</p>}
+                      {!item.confirmedAttendee && selectedSuggestion?.source === "voice_profile" && (
+                        <p className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-4 text-primary">
+                          <ShieldCheck className="mt-0.5 h-3 w-3 shrink-0" />
+                          Preselected from a saved voice match. Confirm to apply it.
+                        </p>
+                      )}
                     </div>
 
                     <div className="flex flex-wrap gap-2 lg:justify-end">

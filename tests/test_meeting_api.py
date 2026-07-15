@@ -3004,6 +3004,14 @@ async def test_finalization_retry_can_switch_to_a_ready_compatible_provider(
         ended_at_ms=9_000_000,
     )
     store.transition(meeting["id"], "finalizing")
+    store.transition(meeting["id"], "ready")
+    store.reserve_full_reprocess(
+        meeting["id"],
+        final_provider="gladia_async",
+        final_model="pre-recorded-v2",
+        analysis_model="gpt-5-mini",
+        voice_library_enabled=False,
+    )
     store.transition(meeting["id"], "finalization_failed")
     import_store = MeetingImportStore(tmp_path / "retry-provider.db")
     controller = FakeController(store)
@@ -3029,6 +3037,120 @@ async def test_finalization_retry_can_switch_to_a_ready_compatible_provider(
         assert payload["state"] == "finalizing"
         assert payload["finalProvider"] == "deepgram_async"
         assert store.get(meeting["id"])["finalProvider"] == "deepgram_async"
+        assert (
+            store.get(meeting["id"])["captureMetadata"]["reprocessFinalModel"]
+            == web_api.provider_batch_model("deepgram_async")
+        )
+    finally:
+        await client.close()
+        import_store.close()
+        database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_full_reprocess_retry_duration_uses_its_frozen_mistral_model(
+    monkeypatch, tmp_path
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "retry-frozen-model.db")
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(web_api, "_provider_readiness_error", lambda _provider: None)
+    monkeypatch.setattr(web_api.Config, "MISTRAL_ASYNC_MODEL", "voxtral-mini-2507")
+    monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    meeting = store.create(MeetingCreate(
+        title="Keep the frozen Mistral route",
+        final_provider="mistral_async",
+    ))
+    store.add_audio_chunk(
+        meeting["id"],
+        source="system",
+        sequence=0,
+        relative_path="retry-frozen-model/system.wav",
+        started_at_ms=0,
+        ended_at_ms=7_200_000,
+    )
+    store.transition(meeting["id"], "finalizing")
+    store.transition(meeting["id"], "ready")
+    store.reserve_full_reprocess(
+        meeting["id"],
+        final_provider="mistral_async",
+        final_model="voxtral-mini-2602",
+        analysis_model="gpt-5-mini",
+        voice_library_enabled=False,
+    )
+    store.transition(meeting["id"], "finalization_failed")
+    import_store = MeetingImportStore(tmp_path / "retry-frozen-model.db")
+    controller = FakeController(store)
+    controller._meeting_import_store = import_store
+    controller._meeting_tasks = {}
+    client = TestClient(TestServer(web_api.create_app(controller)))
+    await client.start_server()
+    try:
+        response = await client.post(
+            f"/api/meetings/{meeting['id']}/retry",
+            json={"finalProvider": "mistral_async"},
+        )
+        payload = await response.json()
+        assert response.status == 202
+        assert payload["state"] == "finalizing"
+        persisted = store.get(meeting["id"])
+        assert persisted["captureMetadata"]["reprocessFinalModel"] == (
+            "voxtral-mini-2602"
+        )
+    finally:
+        await client.close()
+        import_store.close()
+        database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_full_reprocess_retry_busy_rollback_restores_provider_and_model(
+    monkeypatch, tmp_path
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "retry-model-rollback.db")
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(web_api, "_provider_readiness_error", lambda _provider: None)
+    monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    meeting = store.create(MeetingCreate(
+        title="Rollback the complete route",
+        final_provider="soniox_async",
+    ))
+    store.transition(meeting["id"], "finalizing")
+    store.transition(meeting["id"], "ready")
+    store.reserve_full_reprocess(
+        meeting["id"],
+        final_provider="soniox_async",
+        final_model="stt-async-v4",
+        analysis_model="gpt-5-mini",
+        voice_library_enabled=False,
+    )
+    store.transition(meeting["id"], "finalization_failed")
+    import_store = MeetingImportStore(tmp_path / "retry-model-rollback.db")
+    controller = FakeController(store)
+    controller._meeting_import_store = import_store
+    controller._meeting_tasks = {}
+    controller.schedule_meeting_finalization = lambda *_args, **_kwargs: False
+    client = TestClient(TestServer(web_api.create_app(controller)))
+    await client.start_server()
+    try:
+        response = await client.post(
+            f"/api/meetings/{meeting['id']}/retry",
+            json={"finalProvider": "deepgram_async"},
+        )
+        assert response.status == 409
+        persisted = store.get(meeting["id"])
+        assert persisted["state"] == "finalization_failed"
+        assert persisted["finalProvider"] == "soniox_async"
+        assert persisted["captureMetadata"]["reprocessFinalModel"] == (
+            "stt-async-v4"
+        )
     finally:
         await client.close()
         import_store.close()
@@ -3251,9 +3373,12 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
         assert {
             "soniox_async", "assemblyai", "mistral_async", "deepgram_async",
             "openai_async", "gemini_stt", "azure_mai", "onnx_local", "groq",
+            "modulate_async",
         }.issubset({item["id"] for item in profile_payload["finalProviderOptions"]})
         assert profile_payload["providerCapabilities"]["openai_async"]["batchDiarization"] is False
         assert profile_payload["providerCapabilities"]["openai_async"]["localDiarizationFallback"] is True
+        assert profile_payload["providerCapabilities"]["modulate_async"]["batchDiarization"] is False
+        assert profile_payload["providerCapabilities"]["modulate_async"]["localDiarizationFallback"] is True
         assert profile_payload["providerCapabilities"]["soniox_async"]["fiveHourSupported"] is True
         assert profile_payload["providerCapabilities"]["assemblyai"]["fiveHourSupported"] is True
         assert profile_payload["providerCapabilities"]["deepgram_async"]["fiveHourSupported"] is False
@@ -3525,6 +3650,7 @@ async def test_meeting_audio_range_requires_auth_and_exports_exclude_voiceprints
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "meetings.db")
     monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(web_api.Config, "LANGUAGE", "en")
     monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "meeting-secret-token")
     database.init_database()
     store = MeetingStore()
@@ -3560,6 +3686,10 @@ async def test_meeting_audio_range_requires_auth_and_exports_exclude_voiceprints
     try:
         denied = await client.get(f"/api/meetings/{meeting['id']}/audio")
         assert denied.status == 401
+        denied_audio_export = await client.get(
+            f"/api/meetings/{meeting['id']}/export/audio"
+        )
+        assert denied_audio_export.status == 401
 
         search_denied = await client.get(
             f"/api/meetings/{meeting['id']}/search?q=Public"
@@ -3583,6 +3713,16 @@ async def test_meeting_audio_range_requires_auth_and_exports_exclude_voiceprints
         assert ranged.headers["Cache-Control"] == "private, no-store"
         assert ranged.headers["Accept-Ranges"] == "bytes"
         assert ranged.headers["Content-Type"].startswith("audio/")
+
+        audio_export = await client.get(
+            f"/api/meetings/{meeting['id']}/export/audio",
+            headers={"X-Scriber-Token": "meeting-secret-token"},
+        )
+        assert audio_export.status == 200
+        assert await audio_export.read() == audio_bytes
+        assert audio_export.headers["Cache-Control"] == "private, no-store"
+        assert audio_export.headers["Content-Type"].startswith("audio/")
+        assert "Secure meeting - audio.opus" in audio_export.headers["Content-Disposition"]
 
         traversal = await client.get(
             f"/api/meetings/{meeting['id']}/audio/%2e%2e", headers={"X-Scriber-Token": "meeting-secret-token"}
@@ -3618,16 +3758,171 @@ async def test_meeting_audio_range_requires_auth_and_exports_exclude_voiceprints
         )
         assert email_export.status == 200
         assert email_export.headers["Content-Type"].startswith("message/rfc822")
-        message = BytesParser(policy=policy.default).parsebytes(await email_export.read())
+        email_bytes = await email_export.read()
+        assert b"\n" not in email_bytes.replace(b"\r\n", b"")
+        message = BytesParser(policy=policy.default).parsebytes(email_bytes)
+        assert message["X-Unsent"] == "1"
         assert "morgan@example.com" in str(message["To"])
         attachments = list(message.iter_attachments())
         assert len(attachments) == 1
         assert attachments[0].get_filename() == "Secure meeting.md"
         assert "Public transcript content" in attachments[0].get_content()
         assert "Attached: Secure meeting.md" in message.get_body(preferencelist=("plain",)).get_content()
+
+        async def fake_document_export(*, export_format, document_labels, **_kwargs):
+            assert document_labels["summary"] == "Summary"
+            if export_format == "pdf":
+                return b"%PDF-selected", "application/pdf", "pdf"
+            return (
+                b"PK-selected-docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "docx",
+            )
+
+        monkeypatch.setattr(web_api, "_render_transcript_export_async", fake_document_export)
+        for attachment_format, expected_type, expected_payload in (
+            ("pdf", "application/pdf", b"%PDF-selected"),
+            (
+                "docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                b"PK-selected-docx",
+            ),
+        ):
+            selected_export = await client.get(
+                f"/api/meetings/{meeting['id']}/export-email?attachment={attachment_format}",
+                headers={"X-Scriber-Token": "meeting-secret-token"},
+            )
+            assert selected_export.status == 200
+            selected_message = BytesParser(policy=policy.default).parsebytes(
+                await selected_export.read()
+            )
+            selected_attachments = list(selected_message.iter_attachments())
+            assert len(selected_attachments) == 1
+            assert selected_attachments[0].get_filename() == (
+                f"Secure meeting.{attachment_format}"
+            )
+            assert selected_attachments[0].get_content_type() == expected_type
+            assert selected_attachments[0].get_payload(decode=True) == expected_payload
+
+        body_only_export = await client.get(
+            f"/api/meetings/{meeting['id']}/export-email",
+            headers={"X-Scriber-Token": "meeting-secret-token"},
+        )
+        assert body_only_export.status == 200
+        body_only_message = BytesParser(policy=policy.default).parsebytes(
+            await body_only_export.read()
+        )
+        assert list(body_only_message.iter_attachments()) == []
+        assert "Attached:" not in body_only_message.get_body(
+            preferencelist=("plain",)
+        ).get_content()
     finally:
         await client.close()
         database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_voice_profile_preview_uses_only_an_opaque_bounded_capability(
+    monkeypatch, tmp_path
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "meetings.db")
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    meeting = store.create(MeetingCreate(title="Local preview", consent_confirmed=True))
+    segment = store.replace_segments(
+        meeting["id"],
+        "canonical",
+        [
+            {
+                "id": "preview-voice",
+                "source": "system",
+                "speakerLabel": "Remote",
+                "startMs": 0,
+                "endMs": 4_000,
+                "text": "Short local sample",
+            }
+        ],
+    )[0]
+    profile = store.register_speaker_embedding(
+        meeting["id"],
+        segment["speakerId"],
+        segment["id"],
+        [1.0] + [0.0] * 255,
+    )
+    store.transition(meeting["id"], "finalizing")
+    store.transition(meeting["id"], "ready")
+    with database._get_connection() as conn:
+        conn.execute(
+            """INSERT INTO meeting_audio_assets
+               (id,meeting_id,kind,relative_path,codec,sample_rate,channels,
+                duration_ms,byte_size,sha256,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "preview-system-asset",
+                meeting["id"],
+                "playback_system",
+                f"{meeting['id']}/final/system.opus",
+                "opus",
+                16_000,
+                1,
+                4_000,
+                128,
+                "a" * 64,
+                "2026-07-15T10:00:00Z",
+            ),
+        )
+        conn.commit()
+    final_dir = tmp_path / "meetings" / meeting["id"] / "final"
+    final_dir.mkdir(parents=True)
+    (final_dir / "system.opus").write_bytes(b"retained-local-audio")
+
+    class Model:
+        @staticmethod
+        def status():
+            return {"installed": True}
+
+    controller = SimpleNamespace(_meeting_store=store, _speaker_model=Model())
+    app = web_api.create_app(controller)
+    list_handler = _route_handler(app, "GET", "/api/meetings/speaker-profiles")
+    response = await list_handler(_DirectRequest(app))
+    payload = json.loads(response.body)
+    listed = next(item for item in payload["items"] if item["id"] == profile["profileId"])
+    preview = listed["preview"]
+    assert re.fullmatch(r"[0-9a-f]{32}", preview["token"])
+    assert preview["durationMs"] == 4_000
+    assert preview["url"].endswith(preview["token"])
+    serialized = json.dumps(preview).casefold()
+    assert meeting["id"].casefold() not in serialized
+    assert "relativepath" not in serialized
+    assert "\\" not in serialized
+
+    async def render(grant):
+        assert grant.profile_id == profile["profileId"]
+        assert grant.duration_ms == 4_000
+        return b"RIFF" + b"\0" * 64
+
+    monkeypatch.setattr(web_api, "_render_speaker_profile_preview", render)
+    preview_handler = _route_handler(
+        app,
+        "GET",
+        "/api/meetings/speaker-profile-preview/{token}",
+    )
+    preview_response = await preview_handler(
+        SimpleNamespace(app=app, match_info={"token": preview["token"]})
+    )
+    assert preview_response.status == 200
+    assert preview_response.body.startswith(b"RIFF")
+    assert preview_response.headers["Cache-Control"] == "private, no-store"
+
+    store.delete_speaker_profile(profile["profileId"])
+    revoked = await preview_handler(
+        SimpleNamespace(app=app, match_info={"token": preview["token"]})
+    )
+    assert revoked.status == 404
+    database._close_all_connections()
 
 
 class _EnrollmentStore:
@@ -4457,3 +4752,558 @@ async def test_voice_model_promotion_cancellation_finishes_durable_opt_out_clean
         "promoted",
         "model-deleted",
     ]
+def test_meeting_processing_components_report_actual_local_models_only():
+    from types import SimpleNamespace
+
+    detail = {
+        "smartTurnEnabled": True,
+        "transcriptionMode": "live_final",
+        "origin": "captured",
+        "finalProvider": "soniox_async",
+        "captureMetadata": {
+            "liveTranscriptionSessions": [{
+                "streams": {
+                    "microphone": {
+                        "smartTurn": {
+                            "enabled": True,
+                            "engine": "Pipecat local",
+                            "model": "Smart Turn V3",
+                            "analyses": 4,
+                            "failures": 0,
+                        }
+                    }
+                }
+            }]
+        },
+    }
+    track = SimpleNamespace(evidence={"nativeSpeakerEvidence": False})
+    derivation = SimpleNamespace(
+        derivation_kind="local_speaker_diarization",
+        evidence={
+            "engine": "sherpa-onnx",
+            "engineVersion": "1.12.11",
+            "model": "pyannote-segmentation-3.0-int8",
+            "workerVersion": "1.0.0",
+        },
+    )
+
+    components = web_api._meeting_processing_components(
+        detail,
+        final_route={"provider": "soniox_async", "model": "stt-async-v4"},
+        track_results=[track],
+        track_derivations=[derivation],
+    )
+
+    assert components["diarization"] == {
+        "used": True,
+        "engine": "Sherpa-ONNX 1.12.11",
+        "model": "pyannote-segmentation-3.0-int8",
+        "mode": "local_fallback",
+    }
+    assert components["vad"]["used"] is False
+    assert components["turnDetection"]["used"] is True
+    assert components["turnDetection"]["model"] == "Smart Turn V3"
+    assert components["turnDetection"]["analysisCount"] == 4
+
+
+def test_meeting_processing_components_do_not_confuse_settings_with_usage():
+    components = web_api._meeting_processing_components({
+        "smartTurnEnabled": True,
+        "transcriptionMode": "live_final",
+        "origin": "captured",
+        "captureMetadata": {},
+    })
+
+    assert components["diarization"]["used"] is False
+    assert components["vad"]["used"] is False
+    assert components["turnDetection"]["used"] is False
+    assert components["turnDetection"]["mode"] == "no_live_session_evidence"
+
+
+def test_meeting_processing_components_do_not_relabel_other_vad_as_silero():
+    track = SimpleNamespace(evidence={
+        "processingComponents": {
+            "vad": {
+                "used": True,
+                "engine": "WebRTC VAD",
+                "model": "aggressiveness-2",
+            }
+        }
+    })
+
+    components = web_api._meeting_processing_components(
+        {"captureMetadata": {}},
+        track_results=[track],
+    )
+
+    assert components["vad"] == {
+        "used": True,
+        "engine": "WebRTC VAD",
+        "model": "aggressiveness-2",
+        "mode": "audio_segmentation",
+    }
+
+
+def test_smart_turn_usage_survives_bounded_live_session_history():
+    capture_metadata = {}
+    for index in range(25):
+        snapshot = {
+            "streams": {
+                "microphone": {
+                    "smartTurn": {
+                        "enabled": True,
+                        "engine": "Pipecat local",
+                        "model": "Smart Turn V3",
+                        "analyses": 1,
+                        "incompleteTurns": index % 2,
+                        "failures": 1 if index == 7 else 0,
+                        "lastProbability": 0.92,
+                        "lastLatencyMs": 18.4,
+                    }
+                }
+            },
+            "debugTranscript": "must not enter aggregate",
+        }
+        web_api._merge_meeting_live_processing_aggregate(
+            capture_metadata,
+            snapshot,
+        )
+        sessions = capture_metadata.get("liveTranscriptionSessions", [])
+        capture_metadata["liveTranscriptionSessions"] = [
+            *sessions[-19:],
+            snapshot,
+        ]
+
+    assert len(capture_metadata["liveTranscriptionSessions"]) == 20
+    aggregate = capture_metadata["liveProcessingAggregate"]
+    assert aggregate == {
+        "schemaVersion": 1,
+        "smartTurn": {
+            "enabledSeen": True,
+            "engine": "Pipecat local",
+            "model": "Smart Turn V3",
+            "analyses": 25,
+            "incompleteTurns": 12,
+            "failures": 1,
+        },
+    }
+    assert "lastProbability" not in json.dumps(aggregate)
+    assert "debugTranscript" not in json.dumps(aggregate)
+
+    components = web_api._meeting_processing_components({
+        "smartTurnEnabled": True,
+        "transcriptionMode": "live_final",
+        "origin": "captured",
+        "captureMetadata": capture_metadata,
+    })
+    assert components["turnDetection"]["used"] is True
+    assert components["turnDetection"]["analysisCount"] == 25
+    assert components["turnDetection"]["failureCount"] == 1
+
+
+def _ready_reprocess_detail(tmp_path: Path, meeting_id: str) -> dict:
+    final_dir = tmp_path / "meetings" / meeting_id / "final"
+    final_dir.mkdir(parents=True)
+    archive = final_dir / "meeting-tracks.mka"
+    microphone = final_dir / "microphone.opus"
+    archive.write_bytes(b"lossless-archive")
+    microphone.write_bytes(b"speaker-playback")
+    return {
+        "id": meeting_id,
+        "state": "ready",
+        "segments": [{
+            "id": "segment-1",
+            "revision": "canonical",
+            "source": "microphone",
+            "startMs": 0,
+            "endMs": 4_000,
+            "text": "Hello",
+        }],
+        "audioAssets": [{
+            "kind": "multitrack_flac",
+            "relativePath": f"{meeting_id}/final/meeting-tracks.mka",
+            "byteSize": archive.stat().st_size,
+            "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "equalityVerified": True,
+            "durationMs": 4_000,
+            "trackManifest": [{
+                "source": "microphone",
+                "streamIndex": 0,
+                "codec": "flac",
+                "durationMs": 4_000,
+                "sampleCount": 64_000,
+                "pcmSha256": "a" * 64,
+                "equalityVerified": True,
+            }],
+        }, {
+            "kind": "playback_microphone",
+            "relativePath": f"{meeting_id}/final/microphone.opus",
+            "byteSize": microphone.stat().st_size,
+            "sha256": hashlib.sha256(microphone.read_bytes()).hexdigest(),
+        }],
+    }
+
+
+@pytest.mark.asyncio
+async def test_reprocess_capabilities_require_current_models_and_valid_archive(
+    monkeypatch, tmp_path
+):
+    meeting_id = "a" * 32
+    detail = _ready_reprocess_detail(tmp_path, meeting_id)
+
+    class Store:
+        @staticmethod
+        def speaker_library_enabled():
+            return True
+
+    controller = SimpleNamespace(
+        _meeting_store=Store(),
+        _speaker_model=SimpleNamespace(status=lambda: {"installed": True}),
+    )
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+    monkeypatch.setattr(web_api.Config, "MEETING_FINAL_PROVIDER", "deepgram_async")
+    monkeypatch.setattr(web_api, "_provider_readiness_error", lambda _provider: None)
+
+    available = await web_api._meeting_reprocessing_capabilities(controller, detail)
+
+    assert available["speakerIdentityAvailable"] is True
+    assert available["fullTranscriptAvailable"] is True
+
+    detail["audioAssets"][0]["trackManifest"][0]["durationMs"] = "invalid"
+    malformed = await web_api._meeting_reprocessing_capabilities(controller, detail)
+
+    assert malformed["fullTranscriptAvailable"] is False
+    assert "lossless" in malformed["fullTranscriptUnavailableReason"].lower()
+
+
+@pytest.mark.asyncio
+async def test_reprocess_capabilities_expose_and_gate_the_active_speaker_task(
+    monkeypatch, tmp_path
+):
+    meeting_id = "f" * 32
+    detail = _ready_reprocess_detail(tmp_path, meeting_id)
+
+    class Store:
+        @staticmethod
+        def speaker_library_enabled():
+            return True
+
+    gate = asyncio.Event()
+    task = asyncio.create_task(
+        gate.wait(),
+        name=f"meeting-speaker-refresh-{meeting_id[:8]}",
+    )
+    controller = SimpleNamespace(
+        _meeting_store=Store(),
+        _speaker_model=SimpleNamespace(status=lambda: {"installed": True}),
+        _meeting_tasks={meeting_id: task},
+    )
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+    monkeypatch.setattr(web_api.Config, "MEETING_FINAL_PROVIDER", "deepgram_async")
+    monkeypatch.setattr(web_api, "_provider_readiness_error", lambda _provider: None)
+    try:
+        capabilities = await web_api._meeting_reprocessing_capabilities(
+            controller,
+            detail,
+        )
+    finally:
+        gate.set()
+        await task
+
+    assert capabilities["processingRunning"] is True
+    assert capabilities["speakerIdentityRunning"] is True
+    assert capabilities["speakerIdentityAvailable"] is False
+    assert capabilities["fullTranscriptAvailable"] is False
+    assert "already being refreshed" in capabilities[
+        "speakerIdentityUnavailableReason"
+    ].lower()
+
+
+@pytest.mark.asyncio
+async def test_speaker_refresh_worker_broadcasts_terminal_state_on_failure(
+    monkeypatch, tmp_path
+):
+    meeting_id = "9" * 32
+    events = []
+
+    class FailingFinalizer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        @staticmethod
+        async def reprocess_speaker_identity(_meeting_id):
+            raise RuntimeError("local model unavailable")
+
+    class Store:
+        @staticmethod
+        def get(_meeting_id):
+            return {"id": _meeting_id, "state": "ready", "title": "Meeting"}
+
+    async def broadcast(payload):
+        events.append(payload)
+
+    controller = SimpleNamespace(
+        _meeting_store=Store(),
+        _speaker_model=object(),
+        _speaker_diarizer=object(),
+        _transcript_artifacts=None,
+        _meeting_tasks={meeting_id: asyncio.current_task()},
+        broadcast=broadcast,
+    )
+    monkeypatch.setattr(web_api, "MeetingFinalizer", FailingFinalizer)
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+
+    with pytest.raises(RuntimeError, match="local model unavailable"):
+        await web_api.ScriberWebController._run_meeting_speaker_reprocessing(
+            controller,
+            meeting_id,
+        )
+
+    assert any(
+        event.get("type") == "meeting_analysis_progress"
+        and event.get("progress") == 1.0
+        and event.get("status") == "Speaker matches could not be refreshed"
+        for event in events
+    )
+    assert events[-1]["type"] == "meeting_state"
+    assert events[-1]["meeting"]["state"] == "ready"
+    assert meeting_id not in controller._meeting_tasks
+
+
+@pytest.mark.asyncio
+async def test_speaker_refresh_scheduler_consumes_background_failure():
+    meeting_id = "8" * 32
+
+    async def fail(_meeting_id):
+        raise RuntimeError("background failure")
+
+    controller = SimpleNamespace(
+        _meeting_tasks={},
+        _loop=asyncio.get_running_loop(),
+        _run_meeting_speaker_reprocessing=fail,
+    )
+    assert web_api.ScriberWebController.schedule_meeting_speaker_reprocessing(
+        controller,
+        meeting_id,
+    )
+    task = controller._meeting_tasks[meeting_id]
+    result = await task
+    await asyncio.sleep(0)
+
+    assert result == {
+        "meetingId": meeting_id,
+        "errorCode": "RuntimeError",
+    }
+    assert meeting_id not in controller._meeting_tasks
+
+
+@pytest.mark.asyncio
+async def test_reprocess_capabilities_accept_analysis_failed_and_require_playback_integrity(
+    monkeypatch, tmp_path
+):
+    meeting_id = "d" * 32
+    detail = _ready_reprocess_detail(tmp_path, meeting_id)
+    detail["state"] = "analysis_failed"
+
+    class Store:
+        @staticmethod
+        def speaker_library_enabled():
+            return True
+
+    controller = SimpleNamespace(
+        _meeting_store=Store(),
+        _speaker_model=SimpleNamespace(status=lambda: {"installed": True}),
+    )
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+    monkeypatch.setattr(web_api.Config, "MEETING_FINAL_PROVIDER", "deepgram_async")
+    monkeypatch.setattr(web_api, "_provider_readiness_error", lambda _provider: None)
+
+    available = await web_api._meeting_reprocessing_capabilities(controller, detail)
+
+    assert available["speakerIdentityAvailable"] is True
+    assert available["fullTranscriptAvailable"] is True
+
+    detail["audioAssets"][1]["sha256"] = "not-a-sha256"
+    incomplete = await web_api._meeting_reprocessing_capabilities(controller, detail)
+
+    assert incomplete["speakerIdentityAvailable"] is False
+    assert "playback audio" in incomplete["speakerIdentityUnavailableReason"].lower()
+
+
+@pytest.mark.asyncio
+async def test_speaker_reprocess_requires_system_speaker_but_not_microphone_speaker_id(
+    monkeypatch, tmp_path
+):
+    meeting_id = "e" * 32
+    detail = _ready_reprocess_detail(tmp_path, meeting_id)
+    system_path = tmp_path / "meetings" / meeting_id / "final" / "system.opus"
+    system_path.write_bytes(b"system-speaker-playback")
+    detail["segments"] = [{
+        "id": "system-segment",
+        "revision": "canonical",
+        "source": "system",
+        "startMs": 0,
+        "endMs": 4_000,
+        "text": "Remote participant",
+    }]
+    detail["audioAssets"][1] = {
+        "kind": "playback_system",
+        "relativePath": f"{meeting_id}/final/system.opus",
+        "byteSize": system_path.stat().st_size,
+        "sha256": hashlib.sha256(system_path.read_bytes()).hexdigest(),
+    }
+
+    class Store:
+        @staticmethod
+        def speaker_library_enabled():
+            return True
+
+    controller = SimpleNamespace(
+        _meeting_store=Store(),
+        _speaker_model=SimpleNamespace(status=lambda: {"installed": True}),
+    )
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+    monkeypatch.setattr(web_api.Config, "MEETING_FINAL_PROVIDER", "deepgram_async")
+    monkeypatch.setattr(web_api, "_provider_readiness_error", lambda _provider: None)
+
+    without_diarization = await web_api._meeting_reprocessing_capabilities(
+        controller, detail
+    )
+    assert without_diarization["speakerIdentityAvailable"] is False
+
+    detail["segments"][0]["speakerId"] = "speaker-remote"
+    with_diarization = await web_api._meeting_reprocessing_capabilities(
+        controller, detail
+    )
+    assert with_diarization["speakerIdentityAvailable"] is True
+
+
+@pytest.mark.asyncio
+async def test_speaker_reprocess_returns_accepted_without_waiting_for_local_model(
+    monkeypatch, tmp_path
+):
+    meeting_id = "b" * 32
+    detail = _ready_reprocess_detail(tmp_path, meeting_id)
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    class Store:
+        @staticmethod
+        def detail(_meeting_id):
+            assert _meeting_id == meeting_id
+            return detail
+
+        @staticmethod
+        def get(_meeting_id):
+            return {"id": _meeting_id, "state": "ready", "title": "Meeting"}
+
+        @staticmethod
+        def speaker_library_enabled():
+            return True
+
+    class Controller:
+        def __init__(self):
+            self._meeting_store = Store()
+            self._speaker_model = SimpleNamespace(status=lambda: {"installed": True})
+            self._meeting_tasks = {}
+
+        def schedule_meeting_speaker_reprocessing(self, selected_id, *, start_gate):
+            async def run():
+                await start_gate.wait()
+                started.set()
+                await finish.wait()
+
+            self._meeting_tasks[selected_id] = asyncio.create_task(run())
+            return True
+
+    controller = Controller()
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+    monkeypatch.setattr(web_api.Config, "MEETING_FINAL_PROVIDER", "deepgram_async")
+    monkeypatch.setattr(web_api, "_provider_readiness_error", lambda _provider: None)
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/{id}/reprocess")
+
+    response = await handler(_DirectRequest(
+        app,
+        payload={"mode": "speaker_identity"},
+        meeting_id=meeting_id,
+    ))
+
+    assert response.status == 202
+    assert json.loads(response.body)["mode"] == "speaker_identity"
+    await asyncio.wait_for(started.wait(), timeout=1)
+    assert controller._meeting_tasks[meeting_id].done() is False
+    finish.set()
+    await controller._meeting_tasks[meeting_id]
+
+
+@pytest.mark.asyncio
+async def test_full_reprocess_reserves_current_settings_and_opens_worker_gate(
+    monkeypatch, tmp_path
+):
+    meeting_id = "c" * 32
+    detail = _ready_reprocess_detail(tmp_path, meeting_id)
+    detail["state"] = "analysis_failed"
+    reserved = {}
+    broadcasts = []
+
+    class Store:
+        @staticmethod
+        def detail(_meeting_id):
+            return detail
+
+        @staticmethod
+        def speaker_library_enabled():
+            return True
+
+        @staticmethod
+        def reserve_full_reprocess(_meeting_id, **kwargs):
+            reserved.update(meeting_id=_meeting_id, **kwargs)
+            return {"id": _meeting_id, "state": "finalizing", "title": "Meeting"}
+
+    class Controller:
+        def __init__(self):
+            self._meeting_store = Store()
+            self._speaker_model = SimpleNamespace(status=lambda: {"installed": True})
+            self._meeting_tasks = {}
+
+        def schedule_meeting_finalization(self, selected_id, *, start_gate):
+            async def run():
+                await start_gate.wait()
+
+            self._meeting_tasks[selected_id] = asyncio.create_task(run())
+            return True
+
+        async def broadcast(self, payload):
+            broadcasts.append(payload)
+
+    controller = Controller()
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
+    monkeypatch.setattr(web_api.Config, "MEETING_FINAL_PROVIDER", "deepgram_async")
+    monkeypatch.setattr(web_api.Config, "MEETING_ANALYSIS_MODEL", "gpt-5-mini")
+    monkeypatch.setattr(web_api, "_provider_readiness_error", lambda _provider: None)
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/{id}/reprocess")
+
+    response = await handler(_DirectRequest(
+        app,
+        payload={"mode": "full_transcript"},
+        meeting_id=meeting_id,
+    ))
+
+    assert response.status == 202
+    assert reserved == {
+        "meeting_id": meeting_id,
+        "final_provider": "deepgram_async",
+        "final_model": "nova-3",
+        "analysis_model": "gpt-5-mini",
+        "voice_library_enabled": True,
+    }
+    assert broadcasts[-1]["type"] == "meeting_state"
+    await controller._meeting_tasks[meeting_id]

@@ -50,6 +50,10 @@ Backend and runtime:
   jobs, transcript history, mic control, uploads, logs, support bundles.
 - `src/pipeline.py`: STT pipeline orchestration, provider factory, analyzer
   cache, mic resolution, async/direct transcription.
+- `src/modulate_stt.py`: Modulate multilingual batch and streaming adapters.
+  Both paths expose final transcript text only; they explicitly disable
+  diarization, partials, emotion, accent, deepfake, and PII/PHI signals and
+  discard provider utterance metadata at the boundary.
 - `src/microphone.py`: live microphone capture boundary backed by the Rust
   WASAPI frame-pipe source, channel selection, RMS callback, stream lifecycle.
 - `src/mic_prewarm.py`: Rust/WASAPI idle mic prewarm and rolling prebuffer.
@@ -341,6 +345,11 @@ Packaging and scripts:
   phases must stay off the aiohttp event loop. Once a SQLite worker mutation has
   started, cancellation must observe it through its durable boundary; mutate
   the shared `TranscriptRecord` only after returning to the event-loop thread.
+- File and YouTube attempt leases remain heartbeated continuously from attempt
+  acquisition through source preparation, provider execution, optional local
+  diarization, and canonical commit. Each renewal must reload the current
+  attempt version because persisting `provider_result_ready` advances the CAS
+  version while the same worker still owns the lease.
 - Meeting and canonical transcript FTS5 projections use base-table `rowid` as
   their FTS `rowid`. Keep schema-versioned atomic rebuilds, rowid-based trigger
   deletes/parity checks, Meeting-scoped MATCH expressions, and the explicit
@@ -351,10 +360,21 @@ Packaging and scripts:
 - Meeting exports must use `src/meeting_export.py` as the shared template
   boundary. Email headers must remain single-line and participant addresses
   validated/deduplicated; body-only drafts must not claim an attachment exists.
+  Saved `.eml` drafts use SMTP CRLF line endings, an ASCII-safe
+  quoted-printable UTF-8 body, plus `X-Unsent: 1`, and the
+  selected PDF, DOCX, or Markdown attachment must remain a real MIME part when
+  Outlook opens the draft. Export labels, email subject/body, and document
+  headings follow conservative transcript-language evidence first, then the
+  analysis `outputLanguage`, a concrete Meeting language, and finally the
+  configured language/English fallback.
   In Tauri, exports use the native Save As dialog and an atomic file replace.
   Subsequent Open/Open Folder commands must resolve only the bounded,
   process-local opaque token returned by that save; never accept a frontend
-  path for those commands. Browser builds keep the normal download fallback.
+  path for those commands. Compressed Meeting audio reuses the finalized
+  64-kbit/s Opus playback mix; desktop saves stream it from the authenticated,
+  allowlisted local Meeting endpoint into an atomic destination so five-hour
+  files do not cross the WebView byte-array boundary. Browser builds keep the
+  normal download fallback.
 
 ### Outlook Calendar and Participant Identity
 
@@ -958,6 +978,11 @@ Packaging and scripts:
 - Persisted attempt route values are authoritative for language and exact model.
   Batch providers must not read mutable `Config.LANGUAGE` or model defaults for
   queued/retried/recovered work once a RouteSnapshot exists.
+  A recoverable Meeting attempt may be resumed only when workload, source track,
+  provider, model, and language all match the Meeting's frozen route. A failed
+  full-reprocess provider switch must update or roll back `final_provider` and
+  `reprocessFinalModel` together, and duration admission must use that frozen
+  model rather than a newer Settings value.
 - Analysis output and derived automatic action items commit as one generation.
   Remove absent unmodified rows on regeneration; preserve user-modified rows
   only with explicit carried-user provenance. Automatic action ids must remain
@@ -1227,8 +1252,17 @@ Already implemented and should not be regressed:
 
 Run from repository root unless stated.
 
+Scriber owns its Python environment. Use `scripts\project-python.cmd` for every
+local Python command; it resolves `venv\Scripts\python.exe` (or `.venv` as a
+fallback) and fails closed when neither exists. Never use bare `python` or `py`
+for tests, runtime checks, generators, or smoke scripts after the environment
+has been created. This prevents a global Python installation with stale
+Pipecat/provider packages from producing misleading failures. The launcher also
+checks the `pipecat-ai` version against the exact pin in
+`requirements-base.txt` before it executes the requested command.
+
 ```powershell
-python -m pytest
+scripts\project-python.cmd -m pytest
 ```
 
 ```powershell
@@ -1292,38 +1326,38 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_microphone_hardw
 Frontend browser smoke:
 
 ```powershell
-python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json
+scripts\project-python.cmd scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json
 ```
 
 Rust audio sidecar short physical smoke:
 
 ```powershell
-python scripts\smoke_rust_audio_sidecar.py --mode wasapi --duration-sec 1 --output tmp\rust-audio-sidecar-smoke.json
+scripts\project-python.cmd scripts\smoke_rust_audio_sidecar.py --mode wasapi --duration-sec 1 --output tmp\rust-audio-sidecar-smoke.json
 ```
 
 Rust audio prewarm sidecar smoke:
 
 ```powershell
-python scripts\smoke_rust_audio_prewarm_sidecar.py --duration-sec 1 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-smoke.json
+scripts\project-python.cmd scripts\smoke_rust_audio_prewarm_sidecar.py --duration-sec 1 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-smoke.json
 ```
 
 Use `--mode wasapi` to exercise the real passive WASAPI prewarm worker:
 
 ```powershell
-python scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 1 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-wasapi-smoke.json
+scripts\project-python.cmd scripts\smoke_rust_audio_prewarm_sidecar.py --mode wasapi --duration-sec 1 --prebuffer-ms 400 --output tmp\rust-audio-prewarm-sidecar-wasapi-smoke.json
 ```
 
 Use `--prewarm-before-capture` on the sidecar capture smoke to prove buffered
 prewarm frames are adopted into the next capture within one sidecar session:
 
 ```powershell
-python scripts\smoke_rust_audio_sidecar.py --mode wasapi --duration-sec 1 --prebuffer-ms 400 --prewarm-before-capture --skip-selected-hash --output tmp\rust-audio-sidecar-adopt-wasapi-smoke.json
+scripts\project-python.cmd scripts\smoke_rust_audio_sidecar.py --mode wasapi --duration-sec 1 --prebuffer-ms 400 --prewarm-before-capture --skip-selected-hash --output tmp\rust-audio-sidecar-adopt-wasapi-smoke.json
 ```
 
 Rust audio app-level prewarm adoption smoke:
 
 ```powershell
-python scripts\smoke_rust_audio_app_prewarm.py --mode wasapi --duration-sec 1 --prewarm-duration-sec 1 --capture-cycles 1 --prebuffer-ms 400 --output tmp\rust-audio-app-prewarm-wasapi-smoke.json
+scripts\project-python.cmd scripts\smoke_rust_audio_app_prewarm.py --mode wasapi --duration-sec 1 --prewarm-duration-sec 1 --capture-cycles 1 --prebuffer-ms 400 --output tmp\rust-audio-app-prewarm-wasapi-smoke.json
 ```
 
 This verifies the Python `RustAudioPrewarmManager` plus
@@ -1397,7 +1431,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_recording_hot_pa
 Manual validator form for pre-existing reports:
 
 ```powershell
-python scripts\validate_recording_hot_path_comparison.py `
+scripts\project-python.cmd scripts\validate_recording_hot_path_comparison.py `
   --python-report tmp\hybrid-baseline\python-recording-hot-path-baseline-recording-hot-path-1.json `
   --rust-report tmp\hybrid-baseline\rust-recording-hot-path-baseline-recording-hot-path-1.json `
   --output tmp\hybrid-baseline\recording-hot-path-python-rust-comparison.json

@@ -665,7 +665,13 @@ def test_audio_diagnostics_silence_requires_no_pipecat_vad_speech():
 def test_segmented_live_providers_use_async_finalization_timeout(monkeypatch):
     monkeypatch.setattr(web_api.Config, "SONIOX_MODE", "realtime")
 
-    for service_name in ("elevenlabs", "groq", "mistral", "openai"):
+    for service_name in (
+        "elevenlabs",
+        "groq",
+        "mistral",
+        "modulate_async",
+        "openai",
+    ):
         assert web_api._live_pipeline_uses_async_finalization(
             types.SimpleNamespace(service_name=service_name)
         ) is True
@@ -924,9 +930,17 @@ async def test_write_upload_stream_batches_disk_dispatches(monkeypatch, tmp_path
 
 @pytest.mark.asyncio
 async def test_render_transcript_export_async_runs_renderer(monkeypatch):
+    labels = {
+        "date": "Datum",
+        "duration": "Dauer",
+        "summary": "Zusammenfassung",
+        "transcript": "Transkript",
+    }
+
     def fake_render(**kwargs):
         assert kwargs["export_format"] == "pdf"
         assert kwargs["title"] == "Title"
+        assert kwargs["document_labels"] == labels
         return b"pdf", "application/pdf", "pdf"
 
     monkeypatch.setattr(web_api, "_render_transcript_export", fake_render)
@@ -938,11 +952,57 @@ async def test_render_transcript_export_async_runs_renderer(monkeypatch):
         summary="Summary",
         date="Today",
         duration="00:01",
+        document_labels=labels,
     )
 
     assert data == b"pdf"
     assert content_type == "application/pdf"
     assert ext == "pdf"
+
+
+@pytest.mark.parametrize(
+    ("export_format", "expected_type", "expected_ext"),
+    [
+        ("pdf", "application/pdf", "pdf"),
+        (
+            "docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "docx",
+        ),
+    ],
+)
+def test_render_transcript_export_passes_localized_labels_to_document_renderer(
+    monkeypatch, export_format, expected_type, expected_ext
+):
+    from src import export as export_module
+
+    labels = {
+        "date": "Datum",
+        "duration": "Dauer",
+        "summary": "Zusammenfassung",
+        "transcript": "Transkript",
+    }
+    captured = {}
+
+    def fake_document_renderer(**kwargs):
+        captured.update(kwargs)
+        return b"localized-document"
+
+    monkeypatch.setattr(export_module, f"export_to_{export_format}", fake_document_renderer)
+    payload, content_type, extension = web_api._render_transcript_export(
+        export_format=export_format,
+        title="Besprechung",
+        content="Transkriptinhalt",
+        summary="Zusammenfassungstext",
+        date="Heute",
+        duration="00:01",
+        document_labels=labels,
+    )
+
+    assert payload == b"localized-document"
+    assert content_type == expected_type
+    assert extension == expected_ext
+    assert captured["labels"] == labels
 
 
 def test_attachment_content_disposition_supports_unicode_safely():
@@ -1222,6 +1282,45 @@ async def test_settings_round_trips_openrouter_summary_model_and_key(monkeypatch
     assert web_api.Config.OPENROUTER_API_KEY == "openrouter-secret"
     assert settings["summarizationModel"] == "minimax/minimax-m3:nitro"
     assert settings["apiKeys"]["openrouter"] == "openrouter-secret"
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_settings_round_trips_and_persists_modulate_key_and_meeting_provider(
+    monkeypatch, tmp_path
+):
+    from src import config as config_module
+
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
+    monkeypatch.setattr(config_module, "_json_settings", dict(config_module._json_settings))
+    monkeypatch.setattr(web_api.Config, "MODULATE_API_KEY", "", raising=False)
+    monkeypatch.setattr(
+        web_api.Config, "MEETING_FINAL_PROVIDER", "soniox_async", raising=False
+    )
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", MagicMock())
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    await ctl.update_settings(
+        {
+            "apiKeys": {"modulate": "modulate-secret"},
+            "meetingFinalProvider": "modulate_async",
+        }
+    )
+    settings = ctl.get_settings()
+
+    assert web_api.Config.get_api_key("modulate") == "modulate-secret"
+    assert settings["apiKeys"]["modulate"] == "modulate-secret"
+    assert settings["meetingFinalProvider"] == "modulate_async"
+    assert config_module._json_settings["meetingFinalProvider"] == "modulate_async"
+
+    target = tmp_path / "modulate.env"
+    web_api.Config.persist_to_env_file(str(target))
+    contents = target.read_text(encoding="utf-8")
+    assert contents.count("MODULATE_API_KEY=") == 1
+    assert "MODULATE_API_KEY=modulate-secret" in contents
 
     ctl.shutdown()
 

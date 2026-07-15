@@ -8,6 +8,7 @@ import re
 import shutil
 import wave
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -124,6 +125,33 @@ class MeetingFinalizer:
         self._attempt_lease_heartbeat_task: asyncio.Task[None] | None = None
 
     @staticmethod
+    def cleanup_stale_voice_reprocess_temp(audio_root: Path) -> int:
+        """Remove crash-leftover decoded voice snippets before Meeting work starts."""
+
+        root = (Path(audio_root) / ".runtime" / "voice-reprocess").resolve()
+        try:
+            root.relative_to(Path(audio_root).resolve())
+        except ValueError:
+            return 0
+        removed = sum(1 for item in root.iterdir()) if root.is_dir() else 0
+        shutil.rmtree(root, ignore_errors=True)
+        return removed
+
+    def _new_voice_reprocess_temp_dir(self) -> Path:
+        audio_root = self.audio_root.resolve()
+        root = (audio_root / ".runtime" / "voice-reprocess").resolve()
+        try:
+            root.relative_to(audio_root)
+        except ValueError as exc:
+            raise ValueError(
+                "Meeting voice-processing temp directory escaped the audio workspace."
+            ) from exc
+        root.mkdir(parents=True, exist_ok=True)
+        temporary = root / uuid4().hex
+        temporary.mkdir(parents=False, exist_ok=False)
+        return temporary
+
+    @staticmethod
     def _ensure_transcript_parent(meeting: dict[str, Any]) -> None:
         if database.get_transcript(str(meeting["id"])) is not None:
             return
@@ -139,6 +167,13 @@ class MeetingFinalizer:
     def _frozen_meeting_route(self, meeting: dict[str, Any]):
         status = self.speaker_diarizer.status() if self.speaker_diarizer is not None else {}
         provider = str(meeting["finalProvider"])
+        metadata = meeting.get("captureMetadata")
+        reprocess_model = (
+            str(metadata.get("reprocessFinalModel") or "").strip()
+            if isinstance(metadata, dict)
+            and metadata.get("reprocessKind") == "full_transcript"
+            else ""
+        )
         return freeze_provider_route(
             workload="meeting",
             provider=provider,
@@ -153,9 +188,11 @@ class MeetingFinalizer:
             },
             transport=(
                 "webm_opus_task_derivative"
-                if provider.strip().lower() in {"soniox", "soniox_async"}
+                if provider.strip().lower()
+                in {"soniox", "soniox_async", "modulate", "modulate_async"}
                 else None
             ),
+            model=reprocess_model or None,
         )
 
     @staticmethod
@@ -179,11 +216,17 @@ class MeetingFinalizer:
         self, meeting: dict[str, Any]
     ) -> tuple[AttemptRecord, str, Any | None, dict[str, Any]]:
         owner = f"meeting-{uuid4().hex}"
-        selected_provider = str(meeting.get("finalProvider") or "").strip().lower()
+        frozen_route = self._frozen_meeting_route(meeting)
+        expected_route = frozen_route.snapshot_draft()
         recovered = self.artifact_store.latest_recoverable_for_transcript(meeting["id"])
         if (
             recovered is not None
-            and recovered.route_snapshot.provider.strip().lower() == selected_provider
+            and self._route_snapshot_matches(
+                recovered.route_snapshot, expected_route
+            )
+            and self._attempt_belongs_to_current_reprocess(
+                meeting, recovered.attempt
+            )
         ):
             bundle = self.artifact_store.claim_recovery_bundle(
                 recovered.attempt.id,
@@ -198,7 +241,10 @@ class MeetingFinalizer:
         partial = self.artifact_store.latest_resumable_track_attempt(meeting["id"])
         if (
             partial is not None
-            and partial.route_snapshot.provider.strip().lower() == selected_provider
+            and self._route_snapshot_matches(partial.route_snapshot, expected_route)
+            and self._attempt_belongs_to_current_reprocess(
+                meeting, partial.attempt
+            )
         ):
             attempt = self.artifact_store.acquire_attempt_lease(
                 partial.attempt.id,
@@ -210,11 +256,10 @@ class MeetingFinalizer:
                 partial.route_snapshot
             )
 
-        route = self._frozen_meeting_route(meeting)
         attempt = self.artifact_store.create_attempt(
             transcript_id=meeting["id"], workload="meeting"
         )
-        self.artifact_store.persist_route_snapshot(attempt.id, route.snapshot_draft())
+        self.artifact_store.persist_route_snapshot(attempt.id, expected_route)
         attempt = self.artifact_store.acquire_attempt_lease(
             attempt.id,
             owner=owner,
@@ -233,7 +278,92 @@ class MeetingFinalizer:
                 new_state=target,
                 lease_owner=owner,
             )
-        return attempt, owner, None, route.execution_route()
+        return attempt, owner, None, frozen_route.execution_route()
+
+    @staticmethod
+    def _route_snapshot_matches(actual: Any, expected: Any) -> bool:
+        """Match only attempts frozen to the exact Meeting transcription route."""
+
+        normalized_fields = (
+            "workload",
+            "source_track",
+            "provider",
+            "model",
+            "language",
+        )
+        return all(
+            str(getattr(actual, field, "") or "").strip().lower()
+            == str(getattr(expected, field, "") or "").strip().lower()
+            for field in normalized_fields
+        )
+
+    @staticmethod
+    def _attempt_belongs_to_current_reprocess(
+        meeting: dict[str, Any], attempt: Any
+    ) -> bool:
+        """Reject provider evidence that predates an explicit full reprocess.
+
+        A failed attempt started by this reprocess remains recoverable on a
+        later retry. Evidence left by an older provider cycle must never be
+        attached to the new request merely because its provider name matches.
+        """
+
+        metadata = meeting.get("captureMetadata")
+        if not isinstance(metadata, dict) or metadata.get("reprocessKind") != "full_transcript":
+            return True
+        requested_raw = str(metadata.get("reprocessRequestedAt") or "").strip()
+        created_raw = str(getattr(attempt, "created_at", "") or "").strip()
+        if not requested_raw or not created_raw:
+            return False
+        try:
+            requested = datetime.fromisoformat(requested_raw.replace("Z", "+00:00"))
+            created = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+            if requested.tzinfo is None:
+                requested = requested.replace(tzinfo=timezone.utc)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            return created.astimezone(timezone.utc) >= requested.astimezone(timezone.utc)
+        except ValueError:
+            return False
+
+    def _completed_artifact_for_current_reprocess(
+        self, meeting: dict[str, Any]
+    ) -> tuple[CanonicalSegment, ...] | None:
+        """Return a committed reprocess artifact whose Meeting projection may lag.
+
+        Canonical artifact publication and the Meeting projection intentionally
+        live in separate SQLite ownership boundaries.  If the process exits
+        between those durable commits, retrying must project the already-paid
+        provider result instead of calling the provider again.  The explicit
+        reprocess timestamp prevents an older canonical head from being reused
+        for a newer user request.
+        """
+
+        metadata = meeting.get("captureMetadata")
+        if not isinstance(metadata, dict) or metadata.get("reprocessKind") != "full_transcript":
+            return None
+        head = self.artifact_store.get_head(str(meeting["id"]))
+        if head is None:
+            return None
+        artifact = self.artifact_store.get_artifact(head.artifact_id)
+        if artifact is None or artifact.transcript_id != str(meeting["id"]):
+            return None
+        attempt = self.artifact_store.get_attempt(artifact.attempt_id)
+        route = self.artifact_store.get_route_snapshot(artifact.attempt_id)
+        if (
+            attempt is None
+            or route is None
+            or attempt.state != AttemptState.COMPLETED
+            or attempt.canonical_artifact_id != artifact.id
+            or artifact.route_snapshot_id != route.id
+            or not self._attempt_belongs_to_current_reprocess(meeting, attempt)
+        ):
+            return None
+
+        expected = self._frozen_meeting_route(meeting).snapshot_draft()
+        if not self._route_snapshot_matches(route, expected):
+            return None
+        return artifact.segments
 
     async def _begin_artifact_attempt_async(
         self, meeting: dict[str, Any]
@@ -458,6 +588,7 @@ class MeetingFinalizer:
         meeting = self.store.get(meeting_id)
         await progress("Preparing durable audio", 0.05)
         tracks: dict[str, PreparedMeetingTrack] = {}
+        loaded_from_retained_archive = False
         for source in ("microphone", "mic_clean", "system"):
             # Verification/concatenation are proportional to meeting length.
             # Only one full PCM working track exists at a time; it is converted
@@ -470,11 +601,31 @@ class MeetingFinalizer:
                     chunks,
                 )
         if not tracks:
+            # Ready Meetings normally purge redundant checkpoint PCM after a
+            # checksum-verified lossless archive has been committed.  A later
+            # user-requested retranscription must therefore reopen that archive
+            # instead of incorrectly claiming that the recording disappeared.
+            await progress("Opening retained lossless audio", 0.1)
+            tracks = await self._prepare_tracks_from_retained_archive(meeting_id)
+            loaded_from_retained_archive = bool(tracks)
+        if not tracks:
             raise ValueError("No durable meeting audio chunks are available for finalization.")
-        await self._consolidate_audio_assets(meeting_id, tracks)
+        if not loaded_from_retained_archive:
+            await self._consolidate_audio_assets(meeting_id, tracks)
 
         await progress("Creating canonical transcript", 0.2)
         await asyncio.to_thread(self._ensure_transcript_parent, meeting)
+        committed_reprocess = await _durable_thread_call(
+            self._completed_artifact_for_current_reprocess, meeting
+        )
+        if committed_reprocess is not None:
+            await progress("Recovering committed transcript", 0.7)
+            return await self._publish_committed_segments_and_analysis(
+                meeting,
+                tracks,
+                committed_reprocess,
+                progress,
+            )
         attempt, owner, recovery, execution_route = await self._begin_artifact_attempt_async(meeting)
         await self._start_attempt_lease_heartbeat(attempt.id, owner)
         recovered_stage = getattr(recovery, "stage_result", None)
@@ -718,6 +869,7 @@ class MeetingFinalizer:
                                 fallback_segments, source_track=source
                             )
                         )
+                        diarizer_status = self.speaker_diarizer.status()
                         derivation = await _durable_thread_call(
                             self.artifact_store.persist_track_derivation,
                             attempt.id,
@@ -727,7 +879,18 @@ class MeetingFinalizer:
                             expected_version=attempt.state_version,
                             units=selected_units,
                             evidence={
-                                "engine": "sherpa-onnx",
+                                "engine": str(
+                                    diarizer_status.get("engine") or "sherpa-onnx"
+                                ),
+                                "engineVersion": str(
+                                    diarizer_status.get("version") or ""
+                                ),
+                                "model": str(
+                                    diarizer_status.get("segmentationModel") or ""
+                                ),
+                                "workerVersion": str(
+                                    diarizer_status.get("workerVersion") or ""
+                                ),
                                 "parentStageResultSha256": track_result.result_sha256,
                                 "segmentCount": len(selected_units),
                             },
@@ -792,6 +955,23 @@ class MeetingFinalizer:
             track_results=track_results,
             track_derivations=track_derivations,
         )
+        return await self._publish_committed_segments_and_analysis(
+            meeting,
+            tracks,
+            artifact_segments,
+            progress,
+        )
+
+    async def _publish_committed_segments_and_analysis(
+        self,
+        meeting: dict[str, Any],
+        tracks: dict[str, PreparedMeetingTrack],
+        artifact_segments: tuple[CanonicalSegment, ...],
+        progress: ProgressCallback,
+    ) -> dict[str, Any]:
+        """Project a committed canonical artifact and finish local post-processing."""
+
+        meeting_id = str(meeting["id"])
         projected = [
             {
                 "id": segment.segment_id,
@@ -801,7 +981,16 @@ class MeetingFinalizer:
                 # MeetingStore speaker ids are globally keyed entities; the
                 # artifact's provider-local key must not be reused as that id.
                 "speakerId": None,
-                "speakerLabel": segment.speaker_label,
+                # A non-diarized microphone track still has one authoritative
+                # source identity: the local microphone. Giving that track the
+                # neutral ``You`` label lets MeetingStore create a stable
+                # speaker entity so local Voice Intelligence can compare it.
+                # This does not claim that multiple people sharing the device
+                # were diarized; provider/local speaker labels still win when
+                # they exist.
+                "speakerLabel": segment.speaker_label or (
+                    "You" if segment.source_track == "microphone" else ""
+                ),
                 "startMs": segment.start_ms,
                 "endMs": segment.end_ms,
                 "text": segment.text,
@@ -811,7 +1000,18 @@ class MeetingFinalizer:
             }
             for segment in artifact_segments
         ]
-        self.store.replace_segments(meeting_id, "canonical", projected)
+        capture_metadata = meeting.get("captureMetadata")
+        is_full_reprocess = bool(
+            isinstance(capture_metadata, dict)
+            and capture_metadata.get("reprocessKind") == "full_transcript"
+        )
+        self.store.replace_segments(
+            meeting_id,
+            "canonical",
+            projected,
+            advance_transcript_version_on_change=is_full_reprocess,
+            reset_speaker_identity_on_change=is_full_reprocess,
+        )
 
         if meeting.get("voiceLibraryEnabled") and self.speaker_model is not None:
             await progress("Building local speaker profiles", 0.76)
@@ -864,6 +1064,7 @@ class MeetingFinalizer:
             cache_get=cache_get,
             cache_put=cache_put,
             on_progress=analysis_progress,
+            fallback_language=str(meeting.get("language") or ""),
         )
         self.store.save_output(
             meeting_id,
@@ -1092,11 +1293,11 @@ class MeetingFinalizer:
                 continue
             extraction_path = track.path
             temporary_wav: Path | None = None
+            temporary_dir: Path | None = None
             try:
                 if extraction_path.suffix.lower() != ".wav":
-                    temporary_wav = extraction_path.with_name(
-                        f".{track_key}.{uuid4().hex}.voice.wav"
-                    )
+                    temporary_dir = self._new_voice_reprocess_temp_dir()
+                    temporary_wav = temporary_dir / f"{track_key}.wav"
                     extraction_path = await self._materialize_pcm_wav(
                         track.path,
                         temporary_wav,
@@ -1131,11 +1332,194 @@ class MeetingFinalizer:
             finally:
                 if temporary_wav is not None:
                     temporary_wav.unlink(missing_ok=True)
+                if temporary_dir is not None:
+                    shutil.rmtree(temporary_dir, ignore_errors=True)
+
+    async def reprocess_speaker_identity(self, meeting_id: str) -> dict[str, Any]:
+        """Refresh local Voice matches without rerunning STT or analysis.
+
+        Every bounded audio window is decoded and embedded before the store is
+        allowed to mutate.  A media/model failure therefore preserves the
+        canonical transcript and all previous identity evidence byte-for-byte.
+        ``MeetingStore.rematch_speaker_embeddings`` performs the eventual
+        evidence swap in one SQLite transaction and never touches confirmed
+        Outlook participant fields.
+        """
+
+        if self.speaker_model is None or not bool(
+            self.speaker_model.status().get("installed")
+        ):
+            raise ValueError("Install the local Voice Library model first.")
+        library_enabled = getattr(self.store, "speaker_library_enabled", None)
+        if callable(library_enabled) and not await asyncio.to_thread(
+            library_enabled
+        ):
+            raise ValueError("Turn on Voice Library before recognizing speakers.")
+
+        detail = await asyncio.to_thread(self.store.detail, meeting_id)
+        if str(detail.get("state") or "") not in {"ready", "analysis_failed"}:
+            raise ValueError("Speaker recognition is available after Meeting processing finishes.")
+        final_dir = self.audio_root / meeting_id / "final"
+        assets = {
+            str(item.get("kind") or ""): item
+            for item in detail.get("audioAssets", [])
+            if isinstance(item, dict)
+        }
+        source_paths: dict[str, Path] = {}
+        for source, kind, filename in (
+            ("microphone", "playback_microphone", "microphone.opus"),
+            ("system", "playback_system", "system.opus"),
+        ):
+            asset = assets.get(kind)
+            if asset is None:
+                continue
+            expected_path = (final_dir / filename).resolve()
+            try:
+                persisted_path = (
+                    self.audio_root / str(asset.get("relativePath") or "")
+                ).resolve()
+                expected_size = int(asset.get("byteSize") or 0)
+                expected_sha256 = str(asset.get("sha256") or "")
+                if (
+                    persisted_path != expected_path
+                    or not persisted_path.is_file()
+                    or expected_size <= 0
+                    or persisted_path.stat().st_size != expected_size
+                    or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
+                ):
+                    raise ValueError
+                actual_sha256 = await asyncio.to_thread(
+                    self._sha256_file, persisted_path
+                )
+                if actual_sha256 != expected_sha256:
+                    raise ValueError
+            except (OSError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    "Retained speaker audio failed its integrity check."
+                ) from exc
+            source_paths[source] = persisted_path
+        scheduled_per_speaker: dict[str, int] = {}
+        candidates: list[dict[str, Any]] = []
+        virtual_microphone_speaker_id = hashlib.sha256(
+            f"{meeting_id}\0canonical\0microphone\0you".encode("utf-8")
+        ).hexdigest()[:32]
+        for segment in detail.get("segments", []):
+            source = str(segment.get("source") or "")
+            if source not in source_paths or not source_paths[source].is_file():
+                continue
+            start_ms = max(0, int(segment.get("startMs") or 0))
+            end_ms = max(start_ms, int(segment.get("endMs") or start_ms))
+            if end_ms - start_ms < 2_000:
+                continue
+            speaker_id = str(segment.get("speakerId") or "")
+            speaker_label = str(segment.get("speakerLabel") or "")
+            if not speaker_id and source == "microphone":
+                # Track provenance tells us only that this is the local mic,
+                # not how many people were physically near it.  Use one
+                # neutral source speaker without claiming diarization.
+                speaker_id = virtual_microphone_speaker_id
+                speaker_label = "You"
+            if not speaker_id:
+                continue
+            if scheduled_per_speaker.get(speaker_id, 0) >= 3:
+                continue
+            duration_ms = min(10_000, end_ms - start_ms)
+            clip_start_ms = start_ms + max(
+                0, ((end_ms - start_ms) - duration_ms) // 2
+            )
+            candidates.append(
+                {
+                    "speakerId": speaker_id,
+                    "speakerLabel": speaker_label,
+                    "segmentId": str(segment.get("id") or ""),
+                    "source": source,
+                    "startMs": clip_start_ms,
+                    "durationMs": duration_ms,
+                    "path": source_paths[source],
+                }
+            )
+            scheduled_per_speaker[speaker_id] = (
+                scheduled_per_speaker.get(speaker_id, 0) + 1
+            )
+        if not candidates:
+            raise ValueError(
+                "No retained speaker audio is available for local recognition."
+            )
+
+        ffmpeg = require_media_tool("ffmpeg")
+        observations: list[dict[str, Any]] = []
+        temporary_dir = self._new_voice_reprocess_temp_dir()
+        try:
+            for candidate in candidates:
+                temporary = temporary_dir / f"{uuid4().hex}.wav"
+                process = await asyncio.create_subprocess_exec(
+                    ffmpeg,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-nostdin",
+                    "-ss",
+                    f"{candidate['startMs'] / 1000.0:.3f}",
+                    "-i",
+                    str(candidate["path"]),
+                    "-t",
+                    f"{candidate['durationMs'] / 1000.0:.3f}",
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    "-c:a",
+                    "pcm_s16le",
+                    "-f",
+                    "wav",
+                    "-y",
+                    str(temporary),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                    **hidden_subprocess_kwargs(),
+                )
+                _, stderr = await communicate_or_kill_on_cancel(
+                    process, max_stderr_bytes=64 * 1024
+                )
+                if (
+                    process.returncode != 0
+                    or not temporary.is_file()
+                    or temporary.stat().st_size <= 44
+                ):
+                    reason = (stderr or b"").decode(
+                        "utf-8", errors="replace"
+                    )[-400:]
+                    raise RuntimeError(
+                        "A retained speaker sample could not be decoded"
+                        + (f": {reason}" if reason else ".")
+                    )
+                embedding = await self.speaker_model.extract(
+                    temporary, 0, int(candidate["durationMs"])
+                )
+                observations.append(
+                    {
+                        "speakerId": candidate["speakerId"],
+                        "speakerLabel": candidate["speakerLabel"],
+                        "segmentId": candidate["segmentId"],
+                        "source": candidate["source"],
+                        "embedding": embedding,
+                        "quality": 1.0,
+                    }
+                )
+        finally:
+            shutil.rmtree(temporary_dir, ignore_errors=True)
+
+        return await asyncio.to_thread(
+            self.store.rematch_speaker_embeddings,
+            meeting_id,
+            observations,
+        )
 
     async def _create_webm_provider_derivative(
         self, source_path: Path, *, source: str
     ) -> Path:
-        """Create a task-owned Soniox upload derivative from lossless meeting PCM."""
+        """Create a task-owned provider upload derivative from lossless Meeting PCM."""
         ffmpeg = require_media_tool("ffmpeg")
         destination = source_path.with_name(
             f".{source}.{uuid4().hex}.provider.webm"
@@ -1237,6 +1621,140 @@ class MeetingFinalizer:
             if not replaced:
                 temporary.unlink(missing_ok=True)
             raise
+
+    async def _prepare_tracks_from_retained_archive(
+        self,
+        meeting_id: str,
+    ) -> dict[str, PreparedMeetingTrack]:
+        """Materialize task-local FLAC streams from the verified Meeting archive.
+
+        The archive remains immutable source evidence.  Working tracks are
+        written atomically beside it and are removed by the normal post-ready
+        cleanup.  Compressed playback derivatives are deliberately not accepted
+        as retranscription sources because doing so would silently replace the
+        original lossless evidence with a lossy generation.
+        """
+
+        assets = {item["kind"]: item for item in self.store.audio_assets(meeting_id)}
+        archive = assets.get("multitrack_flac")
+        if not archive or not bool(archive.get("equalityVerified")):
+            raise ValueError(
+                "The original lossless Meeting audio is no longer available for retranscription."
+            )
+        manifest = archive.get("trackManifest")
+        if not isinstance(manifest, list) or not manifest:
+            raise ValueError("The retained Meeting archive has no verified track manifest.")
+
+        root = self.audio_root.resolve()
+        archive_path = (root / str(archive.get("relativePath") or "")).resolve()
+        if root not in archive_path.parents or not archive_path.is_file():
+            raise ValueError("The retained Meeting archive file is unavailable.")
+        expected_sha256 = str(archive.get("sha256") or "").strip().lower()
+        actual_sha256 = await asyncio.to_thread(self._sha256_file, archive_path)
+        if not expected_sha256 or actual_sha256 != expected_sha256:
+            raise RuntimeError("The retained Meeting archive checksum does not match.")
+
+        entries = {
+            str(item.get("source") or ""): item
+            for item in manifest
+            if isinstance(item, dict)
+            and str(item.get("source") or "") in {"microphone", "mic_clean", "system"}
+        }
+        selected_sources: list[str] = []
+        if "mic_clean" in entries:
+            selected_sources.append("mic_clean")
+        elif "microphone" in entries:
+            selected_sources.append("microphone")
+        if "system" in entries:
+            selected_sources.append("system")
+        if not selected_sources:
+            raise ValueError("The retained Meeting archive has no transcribable audio tracks.")
+
+        ffmpeg = require_media_tool("ffmpeg")
+        ffprobe = require_media_tool("ffprobe")
+        destination_dir = self.audio_root / meeting_id / "final"
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        prepared: dict[str, PreparedMeetingTrack] = {}
+        for source in selected_sources:
+            item = entries[source]
+            try:
+                stream_index = int(item.get("streamIndex"))
+                duration_ms = max(0, int(item.get("durationMs")))
+                timeline_origin_ms = max(0, int(item.get("timelineOriginMs")))
+                sample_count = max(0, int(item.get("sampleCount")))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("The retained Meeting track manifest is invalid.") from exc
+            pcm_sha256 = str(item.get("pcmSha256") or "").strip().lower()
+            if (
+                stream_index < 0
+                or duration_ms <= 0
+                or sample_count <= 0
+                or not re.fullmatch(r"[0-9a-f]{64}", pcm_sha256)
+                or not bool(item.get("equalityVerified"))
+            ):
+                raise ValueError("The retained Meeting track is not losslessly verified.")
+
+            destination = destination_dir / f"{source}.work.flac"
+            temporary = destination.with_name(
+                f".{destination.stem}.{uuid4().hex}.partial{destination.suffix}"
+            )
+            process = await asyncio.create_subprocess_exec(
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(archive_path),
+                "-map",
+                f"0:{stream_index}",
+                "-c:a",
+                "copy",
+                str(temporary),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                **hidden_subprocess_kwargs(),
+            )
+            replaced = False
+            try:
+                _, stderr = await communicate_or_kill_on_cancel(
+                    process, max_stderr_bytes=1024 * 1024
+                )
+                if process.returncode != 0 or not temporary.is_file():
+                    reason = (stderr or b"").decode("utf-8", errors="replace")[-800:]
+                    raise RuntimeError(
+                        f"Meeting archive track extraction failed ({source}): {reason}"
+                    )
+                await self._verify_audio_asset(
+                    ffprobe,
+                    temporary,
+                    expected_codec="flac",
+                    expected_streams=1,
+                )
+                decoded = await self._decoded_pcm_fingerprint(
+                    ffmpeg, temporary, stream_index=0
+                )
+                if (
+                    int(decoded["sampleCount"]) != sample_count
+                    or str(decoded["pcmSha256"]) != pcm_sha256
+                ):
+                    raise RuntimeError(
+                        f"Retained Meeting track PCM verification failed ({source})."
+                    )
+                temporary.replace(destination)
+                replaced = True
+                prepared[source] = PreparedMeetingTrack(
+                    path=destination,
+                    duration_ms=duration_ms,
+                    timeline_origin_ms=timeline_origin_ms,
+                    sample_count=sample_count,
+                    pcm_sha256=pcm_sha256,
+                )
+            except BaseException:
+                if not replaced:
+                    temporary.unlink(missing_ok=True)
+                raise
+        return prepared
 
     async def _materialize_pcm_wav(self, source_path: Path, destination: Path) -> Path:
         """Create a task-scoped canonical WAV for a WAV-only optional consumer."""

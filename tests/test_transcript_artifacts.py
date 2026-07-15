@@ -4,6 +4,7 @@ from src.transcript_artifacts import (
     duration_label_to_ms,
     freeze_caption_route,
     freeze_provider_route,
+    provider_batch_model,
     stage_units_from_captions,
     stage_units_from_provider,
 )
@@ -35,6 +36,30 @@ def test_provider_route_can_freeze_task_scoped_transport():
     assert route.transport == "webm_opus_task_derivative"
     assert route.execution_route()["transport"] == "webm_opus_task_derivative"
     assert route.snapshot_draft().transport == "webm_opus_task_derivative"
+
+
+def test_groq_batch_model_is_reported_as_the_actual_supported_model():
+    assert provider_batch_model("groq") == "whisper-large-v3-turbo"
+    assert freeze_provider_route(
+        workload="meeting",
+        provider="groq",
+    ).model == "whisper-large-v3-turbo"
+
+
+def test_modulate_route_reports_final_text_with_estimated_timing():
+    for provider in ("modulate", "modulate_async"):
+        route = freeze_provider_route(
+            workload="meeting",
+            provider=provider,
+            language="de",
+        )
+        draft = route.snapshot_draft()
+
+        assert route.model == "velma-2-stt-batch"
+        assert route.execution_route()["language"] == "de"
+        assert draft.response_shape == "final_text"
+        assert draft.timestamp_mode == "estimated"
+        assert draft.diarization_mode == "local_fallback_if_enabled"
 
 
 def test_provider_speaker_zero_and_exact_timing_become_stage_units():

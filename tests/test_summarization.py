@@ -253,6 +253,30 @@ async def test_summarize_text_passes_dynamic_budget_to_model(monkeypatch: pytest
     assert captured["max_output_tokens"] >= 512
     assert "Zusätzliche Längenregel" in str(captured["prompt"])
     assert "niemals den Bullet-Charakter '•'" in str(captured["prompt"])
+    assert "Infer the dominant natural language from the transcript itself" in str(captured["prompt"])
+    assert "UNTRUSTED_TRANSCRIPT_TEXT:" in str(captured["prompt"])
+
+
+@pytest.mark.asyncio
+async def test_summarize_text_uses_configured_language_only_as_ambiguous_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict[str, str] = {}
+
+    async def _fake_openai(prompt: str, _model: str, _max_output_tokens: int) -> str:
+        captured["prompt"] = prompt
+        return "Deutsche Zusammenfassung"
+
+    monkeypatch.setattr(summarization, "_summarize_openai", _fake_openai)
+    monkeypatch.setattr(summarization.Config, "LANGUAGE", "de-DE", raising=False)
+
+    result = await summarization.summarize_text(
+        "Wir besprechen heute die nächsten Schritte.", model="gpt-5-mini"
+    )
+
+    assert result == "Deutsche Zusammenfassung"
+    assert "Only if the transcript is too short or language-neutral to decide, use de-DE" in captured["prompt"]
+    assert "do not translate the transcript" in captured["prompt"]
 
 
 @pytest.mark.asyncio

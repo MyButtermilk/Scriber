@@ -35,6 +35,8 @@ AUDIO_ASSET_TRACK_SOURCES = frozenset({"microphone", "mic_clean", "system", "mix
 TRANSCRIPT_CHECKPOINT_SCHEMA_VERSION = 3
 MEETING_SEGMENTS_FTS_SCHEMA_VERSION = 2
 MEETING_SEGMENTS_FTS_SCHEMA_KEY = "meeting_segments_fts_schema_version"
+VOICE_PROFILE_MATCH_THRESHOLD = 0.82
+VOICE_PROFILE_MATCH_MARGIN = 0.08
 # A compact base every 10 minutes keeps work bounded. Delta checkpoints carry
 # an additional previous-base tail, so one corrupt base row cannot invalidate
 # the rest of a long meeting's recovery interval.
@@ -94,6 +96,17 @@ def _loads(value: str | None, fallback: Any) -> Any:
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return fallback
+
+
+def _generated_speaker_profile_name(profile_id: str) -> str:
+    return f"Speaker {str(profile_id)[:6]}"
+
+
+def _is_generated_speaker_profile_name(profile_id: str, display_name: str) -> bool:
+    return (
+        " ".join(str(display_name).split()).casefold()
+        == _generated_speaker_profile_name(profile_id).casefold()
+    )
 
 
 _STABLE_ACTION_ID_RE = re.compile(r"action-[0-9a-f]{20}\Z")
@@ -685,6 +698,41 @@ class MeetingStore:
                     conn.execute(
                         f"ALTER TABLE meeting_speakers ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
                     )
+            # A previous Meeting rename flow could accidentally promote the
+            # generated placeholder (for example ``Speaker a1b2c3``) to a
+            # user-named biometric profile. Repair only the exact generated
+            # label and only profiles without an explicit enrollment sample.
+            # Real user-chosen names and enrolled profiles are left untouched.
+            generated_profile_ids = [
+                str(row["id"])
+                for row in conn.execute(
+                    """SELECT id FROM speaker_profiles
+                       WHERE is_named=1 AND enrollment_sample_count=0
+                         AND lower(trim(display_name))=
+                             lower('Speaker ' || substr(id,1,6))"""
+                ).fetchall()
+            ]
+            for generated_profile_id in generated_profile_ids:
+                conn.execute(
+                    """UPDATE meeting_segments SET speaker_label=(
+                         SELECT label FROM meeting_speakers s
+                         WHERE s.id=meeting_segments.speaker_id
+                       ) WHERE speaker_id IN (
+                         SELECT id FROM meeting_speakers
+                         WHERE profile_id=? AND display_name_source='profile'
+                       )""",
+                    (generated_profile_id,),
+                )
+                conn.execute(
+                    """UPDATE meeting_speakers
+                       SET display_name=label,display_name_source='anonymous'
+                       WHERE profile_id=? AND display_name_source='profile'""",
+                    (generated_profile_id,),
+                )
+                conn.execute(
+                    "UPDATE speaker_profiles SET is_named=0 WHERE id=?",
+                    (generated_profile_id,),
+                )
             checkpoint_columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(meeting_transcript_checkpoints)")
@@ -1186,6 +1234,7 @@ class MeetingStore:
         expected_state: str,
         expected_final_provider: str,
         allowed_providers: Iterable[str],
+        final_model: str | None = None,
     ) -> str:
         """CAS one failed Meeting onto a validated final-provider choice.
 
@@ -1217,7 +1266,8 @@ class MeetingStore:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute(
-                    "SELECT state,final_provider FROM meetings WHERE id=?",
+                    """SELECT state,final_provider,capture_metadata_json
+                       FROM meetings WHERE id=?""",
                     (meeting_id,),
                 ).fetchone()
                 if row is None:
@@ -1237,14 +1287,30 @@ class MeetingStore:
                     raise MeetingConflict(
                         "Meeting final transcription provider changed concurrently."
                     )
+                metadata = _loads(row["capture_metadata_json"], {})
+                if not isinstance(metadata, dict):
+                    metadata = {}
                 if target_provider == current_provider:
                     conn.commit()
                     return current_provider
+                if (
+                    metadata.get("reprocessKind") == "full_transcript"
+                    and final_model is None
+                ):
+                    raise ValueError(
+                        "A full Meeting reprocess provider change requires its frozen model."
+                    )
+                if (
+                    final_model is not None
+                    and metadata.get("reprocessKind") == "full_transcript"
+                ):
+                    metadata["reprocessFinalModel"] = str(final_model).strip()
                 cursor = conn.execute(
-                    """UPDATE meetings SET final_provider=?,updated_at=?
+                    """UPDATE meetings SET final_provider=?,capture_metadata_json=?,updated_at=?
                        WHERE id=? AND state=? AND final_provider=?""",
                     (
                         target_provider,
+                        _json(metadata),
                         now,
                         meeting_id,
                         str(row["state"]),
@@ -1260,6 +1326,75 @@ class MeetingStore:
             except Exception:
                 conn.rollback()
                 raise
+
+    def reserve_full_reprocess(
+        self,
+        meeting_id: str,
+        *,
+        final_provider: str,
+        final_model: str = "",
+        analysis_model: str,
+        voice_library_enabled: bool,
+    ) -> dict[str, Any]:
+        """CAS a completed Meeting into a non-destructive full reprocess attempt.
+
+        The API checks retained multitrack capability before this boundary.
+        Existing canonical rows and outputs remain readable until the normal
+        finalizer's atomic artifact commit succeeds.
+        """
+
+        provider = str(final_provider or "").strip().lower()
+        model = str(analysis_model or "").strip()
+        if not provider:
+            raise ValueError("Final transcription provider is required.")
+        now = _utc_now()
+        with db._get_connection() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    """SELECT state,final_provider,capture_metadata_json
+                       FROM meetings WHERE id=?""",
+                    (meeting_id,),
+                ).fetchone()
+                if row is None:
+                    raise MeetingNotFound(f"Meeting not found: {meeting_id}")
+                previous_state = str(row["state"])
+                if previous_state not in {"ready", "analysis_failed"}:
+                    raise MeetingConflict(
+                        "Only a completed Meeting can start full transcript reprocessing."
+                    )
+                metadata = _loads(row["capture_metadata_json"], {})
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                metadata["reprocessRequestedAt"] = now
+                metadata["reprocessKind"] = "full_transcript"
+                metadata["reprocessPreviousProvider"] = str(
+                    row["final_provider"] or ""
+                )
+                metadata["reprocessPreviousState"] = previous_state
+                metadata["reprocessFinalModel"] = str(final_model or "").strip()
+                cursor = conn.execute(
+                    """UPDATE meetings SET state='finalizing',final_provider=?,
+                       analysis_model=?,voice_library_enabled=?,updated_at=?,
+                       error_code='',error_message='',capture_metadata_json=?
+                       WHERE id=? AND state=?""",
+                    (
+                        provider,
+                        model,
+                        1 if voice_library_enabled else 0,
+                        now,
+                        _json(metadata),
+                        meeting_id,
+                        previous_state,
+                    ),
+                )
+                if int(cursor.rowcount or 0) != 1:
+                    raise MeetingConflict("Meeting state changed concurrently.")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return self.get(meeting_id)
 
     def add_note(self, meeting_id: str, body: str, *, at_ms: int | None = None) -> dict[str, Any]:
         self.get(meeting_id)
@@ -2732,10 +2867,19 @@ class MeetingStore:
             raise ValueError("Speaker name must contain 1 to 120 characters.")
         now = _utc_now()
         with db._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             current = conn.execute(
-                "SELECT profile_id FROM meeting_speakers WHERE meeting_id=? AND id=?",
+                """SELECT s.profile_id,s.display_name,s.display_name_source,
+                          s.participant_address,p.display_name AS profile_display_name,
+                          p.is_named AS profile_is_named
+                   FROM meeting_speakers s
+                   LEFT JOIN speaker_profiles p ON p.id=s.profile_id
+                   WHERE s.meeting_id=? AND s.id=?""",
                 (meeting_id, speaker_id),
             ).fetchone()
+            if current is None:
+                conn.rollback()
+                return 0
             speaker_update = conn.execute(
                 """UPDATE meeting_speakers SET display_name = ?, display_name_source='manual',
                    participant_name='',participant_address='',participant_link_source='',
@@ -2747,9 +2891,21 @@ class MeetingStore:
                 (display_name, meeting_id, speaker_id),
             )
             if current is not None and current["profile_id"]:
+                # Merely re-submitting an automatically generated placeholder
+                # must not turn it into a trusted/named Voice Library entry.
+                is_meaningful_name = not _is_generated_speaker_profile_name(
+                    str(current["profile_id"]), display_name
+                )
                 conn.execute(
-                    "UPDATE speaker_profiles SET display_name=?,is_named=1,updated_at=? WHERE id=?",
-                    (display_name, now, current["profile_id"]),
+                    """UPDATE speaker_profiles SET display_name=?,
+                       is_named=CASE WHEN ? THEN 1 ELSE is_named END,updated_at=?
+                       WHERE id=?""",
+                    (
+                        display_name,
+                        1 if is_meaningful_name else 0,
+                        now,
+                        current["profile_id"],
+                    ),
                 )
             conn.commit()
         return max(int(speaker_update.rowcount), int(segment_update.rowcount))
@@ -2945,6 +3101,59 @@ class MeetingStore:
             "createdAt": row["created_at"], "updatedAt": row["updated_at"],
         } for row in rows]
 
+    def speaker_profile_preview_candidates(self) -> dict[str, dict[str, Any]]:
+        """Return one private, retained-audio observation per learned profile.
+
+        These descriptors are an internal capability-minting boundary.  They
+        intentionally contain no filesystem path and must never be serialized
+        directly to a REST response.  Explicit enrollment recordings are not
+        persisted, so only profiles learned from Meeting observations can have
+        a playback preview.
+        """
+
+        rows = db._get_connection().execute(
+            """SELECT p.id AS profile_id,o.meeting_id,s.source,s.start_ms,s.end_ms,
+                      COALESCE(o.quality,0.0) AS quality,o.created_at
+               FROM speaker_profiles p
+               JOIN speaker_profile_observations o ON o.profile_id=p.id
+               JOIN meeting_segments s ON s.id=o.segment_id
+                 AND s.meeting_id=o.meeting_id
+               JOIN meetings m ON m.id=o.meeting_id
+               JOIN meeting_audio_assets a ON a.meeting_id=o.meeting_id
+                 AND a.kind=CASE
+                   WHEN s.source='microphone' THEN 'playback_microphone'
+                   WHEN s.source='system' THEN 'playback_system'
+                   ELSE '' END
+               WHERE p.enrollment_sample_count=0
+                 AND m.state IN ('ready','analysis_failed')
+                 AND s.source IN ('microphone','system')
+                 AND s.end_ms-s.start_ms>=2000
+               ORDER BY p.id,quality DESC,(s.end_ms-s.start_ms) DESC,o.created_at DESC"""
+        ).fetchall()
+        selected: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            profile_id = str(row["profile_id"])
+            if profile_id in selected:
+                continue
+            segment_start_ms = max(0, int(row["start_ms"]))
+            segment_end_ms = max(segment_start_ms, int(row["end_ms"]))
+            segment_duration_ms = segment_end_ms - segment_start_ms
+            duration_ms = min(8_000, segment_duration_ms)
+            # Center long observations to avoid clipping a turn boundary while
+            # preserving the original meeting-clock seek position.
+            start_ms = segment_start_ms + max(
+                0, (segment_duration_ms - duration_ms) // 2
+            )
+            selected[profile_id] = {
+                "profileId": profile_id,
+                "meetingId": str(row["meeting_id"]),
+                "source": str(row["source"]),
+                "startMs": start_ms,
+                "endMs": start_ms + duration_ms,
+                "durationMs": duration_ms,
+            }
+        return selected
+
     @staticmethod
     def _embedding_blob(values: list[float]) -> bytes:
         if len(values) != 256 or not all(math.isfinite(float(value)) for value in values):
@@ -3018,7 +3227,12 @@ class MeetingStore:
         )
 
     def _speaker_profile_vectors_conn(
-        self, conn: sqlite3.Connection, profile_id: str
+        self,
+        conn: sqlite3.Connection,
+        profile_id: str,
+        *,
+        exclude_segment_ids: set[str] | None = None,
+        exclude_meeting_id: str = "",
     ) -> tuple[list[tuple[list[float], float]], int]:
         profile = conn.execute(
             """SELECT enrollment_embedding_blob,enrollment_sample_count,
@@ -3043,16 +3257,30 @@ class MeetingStore:
                         enrollment_norm,
                     )
                 )
+        excluded = sorted(exclude_segment_ids or set())
+        excluded_sql = (
+            f" AND (segment_id IS NULL OR segment_id NOT IN ({','.join('?' for _ in excluded)}))"
+            if excluded
+            else ""
+        )
+        meeting_sql = " AND meeting_id<>?" if exclude_meeting_id else ""
+        params: tuple[Any, ...] = (
+            profile_id,
+            *excluded,
+            *((exclude_meeting_id,) if exclude_meeting_id else ()),
+        )
         observations = conn.execute(
-            """SELECT embedding_blob FROM speaker_profile_observations
-               WHERE profile_id=? AND embedding_blob IS NOT NULL
-               ORDER BY quality DESC,created_at DESC LIMIT 20""",
-            (profile_id,),
+            f"""SELECT embedding_blob FROM speaker_profile_observations
+                WHERE profile_id=? AND embedding_blob IS NOT NULL
+                {excluded_sql}{meeting_sql}
+                ORDER BY quality DESC,created_at DESC LIMIT 20""",
+            params,
         ).fetchall()
         observation_count = int(
             conn.execute(
-                "SELECT COUNT(*) FROM speaker_profile_observations WHERE profile_id=?",
-                (profile_id,),
+                f"""SELECT COUNT(*) FROM speaker_profile_observations
+                    WHERE profile_id=?{excluded_sql}{meeting_sql}""",
+                params,
             ).fetchone()[0]
         )
         for row in observations:
@@ -3220,7 +3448,9 @@ class MeetingStore:
             best_score = scores[0][0] if scores else -1.0
             second_score = scores[1][0] if len(scores) > 1 else -1.0
             matched = bool(
-                scores and best_score >= 0.82 and best_score - second_score >= 0.08
+                scores
+                and best_score >= VOICE_PROFILE_MATCH_THRESHOLD
+                and best_score - second_score >= VOICE_PROFILE_MATCH_MARGIN
             )
             profile_id = str(scores[0][1]["id"]) if matched else uuid4().hex
             if not matched:
@@ -3228,7 +3458,14 @@ class MeetingStore:
                     """INSERT INTO speaker_profiles
                        (id,display_name,embedding_json,embedding_blob,is_named,sample_count,created_at,updated_at)
                        VALUES (?,?,?, ?,0,0,?,?)""",
-                    (profile_id, f"Speaker {profile_id[:6]}", "[]", blob, now, now),
+                    (
+                        profile_id,
+                        _generated_speaker_profile_name(profile_id),
+                        "[]",
+                        blob,
+                        now,
+                        now,
+                    ),
                 )
                 best_score = 1.0
             conn.execute(
@@ -3246,8 +3483,14 @@ class MeetingStore:
             independent_matches = int(conn.execute(
                 """SELECT COUNT(DISTINCT o.segment_id) FROM speaker_profile_observations o
                    JOIN meeting_segments s ON s.id=o.segment_id
-                   WHERE o.profile_id=? AND o.meeting_id=? AND s.speaker_id=? AND o.similarity>=0.82""",
-                (profile_id, meeting_id, speaker_id),
+                   WHERE o.profile_id=? AND o.meeting_id=? AND s.speaker_id=?
+                     AND o.similarity>=?""",
+                (
+                    profile_id,
+                    meeting_id,
+                    speaker_id,
+                    VOICE_PROFILE_MATCH_THRESHOLD,
+                ),
             ).fetchone()[0])
             conn.execute(
                 "UPDATE meeting_speakers SET profile_id=?,confidence=?,updated_at=? WHERE meeting_id=? AND id=?",
@@ -3269,6 +3512,325 @@ class MeetingStore:
         return {
             "profileId": profile_id, "similarity": best_score, "matched": matched,
             "autoNamed": bool(profile["is_named"] and independent_matches >= 2 and matched),
+            "safePreselection": bool(profile["is_named"] and matched),
+            "evidenceCount": independent_matches,
+        }
+
+    def rematch_speaker_embeddings(
+        self,
+        meeting_id: str,
+        observations: Iterable[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Atomically replace only this Meeting's local voice-match evidence.
+
+        Audio decoding and ONNX inference happen before this method is called.
+        Consequently an extraction failure leaves every existing observation,
+        canonical transcript, speaker label, and confirmed attendee untouched.
+        The transaction below stages all candidate decisions before deleting
+        old evidence, so a database failure likewise rolls back to the exact
+        previous identity state.
+        """
+
+        prepared: list[dict[str, Any]] = []
+        seen_segments: set[str] = set()
+        for raw in observations:
+            speaker_id = str(raw.get("speakerId") or "").strip()
+            segment_id = str(raw.get("segmentId") or "").strip()
+            if not speaker_id or not segment_id or segment_id in seen_segments:
+                raise ValueError("Voice reprocessing requires unique speaker segments.")
+            vector = self._weighted_embedding_centroid(
+                [(list(raw.get("embedding") or []), 1.0)]
+            )
+            quality = float(raw.get("quality", 1.0) or 0.0)
+            if not math.isfinite(quality):
+                raise ValueError("Speaker sample quality must be finite.")
+            seen_segments.add(segment_id)
+            prepared.append(
+                {
+                    "speakerId": speaker_id,
+                    "segmentId": segment_id,
+                    "source": str(raw.get("source") or ""),
+                    "speakerLabel": str(raw.get("speakerLabel") or "")[:120],
+                    "embedding": vector,
+                    "quality": max(0.0, min(1.0, quality)),
+                }
+            )
+        if not prepared:
+            raise ValueError("No eligible speaker audio is available to reprocess.")
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in prepared:
+            grouped.setdefault(item["speakerId"], []).append(item)
+        now = _utc_now()
+        with db._get_connection() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                if conn.execute(
+                    "SELECT 1 FROM meetings WHERE id=?", (meeting_id,)
+                ).fetchone() is None:
+                    raise MeetingNotFound(f"Meeting not found: {meeting_id}")
+                if not self._speaker_library_enabled_conn(conn):
+                    raise VoiceLibraryDisabled("Voice Library is turned off.")
+
+                speaker_ids = sorted(grouped)
+                placeholders = ",".join("?" for _ in speaker_ids)
+                existing_speaker_ids = {
+                    str(row["id"])
+                    for row in conn.execute(
+                        f"""SELECT id FROM meeting_speakers
+                            WHERE meeting_id=? AND id IN ({placeholders})""",
+                        (meeting_id, *speaker_ids),
+                    ).fetchall()
+                }
+                for speaker_id, items in grouped.items():
+                    if speaker_id in existing_speaker_ids:
+                        continue
+                    expected_microphone_id = hashlib.sha256(
+                        f"{meeting_id}\0canonical\0microphone\0you".encode("utf-8")
+                    ).hexdigest()[:32]
+                    if speaker_id != expected_microphone_id or any(
+                        item["source"] != "microphone" for item in items
+                    ):
+                        raise MeetingNotFound("Meeting speaker not found")
+                    selected_segment_ids = [item["segmentId"] for item in items]
+                    selected_placeholders = ",".join(
+                        "?" for _ in selected_segment_ids
+                    )
+                    valid_count = int(
+                        conn.execute(
+                            f"""SELECT COUNT(*) FROM meeting_segments
+                                WHERE meeting_id=? AND revision='canonical'
+                                  AND source='microphone' AND speaker_id IS NULL
+                                  AND id IN ({selected_placeholders})""",
+                            (meeting_id, *selected_segment_ids),
+                        ).fetchone()[0]
+                    )
+                    if valid_count != len(selected_segment_ids):
+                        raise ValueError(
+                            "The local microphone segments changed before voice reprocessing completed."
+                        )
+                    conn.execute(
+                        """INSERT INTO meeting_speakers
+                           (id,meeting_id,label,display_name,source_hint,profile_id,
+                            confidence,created_at,updated_at)
+                           VALUES (?,?,?,?,?,NULL,NULL,?,?)""",
+                        (
+                            speaker_id,
+                            meeting_id,
+                            "You",
+                            "You",
+                            "microphone",
+                            now,
+                            now,
+                        ),
+                    )
+                    conn.execute(
+                        """UPDATE meeting_segments SET speaker_id=?,speaker_label='You'
+                           WHERE meeting_id=? AND revision='canonical'
+                             AND source='microphone' AND speaker_id IS NULL""",
+                        (speaker_id, meeting_id),
+                    )
+                speaker_rows = {
+                    str(row["id"]): row
+                    for row in conn.execute(
+                        f"""SELECT * FROM meeting_speakers
+                            WHERE meeting_id=? AND id IN ({placeholders})""",
+                        (meeting_id, *speaker_ids),
+                    ).fetchall()
+                }
+                if set(speaker_rows) != set(speaker_ids):
+                    raise MeetingNotFound("Meeting speaker not found")
+                segment_rows = {
+                    str(row["id"]): row
+                    for row in conn.execute(
+                        f"""SELECT id,speaker_id FROM meeting_segments
+                            WHERE meeting_id=? AND speaker_id IN ({placeholders})""",
+                        (meeting_id, *speaker_ids),
+                    ).fetchall()
+                }
+                for item in prepared:
+                    segment = segment_rows.get(item["segmentId"])
+                    if segment is None or str(segment["speaker_id"] or "") != item["speakerId"]:
+                        raise ValueError(
+                            "Voice reprocessing segment does not belong to the selected speaker."
+                        )
+                replaced_segment_ids = set(segment_rows)
+
+                profiles = conn.execute("SELECT id FROM speaker_profiles").fetchall()
+                candidate_centroids: dict[str, list[float]] = {}
+                for profile in profiles:
+                    profile_id = str(profile["id"])
+                    vectors, _sample_count = self._speaker_profile_vectors_conn(
+                        conn,
+                        profile_id,
+                        exclude_segment_ids=replaced_segment_ids,
+                        exclude_meeting_id=meeting_id,
+                    )
+                    if vectors:
+                        candidate_centroids[profile_id] = (
+                            self._weighted_embedding_centroid(vectors)
+                        )
+
+                plans: dict[str, dict[str, Any]] = {}
+                for speaker_id, items in grouped.items():
+                    speaker_centroid = self._weighted_embedding_centroid(
+                        [
+                            (item["embedding"], max(0.01, item["quality"]))
+                            for item in items
+                        ]
+                    )
+                    scores = sorted(
+                        (
+                            sum(
+                                left * right
+                                for left, right in zip(
+                                    speaker_centroid, centroid, strict=True
+                                )
+                            ),
+                            profile_id,
+                        )
+                        for profile_id, centroid in candidate_centroids.items()
+                    )
+                    scores.reverse()
+                    best_score = scores[0][0] if scores else -1.0
+                    second_score = scores[1][0] if len(scores) > 1 else -1.0
+                    matched = bool(
+                        scores
+                        and best_score >= VOICE_PROFILE_MATCH_THRESHOLD
+                        and best_score - second_score >= VOICE_PROFILE_MATCH_MARGIN
+                    )
+                    profile_id = scores[0][1] if matched else uuid4().hex
+                    plans[speaker_id] = {
+                        "profileId": profile_id,
+                        "matched": matched,
+                        "confidence": best_score if matched else 1.0,
+                        "centroid": speaker_centroid,
+                        "items": items,
+                    }
+
+                old_profile_ids = {
+                    str(row["profile_id"])
+                    for row in speaker_rows.values()
+                    if row["profile_id"]
+                }
+                if replaced_segment_ids:
+                    replaced_placeholders = ",".join(
+                        "?" for _ in replaced_segment_ids
+                    )
+                    conn.execute(
+                        f"""DELETE FROM speaker_profile_observations
+                            WHERE meeting_id=?
+                              AND segment_id IN ({replaced_placeholders})""",
+                        (meeting_id, *sorted(replaced_segment_ids)),
+                    )
+
+                for speaker_id, plan in plans.items():
+                    profile_id = str(plan["profileId"])
+                    if not plan["matched"]:
+                        conn.execute(
+                            """INSERT INTO speaker_profiles
+                               (id,display_name,embedding_json,embedding_blob,is_named,
+                                sample_count,created_at,updated_at)
+                               VALUES (?,?,?, ?,0,0,?,?)""",
+                            (
+                                profile_id,
+                                _generated_speaker_profile_name(profile_id),
+                                "[]",
+                                self._embedding_blob(plan["centroid"]),
+                                now,
+                                now,
+                            ),
+                        )
+                    target_centroid = candidate_centroids.get(
+                        profile_id, plan["centroid"]
+                    )
+                    for item in plan["items"]:
+                        similarity = sum(
+                            left * right
+                            for left, right in zip(
+                                item["embedding"], target_centroid, strict=True
+                            )
+                        )
+                        observation_id = hashlib.sha256(
+                            f"{profile_id}:{item['segmentId']}".encode()
+                        ).hexdigest()[:32]
+                        conn.execute(
+                            """INSERT INTO speaker_profile_observations
+                               (id,profile_id,meeting_id,segment_id,similarity,
+                                embedding_blob,quality,created_at)
+                               VALUES (?,?,?,?,?,?,?,?)""",
+                            (
+                                observation_id,
+                                profile_id,
+                                meeting_id,
+                                item["segmentId"],
+                                similarity,
+                                self._embedding_blob(item["embedding"]),
+                                item["quality"],
+                                now,
+                            ),
+                        )
+                    conn.execute(
+                        """UPDATE meeting_speakers SET profile_id=?,confidence=?,updated_at=?
+                           WHERE meeting_id=? AND id=?""",
+                        (
+                            profile_id,
+                            plan["confidence"],
+                            now,
+                            meeting_id,
+                            speaker_id,
+                        ),
+                    )
+
+                affected_profiles = old_profile_ids | {
+                    str(plan["profileId"]) for plan in plans.values()
+                }
+                for profile_id in affected_profiles:
+                    self._recompute_speaker_profile_conn(conn, profile_id, now)
+
+                # Keep confirmed Outlook/manual identities intact. A label that
+                # was previously sourced from a Voice profile follows the new
+                # profile only when it is still a named, safe match.
+                for speaker_id, plan in plans.items():
+                    speaker = speaker_rows[speaker_id]
+                    if str(speaker["display_name_source"] or "") != "profile":
+                        continue
+                    profile = conn.execute(
+                        "SELECT display_name,is_named FROM speaker_profiles WHERE id=?",
+                        (plan["profileId"],),
+                    ).fetchone()
+                    display_name = (
+                        str(profile["display_name"])
+                        if profile is not None and bool(profile["is_named"])
+                        else str(speaker["label"] or "")
+                    )
+                    display_source = (
+                        "profile"
+                        if profile is not None and bool(profile["is_named"])
+                        else "anonymous"
+                    )
+                    conn.execute(
+                        """UPDATE meeting_speakers SET display_name=?,
+                           display_name_source=?,updated_at=?
+                           WHERE meeting_id=? AND id=?""",
+                        (display_name, display_source, now, meeting_id, speaker_id),
+                    )
+                    conn.execute(
+                        """UPDATE meeting_segments SET speaker_label=?
+                           WHERE meeting_id=? AND speaker_id=?""",
+                        (display_name, meeting_id, speaker_id),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+        detail = self.detail(meeting_id)
+        return {
+            "meetingId": meeting_id,
+            "processedSpeakerCount": len(plans),
+            "processedSegmentCount": len(prepared),
+            "speakers": detail["speakers"],
         }
 
     def delete_speaker_profile(self, profile_id: str) -> bool:
@@ -3618,6 +4180,8 @@ class MeetingStore:
         segments: Iterable[dict[str, Any]],
         *,
         replace_revision: str | None = None,
+        advance_transcript_version_on_change: bool = False,
+        reset_speaker_identity_on_change: bool = False,
     ) -> list[dict[str, Any]]:
         self.get(meeting_id)
         items = [dict(item) for item in segments]
@@ -3633,7 +4197,24 @@ class MeetingStore:
             # Canonical finalization is a complete snapshot, not a sparse
             # upsert. Delete and insert stay in this one SQLite transaction so
             # retries with fewer turns cannot leave a stale canonical tail.
+            prior_snapshot: list[tuple[Any, ...]] = []
             if replace_revision is not None:
+                if advance_transcript_version_on_change:
+                    if replace_revision != "canonical":
+                        raise ValueError(
+                            "Only a canonical transcript replacement can advance its version."
+                        )
+                    prior_snapshot = [
+                        tuple(row)
+                        for row in conn.execute(
+                            """SELECT source,start_ms,end_ms,speaker_label,text,
+                                      alignment_quality,sequence
+                               FROM meeting_segments
+                               WHERE meeting_id=? AND revision='canonical'
+                               ORDER BY start_ms,source,sequence,id""",
+                            (meeting_id,),
+                        ).fetchall()
+                    ]
                 conn.execute(
                     "DELETE FROM meeting_segments WHERE meeting_id=? AND revision=?",
                     (meeting_id, replace_revision),
@@ -3683,6 +4264,57 @@ class MeetingStore:
                                 "source": source, "speakerId": speaker_id,
                                 "speakerLabel": speaker_label, "alignmentQuality": alignment_quality,
                                 "sequence": sequence})
+            if advance_transcript_version_on_change:
+                current_snapshot = [
+                    tuple(row)
+                    for row in conn.execute(
+                        """SELECT source,start_ms,end_ms,speaker_label,text,
+                                  alignment_quality,sequence
+                           FROM meeting_segments
+                           WHERE meeting_id=? AND revision='canonical'
+                           ORDER BY start_ms,source,sequence,id""",
+                        (meeting_id,),
+                    ).fetchall()
+                ]
+                if current_snapshot != prior_snapshot:
+                    if reset_speaker_identity_on_change:
+                        affected_profile_ids = {
+                            str(row[0])
+                            for row in conn.execute(
+                                """SELECT DISTINCT profile_id
+                                   FROM meeting_speakers
+                                   WHERE meeting_id=? AND profile_id IS NOT NULL""",
+                                (meeting_id,),
+                            ).fetchall()
+                        }
+                        conn.execute(
+                            "DELETE FROM speaker_profile_observations WHERE meeting_id=?",
+                            (meeting_id,),
+                        )
+                        conn.execute(
+                            """UPDATE meeting_speakers
+                               SET display_name=label,
+                                   display_name_source='anonymous',
+                                   profile_id=NULL,
+                                   confidence=NULL,
+                                   participant_name='',
+                                   participant_address='',
+                                   participant_link_source='',
+                                   updated_at=?
+                               WHERE meeting_id=?""",
+                            (now, meeting_id),
+                        )
+                        for profile_id in affected_profile_ids:
+                            self._recompute_speaker_profile_conn(
+                                conn, profile_id, now
+                            )
+                    conn.execute(
+                        """UPDATE meetings
+                           SET transcript_edit_version=transcript_edit_version+1,
+                               updated_at=?
+                           WHERE id=?""",
+                        (now, meeting_id),
+                    )
             conn.commit()
         return created
 
@@ -3777,12 +4409,17 @@ class MeetingStore:
         meeting_id: str,
         revision: str,
         segments: Iterable[dict[str, Any]],
+        *,
+        advance_transcript_version_on_change: bool = False,
+        reset_speaker_identity_on_change: bool = False,
     ) -> list[dict[str, Any]]:
         """Atomically replace one complete transcript revision."""
         return self._write_segments(
             meeting_id,
             segments,
             replace_revision=revision,
+            advance_transcript_version_on_change=advance_transcript_version_on_change,
+            reset_speaker_identity_on_change=reset_speaker_identity_on_change,
         )
 
     def edit_segment(
@@ -4001,12 +4638,14 @@ class MeetingStore:
                    ORDER BY start_ms, sequence""",
                 (meeting_id, revision),
             ).fetchall()
+            effective_revision = revision
             if not rows and revision == "canonical":
                 rows = conn.execute(
                     """SELECT * FROM meeting_segments WHERE meeting_id = ? AND revision = 'live'
                        ORDER BY start_ms, sequence""",
                     (meeting_id,),
                 ).fetchall()
+                effective_revision = "live"
             outputs = conn.execute(
                 "SELECT * FROM meeting_outputs WHERE meeting_id = ? ORDER BY created_at",
                 (meeting_id,),
@@ -4017,8 +4656,26 @@ class MeetingStore:
                 (meeting_id,),
             ).fetchall()
             speaker_rows = conn.execute(
-                "SELECT * FROM meeting_speakers WHERE meeting_id=? ORDER BY created_at,id",
-                (meeting_id,),
+                """SELECT s.*,p.display_name AS profile_display_name,
+                          p.is_named AS profile_is_named,
+                          (SELECT COUNT(DISTINCT o.segment_id)
+                           FROM speaker_profile_observations o
+                           JOIN meeting_segments observed ON observed.id=o.segment_id
+                           WHERE o.profile_id=s.profile_id
+                             AND o.meeting_id=s.meeting_id
+                             AND observed.speaker_id=s.id
+                             AND o.similarity>=?) AS profile_evidence_count
+                   FROM meeting_speakers s
+                   LEFT JOIN speaker_profiles p ON p.id=s.profile_id
+                   WHERE s.meeting_id=?
+                     AND EXISTS(
+                       SELECT 1 FROM meeting_segments visible
+                       WHERE visible.meeting_id=s.meeting_id
+                         AND visible.speaker_id=s.id
+                         AND visible.revision=?
+                     )
+                   ORDER BY s.created_at,s.id""",
+                (VOICE_PROFILE_MATCH_THRESHOLD, meeting_id, effective_revision),
             ).fetchall()
             note_rows = conn.execute(
                 "SELECT * FROM meeting_notes WHERE meeting_id=? ORDER BY created_at,id",
@@ -4050,18 +4707,61 @@ class MeetingStore:
 
         meeting = self._meeting(meeting_row)
         meeting["segments"] = [self._segment(row) for row in rows]
-        meeting["speakers"] = [
-            {"id": row["id"], "meetingId": row["meeting_id"], "label": row["label"],
-             "displayName": row["display_name"], "sourceHint": row["source_hint"],
-             "profileId": row["profile_id"], "confidence": row["confidence"],
-             "confirmedAttendee": (
-                 {"name": row["participant_name"], "address": row["participant_address"]}
-                 if row["participant_address"] else None
-             ),
-             "participantLinkSource": row["participant_link_source"],
-             "createdAt": row["created_at"], "updatedAt": row["updated_at"]}
-            for row in speaker_rows
-        ]
+        meeting["speakers"] = []
+        for row in speaker_rows:
+            confidence = row["confidence"]
+            confidence_value = (
+                float(confidence)
+                if isinstance(confidence, (int, float))
+                and math.isfinite(float(confidence))
+                else None
+            )
+            profile_is_named = bool(row["profile_is_named"])
+            can_preselect = bool(
+                row["profile_id"]
+                and profile_is_named
+                and confidence_value is not None
+                and confidence_value >= VOICE_PROFILE_MATCH_THRESHOLD
+            )
+            voice_match = None
+            if row["profile_id"]:
+                voice_match = {
+                    "profileId": row["profile_id"],
+                    "displayName": str(row["profile_display_name"] or "")[:120],
+                    "confidence": confidence_value,
+                    "evidenceCount": int(row["profile_evidence_count"] or 0),
+                    "matchState": (
+                        "applied"
+                        if str(row["display_name_source"] or "") == "profile"
+                        else "suggested"
+                    ),
+                    "canPreselect": can_preselect,
+                    "requiresConfirmation": True,
+                }
+            meeting["speakers"].append(
+                {
+                    "id": row["id"],
+                    "meetingId": row["meeting_id"],
+                    "label": row["label"],
+                    "displayName": row["display_name"],
+                    "displayNameSource": row["display_name_source"],
+                    "sourceHint": row["source_hint"],
+                    "profileId": row["profile_id"],
+                    "confidence": confidence_value,
+                    "voiceMatch": voice_match,
+                    "confirmedAttendee": (
+                        {
+                            "name": row["participant_name"],
+                            "address": row["participant_address"],
+                        }
+                        if row["participant_address"]
+                        else None
+                    ),
+                    "participantLinkSource": row["participant_link_source"],
+                    "createdAt": row["created_at"],
+                    "updatedAt": row["updated_at"],
+                }
+            )
         meeting["notes"] = [
             {"id": row["id"], "meetingId": row["meeting_id"], "body": row["body"],
              "atMs": row["at_ms"], "createdAt": row["created_at"], "updatedAt": row["updated_at"]}

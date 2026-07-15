@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from email import policy
 from email.parser import BytesParser
 
@@ -10,6 +11,8 @@ from src.meeting_export import (
     build_meeting_summary_markdown,
     build_meeting_transcript_text,
     meeting_email_recipients,
+    meeting_export_labels,
+    meeting_export_language,
 )
 
 
@@ -140,6 +143,9 @@ def test_eml_draft_is_rfc822_parseable_and_carries_selected_attachment():
     )
     message = BytesParser(policy=policy.default).parsebytes(payload)
 
+    assert message["X-Unsent"] == "1"
+    assert b"\r\n" in payload
+    assert b"\n" not in payload.replace(b"\r\n", b"")
     assert message["Bcc"] is None
     assert "owner@example.com" in str(message["To"])
     assert "marta@example.com" in str(message["To"])
@@ -152,3 +158,90 @@ def test_eml_draft_is_rfc822_parseable_and_carries_selected_attachment():
     assert attachments[0].get_filename() == "Roadmap review.md"
     assert attachments[0].get_content_type() == "text/markdown"
     assert attachments[0].get_payload(decode=True) == b"# Meeting attachment\n"
+
+
+def test_eml_body_only_has_no_attachment_or_false_attachment_claim():
+    payload = build_eml_draft(meeting_detail())
+    message = BytesParser(policy=policy.default).parsebytes(payload)
+
+    assert message["X-Unsent"] == "1"
+    assert list(message.iter_attachments()) == []
+    body = message.get_body(preferencelist=("plain",)).get_content()
+    assert "The full timestamped transcript remains available in Scriber." in body
+    assert "Attached:" not in body
+
+
+def test_meeting_exports_follow_analysis_output_language_including_email_labels():
+    detail = copy.deepcopy(meeting_detail())
+    analysis = next(item for item in detail["outputs"] if item["kind"] == "analysis")
+    analysis["payload"]["outputLanguage"] = "de"
+    analysis["payload"]["executiveSummary"] = "Die Veröffentlichung wurde beschlossen."
+
+    assert meeting_export_language(detail, fallback_language="en") == "de"
+    assert meeting_export_labels(detail)["transcript"] == "Transkript"
+    markdown = build_meeting_markdown(detail, fallback_language="en")
+    assert "## Kurzfassung" in markdown
+    assert "## Entscheidungen" in markdown
+    assert "## Transkript mit Zeitstempeln" in markdown
+    assert "**Datum:**" in markdown
+    assert "**Dauer:**" in markdown
+
+    email = build_meeting_email(detail, attachment_name="Besprechung.pdf")
+    assert email["subject"].startswith("Besprechungsnachbereitung:")
+    assert "Zusammenfassung\nDie Veröffentlichung wurde beschlossen." in email["body"]
+    assert "Entscheidungen" in email["body"]
+    assert "Im Anhang: Besprechung.pdf" in email["body"]
+    assert "Best regards" not in email["body"]
+
+    eml = build_eml_draft(
+        detail,
+        attachment=b"%PDF-localized",
+        attachment_name="Besprechung.pdf",
+        attachment_type="application/pdf",
+    )
+    # Headers, quoted-printable body, and base64 attachment remain ASCII-safe
+    # even though the decoded draft contains umlauts and localized text.
+    eml.decode("ascii")
+    parsed = BytesParser(policy=policy.default).parsebytes(eml)
+    assert "Die Veröffentlichung wurde beschlossen." in parsed.get_body(
+        preferencelist=("plain",)
+    ).get_content()
+    assert list(parsed.iter_attachments())[0].get_payload(decode=True) == b"%PDF-localized"
+
+
+def test_meeting_export_uses_concrete_settings_language_only_when_language_is_unknown():
+    detail = copy.deepcopy(meeting_detail())
+    detail["language"] = "auto"
+    analysis = next(item for item in detail["outputs"] if item["kind"] == "analysis")
+    analysis["payload"].pop("outputLanguage", None)
+    # This short fixture is intentionally below the conservative heuristic's
+    # evidence threshold, so the configured language becomes the fallback.
+    assert meeting_export_language(detail, fallback_language="de") == "de"
+    assert build_meeting_email(detail, fallback_language="de")["subject"].startswith(
+        "Besprechungsnachbereitung:"
+    )
+
+
+def test_transcript_language_overrides_stale_analysis_and_settings_language():
+    detail = copy.deepcopy(meeting_detail())
+    detail["language"] = "en"
+    analysis = next(item for item in detail["outputs"] if item["kind"] == "analysis")
+    analysis["payload"]["outputLanguage"] = "en"
+    detail["segments"] = [{
+        "id": "segment-de",
+        "source": "microphone",
+        "speakerLabel": "Alex",
+        "startMs": 0,
+        "endMs": 12_000,
+        "durationMs": 12_000,
+        "text": (
+            "Wir haben heute die Planung besprochen und die wichtigsten Aufgaben "
+            "für das Team festgelegt. Die Veröffentlichung ist am Freitag, aber "
+            "wir prüfen auch noch, dass der Kunde mit dem Ergebnis zufrieden ist."
+        ),
+    }]
+
+    assert meeting_export_language(detail, fallback_language="en") == "de"
+    assert build_meeting_email(detail)["subject"].startswith(
+        "Besprechungsnachbereitung:"
+    )

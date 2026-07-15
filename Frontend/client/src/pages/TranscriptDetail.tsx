@@ -1,5 +1,5 @@
 import { useParams, Link, useLocation } from "wouter";
-import { ArrowLeft, Share2, Download, Copy, Play, Search, Clock, Calendar, Pencil, Check, Loader2, Sparkles, FileText, Square, RotateCcw } from "lucide-react";
+import { ArrowLeft, Share2, Download, Copy, Play, Search, Clock, Calendar, Pencil, Check, Loader2, Sparkles, FileText, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -437,6 +437,8 @@ export default function TranscriptDetail() {
     "Summary generation failed.",
   );
   const summaryActionLabel = isSummaryFailed ? "Retry Summary" : "Summarize";
+  const showHeaderSummaryAction =
+    transcript.status === "completed" && !hasSummary && !isSummaryInProgress && !isSummaryFailed;
   const isFailedYoutubeTranscript =
     transcript?.status === "failed" && transcript?.type === "youtube";
   const rawFailureMessage = useMemo(
@@ -703,26 +705,12 @@ export default function TranscriptDetail() {
           {transcript.status === "processing" && (
             <StopButton transcriptId={id!} onStop={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
           )}
-          {isFailedYoutubeTranscript && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                void retryYoutubeTranscription();
-              }}
-              disabled={isRetryingYoutube}
-              type="button"
-            >
-              {isRetryingYoutube ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <RotateCcw className="w-3 h-3 mr-1" />}
-              {isRetryingYoutube ? "Retrying..." : "Retry"}
-            </Button>
-          )}
-          {transcript.status === "completed" && !hasSummary && !isSummaryInProgress && (
+          {showHeaderSummaryAction && (
             <div className="hidden md:block">
               <SummarizeButton transcriptId={id} label={summaryActionLabel} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
             </div>
           )}
-          {transcript.status === "completed" && !hasSummary && !isSummaryInProgress && (
+          {showHeaderSummaryAction && (
             <div className="md:hidden">
               <SummarizeButton transcriptId={id} label={summaryActionLabel} onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })} />
             </div>

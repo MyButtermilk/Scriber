@@ -194,6 +194,17 @@ def test_persist_to_env_file_includes_openrouter_api_key(monkeypatch, tmp_path):
     assert "OPENROUTER_API_KEY=openrouter-secret" in target.read_text(encoding="utf-8")
 
 
+def test_persist_to_env_file_includes_modulate_api_key(monkeypatch, tmp_path):
+    target = tmp_path / ".env"
+    monkeypatch.setattr(Config, "MODULATE_API_KEY", "modulate-secret", raising=False)
+
+    Config.persist_to_env_file(str(target))
+
+    contents = target.read_text(encoding="utf-8")
+    assert contents.count("MODULATE_API_KEY=") == 1
+    assert "MODULATE_API_KEY=modulate-secret" in contents
+
+
 def test_persist_to_env_file_includes_soniox_async_v5_default(monkeypatch, tmp_path):
     target = tmp_path / ".env"
     monkeypatch.setattr(Config, "SONIOX_ASYNC_MODEL", Config.DEFAULT_SONIOX_ASYNC_MODEL)

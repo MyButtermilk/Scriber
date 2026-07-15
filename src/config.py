@@ -157,6 +157,7 @@ class Config:
     GLADIA_API_KEY = os.getenv("GLADIA_API_KEY")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
     SPEECHMATICS_API_KEY = os.getenv("SPEECHMATICS_API_KEY")
+    MODULATE_API_KEY = os.getenv("MODULATE_API_KEY")
 
     # Application settings
     HOTKEY = os.getenv("SCRIBER_HOTKEY", "ctrl+alt+s")
@@ -235,6 +236,8 @@ class Config:
         "groq": "GROQ_API_KEY",
         "speechmatics": "SPEECHMATICS_API_KEY",
         "speechmatics_async": "SPEECHMATICS_API_KEY",
+        "modulate": "MODULATE_API_KEY",
+        "modulate_async": "MODULATE_API_KEY",
         "onnx_local": None,  # No API key needed for local models
     }
 
@@ -260,6 +263,8 @@ class Config:
         "groq": "Groq",
         "speechmatics": "Speechmatics (Realtime)",
         "speechmatics_async": "Speechmatics (Batch)",
+        "modulate": "Modulate (Realtime Multilingual)",
+        "modulate_async": "Modulate (Batch Multilingual)",
         "onnx_local": "Local (ONNX)",
     }
 
@@ -715,6 +720,7 @@ ${output}"""
         add("GLADIA_API_KEY", cls.GLADIA_API_KEY or "")
         add("GROQ_API_KEY", cls.GROQ_API_KEY or "")
         add("SPEECHMATICS_API_KEY", cls.SPEECHMATICS_API_KEY or "")
+        add("MODULATE_API_KEY", cls.MODULATE_API_KEY or "")
 
         add("SCRIBER_HOTKEY", cls.HOTKEY)
         add("SCRIBER_POST_PROCESSING_HOTKEY", cls.POST_PROCESSING_HOTKEY)

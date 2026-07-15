@@ -4,7 +4,22 @@ import io
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Mapping, Optional, List, Tuple
+
+
+_DEFAULT_DOCUMENT_LABELS = {
+    "date": "Date",
+    "duration": "Duration",
+    "summary": "Summary",
+    "transcript": "Transcript",
+}
+
+
+def _document_labels(labels: Optional[Mapping[str, str]]) -> dict[str, str]:
+    resolved = dict(_DEFAULT_DOCUMENT_LABELS)
+    if labels:
+        resolved.update({key: str(value) for key, value in labels.items() if str(value)})
+    return resolved
 
 # Lazy imports for export libraries
 def _get_docx():
@@ -123,6 +138,7 @@ def export_to_docx(
     summary: Optional[str] = None,
     date: Optional[str] = None,
     duration: Optional[str] = None,
+    labels: Optional[Mapping[str, str]] = None,
 ) -> bytes:
     """Export transcript to DOCX format with markdown support.
     
@@ -137,6 +153,7 @@ def export_to_docx(
         DOCX file as bytes
     """
     Document, Inches, Pt, WD_ALIGN_PARAGRAPH, RGBColor = _get_docx()
+    document_labels = _document_labels(labels)
     
     doc = Document()
     
@@ -148,9 +165,9 @@ def export_to_docx(
     if date or duration:
         meta_text = []
         if date:
-            meta_text.append(f"Date: {date}")
+            meta_text.append(f"{document_labels['date']}: {date}")
         if duration:
-            meta_text.append(f"Duration: {duration}")
+            meta_text.append(f"{document_labels['duration']}: {duration}")
         meta_para = doc.add_paragraph(" | ".join(meta_text))
         meta_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         for run in meta_para.runs:
@@ -161,7 +178,7 @@ def export_to_docx(
     
     # Summary section with markdown parsing
     if summary:
-        doc.add_heading("Summary", level=1)
+        doc.add_heading(document_labels["summary"], level=1)
         
         for line in summary.split("\n"):
             line = line.strip()
@@ -187,7 +204,7 @@ def export_to_docx(
         doc.add_paragraph()  # Spacer
     
     # Transcript section
-    doc.add_heading("Transcript", level=1)
+    doc.add_heading(document_labels["transcript"], level=1)
     
     # Parse speaker labels and format
     for para in content.split("\n\n"):
@@ -221,6 +238,7 @@ def export_to_pdf(
     summary: Optional[str] = None,
     date: Optional[str] = None,
     duration: Optional[str] = None,
+    labels: Optional[Mapping[str, str]] = None,
 ) -> bytes:
     """Export transcript to PDF format with markdown support.
     
@@ -235,6 +253,7 @@ def export_to_pdf(
         PDF file as bytes
     """
     A4, getSampleStyleSheet, ParagraphStyle, inch, SimpleDocTemplate, Paragraph, Spacer, TA_LEFT, TA_JUSTIFY, ListFlowable, ListItem = _get_reportlab()
+    document_labels = _document_labels(labels)
     
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -325,14 +344,14 @@ def export_to_pdf(
     if date or duration:
         meta_parts = []
         if date:
-            meta_parts.append(date)
+            meta_parts.append(f"{document_labels['date']}: {date}")
         if duration:
-            meta_parts.append(duration)
+            meta_parts.append(f"{document_labels['duration']}: {duration}")
         story.append(Paragraph(" | ".join(meta_parts), meta_style))
     
     # Summary with markdown parsing
     if summary:
-        story.append(Paragraph("Summary", heading1_style))
+        story.append(Paragraph(document_labels["summary"], heading1_style))
         
         for line in summary.split("\n"):
             line = line.strip()
@@ -356,7 +375,7 @@ def export_to_pdf(
         story.append(Spacer(1, 12))
     
     # Transcript
-    story.append(Paragraph("Transcript", heading1_style))
+    story.append(Paragraph(document_labels["transcript"], heading1_style))
     
     for para in content.split("\n\n"):
         if para.strip():

@@ -296,6 +296,34 @@ bytes.
    explicit `crash-recovery` gap. A process exit during `stopping` or
    `finalizing` becomes `finalization_failed` instead, so the UI retries from
    saved audio and never offers to append new capture to a stopped meeting.
+   A completed Meeting in either `ready` or `analysis_failed` may be processed
+   again from retained evidence. Speaker-only refresh never calls an STT
+   provider: it verifies the persisted Opus playback asset and its SHA-256,
+   reruns local Voice Library matching, and swaps the identity observations
+   atomically. Microphone segments may use the deterministic microphone-speaker
+   identity even when a provider did not emit a speaker id; system segments are
+   eligible only when diarization produced a nonempty speaker id. Full
+   retranscription freezes the provider and model currently selected in
+   Settings, reopens the verified lossless FLAC archive, and preserves the old
+   canonical transcript until the new artifact commits. If the process exits
+   after that artifact commit but before the Meeting projection, retry projects
+   the already-paid artifact instead of calling the provider again. Recovery
+   reuses partial or recoverable attempts only when workload, source
+   track, provider, model, and language match the frozen reprocess route. A
+   provider switch changes the frozen provider/model pair atomically; rollback
+   restores both, and model-specific duration checks read that same pair.
+   Temporary decoded Voice-matching WAVs live only under the bounded runtime temp area,
+   are removed in `finally`, and crash leftovers are cleared on next startup.
+   The Process again
+   dialog reports each mode independently when retained audio, credentials,
+   duration support, or the local Voice model is unavailable.
+   Meeting Technical details are evidence-driven rather than inferred from the
+   current Settings. Pyannote/Sherpa-ONNX is reported only from a persisted
+   local diarization derivation, native diarization only from parsed provider
+   speaker evidence, Silero only from the VAD evidence used for that Meeting,
+   and Smart Turn V3 from the completed live-session snapshot including its
+   bounded analysis and failure counts. Older Meetings without versioned
+   evidence say that the component was not recorded instead of guessing.
 5. The canonical transcript is immutable input to versioned MeetingAnalysisV1
    output. Notes, speaker renames, action-item edits, cited chat, exports, and
    webhook delivery are separate durable work objects. Analysis stays on a
@@ -320,8 +348,16 @@ bytes.
    render inputs, avoiding duplicate document headers. Email preview and RFC
    822 `.eml` drafts reuse the same summary template, populate valid unique
    Outlook participant addresses, and support body-only, Markdown, PDF, or DOCX
-   attachment modes without claiming that a missing attachment exists. Tauri
-   saves each export through the native Save As dialog with an atomic replace;
+   attachment modes without claiming that a missing attachment exists. Drafts
+   use SMTP CRLF plus `X-Unsent: 1`, so Outlook opens an editable draft and
+   retains the selected MIME attachment. Email and document labels follow
+   conservative transcript-language evidence first, with analysis output,
+   Meeting, and configuration fallbacks for short or language-neutral text.
+   The Save or share surface also exports the finalized 64-kbit/s Opus playback
+   mix. Tauri streams this authenticated, allowlisted local response directly
+   to the native Save As destination with an atomic replace, avoiding the
+   64-MiB WebView/IPC byte-array boundary for long Meetings. Other Tauri
+   exports use the same native Save As dialog and atomic replacement;
    the resulting Open file/Open folder actions accept only a bounded,
    process-local opaque registry token, never a path supplied by the WebView.
    Browser builds retain the ordinary download behavior.
@@ -1042,6 +1078,22 @@ finish or a final transcript frame, then shuts the local pipeline down. Once a
 final transcript frame has arrived, Scriber must not wait on a reconnecting
 Soniox receive task; `SCRIBER_SONIOX_RT_STOP_FINAL_TIMEOUT_SECONDS` exists only
 as a bounded troubleshooting override for unusually slow finalization.
+
+Modulate.AI is exposed as `modulate` for multilingual streaming and
+`modulate_async` for multilingual batch. The streaming adapter sends 16-kHz
+mono `s16le`, explicitly disables partial results, speaker diarization, emotion,
+accent, deepfake, and PII/PHI signals, and forwards only text from provider-final
+messages. The API requires the credential in the WebSocket query string, so the
+complete connection URL is never logged and provider errors pass through a
+credential/query redactor. The batch adapter explicitly disables the same
+optional outputs and reduces the response to top-level final text plus bounded
+duration before it can enter Scriber state; Modulate's unavoidable utterance
+array is discarded at that boundary. The current direct batch route enforces
+the documented 100-MB upload limit and advertises neither native diarization nor
+provider timestamps. Meeting finalization first creates a task-owned 64-kbit/s
+WebM/Opus derivative and caps this route at three hours, keeping normal
+multi-hour recordings below that file boundary without claiming five-hour
+support.
 
 Speaker diarization is a batch-transcription feature, not a live dictation
 feature. File and YouTube jobs enable provider diarization where the current

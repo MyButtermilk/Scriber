@@ -9,10 +9,10 @@ notes.
 
 Run from repository root unless specified.
 
-Python:
+Python (always through Scriber's project environment, never bare `python`):
 
 ```powershell
-python -m pytest
+scripts\project-python.cmd -m pytest
 ```
 
 Frontend:
@@ -87,14 +87,14 @@ time-bounded exception for the exact detection pattern after review.
 Frontend browser smoke:
 
 ```powershell
-python scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json --fast-tab-switch
+scripts\project-python.cmd scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json --fast-tab-switch
 ```
 
 To retain settled screenshots of the primary transcription workspaces alongside
 the JSON evidence:
 
 ```powershell
-python scripts\smoke_frontend_browser.py --routes "/,/youtube,/file" `
+scripts\project-python.cmd scripts\smoke_frontend_browser.py --routes "/,/youtube,/file" `
   --evidence-dir output\playwright\transcription-smoke `
   --output output\playwright\transcription-smoke\result.json
 ```
@@ -167,10 +167,10 @@ Performance/packaging:
 Focused worker resource checks:
 
 ```powershell
-python -m pytest tests\test_diarization_worker_manifest.py `
+scripts\project-python.cmd -m pytest tests\test_diarization_worker_manifest.py `
   tests\test_diarization_worker_resource_smoke.py -q
 
-python scripts\smoke_diarization_worker_resource.py `
+scripts\project-python.cmd scripts\smoke_diarization_worker_resource.py `
   --root Frontend\src-tauri\target\release\backend `
   --output tmp\diarization-worker-staged-smoke.json
 ```
@@ -339,7 +339,7 @@ It can be run locally after building the sidecar binary. Synthetic mode remains
 the default for CI-safe plumbing checks:
 
 ```powershell
-python scripts\smoke_rust_audio_prewarm_sidecar.py `
+scripts\project-python.cmd scripts\smoke_rust_audio_prewarm_sidecar.py `
   --mode synthetic `
   --duration-sec 1 `
   --prebuffer-ms 400 `
@@ -350,7 +350,7 @@ Use WASAPI mode on a Windows machine with a real microphone to exercise the
 passive idle stream:
 
 ```powershell
-python scripts\smoke_rust_audio_prewarm_sidecar.py `
+scripts\project-python.cmd scripts\smoke_rust_audio_prewarm_sidecar.py `
   --mode wasapi `
   --duration-sec 1 `
   --prebuffer-ms 400 `
@@ -362,7 +362,7 @@ This lifecycle-only report does not prove active-capture adoption. Use
 needs to show buffered idle frames flowing into the next capture:
 
 ```powershell
-python scripts\smoke_rust_audio_sidecar.py `
+scripts\project-python.cmd scripts\smoke_rust_audio_sidecar.py `
   --mode wasapi `
   --duration-sec 1 `
   --prebuffer-ms 400 `
@@ -377,7 +377,7 @@ sidecar emits prebuffer frames before live frames, and that idle prewarm resumes
 after capture:
 
 ```powershell
-python scripts\smoke_rust_audio_app_prewarm.py `
+scripts\project-python.cmd scripts\smoke_rust_audio_app_prewarm.py `
   --mode wasapi `
   --duration-sec 1 `
   --prewarm-duration-sec 1 `
@@ -471,7 +471,7 @@ provider defaults from a local/release `.env`; the runner records only the file
 path and provider names, never secret values. It finally calls:
 
 ```powershell
-python scripts\validate_recording_hot_path_comparison.py `
+scripts\project-python.cmd scripts\validate_recording_hot_path_comparison.py `
   --python-report tmp\hybrid-baseline\python-recording-hot-path-baseline-recording-hot-path-1.json `
   --rust-report tmp\hybrid-baseline\rust-recording-hot-path-baseline-recording-hot-path-1.json `
   --min-samples-per-report 3 `
@@ -1479,7 +1479,7 @@ history data.
 To capture reviewable UI evidence from that same deterministic journey:
 
 ```powershell
-python scripts\smoke_frontend_browser.py --routes /meetings `
+scripts\project-python.cmd scripts\smoke_frontend_browser.py --routes /meetings `
   --output tmp\meeting-ui-screenshot-smoke.json `
   --evidence-dir output\playwright\meeting-ui
 ```
@@ -1529,13 +1529,13 @@ missing legal review pass the full matrix. Collect the two locally automatable
 reports from the current installer with:
 
 ```powershell
-python scripts\collect_meeting_support_bundle_evidence.py `
+scripts\project-python.cmd scripts\collect_meeting_support_bundle_evidence.py `
   --installed-smoke tmp\meeting-support-installed-current.json `
   --installer Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.35_x64-setup.exe `
   --output-dir tmp\meeting-release-matrix-current `
   --app-version 0.4.35
 
-python scripts\collect_meeting_regression_evidence.py `
+scripts\project-python.cmd scripts\collect_meeting_regression_evidence.py `
   --installer Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.4.35_x64-setup.exe `
   --browser-smoke tmp\meeting-ui-current-smoke.json `
   --build-timing Frontend\src-tauri\target\release\release-metadata\build-timing.json `
@@ -1590,7 +1590,7 @@ do not interpret an entire mixed near-end conversation as echo-only reduction.
 Validate the completed bundle directly:
 
 ```powershell
-python scripts\validate_meeting_release_matrix.py `
+scripts\project-python.cmd scripts\validate_meeting_release_matrix.py `
   --input-dir tmp\meeting-release-matrix `
   --expected-app-version 0.4.35 `
   --output tmp\meeting-release-matrix\meeting-release-matrix-validation.json

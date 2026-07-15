@@ -687,6 +687,8 @@ class SonioxMeetingStream:
             "timelineCursorMs": round(self._next_timeline_ms),
             "smartTurn": {
                 "enabled": self.smart_turn_analyzer is not None or self.smart_turn_analyses > 0,
+                "engine": "Pipecat local",
+                "model": "Smart Turn V3",
                 "analyses": self.smart_turn_analyses,
                 "incompleteTurns": self.smart_turn_incomplete,
                 "failures": self.smart_turn_failures,

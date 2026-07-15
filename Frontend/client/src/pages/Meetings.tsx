@@ -48,6 +48,10 @@ import {
   type MeetingExportResult,
 } from "@/lib/meeting-export";
 import {
+  meetingEmailDraftPath,
+  type MeetingEmailDraftAttachment,
+} from "@/lib/meeting-export-utils";
+import {
   calculateMeetingElapsedMs,
   captureMeetingPlaybackRequest,
   formatMeetingOffset,
@@ -119,8 +123,10 @@ import type {
   MeetingImportsResponse,
   MeetingNote,
   MeetingProviderProfile,
+  MeetingProcessingComponent,
   MeetingProfilesResponse,
   MeetingSegment,
+  MeetingSpeakerAssignmentsResponse,
   MeetingState,
   MeetingSummary,
   MeetingsResponse,
@@ -129,6 +135,7 @@ import type {
   OutlookCalendarStatus,
   OutlookCalendarSyncResponse,
   SpeakerModelStatus,
+  SpeakerProfilesResponse,
 } from "@/lib/api-types";
 
 const OPEN_STATES = new Set<MeetingState>(["starting", "recording", "paused", "stopping", "finalizing", "analyzing"]);
@@ -136,11 +143,36 @@ const TERMINAL_MEETING_STATES = new Set<MeetingState>([
   "ready", "capture_failed", "finalization_failed", "analysis_failed", "interrupted", "discarded",
 ]);
 type MeetingWorkspaceView = "overview" | "transcript" | "decisions" | "actions" | "questions" | "notes" | "chat";
+type MeetingReprocessMode = "speaker_identity" | "full_transcript";
 const MEETING_WORKSPACE_VIEWS: ReadonlyArray<readonly [MeetingWorkspaceView, string]> = [
   ["overview", "Overview"], ["transcript", "Transcript"], ["decisions", "Decisions"],
   ["actions", "Action items"], ["questions", "Open questions"],
   ["notes", "Notes"], ["chat", "Ask meeting"],
 ];
+
+function processingComponentLabel(component: MeetingProcessingComponent | undefined): string {
+  if (!component) return "Not recorded for this meeting";
+  if (!component.used) return "Not used";
+  return [component.engine, component.model].filter(Boolean).join(" · ") || "Used";
+}
+
+function processingComponentModeLabel(component: MeetingProcessingComponent | undefined): string {
+  if (!component) return "";
+  const labels: Record<string, string> = {
+    local_fallback: "Local fallback after transcription",
+    provider_native: "Included by the transcription provider",
+    audio_segmentation: "Used to find speech in the recording",
+    live_preview_boundaries: "Used for live-preview turn boundaries",
+    not_requested: "Not requested for this meeting",
+    failed_or_unavailable: "Requested, but failed or was unavailable",
+    ready_no_completed_turns: "Ready, but no complete turn required analysis",
+    no_live_session_evidence: "No completed live-session evidence was recorded",
+  };
+  const label = labels[component.mode] || component.mode.replaceAll("_", " ");
+  if (component.analysisCount) return `${label} · ${component.analysisCount} analyses`;
+  if (component.failureCount) return `${label} · ${component.failureCount} failures`;
+  return component.mode === "not_used" ? "" : label;
+}
 
 function stateLabel(state: MeetingState): string {
   const labels: Record<MeetingState, string> = {
@@ -807,12 +839,17 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const meetingImportExplicitCancelRef = useRef(false);
   const pendingPlaybackRef = useRef<MeetingPlaybackRequest | null>(null);
   const silencedPlaybackRef = useRef<MeetingPlaybackRequest | null>(null);
+  const speakerSnippetEndMsRef = useRef<number | null>(null);
+  const savedVoicePreviewRef = useRef<HTMLAudioElement | null>(null);
+  const savedVoicePreviewProfileIdRef = useRef("");
   const [audioSource, setAudioSource] = useState<MeetingPlaybackSource>("mix");
   const [playbackError, setPlaybackError] = useState("");
   const [mutedSources, setMutedSources] = useState({ microphone: false, system: false });
   const [meetingPendingDelete, setMeetingPendingDelete] = useState<MeetingSummary | null>(null);
   const [transcriptSearch, setTranscriptSearch] = useState("");
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
+  const [reprocessDialogOpen, setReprocessDialogOpen] = useState(false);
+  const [reprocessMode, setReprocessMode] = useState<MeetingReprocessMode>("speaker_identity");
   const [lastExport, setLastExport] = useState<Extract<MeetingExportResult, { status: "saved" }> | null>(null);
   const [meetingImportCandidate, setMeetingImportCandidate] = useState<{
     file: File;
@@ -826,7 +863,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     stage: "Ready",
     percentage: 0,
   });
-  const [emailAttachment, setEmailAttachment] = useState<"" | "md" | "pdf" | "docx">("pdf");
+  const [emailAttachment, setEmailAttachment] = useState<MeetingEmailDraftAttachment>("pdf");
   const [retryFinalProvider, setRetryFinalProvider] = useState("");
   const [microphoneEndpointHash, setMicrophoneEndpointHash] = useState("");
   const [renderEndpointHash, setRenderEndpointHash] = useState("");
@@ -1036,6 +1073,15 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     staleTime: 5_000,
   });
   const detail = detailQuery.data;
+  const speakerProfilesQuery = useQuery<SpeakerProfilesResponse>({
+    queryKey: ["/api/meetings/speaker-profiles"],
+    queryFn: ({ signal }) => fetchJson("/api/meetings/speaker-profiles", signal),
+    enabled: Boolean(detail?.speakers.some((speaker) => speaker.profileId)),
+    staleTime: 30_000,
+  });
+  const speakerProfilesById = useMemo(() => new Map(
+    (speakerProfilesQuery.data?.items ?? []).map((profile) => [profile.id, profile]),
+  ), [speakerProfilesQuery.data?.items]);
   const emailPreviewQuery = useQuery<{
     recipients: Array<{ name: string; address: string }>;
     subject: string;
@@ -1049,6 +1095,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
 
   useEffect(() => {
     setEmailDialogOpen(false);
+    setReprocessDialogOpen(false);
+    setReprocessMode("speaker_identity");
     setEmailAttachment("pdf");
     setWebhookUrl("");
     setWebhookPreview(null);
@@ -1059,6 +1107,9 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     setLiveStatuses({ microphone: null, system: null });
     pendingPlaybackRef.current = null;
     silencedPlaybackRef.current = null;
+    speakerSnippetEndMsRef.current = null;
+    savedVoicePreviewRef.current?.pause();
+    savedVoicePreviewProfileIdRef.current = "";
     audioRef.current?.pause();
     setAudioSource("mix");
     setMutedSources({ microphone: false, system: false });
@@ -1069,6 +1120,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     setNote("");
     setNoteHydratedFor("");
   }, [selectedId]);
+
+  useEffect(() => () => {
+    const preview = savedVoicePreviewRef.current;
+    if (!preview) return;
+    preview.pause();
+    preview.removeAttribute("src");
+    savedVoicePreviewRef.current = null;
+  }, []);
 
   useEffect(() => {
     if (!detail || noteHydratedFor === detail.id) return;
@@ -1104,6 +1163,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       if (TERMINAL_MEETING_STATES.has(message.meeting.state)) {
         void queryClient.invalidateQueries({ queryKey: ["/api/meetings", message.meeting.id], exact: true });
         void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
+        void queryClient.invalidateQueries({ queryKey: ["/api/meetings", message.meeting.id, "speaker-assignments"], exact: true });
+        void queryClient.invalidateQueries({ queryKey: ["/api/meetings", message.meeting.id, "email-preview"], exact: true });
       }
       if (message.meeting.id === selectedId && !["stopping", "finalizing", "analyzing"].includes(message.meeting.state)) {
         setMeetingProgress(null);
@@ -1118,6 +1179,17 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         progress: Math.max(0, Math.min(1, message.progress)),
         status: message.status,
       });
+      if (message.type === "meeting_analysis_progress" && message.progress >= 1) {
+        if (message.status === "Speaker matches refreshed") {
+          toast({ title: "Speaker matches refreshed", description: "The latest saved voices are now reflected in this meeting." });
+        } else if (message.status === "Speaker matches could not be refreshed") {
+          toast({
+            variant: "destructive",
+            title: "Speaker matches were not refreshed",
+            description: "The meeting and its existing speaker names were left unchanged. You can try again.",
+          });
+        }
+      }
     }
     if (message.type === "meeting_segment") {
       applyMeetingSegmentEvent(queryClient, message.meetingId, message.segment);
@@ -1640,6 +1712,29 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     },
     onError: (error) => toast({ variant: "destructive", title: "Meeting could not be recovered", description: error.message }),
   });
+  const reprocessMutation = useMutation({
+    mutationFn: async ({ id, mode }: { id: string; mode: MeetingReprocessMode }) => {
+      const response = await apiRequest("POST", `/api/meetings/${id}/reprocess`, { mode });
+      return response.json() as Promise<{
+        apiVersion: string;
+        meeting: MeetingSummary;
+        mode: MeetingReprocessMode;
+      }>;
+    },
+    onSuccess: (payload) => {
+      applyMeetingSummaryEvent(queryClient, payload.meeting);
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings", payload.meeting.id], exact: true });
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings", payload.meeting.id, "speaker-assignments"], exact: true });
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings", payload.meeting.id, "email-preview"], exact: true });
+      setReprocessDialogOpen(false);
+      setWorkspaceView("transcript");
+      toast({
+        title: payload.mode === "speaker_identity" ? "Speaker matches are being refreshed" : "A new full transcript is being created",
+        description: "The original recording remains unchanged.",
+      });
+    },
+    onError: (error) => toast({ variant: "destructive", title: "Meeting could not be processed again", description: error.message }),
+  });
   const speakerMutation = useMutation({
     mutationFn: async ({ id, speakerId, displayName }: { id: string; speakerId: string; displayName: string }) => {
       const response = await apiRequest("PATCH", `/api/meetings/${id}/speakers/${speakerId}`, { displayName });
@@ -1649,6 +1744,46 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       applyMeetingSpeakerName(queryClient, variables.id, variables.speakerId, variables.displayName);
     },
     onError: (error) => toast({ variant: "destructive", title: "Speaker name was not saved", description: error.message }),
+  });
+  const speakerProfileNameMutation = useMutation({
+    mutationFn: async ({ profileId, displayName }: { profileId: string; displayName: string }) => {
+      const response = await apiRequest("PATCH", `/api/meetings/speaker-profiles/${profileId}`, { displayName });
+      return response.json() as Promise<{
+        apiVersion: string;
+        id: string;
+        displayName: string;
+        isNamed: boolean;
+        updatedAt: string;
+      }>;
+    },
+    onSuccess: (profile) => {
+      // Settings reads this exact query key. Update it synchronously so a user
+      // who navigates there immediately sees the name they just saved here.
+      queryClient.setQueryData<SpeakerProfilesResponse>(
+        ["/api/meetings/speaker-profiles"],
+        (current) => current ? {
+          ...current,
+          items: current.items.map((item) => item.id === profile.id
+            ? { ...item, displayName: profile.displayName, isNamed: true, updatedAt: profile.updatedAt }
+            : item),
+        } : current,
+      );
+      if (detail?.id) {
+        queryClient.setQueryData<MeetingSpeakerAssignmentsResponse>(
+          ["/api/meetings", detail.id, "speaker-assignments"],
+          (current) => current ? {
+            ...current,
+            items: current.items.map((item) => item.profileMatch?.profileId === profile.id
+              ? { ...item, profileMatch: { ...item.profileMatch, displayName: profile.displayName } }
+              : item),
+          } : current,
+        );
+      }
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"], exact: true });
+      if (detail?.id) void refreshMeetingDetail(queryClient, detail.id);
+      toast({ title: "Saved voice name updated", description: `${profile.displayName} will be used for future voice matches.` });
+    },
+    onError: (error) => toast({ variant: "destructive", title: "Saved voice name was not updated", description: error.message }),
   });
   const splitSpeakerMutation = useMutation({
     mutationFn: async ({ id, speakerId }: { id: string; speakerId: string }) => {
@@ -1757,6 +1892,21 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     !capabilitiesQuery.data?.nativeMeetingCapture || capabilitiesQuery.data?.liveMicBusy || activeMeeting
       || !selectedProfile?.available || calendarSelectionNeedsReview,
   );
+  const meetingStartStatus = startMutation.isPending
+    ? "Starting audio capture…"
+    : activeMeeting
+      ? `Finish “${activeMeeting.title}” first.`
+      : calendarSelectionNeedsReview
+        ? "Choose the Outlook meeting again or continue without Outlook."
+        : !capabilitiesQuery.data?.nativeMeetingCapture
+          ? "Meeting recording is unavailable on this PC."
+          : capabilitiesQuery.data?.liveMicBusy
+            ? "Finish the Live Mic recording first."
+            : !selectedProfile?.available
+              ? "Choose an available transcription option in Settings."
+              : longSessionReady
+                ? `Ready to record · safety saves every ${longSession?.checkpointIntervalSeconds ?? 30} seconds`
+                : "Ready for a shorter meeting · review the details before a long recording.";
   const meetingImportBusy = meetingImportMutation.isPending || Boolean(meetingImportId);
   const liveSegments = detail?.segments ?? [];
   const groupedSegments = useMemo(() => liveSegments.map((segment) => ({
@@ -1772,6 +1922,16 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     ));
   }, [groupedSegments, transcriptSearch]);
   const analysisOutput = detail?.outputs.find((output) => output.kind === "analysis" && output.status === "completed");
+  const currentAnalysisOutput = detail?.outputs.find((output) => (
+    output.kind === "analysis"
+    && output.status === "completed"
+    && output.transcriptEditVersion === (detail.transcriptEditVersion ?? 0)
+  ));
+  const technicalAnalysisModel = currentAnalysisOutput
+    ? `${currentAnalysisOutput.provider || "Model not recorded"} · output v${currentAnalysisOutput.version}`
+    : analysisOutput
+      ? `${analysisOutput.provider || "Model not recorded"} · previous output v${analysisOutput.version}`
+      : "Not generated";
   const analysis = analysisOutput?.payload;
   const hasCanonicalTranscript = Boolean(detail?.segments.some((segment) => segment.revision === "canonical"));
   const outputsStale = Boolean(detail?.outputs.some(
@@ -1799,6 +1959,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     )),
   ), [detail?.audioAssets]);
   const hasPlayableAudio = availablePlaybackSources.size > 0;
+  const playableSpeakerIds = useMemo(() => new Set(
+    hasPlayableAudio
+      ? liveSegments.filter((segment) => segment.speakerId && segment.endMs > segment.startMs).map((segment) => segment.speakerId!)
+      : [],
+  ), [hasPlayableAudio, liveSegments]);
   const aecMetrics = detail?.captureMetadata.aecMetrics;
   const latestCheckpoint = detail?.transcriptCheckpoints?.at(-1);
   const expectedCheckpointTrackCount = useMemo(() => {
@@ -1843,6 +2008,9 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   }, [audioSource, detail?.audioAssets]);
   const playSegment = useCallback((source: "microphone" | "system" | "mixed", startMs: number) => {
     if (!detail) return;
+    speakerSnippetEndMsRef.current = null;
+    savedVoicePreviewRef.current?.pause();
+    savedVoicePreviewProfileIdRef.current = "";
     const requestedSource = playbackSourceForSegment(source);
     const nextSource = availablePlaybackSources.has(requestedSource)
       ? requestedSource
@@ -1875,6 +2043,56 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       setAudioSource(nextSource);
     }
   }, [audioSource, availablePlaybackSources, detail, playLoadedAudio]);
+  const playSpeakerSnippet = useCallback((speakerId: string) => {
+    const segment = [...liveSegments]
+      .filter((item) => item.speakerId === speakerId && item.endMs > item.startMs)
+      .sort((left, right) => {
+        if (left.revision !== right.revision) return left.revision === "canonical" ? -1 : 1;
+        return right.durationMs - left.durationMs;
+      })[0];
+    if (!segment) {
+      setPlaybackError("No saved voice sample is available for this speaker.");
+      return;
+    }
+    playSegment(segment.source, segment.startMs);
+    speakerSnippetEndMsRef.current = Math.min(segment.endMs, segment.startMs + 8_000);
+  }, [liveSegments, playSegment]);
+  const playSavedVoicePreview = useCallback(async (profileId: string, previewUrl: string) => {
+    if (!previewUrl) return;
+    speakerSnippetEndMsRef.current = null;
+    audioRef.current?.pause();
+    let preview = savedVoicePreviewRef.current;
+    if (preview && savedVoicePreviewProfileIdRef.current === profileId && !preview.paused) {
+      preview.pause();
+      savedVoicePreviewProfileIdRef.current = "";
+      return;
+    }
+    if (!preview) {
+      preview = new Audio();
+      preview.preload = "metadata";
+      savedVoicePreviewRef.current = preview;
+    } else {
+      preview.pause();
+    }
+    savedVoicePreviewProfileIdRef.current = profileId;
+    preview.src = apiUrl(previewUrl);
+    preview.currentTime = 0;
+    preview.onended = () => {
+      if (savedVoicePreviewProfileIdRef.current === profileId) savedVoicePreviewProfileIdRef.current = "";
+    };
+    preview.onerror = () => {
+      if (savedVoicePreviewProfileIdRef.current === profileId) savedVoicePreviewProfileIdRef.current = "";
+      setPlaybackError("The saved voice sample could not be played.");
+      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"], exact: true });
+    };
+    try {
+      await preview.play();
+      setPlaybackError("");
+    } catch (error) {
+      savedVoicePreviewProfileIdRef.current = "";
+      setPlaybackError(error instanceof Error ? error.message : "The saved voice sample could not be played.");
+    }
+  }, [queryClient]);
   const togglePlaybackSource = useCallback((source: "microphone" | "system") => {
     setMutedSources((current) => ({ ...current, [source]: !current[source] }));
   }, []);
@@ -1921,6 +2139,13 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     pendingPlaybackRef.current = null;
     void playLoadedAudio(request);
   }, [playLoadedAudio]);
+  const handlePlaybackTimeUpdate = useCallback(() => {
+    const stopAtMs = speakerSnippetEndMsRef.current;
+    if (stopAtMs == null) return;
+    if (captureCurrentPlayback().meetingTimeMs < stopAtMs) return;
+    speakerSnippetEndMsRef.current = null;
+    audioRef.current?.pause();
+  }, [captureCurrentPlayback]);
   const seekCitation = useCallback((segmentId: string) => {
     const segment = liveSegments.find((item) => item.id === segmentId);
     if (segment) playSegment(segment.source, segment.startMs);
@@ -1933,6 +2158,16 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     }
     setLocation("/settings");
   }, [setLocation]);
+  const openReprocessDialog = useCallback(() => {
+    const availability = detail?.reprocessing;
+    reprocessMutation.reset();
+    setReprocessMode(
+      availability?.speakerIdentityAvailable === false && availability.fullTranscriptAvailable
+        ? "full_transcript"
+        : "speaker_identity",
+    );
+    setReprocessDialogOpen(true);
+  }, [detail?.reprocessing, reprocessMutation]);
 
   return (
     <div className="app-page-shell transcription-page meetings-page flex min-h-[calc(100dvh-3.5rem)] flex-col px-4 py-5 md:px-6 md:py-6" data-page-shell="meetings">
@@ -1975,20 +2210,15 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
           />
           <Button
             type="button"
-            size="sm"
             variant="outline"
             disabled={meetingImportBusy || Boolean(activeMeeting)}
             onClick={() => meetingImportRef.current?.click()}
-            className="active:scale-[0.97]"
           >
             {meetingImportBusy
-              ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-              : <FileUp className="mr-2 h-3.5 w-3.5" />}
+              ? <Loader2 className="animate-spin" />
+              : <FileUp />}
             <span className="hidden sm:inline">Import recording</span>
             <span className="sm:hidden">Import</span>
-          </Button>
-          <Button type="button" size="sm" onClick={() => document.getElementById("meeting-title")?.focus()} className="active:scale-[0.97]">
-            <CirclePlay className="mr-2 h-3.5 w-3.5" />New meeting
           </Button>
         </> : null}
       />
@@ -2111,6 +2341,26 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               </div>
               <div className="grid gap-5 p-5 md:p-6 lg:p-7 min-[1380px]:grid-cols-[minmax(0,1fr)_260px]">
                 <section className="flex min-w-0 flex-col gap-4">
+                <div>
+                  <label htmlFor="meeting-title" className="text-sm font-medium">Meeting title</label>
+                  <Input id="meeting-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Weekly product sync" className="mt-2 h-12 text-base" />
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <Button
+                      type="button"
+                      disabled={startBlocked || startMutation.isPending}
+                      aria-describedby="meeting-start-status"
+                      onClick={() => startMutation.mutate()}
+                      className="w-full min-w-[168px] sm:w-auto"
+                    >
+                      {startMutation.isPending ? <Loader2 className="animate-spin" /> : <CirclePlay />}
+                      {startMutation.isPending ? "Starting…" : "Start meeting"}
+                    </Button>
+                    <p id="meeting-start-status" className="flex min-h-5 items-center gap-1.5 text-xs leading-5 text-muted-foreground" role="status" aria-live="polite">
+                      <ShieldCheck className={`h-3.5 w-3.5 shrink-0 ${startBlocked ? "text-amber-600 dark:text-amber-300" : "text-emerald-600 dark:text-emerald-300"}`} />
+                      {meetingStartStatus}
+                    </p>
+                  </div>
+                </div>
                 {detectionQuery.data?.detection && <div className="rounded-2xl border border-primary/35 bg-primary/5 p-4">
                   <div className="flex items-start gap-3">
                     <MonitorSpeaker className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
@@ -2118,7 +2368,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       <p className="text-sm font-medium">Meeting activity detected</p>
                       <p className="mt-1 truncate text-sm text-muted-foreground">{detectionQuery.data.detection.label}</p>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        <Button type="button" size="sm" onClick={() => {
+                        <Button type="button" size="sm" variant="secondary" onClick={() => {
                           const calendarEvent = detectionQuery.data?.detection?.calendarEvent;
                           setTitle(calendarEvent?.subject || detectionQuery.data?.detection?.label || "Meeting");
                           if (calendarEvent?.id) {
@@ -2199,7 +2449,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   <div className="min-w-0 border-t border-border/60 pt-4">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-sm font-medium">Audio devices</p>
-                      <Button type="button" size="sm" variant="ghost" disabled={audioDevicesQuery.isFetching} onClick={() => void audioDevicesQuery.refetch()}><RefreshCw className={`mr-2 h-3.5 w-3.5 ${audioDevicesQuery.isFetching ? "animate-spin" : ""}`} />Refresh</Button>
+                      <Button type="button" size="sm" variant="ghost" disabled={audioDevicesQuery.isFetching} onClick={() => void audioDevicesQuery.refetch()}><RefreshCw className={audioDevicesQuery.isFetching ? "animate-spin" : ""} />Refresh</Button>
                     </div>
                     <div className="mt-2 grid gap-2 sm:grid-cols-2">
                       <div className="min-w-0"><label htmlFor="meeting-microphone" className="text-xs text-muted-foreground">Microphone</label><select id="meeting-microphone" value={microphoneEndpointHash} disabled={microphoneSelectDisabled} onChange={(event) => setMicrophoneEndpointHash(event.target.value)} className="mt-1 h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60"><option value="">{audioDeviceInitialLoading ? "Looking for microphones…" : captureEndpoints.length === 0 ? "Windows default microphone (automatic)" : "Windows default microphone"}</option>{captureEndpoints.map((endpoint) => <option key={endpoint.endpointIdHash} value={endpoint.endpointIdHash}>{endpoint.friendlyName}{endpoint.isDefault ? " (default)" : ""}</option>)}</select></div>
@@ -2207,7 +2457,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     </div>
                     <p className={`mt-2 text-xs leading-5 ${audioDeviceInventoryUnavailable ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground"}`} role="status" aria-live="polite">{audioDeviceStatus}</p>
                     <Button type="button" size="sm" variant="outline" className="mt-3 h-auto min-h-9 w-full whitespace-normal px-3 text-center leading-5" disabled={!audioDevicesQuery.data?.available || deviceTestMutation.isPending || capabilitiesQuery.data?.liveMicBusy || Boolean(capabilitiesQuery.data?.activeMeeting)} onClick={() => deviceTestMutation.mutate()}>
-                      {deviceTestMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Waves className="mr-2 h-3.5 w-3.5" />}Test microphone and playback
+                      {deviceTestMutation.isPending ? <Loader2 className="animate-spin" /> : <Waves />}Test microphone and playback
                     </Button>
                     <p className="mt-2 text-[11px] leading-4 text-muted-foreground">Speak normally during the 3-second test. Scriber also plays a short sound through your speakers. Nothing is saved or uploaded.</p>
                     {deviceTestMutation.data && <div className="mt-3 space-y-2" role="status">
@@ -2227,10 +2477,6 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><Volume2 className="h-3.5 w-3.5" />{deviceTestMutation.data.testTonePlayed ? "Speaker sound played" : "Speaker sound unavailable"} · Echo reduction {deviceTestMutation.data.aecActive ? "ready" : "unavailable"}</p>
                     </div>}
                   </div>
-                </div>
-                <div className="order-first">
-                  <label htmlFor="meeting-title" className="text-sm font-medium">Meeting title</label>
-                  <Input id="meeting-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Weekly product sync" className="mt-2 h-12 text-base" />
                 </div>
                 </section>
                 <aside className="h-fit min-w-0 rounded-[22px] border border-border/70 bg-background/45 p-4 min-[1380px]:sticky min-[1380px]:top-4">
@@ -2260,20 +2506,6 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">Speaker names</span><span className={finalProviderCapability?.batchDiarization ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{finalProviderCapability?.batchDiarization ? "Included" : "Up to 60 min"}</span></div>
                   </div>
                   {!finalProviderCapability?.batchDiarization && <p className="mt-2 text-[11px] leading-4 text-muted-foreground">For meetings over 60 minutes, choose a transcription option that includes speaker names.</p>}
-                <div className="mt-4 flex flex-col gap-2">
-                  <Button
-                    type="button"
-                    size="lg"
-                    disabled={startBlocked || startMutation.isPending}
-                    onClick={() => startMutation.mutate()}
-                    className="h-11 w-full active:scale-[0.97]"
-                  >
-                    {startMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CirclePlay className="mr-2 h-4 w-4" />}
-                    Start meeting
-                  </Button>
-                  {activeMeeting && <p className="text-sm text-muted-foreground">Finish “{activeMeeting.title}” first.</p>}
-                  {calendarSelectionNeedsReview && <p className="text-sm text-muted-foreground">Choose the Outlook meeting again or continue without Outlook above.</p>}
-                </div>
                 </aside>
               </div>
             </div>
@@ -2302,6 +2534,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 </div>
                 {(detail.state === "recording" || detail.state === "paused") && <MeetingElapsedTime startedAt={detail.startedAt} audioGaps={detail.audioGaps} paused={detail.state === "paused"} pausedAtTimelineMs={detail.captureMetadata.pauseStartedAtMs} pausedAtUtc={detail.captureMetadata.pauseStartedAtUtc} recordingTimelineOffsetMs={detail.captureMetadata.timelineOffsetMs} recordingTimelineStartedAtUtc={detail.captureMetadata.timelineStartedAtUtc} finalProviderMaxDurationSeconds={detailFinalProviderCapability?.maxDurationSeconds} />}
                 <div className="flex flex-wrap gap-2">
+                  {["ready", "analysis_failed"].includes(detail.state) && detail.reprocessing?.processingRunning && <Button type="button" variant="outline" className="h-9" disabled>
+                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />{detail.reprocessing.speakerIdentityRunning ? "Refreshing speakers…" : "Processing…"}
+                  </Button>}
+                  {["ready", "analysis_failed"].includes(detail.state) && detail.reprocessing && !detail.reprocessing.processingRunning && (detail.reprocessing.speakerIdentityAvailable || detail.reprocessing.fullTranscriptAvailable) && <Button type="button" variant="outline" className="h-9 active:scale-[0.97]" onClick={openReprocessDialog}>
+                    <RefreshCw className="mr-2 h-3.5 w-3.5" />Process again
+                  </Button>}
                   {detail.state === "ready" && <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button type="button" variant="outline" className="h-9 active:scale-[0.97]">
@@ -2324,6 +2562,21 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                           <FileText className="mr-2 h-3.5 w-3.5" />Save {format === "docx" ? "Word document" : format === "md" ? "Markdown" : format.toUpperCase()}
                         </DropdownMenuItem>
                       ))}
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        disabled={exportMutation.isPending || !availablePlaybackSources.has("mix")}
+                        onSelect={() => exportMutation.mutate({
+                          path: `/api/meetings/${detail.id}/export/audio`,
+                          fallbackName: `${detail.title} - audio.opus`,
+                        })}
+                        className="items-start"
+                      >
+                        <Headphones className="mr-2 mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span>
+                          <span className="block">Save compressed audio</span>
+                          <span className="mt-0.5 block text-[10px] leading-4 text-muted-foreground">{availablePlaybackSources.has("mix") ? "Small Opus file for sharing or archiving" : "Compressed audio is not retained for this meeting"}</span>
+                        </span>
+                      </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         onSelect={() => setEmailDialogOpen(true)}
@@ -2469,6 +2722,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 <SpeakerAttendeeAssignments
                   meetingId={detail.id}
                   calendarEvent={detail.captureMetadata.calendarEvent}
+                  playableSpeakerIds={playableSpeakerIds}
+                  onPlaySpeaker={playSpeakerSnippet}
                   onAssignmentsChanged={() => {
                     void queryClient.invalidateQueries({
                       queryKey: ["/api/meetings", detail.id],
@@ -2494,6 +2749,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     preload="metadata"
                     src={apiUrl(audioSource === "mix" ? `/api/meetings/${detail.id}/audio` : `/api/meetings/${detail.id}/audio/${audioSource}`)}
                     onLoadedMetadata={handlePlaybackMetadata}
+                    onTimeUpdate={handlePlaybackTimeUpdate}
                     onPlay={() => setPlaybackError("")}
                     onError={() => setPlaybackError("The saved meeting audio could not be loaded.")}
                     className="h-8 w-full sm:ml-auto sm:max-w-md"
@@ -2563,22 +2819,85 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       aria-label="Search this meeting transcript"
                     />
                   </label>
-                  {detail.speakers.length > 0 && <div className="mb-4 flex flex-wrap gap-2">
-                    {detail.speakers.map((speaker) => <label key={speaker.id} className="flex items-center gap-2 rounded-full border border-border/70 bg-muted/35 px-3 py-1.5 text-xs">
-                      <span className="text-muted-foreground">{speaker.sourceHint === "microphone" ? "Mic" : "Remote"}</span>
-                      <input
-                        defaultValue={speaker.displayName || speaker.label}
-                        aria-label={`Rename ${speaker.displayName || speaker.label}`}
-                        className="w-24 bg-transparent font-medium outline-none"
-                        onBlur={(event) => {
-                          const displayName = event.target.value.trim();
-                          if (displayName && displayName !== speaker.displayName) {
-                            speakerMutation.mutate({ id: detail.id, speakerId: speaker.id, displayName });
-                          }
-                        }}
-                      />
-                      {speaker.profileId && <button type="button" className="rounded px-1 text-[10px] text-muted-foreground hover:bg-background hover:text-foreground" disabled={splitSpeakerMutation.isPending} onClick={(event) => { event.preventDefault(); splitSpeakerMutation.mutate({ id: detail.id, speakerId: speaker.id }); }} title="Do not match this speaker to the saved voice">Wrong match</button>}
-                    </label>)}
+                  {detail.speakers.length > 0 && <div className="mb-4 grid gap-2 lg:grid-cols-2">
+                    {detail.speakers.map((speaker) => {
+                      const speakerProfileId = speaker.profileId;
+                      const profile = speakerProfileId ? speakerProfilesById.get(speakerProfileId) : null;
+                      const savedVoiceName = profile?.displayName || "";
+                      const savedVoicePreviewUrl = profile?.preview?.url || "";
+                      const voiceEvidenceCount = speaker.voiceMatch?.evidenceCount ?? 0;
+                      const hasSpeakerSnippet = hasPlayableAudio && liveSegments.some((segment) => (
+                        segment.speakerId === speaker.id && segment.endMs > segment.startMs
+                      ));
+                      const renamingProfile = speakerProfileNameMutation.isPending
+                        && speakerProfileNameMutation.variables?.profileId === speaker.profileId;
+                      return <div key={speaker.id} className="rounded-xl border border-border/70 bg-muted/25 px-3 py-2.5 text-xs">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <span className="shrink-0 text-muted-foreground">{speaker.sourceHint === "microphone" ? "Mic" : "Remote"}</span>
+                          <input
+                            key={`${speaker.id}-${speaker.updatedAt}`}
+                            defaultValue={speaker.displayName || speaker.label}
+                            aria-label={`Name in this meeting for ${speaker.displayName || speaker.label}`}
+                            className="min-w-24 flex-1 bg-transparent font-medium outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-ring"
+                            onBlur={(event) => {
+                              const displayName = event.target.value.trim();
+                              if (displayName && displayName !== speaker.displayName) {
+                                speakerMutation.mutate({ id: detail.id, speakerId: speaker.id, displayName });
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            disabled={!hasSpeakerSnippet}
+                            onClick={() => playSpeakerSnippet(speaker.id)}
+                            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-muted-foreground hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                            title={hasSpeakerSnippet ? "Play up to 8 seconds of this speaker" : "No saved audio sample is available"}
+                          >
+                            <CirclePlay className="h-3.5 w-3.5" />Meeting sample
+                          </button>
+                        </div>
+                        {speakerProfileId && <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 border-t border-border/55 pt-2">
+                          <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
+                          <span className="shrink-0 text-[11px] text-muted-foreground">Saved voice</span>
+                          <input
+                            key={`${speakerProfileId}-${profile?.updatedAt || "meeting"}`}
+                            defaultValue={savedVoiceName}
+                            placeholder={speakerProfilesQuery.isLoading ? "Loading name…" : "Saved voice unavailable"}
+                            disabled={!profile || renamingProfile}
+                            aria-label={`Saved voice profile name for ${savedVoiceName || speaker.displayName || speaker.label}`}
+                            className="min-w-24 flex-1 rounded-md border border-transparent bg-background/65 px-2 py-1 font-medium outline-none hover:border-border focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:opacity-60"
+                            onBlur={(event) => {
+                              const displayName = event.target.value.trim();
+                              if (profile && displayName && displayName !== savedVoiceName) {
+                                speakerProfileNameMutation.mutate({ profileId: speakerProfileId, displayName });
+                              }
+                            }}
+                          />
+                          {renamingProfile && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+                          {profile && savedVoicePreviewUrl && <button
+                            type="button"
+                            onClick={() => void playSavedVoicePreview(profile.id, savedVoicePreviewUrl)}
+                            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[10px] font-medium text-muted-foreground hover:bg-background hover:text-foreground"
+                            title="Play the short sample stored for this saved voice"
+                          >
+                            <CirclePlay className="h-3.5 w-3.5" />Saved sample
+                          </button>}
+                          {voiceEvidenceCount > 0 && <span className="text-[10px] text-muted-foreground">
+                            {voiceEvidenceCount} matching {voiceEvidenceCount === 1 ? "sample" : "samples"}
+                          </span>}
+                          <span className="text-[10px] text-muted-foreground">{profile ? "Updates Settings too" : speakerProfilesQuery.isLoading ? "Loading saved profile" : "Profile unavailable"}</span>
+                          <button
+                            type="button"
+                            className="rounded px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-background hover:text-foreground"
+                            disabled={splitSpeakerMutation.isPending}
+                            onClick={() => splitSpeakerMutation.mutate({ id: detail.id, speakerId: speaker.id })}
+                            title="Do not match this speaker to the saved voice"
+                          >
+                            Wrong match
+                          </button>
+                        </div>}
+                      </div>;
+                    })}
                   </div>}
                   <div>
                     {groupedSegments.length === 0 ? (
@@ -2628,7 +2947,23 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       <dl className="mt-3 space-y-2 text-[11px]">
                         <div className="flex items-start justify-between gap-3"><dt className="text-muted-foreground">Live transcript</dt><dd className="text-right font-mono">{detail.origin === "imported" ? "Not used (imported)" : detail.transcriptionMode === "final_only" ? "Not used (transcript after meeting)" : detailLiveModel || detail.liveProvider}</dd></div>
                         <div className="flex items-start justify-between gap-3"><dt className="text-muted-foreground">Final transcript</dt><dd className="text-right font-mono">{detail.finalRoute?.model || detail.finalProvider}</dd></div>
-                        <div className="flex items-start justify-between gap-3"><dt className="text-muted-foreground">Summary and actions</dt><dd className="break-all text-right font-mono">{detail.analysisModel}</dd></div>
+                        <div className="flex items-start justify-between gap-3"><dt className="text-muted-foreground">Summary and actions</dt><dd className="break-all text-right font-mono">{technicalAnalysisModel}</dd></div>
+                        {([[
+                          "Speaker separation",
+                          detail.processingComponents?.diarization,
+                        ], [
+                          "Voice activity detection",
+                          detail.processingComponents?.vad,
+                        ], [
+                          "Turn detection",
+                          detail.processingComponents?.turnDetection,
+                        ]] as const).map(([label, component]) => <div key={label} className="flex items-start justify-between gap-3 border-t border-border/45 pt-2">
+                          <dt className="text-muted-foreground">{label}</dt>
+                          <dd className="max-w-[58%] text-right">
+                            <span className="block font-mono">{processingComponentLabel(component)}</span>
+                            {processingComponentModeLabel(component) && <span className="mt-0.5 block text-[10px] text-muted-foreground">{processingComponentModeLabel(component)}</span>}
+                          </dd>
+                        </div>)}
                       </dl>
                       {detail.state === "ready" && aecMetrics && <div className="mt-4 border-t border-border/60 pt-3">
                         <div className="flex items-center justify-between gap-3">
@@ -2768,7 +3103,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-[680px]">
           <DialogHeader>
             <DialogTitle>Share meeting by email</DialogTitle>
-            <DialogDescription>Create a populated email in your default mail app, or save an Outlook-compatible draft. Suitable recipients come from the linked Outlook event and remain visible for review here.</DialogDescription>
+            <DialogDescription>Create a populated email in your default mail app, or save an Outlook-compatible draft. Suitable recipients come from the linked Outlook event and remain visible for review here. The summary, email body, and selected attachment use the transcript language.</DialogDescription>
           </DialogHeader>
           {emailPreviewQuery.isLoading ? (
             <div className="grid gap-3 py-3"><div className="h-12 animate-pulse rounded-xl bg-muted" /><div className="h-40 animate-pulse rounded-xl bg-muted" /></div>
@@ -2801,11 +3136,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 </Button>
                 <Button
                   type="button"
-                  disabled={exportMutation.isPending}
-                  onClick={() => exportMutation.mutate({
-                    path: `/api/meetings/${detail?.id}/export-email${emailAttachment ? `?attachment=${emailAttachment}` : ""}`,
-                    fallbackName: `${detail?.title || "Meeting"} - email draft.eml`,
-                  })}
+                  disabled={exportMutation.isPending || !detail}
+                  onClick={() => {
+                    if (!detail) return;
+                    exportMutation.mutate({
+                      path: meetingEmailDraftPath(detail.id, emailAttachment),
+                      fallbackName: `${detail.title || "Meeting"} - email draft.eml`,
+                    });
+                  }}
                 >
                   {exportMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Paperclip className="mr-2 h-4 w-4" />}
                   Save email draft{emailAttachment ? ` + ${emailAttachment.toUpperCase()}` : ""}
@@ -2813,6 +3151,84 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={reprocessDialogOpen} onOpenChange={(open) => {
+        if (!reprocessMutation.isPending) setReprocessDialogOpen(open);
+      }}>
+        <DialogContent className="sm:max-w-[660px]">
+          <DialogHeader>
+            <DialogTitle>Process this meeting again</DialogTitle>
+            <DialogDescription>Choose exactly what Scriber should rebuild. Your original recording is never changed or overwritten.</DialogDescription>
+          </DialogHeader>
+          <fieldset className="grid gap-3 py-1">
+            <legend className="sr-only">Choose what to process again</legend>
+            <label className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 ${reprocessMode === "speaker_identity" ? "border-primary bg-primary/5" : "border-border/70 bg-muted/20"} ${detail?.reprocessing?.speakerIdentityAvailable === false ? "cursor-not-allowed opacity-55" : ""}`}>
+              <input
+                type="radio"
+                name="meeting-reprocess-mode"
+                value="speaker_identity"
+                checked={reprocessMode === "speaker_identity"}
+                disabled={!detail?.reprocessing?.speakerIdentityAvailable || reprocessMutation.isPending}
+                onChange={() => setReprocessMode("speaker_identity")}
+                className="mt-1 accent-primary"
+              />
+              <span className="min-w-0">
+                <span className="flex items-center gap-2 text-sm font-semibold"><Users className="h-4 w-4 text-primary" />Refresh speaker matches</span>
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">Uses the latest saved Voice Library names and participant context. Transcript wording, audio, notes, summary, and action items stay unchanged. Suggested people still require your confirmation.</span>
+                {!detail?.reprocessing?.speakerIdentityAvailable && detail?.reprocessing?.speakerIdentityUnavailableReason && (
+                  <span className="mt-2 block text-[11px] leading-4 text-amber-700 dark:text-amber-300">{detail.reprocessing.speakerIdentityUnavailableReason}</span>
+                )}
+              </span>
+            </label>
+            <label className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 ${reprocessMode === "full_transcript" ? "border-primary bg-primary/5" : "border-border/70 bg-muted/20"} ${detail?.reprocessing?.fullTranscriptAvailable === false ? "cursor-not-allowed opacity-55" : ""}`}>
+              <input
+                type="radio"
+                name="meeting-reprocess-mode"
+                value="full_transcript"
+                checked={reprocessMode === "full_transcript"}
+                disabled={!detail?.reprocessing?.fullTranscriptAvailable || reprocessMutation.isPending}
+                onChange={() => setReprocessMode("full_transcript")}
+                className="mt-1 accent-primary"
+              />
+              <span className="min-w-0">
+                <span className="flex items-center gap-2 text-sm font-semibold"><RefreshCw className="h-4 w-4 text-primary" />Create a new full transcript</span>
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">Retranscribes the complete saved recording with the model currently selected in Settings, then rebuilds timestamps and speaker segments. If the result changes, manual transcript corrections and speaker confirmations are cleared so they cannot point to the wrong words. Notes and the original audio remain unchanged.</span>
+                <span className="mt-2 block rounded-lg bg-background/70 px-2.5 py-2 font-mono text-[11px] text-foreground/80">
+                  {detail?.reprocessing?.selectedFinalProvider || "Selected provider"} · {detail?.reprocessing?.selectedFinalModel || "Selected model"}
+                </span>
+                <span className="mt-1.5 block text-[11px] leading-4 text-amber-700 dark:text-amber-300">This option sends the complete recording to the configured transcription provider and may incur normal provider costs.</span>
+                {!detail?.reprocessing?.fullTranscriptAvailable && detail?.reprocessing?.fullTranscriptUnavailableReason && (
+                  <span className="mt-2 block text-[11px] leading-4 text-amber-700 dark:text-amber-300">{detail.reprocessing.fullTranscriptUnavailableReason}</span>
+                )}
+              </span>
+            </label>
+          </fieldset>
+          {detail?.reprocessing?.unavailableReason && (
+            <p className="rounded-xl border border-amber-300/60 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-900 dark:text-amber-100" role="status">{detail.reprocessing.unavailableReason}</p>
+          )}
+          {reprocessMutation.isError && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-xs text-destructive" role="alert">{reprocessMutation.error.message}</p>}
+          <div className="rounded-xl border border-border/70 bg-muted/25 px-3 py-2.5 text-xs leading-5 text-muted-foreground">
+            <ShieldCheck className="mr-2 inline h-4 w-4 align-text-bottom text-primary" />
+            The retained source audio is read-only for this operation. You can continue using the current meeting until the new result is ready.
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={reprocessMutation.isPending} onClick={() => setReprocessDialogOpen(false)}>Cancel</Button>
+            <Button
+              type="button"
+              disabled={
+                !detail
+                || reprocessMutation.isPending
+                || (reprocessMode === "speaker_identity" && !detail.reprocessing?.speakerIdentityAvailable)
+                || (reprocessMode === "full_transcript" && !detail.reprocessing?.fullTranscriptAvailable)
+              }
+              onClick={() => detail && reprocessMutation.mutate({ id: detail.id, mode: reprocessMode })}
+            >
+              {reprocessMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {reprocessMutation.isPending ? "Starting…" : reprocessMode === "speaker_identity" ? "Refresh speakers" : "Create new transcript"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

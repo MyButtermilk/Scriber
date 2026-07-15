@@ -241,6 +241,7 @@ def _live_service_uses_async_finalization(service_name: str) -> bool:
             "gladia_async",
             "openai_async",
             "speechmatics_async",
+            "modulate_async",
             "azure_mai",
             "assemblyai",
         }
@@ -1169,6 +1170,12 @@ from src.cloud_async_stt import (
     transcribe_with_gemini_audio,
     transcribe_with_openai_audio_transcription,
     transcribe_with_speechmatics_batch,
+)
+from src.modulate_stt import (
+    ModulateAsyncProcessor,
+    ModulateRealtimeSTTService,
+    modulate_transcript_payload_to_text,
+    transcribe_with_modulate_multilingual,
 )
 
 LANGUAGE_MAP = {
@@ -2777,6 +2784,27 @@ class ScriberPipeline:
                 on_progress=self.on_progress,
                 diarize=self.enable_speaker_diarization,
             )
+
+        elif self.service_name in {"modulate", "modulate_async"}:
+            api_key = _get_api_key("modulate")
+            if not api_key:
+                raise ValueError("Modulate API Key is missing.")
+            if self.service_name == "modulate_async":
+                logger.info("Using Modulate multilingual batch transcription mode")
+                return ModulateAsyncProcessor(
+                    api_key=api_key,
+                    language=self._execution_language(),
+                    session=session,
+                    on_progress=self.on_progress,
+                )
+            logger.info("Using Modulate multilingual realtime transcription mode")
+            return ModulateRealtimeSTTService(
+                api_key=api_key,
+                language=self._execution_language(),
+                aiohttp_session=session,
+                sample_rate=Config.SAMPLE_RATE,
+                channels=Config.CHANNELS,
+            )
         
         elif self.service_name == "onnx_local":
             from src.onnx_local_service import OnnxLocalBufferedSTTService
@@ -3521,6 +3549,39 @@ class ScriberPipeline:
                 self.last_structured_transcript_payload = payload
                 if text and self.on_transcription:
                     logger.info(f"Gladia direct transcription completed ({len(text)} chars)")
+                    self.on_transcription(text, True)
+
+                if self.on_progress:
+                    self.on_progress("Completed")
+                return
+
+            if self.service_name in {"modulate", "modulate_async"}:
+                api_key = Config.get_api_key("modulate")
+                if not api_key:
+                    raise ValueError("Modulate API key is missing")
+
+                async with aiohttp.ClientSession() as session:
+                    with open(path, "rb") as f:
+                        payload = await transcribe_with_modulate_multilingual(
+                            session=session,
+                            api_key=api_key,
+                            audio_source=f,
+                            filename=path.name,
+                            content_type=content_type,
+                            language=self._execution_language(),
+                            on_progress=self.on_progress,
+                            timeout_secs=batch_timeout_seconds,
+                        )
+
+                # The adapter has already removed Modulate's utterance array and
+                # every enrichment field.  Only final text and duration cross
+                # this boundary.
+                self.last_structured_transcript_payload = payload
+                text = modulate_transcript_payload_to_text(payload)
+                if text and self.on_transcription:
+                    logger.info(
+                        f"Modulate direct transcription completed ({len(text)} chars)"
+                    )
                     self.on_transcription(text, True)
 
                 if self.on_progress:

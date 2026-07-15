@@ -1,0 +1,574 @@
+"""Modulate Velma-2 multilingual speech-to-text adapters.
+
+Scriber intentionally uses only the transcription surface of Modulate's API:
+
+* batch responses are reduced to their top-level final transcript and duration;
+* streaming requests disable partial results and emit only finalized text;
+* diarization and every enrichment/signal are disabled, so utterance metadata,
+  emotion, accent, deepfake, and PII/PHI data never enter Scriber state.
+
+The streaming API requires the credential in the WebSocket query string.  No
+URL containing that query string is logged, and every provider error is passed
+through the local credential redactor before it reaches logs or an ErrorFrame.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+from typing import Any, BinaryIO, Callable
+from urllib.parse import urlencode
+
+import aiohttp
+from aiohttp import WSMsgType
+from loguru import logger
+
+from pipecat.frames.frames import (
+    AudioRawFrame,
+    CancelFrame,
+    EndFrame,
+    ErrorFrame,
+    Frame,
+    StartFrame,
+    StopFrame,
+    TranscriptionFrame,
+)
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.transcriptions.language import Language
+from pipecat.utils.time import time_now_iso8601
+
+from src.runtime.audio_spool import (
+    append_pcm_frame,
+    close_pcm_spool,
+    create_pcm_spool,
+    pcm_stream_to_wav,
+)
+from src.runtime.env_values import env_float
+from src.runtime.http_response import read_response_text_limited
+
+
+MODULATE_BATCH_URL = "https://platform.modulate.ai/api/velma-2-stt-batch"
+MODULATE_STREAMING_URL = "wss://platform.modulate.ai/api/velma-2-stt-streaming"
+MODULATE_BATCH_MAX_BYTES = 100 * 1024 * 1024
+_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+_MAX_PUBLIC_ERROR_CHARS = 500
+_QUERY_SECRET_RE = re.compile(r"(?i)(api_key=)[^&\s]+")
+
+
+def _bool_param(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def modulate_language_code(language: Language | str | None) -> str:
+    """Return an optional ISO-639 primary language hint for Modulate."""
+    if not language:
+        return ""
+    raw = str(language.value if isinstance(language, Language) else language).strip()
+    if not raw or raw.lower() == "auto":
+        return ""
+    return raw.replace("_", "-").split("-", 1)[0].lower()
+
+
+def redact_modulate_error(value: object, api_key: str) -> str:
+    """Bound and redact provider errors before logging or surfacing them."""
+    text = " ".join(str(value or "Modulate request failed").split())
+    if api_key:
+        text = text.replace(api_key, "[REDACTED]")
+    text = _QUERY_SECRET_RE.sub(r"\1[REDACTED]", text)
+    return text[:_MAX_PUBLIC_ERROR_CHARS]
+
+
+def _report_progress(on_progress: Callable[[str], None] | None, message: str) -> None:
+    if not on_progress:
+        return
+    try:
+        on_progress(message)
+    except Exception:
+        pass
+
+
+def _final_transcript_payload(payload: Any) -> dict[str, Any]:
+    """Keep only non-enriched, top-level final transcript fields.
+
+    Modulate's multilingual response includes an ``utterances`` collection even
+    when all enrichments are disabled.  The product requirement is final text
+    only, so that collection and any future signal fields are discarded at the
+    provider boundary instead of being persisted accidentally.
+    """
+    if not isinstance(payload, dict):
+        raise RuntimeError("Modulate returned an invalid transcription response.")
+    text = payload.get("text")
+    if not isinstance(text, str):
+        raise RuntimeError("Modulate returned no final transcript field.")
+    result: dict[str, Any] = {"text": text}
+    duration = payload.get("duration_ms")
+    if isinstance(duration, (int, float)) and not isinstance(duration, bool) and duration >= 0:
+        result["duration_ms"] = int(duration)
+    return result
+
+
+def modulate_transcript_payload_to_text(payload: Any) -> str:
+    """Read only Modulate's top-level final transcript string."""
+    if not isinstance(payload, dict):
+        return ""
+    text = payload.get("text")
+    return text.strip() if isinstance(text, str) else ""
+
+
+async def transcribe_with_modulate_multilingual(
+    *,
+    session: aiohttp.ClientSession,
+    api_key: str,
+    audio_source: bytes | BinaryIO,
+    filename: str,
+    content_type: str,
+    language: Language | str | None = None,
+    on_progress: Callable[[str], None] | None = None,
+    timeout_secs: float = 900.0,
+    endpoint: str = MODULATE_BATCH_URL,
+) -> dict[str, Any]:
+    """Transcribe one complete file using Modulate multilingual batch STT.
+
+    Every optional enrichment is explicitly false.  ``speaker_diarization`` is
+    also false because Scriber does not retain Modulate utterance-level output.
+    """
+    key = str(api_key or "").strip()
+    if not key:
+        raise ValueError("Modulate API Key is missing.")
+
+    data = aiohttp.FormData()
+    data.add_field(
+        "upload_file",
+        audio_source,
+        filename=filename,
+        content_type=content_type,
+    )
+    for field in (
+        "speaker_diarization",
+        "emotion_signal",
+        "accent_signal",
+        "deepfake_signal",
+        "pii_phi_tagging",
+    ):
+        data.add_field(field, "false")
+    language_code = modulate_language_code(language)
+    if language_code:
+        data.add_field("language", language_code)
+
+    _report_progress(on_progress, "Uploading audio...")
+    _report_progress(on_progress, "Processing transcription...")
+    try:
+        async with session.post(
+            endpoint,
+            data=data,
+            headers={"X-API-Key": key},
+            timeout=aiohttp.ClientTimeout(total=max(1.0, float(timeout_secs))),
+        ) as response:
+            raw = await read_response_text_limited(response, _MAX_RESPONSE_BYTES)
+            if response.status >= 400:
+                detail = redact_modulate_error(raw, key)
+                raise RuntimeError(
+                    f"Modulate batch transcription failed ({response.status}): {detail}"
+                )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        if isinstance(exc, RuntimeError) and str(exc).startswith(
+            "Modulate batch transcription failed"
+        ):
+            raise
+        raise RuntimeError(
+            f"Modulate batch transcription failed: {redact_modulate_error(exc, key)}"
+        ) from exc
+
+    if not raw:
+        raise RuntimeError("Modulate returned an empty transcription response.")
+    try:
+        parsed = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError("Modulate returned an invalid transcription response.") from exc
+    return _final_transcript_payload(parsed)
+
+
+class ModulateAsyncProcessor(FrameProcessor):
+    """Buffer one live recording and submit one final Modulate batch request."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        language: Language | str | None = None,
+        session: aiohttp.ClientSession | None = None,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> None:
+        super().__init__()
+        self._api_key = str(api_key or "").strip()
+        self._language = language
+        self._session = session
+        self._on_progress = on_progress
+        self._buffer = create_pcm_spool()
+        self._buffer_size = 0
+        self._sample_rate = 16_000
+        self._channels = 1
+        self._oversized = False
+
+    def _reset_buffer(self) -> None:
+        close_pcm_spool(getattr(self, "_buffer", None))
+        self._buffer = create_pcm_spool()
+        self._buffer_size = 0
+        self._oversized = False
+
+    def __del__(self) -> None:
+        close_pcm_spool(getattr(self, "_buffer", None))
+
+    async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
+        async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
+            return await transcribe_with_modulate_multilingual(
+                session=session,
+                api_key=self._api_key,
+                audio_source=wav_source,
+                filename="audio.wav",
+                content_type="audio/wav",
+                language=self._language,
+                on_progress=self._on_progress,
+            )
+
+        if self._session:
+            payload = await _call(self._session)
+        else:
+            async with aiohttp.ClientSession() as session:
+                payload = await _call(session)
+        return modulate_transcript_payload_to_text(payload)
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, AudioRawFrame):
+            if frame.audio and not self._oversized:
+                if getattr(frame, "sample_rate", None):
+                    self._sample_rate = int(frame.sample_rate or self._sample_rate)
+                if getattr(frame, "num_channels", None):
+                    self._channels = max(1, int(frame.num_channels or self._channels))
+                # Leave room for the WAV header.  The provider's documented
+                # upload maximum is 100 MB.
+                if self._buffer_size + len(frame.audio) + 44 > MODULATE_BATCH_MAX_BYTES:
+                    self._oversized = True
+                    await self.push_frame(
+                        ErrorFrame(
+                            error="modulate async error: recording exceeds the 100MB batch upload limit"
+                        ),
+                        direction,
+                    )
+                else:
+                    self._buffer_size = await append_pcm_frame(
+                        self._buffer,
+                        self._buffer_size,
+                        frame.audio,
+                    )
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
+            try:
+                if getattr(self, "_skip_terminal_transcription", False):
+                    logger.info(
+                        "Modulate async: skipping terminal transcription for silent recording"
+                    )
+                elif self._oversized:
+                    logger.warning("Modulate async recording exceeded the provider upload limit")
+                elif self._buffer_size:
+                    _report_progress(self._on_progress, "Transcribing...")
+                    wav_source = await asyncio.to_thread(
+                        pcm_stream_to_wav,
+                        self._buffer,
+                        self._sample_rate,
+                        self._channels,
+                    )
+                    try:
+                        text = (await self._transcribe_wav(wav_source)).strip()
+                    finally:
+                        wav_source.close()
+                    if text:
+                        await self.push_frame(
+                            TranscriptionFrame(
+                                text=text,
+                                user_id="user",
+                                timestamp=time_now_iso8601(),
+                                result=None,
+                                finalized=True,
+                            ),
+                            direction,
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                safe_error = redact_modulate_error(exc, self._api_key)
+                logger.error(f"Modulate async transcription failed: {safe_error}")
+                await self.push_frame(
+                    ErrorFrame(error=f"modulate async error: {safe_error}"), direction
+                )
+            finally:
+                self._reset_buffer()
+            await self.push_frame(frame, direction)
+            return
+
+        await self.push_frame(frame, direction)
+
+
+class ModulateRealtimeSTTService(FrameProcessor):
+    """Raw-PCM multilingual Modulate WebSocket client with final text only."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        language: Language | str | None = None,
+        aiohttp_session: aiohttp.ClientSession | None = None,
+        sample_rate: int = 16_000,
+        channels: int = 1,
+        endpoint: str = MODULATE_STREAMING_URL,
+    ) -> None:
+        super().__init__()
+        self._api_key = str(api_key or "").strip()
+        self._language = modulate_language_code(language)
+        self._session = aiohttp_session
+        self._owned_session: aiohttp.ClientSession | None = None
+        self._ws: aiohttp.ClientWebSocketResponse | None = None
+        self._receive_task: asyncio.Task | None = None
+        self._sample_rate = max(1, int(sample_rate or 16_000))
+        self._channels = max(1, int(channels or 1))
+        self._endpoint = str(endpoint or MODULATE_STREAMING_URL)
+        self._eos_sent = False
+        self._done_received = False
+        self._connect_failed = False
+        self._terminal_error_emitted = False
+        self._terminal_event = asyncio.Event()
+        self._final_timeout_secs = env_float(
+            "SCRIBER_MODULATE_STREAM_FINAL_TIMEOUT_SECONDS",
+            30.0,
+            minimum=2.0,
+            maximum=120.0,
+        )
+
+    def _ws_url(self) -> str:
+        params = {
+            "api_key": self._api_key,
+            "audio_format": "s16le",
+            "sample_rate": str(self._sample_rate),
+            "num_channels": str(self._channels),
+            "speaker_diarization": "false",
+            "emotion_signal": "false",
+            "accent_signal": "false",
+            "deepfake_signal": "false",
+            "pii_phi_tagging": "false",
+            "partial_results": "false",
+        }
+        if self._language:
+            params["language"] = self._language
+        return f"{self._endpoint}?{urlencode(params)}"
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session:
+            return self._session
+        if not self._owned_session or self._owned_session.closed:
+            self._owned_session = aiohttp.ClientSession()
+        return self._owned_session
+
+    async def _emit_error(self, value: object, direction: FrameDirection) -> None:
+        self._terminal_error_emitted = True
+        safe_error = redact_modulate_error(value, self._api_key)
+        logger.error(f"Modulate realtime transcription failed: {safe_error}")
+        await self.push_frame(
+            ErrorFrame(error=f"modulate realtime error: {safe_error}"), direction
+        )
+
+    async def _ensure_connected(self, direction: FrameDirection) -> bool:
+        if self._ws and not self._ws.closed:
+            return True
+        if self._connect_failed:
+            return False
+        if not self._api_key:
+            self._connect_failed = True
+            await self._emit_error("Modulate API Key is missing.", direction)
+            self._terminal_event.set()
+            return False
+        try:
+            session = await self._get_session()
+            # The credential is required in the URL by Modulate.  Never log or
+            # otherwise expose this URL.
+            self._ws = await session.ws_connect(
+                self._ws_url(),
+                heartbeat=20,
+                timeout=30,
+                max_msg_size=_MAX_RESPONSE_BYTES,
+            )
+            self._eos_sent = False
+            self._done_received = False
+            self._terminal_error_emitted = False
+            self._terminal_event.clear()
+            self._receive_task = asyncio.create_task(
+                self._receive_responses(direction),
+                name="modulate_realtime_receive",
+            )
+            logger.info("Modulate multilingual realtime websocket connected")
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._connect_failed = True
+            self._terminal_event.set()
+            await self._emit_error(exc, direction)
+            return False
+
+    async def _handle_response(self, raw: str, direction: FrameDirection) -> bool:
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            await self._emit_error("invalid JSON response", direction)
+            return False
+        if not isinstance(payload, dict):
+            await self._emit_error("invalid response object", direction)
+            return False
+
+        message_type = str(payload.get("type") or "").strip().lower()
+        if message_type == "utterance":
+            utterance = payload.get("utterance")
+            text = (
+                str(utterance.get("text") or "").strip()
+                if isinstance(utterance, dict)
+                else ""
+            )
+            if text:
+                # Deliberately omit the provider utterance object.  Scriber
+                # receives only finalized transcript text.
+                await self.push_frame(
+                    TranscriptionFrame(
+                        text=text,
+                        user_id="user",
+                        timestamp=time_now_iso8601(),
+                        result=None,
+                        finalized=True,
+                    ),
+                    direction,
+                )
+            return False
+        if message_type == "partial_utterance":
+            # Defensive fail-closed behavior: the request sets
+            # partial_results=false, and an unexpected preview is never emitted.
+            logger.warning("Modulate returned an unexpected partial result; ignored")
+            return False
+        if message_type == "done":
+            self._done_received = True
+            self._terminal_event.set()
+            return True
+        if message_type == "error":
+            await self._emit_error(payload.get("error") or "provider error", direction)
+            self._terminal_event.set()
+            return True
+        # Ignore future metadata message types instead of persisting them.
+        return False
+
+    async def _receive_responses(self, direction: FrameDirection) -> None:
+        ws = self._ws
+        if not ws:
+            self._terminal_event.set()
+            return
+        try:
+            close_code: int | None = None
+            async for message in ws:
+                if message.type == WSMsgType.TEXT:
+                    if await self._handle_response(message.data, direction):
+                        break
+                elif message.type == WSMsgType.BINARY:
+                    await self._emit_error("unexpected binary response", direction)
+                    break
+                elif message.type == WSMsgType.ERROR:
+                    raise RuntimeError(str(ws.exception() or "websocket error"))
+                elif message.type in (
+                    WSMsgType.CLOSE,
+                    WSMsgType.CLOSING,
+                    WSMsgType.CLOSED,
+                ):
+                    if isinstance(message.data, int) and 1000 <= message.data <= 4999:
+                        close_code = int(message.data)
+                    break
+            if not self._done_received and not self._terminal_error_emitted:
+                if close_code is None:
+                    candidate = getattr(ws, "close_code", None)
+                    if isinstance(candidate, int) and 1000 <= candidate <= 4999:
+                        close_code = int(candidate)
+                detail = "websocket closed before the final done message"
+                if close_code is not None:
+                    detail = f"{detail} (close code {close_code})"
+                await self._emit_error(detail, direction)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self._emit_error(exc, direction)
+        finally:
+            self._terminal_event.set()
+
+    async def _close_stream(
+        self,
+        direction: FrameDirection,
+        *,
+        wait_for_final: bool,
+    ) -> None:
+        ws = self._ws
+        if ws and not ws.closed and not self._eos_sent:
+            try:
+                await ws.send_str("")
+                self._eos_sent = True
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await self._emit_error(exc, direction)
+
+        if wait_for_final and self._receive_task and not self._receive_task.done():
+            try:
+                await asyncio.wait_for(
+                    self._terminal_event.wait(), timeout=self._final_timeout_secs
+                )
+            except asyncio.TimeoutError:
+                await self._emit_error(
+                    "timed out waiting for the final transcript", direction
+                )
+
+        task = self._receive_task
+        if task and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if ws and not ws.closed:
+            await ws.close()
+        if self._owned_session and not self._owned_session.closed:
+            await self._owned_session.close()
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, StartFrame):
+            await self._ensure_connected(direction)
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, AudioRawFrame):
+            if frame.audio and await self._ensure_connected(direction):
+                try:
+                    await self._ws.send_bytes(frame.audio)  # type: ignore[union-attr]
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    await self._emit_error(exc, direction)
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
+            await self._close_stream(
+                direction,
+                wait_for_final=not isinstance(frame, CancelFrame),
+            )
+            await self.push_frame(frame, direction)
+            return
+
+        await self.push_frame(frame, direction)

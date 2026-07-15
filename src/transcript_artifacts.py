@@ -96,10 +96,13 @@ def provider_batch_model(provider: str) -> str:
         "gladia": "pre-recorded-v2",
         "gladia_async": "pre-recorded-v2",
         "speechmatics_async": "batch-v2",
+        "modulate": "velma-2-stt-batch",
+        "modulate_async": "velma-2-stt-batch",
         "smallest": "pulse",
         "smallest_async": "pulse",
         "azure_mai": getattr(Config, "AZURE_MAI_MODEL", "mai-transcribe-1.5"),
         "gemini_stt": Config.GEMINI_STT_MODEL,
+        "groq": "whisper-large-v3-turbo",
     }
     return str(configured.get(key) or key or "unknown")
 
@@ -114,24 +117,33 @@ def freeze_provider_route(
     diarization_requested: bool = True,
     local_worker_manifest: Mapping[str, Any] | None = None,
     transport: str | None = None,
+    model: str | None = None,
 ) -> FrozenTranscriptionRoute:
     key = str(provider or "").strip().lower()
     direct = key in {
         "soniox", "soniox_async", "assemblyai", "mistral", "mistral_async",
         "smallest", "smallest_async", "deepgram_async", "openai_async",
         "gemini_stt", "azure_mai", "gladia", "gladia_async", "speechmatics_async",
+        "modulate", "modulate_async",
     }
+    final_text_only = key in {"modulate", "modulate_async"}
     return FrozenTranscriptionRoute(
         workload=workload,
         source_track=source_track,
         provider=key,
-        model=provider_batch_model(key),
+        model=str(model or provider_batch_model(key)),
         transport=str(transport or ("direct_upload" if direct else "decoded_pcm")),
         language=str(Config.LANGUAGE if language is None else language) or "auto",
-        response_shape="provider_segments_or_words",
-        timestamp_mode="word_or_segment",
+        response_shape=("final_text" if final_text_only else "provider_segments_or_words"),
+        timestamp_mode=("estimated" if final_text_only else "word_or_segment"),
         diarization_mode=(
-            "native_if_evidenced_else_local" if diarization_requested else "disabled"
+            (
+                "local_fallback_if_enabled"
+                if final_text_only
+                else "native_if_evidenced_else_local"
+            )
+            if diarization_requested
+            else "disabled"
         ),
         parser_id=PARSER_ID,
         parser_version=PARSER_VERSION,

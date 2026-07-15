@@ -1817,6 +1817,331 @@ async def test_late_youtube_download_progress_cannot_overwrite_transcription_ste
 
 
 @pytest.mark.asyncio
+async def test_youtube_attempt_lease_covers_download_and_long_local_diarization(
+    monkeypatch, tmp_path
+):
+    """Regression for a paid result expiring during the local speaker pass.
+
+    The production incident completed Azure MAI in seconds, persisted
+    ``provider_result_ready``, then spent five minutes in local diarization. The
+    old provider-only heartbeat had already stopped, so the final commit lost
+    its 90-second lease. This compact clock proves that one guard now spans both
+    the pre-provider download and the post-provider speaker phase, including the
+    state-version change between them.
+    """
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._downloads_dir = tmp_path / "downloads"
+    audio_path = tmp_path / "downloaded.webm"
+    audio_path.write_bytes(b"synthetic audio")
+    rec = _completed_record(transcript_type="youtube", tmp_path=tmp_path)
+    rec.id = "youtube-long-postprocess-lease"
+    owner = "youtube-lease-owner"
+    attempt = SimpleNamespace(
+        id="youtube-attempt",
+        state=web_api.AttemptState.TRANSCRIBING,
+        state_version=5,
+        lease_owner=owner,
+    )
+
+    class ExpiringAttemptStore:
+        def __init__(self):
+            self._lock = threading.Lock()
+            self.state = web_api.AttemptState.TRANSCRIBING
+            self.version = 5
+            self.owner = owner
+            self.expires_at = 0.0
+            self.renewed_versions: list[int] = []
+
+        def require_attempt(self, _attempt_id):
+            with self._lock:
+                return SimpleNamespace(
+                    state=self.state,
+                    state_version=self.version,
+                    lease_owner=self.owner,
+                )
+
+        def renew_attempt_lease(
+            self, _attempt_id, *, owner, expected_version, ttl_seconds
+        ):
+            with self._lock:
+                if time.monotonic() >= self.expires_at:
+                    raise web_api.ArtifactConflict("Attempt lease has expired")
+                if owner != self.owner or expected_version != self.version:
+                    raise web_api.ArtifactConflict("Attempt lease renewal CAS lost")
+                self.expires_at = time.monotonic() + ttl_seconds
+                self.renewed_versions.append(expected_version)
+
+        def enter_provider_result_ready(self):
+            with self._lock:
+                self.state = web_api.AttemptState.PROVIDER_RESULT_READY
+                self.version = 6
+
+        def assert_live_and_complete(self):
+            with self._lock:
+                assert time.monotonic() < self.expires_at
+                self.state = web_api.AttemptState.COMPLETED
+                self.version = 7
+                self.owner = ""
+
+    store = ExpiringAttemptStore()
+    ctl._transcript_artifacts = store
+
+    async def begin_attempt(*_args, **_kwargs):
+        store.expires_at = (
+            time.monotonic() + web_api._TRANSCRIPT_ARTIFACT_LEASE_TTL_SECONDS
+        )
+        return attempt, owner, None
+
+    async def download_audio(*_args, **_kwargs):
+        # Longer than the complete synthetic lease: the guard must already be
+        # running before source preparation starts.
+        await asyncio.sleep(0.07)
+        return audio_path
+
+    class Pipeline:
+        last_structured_transcript_payload = None
+
+        def __init__(self, *, on_transcription):
+            self._on_transcription = on_transcription
+
+        async def transcribe_file_direct(self, _path):
+            self._on_transcription("A durable provider transcript.", True)
+
+    def create_pipeline(*_args, **kwargs):
+        return Pipeline(on_transcription=kwargs["on_transcription"])
+
+    async def persist_provider_stage(*_args, **_kwargs):
+        store.enter_provider_result_ready()
+        return SimpleNamespace(
+            id=attempt.id,
+            state=web_api.AttemptState.PROVIDER_RESULT_READY,
+            state_version=6,
+            lease_owner=owner,
+        )
+
+    async def slow_local_diarization(*_args, **_kwargs):
+        # This models the five-minute Sherpa timeout that exposed the incident.
+        await asyncio.sleep(0.09)
+        return []
+
+    async def commit_artifact(*_args, **_kwargs):
+        store.assert_live_and_complete()
+        return "A durable provider transcript."
+
+    async def finalize_content(record, **_kwargs):
+        record.status = "completed"
+        record.step = "Completed"
+
+    monkeypatch.setattr(web_api, "_TRANSCRIPT_ARTIFACT_LEASE_TTL_SECONDS", 0.05)
+    monkeypatch.setattr(web_api, "_TRANSCRIPT_ARTIFACT_LEASE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        web_api, "_TRANSCRIPT_ARTIFACT_LEASE_RETRY_DELAYS_SECONDS", (0.0, 0.001)
+    )
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+
+    with (
+        patch.object(ctl, "_ensure_artifact_transcript_row", new=AsyncMock()),
+        patch.object(
+            ctl,
+            "_begin_transcript_artifact_async",
+            new=AsyncMock(side_effect=begin_attempt),
+        ),
+        patch("src.web_api.download_youtube_audio", new=AsyncMock(side_effect=download_audio)),
+        patch("src.web_api._probe_media_duration_seconds", return_value=958.0),
+        patch.object(
+            ctl,
+            "_register_transcript_source_asset",
+            new=AsyncMock(return_value=""),
+        ),
+        patch("src.web_api.supports_direct_file_upload", return_value=True),
+        patch("src.web_api._create_scriber_pipeline", side_effect=create_pipeline),
+        patch.object(
+            ctl,
+            "_persist_provider_stage_before_local_diarization_async",
+            new=AsyncMock(side_effect=persist_provider_stage),
+        ),
+        patch.object(
+            ctl,
+            "_apply_speaker_diarization_fallback",
+            new=AsyncMock(side_effect=slow_local_diarization),
+        ),
+        patch.object(
+            ctl,
+            "_commit_transcript_artifact_async",
+            new=AsyncMock(side_effect=commit_artifact),
+        ),
+        patch.object(
+            ctl,
+            "_finalize_youtube_content",
+            new=AsyncMock(side_effect=finalize_content),
+        ),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_mark_source_assets_purge_pending"),
+        patch.object(ctl, "_mark_source_assets_purged"),
+    ):
+        await ctl._run_youtube_transcription(rec, provider="azure_mai")
+
+    assert rec.status == "completed"
+    assert 5 in store.renewed_versions
+    assert 6 in store.renewed_versions
+
+
+@pytest.mark.asyncio
+async def test_youtube_failure_stops_lease_guard_before_attempt_cleanup(
+    monkeypatch, tmp_path
+):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._downloads_dir = tmp_path / "downloads"
+    rec = _completed_record(transcript_type="youtube", tmp_path=tmp_path)
+    attempt = SimpleNamespace(id="youtube-failed-attempt", state_version=5)
+    guard_active = False
+    order: list[str] = []
+
+    def start_guard(**_kwargs):
+        nonlocal guard_active
+        guard_active = True
+        return asyncio.Event(), asyncio.create_task(asyncio.sleep(0))
+
+    async def stop_guard(_stop, task):
+        nonlocal guard_active
+        order.append("stop")
+        guard_active = False
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def terminate(_attempt, *, owner, canceled):
+        assert guard_active is False
+        assert owner == "youtube-owner"
+        assert canceled is False
+        order.append("terminate")
+
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+    with (
+        patch.object(ctl, "_ensure_artifact_transcript_row", new=AsyncMock()),
+        patch("src.web_api._validate_provider_ready"),
+        patch.object(
+            ctl,
+            "_begin_transcript_artifact_async",
+            new=AsyncMock(return_value=(attempt, "youtube-owner", None)),
+        ),
+        patch.object(ctl, "_start_transcript_artifact_lease_guard", start_guard),
+        patch.object(ctl, "_stop_transcript_artifact_lease_guard", stop_guard),
+        patch.object(
+            ctl,
+            "_terminate_artifact_attempt_before_result_async",
+            new=AsyncMock(side_effect=terminate),
+        ),
+        patch(
+            "src.web_api.download_youtube_audio",
+            new=AsyncMock(side_effect=YouTubeDownloadError("download failed")),
+        ),
+        patch.object(ctl, "_schedule_retry_if_allowed", new=AsyncMock(return_value=False)),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_mark_source_assets_purge_pending"),
+        patch.object(ctl, "_mark_source_assets_purged"),
+    ):
+        await ctl._run_youtube_transcription(rec, provider="gladia")
+
+    assert order[:2] == ["stop", "terminate"]
+    assert guard_active is False
+
+
+@pytest.mark.asyncio
+async def test_file_postprocessing_failure_releases_provider_result_lease_immediately(
+    monkeypatch, tmp_path
+):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    rec = _completed_record(transcript_type="file", tmp_path=tmp_path)
+    file_path = tmp_path / "audio.wav"
+    file_path.write_bytes(b"RIFF....WAVEfmt ")
+    owner = "file-owner"
+    initial_attempt = SimpleNamespace(
+        id="file-attempt",
+        state=web_api.AttemptState.TRANSCRIBING,
+        state_version=5,
+    )
+    provider_attempt = SimpleNamespace(
+        id="file-attempt",
+        state=web_api.AttemptState.PROVIDER_RESULT_READY,
+        state_version=6,
+    )
+    guard_active = False
+    terminated_attempts: list[tuple[object, bool]] = []
+
+    def start_guard(**_kwargs):
+        nonlocal guard_active
+        guard_active = True
+        return asyncio.Event(), asyncio.create_task(asyncio.sleep(0))
+
+    async def stop_guard(_stop, task):
+        nonlocal guard_active
+        guard_active = False
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def terminate(attempt, *, owner: str, canceled: bool):
+        assert guard_active is False
+        assert owner == "file-owner"
+        terminated_attempts.append((attempt, canceled))
+
+    class Pipeline:
+        last_structured_transcript_payload = None
+
+        def __init__(self, *, on_transcription):
+            self._on_transcription = on_transcription
+
+        async def transcribe_file_direct(self, _path):
+            self._on_transcription("Provider transcript.", True)
+
+    def create_pipeline(*_args, **kwargs):
+        return Pipeline(on_transcription=kwargs["on_transcription"])
+
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+    with (
+        patch.object(ctl, "_ensure_artifact_transcript_row", new=AsyncMock()),
+        patch("src.web_api._probe_media_duration_seconds", return_value=10.0),
+        patch.object(
+            ctl,
+            "_register_transcript_source_asset",
+            new=AsyncMock(return_value="source-asset"),
+        ),
+        patch.object(
+            ctl,
+            "_begin_transcript_artifact_async",
+            new=AsyncMock(return_value=(initial_attempt, owner, None)),
+        ),
+        patch.object(ctl, "_start_transcript_artifact_lease_guard", start_guard),
+        patch.object(ctl, "_stop_transcript_artifact_lease_guard", stop_guard),
+        patch("src.web_api.supports_direct_file_upload", return_value=True),
+        patch("src.web_api._create_scriber_pipeline", side_effect=create_pipeline),
+        patch.object(
+            ctl,
+            "_persist_provider_stage_before_local_diarization_async",
+            new=AsyncMock(return_value=provider_attempt),
+        ),
+        patch.object(
+            ctl,
+            "_apply_speaker_diarization_fallback",
+            new=AsyncMock(side_effect=RuntimeError("local diarization failed")),
+        ),
+        patch.object(
+            ctl,
+            "_terminate_artifact_attempt_before_result_async",
+            new=AsyncMock(side_effect=terminate),
+        ),
+        pytest.raises(RuntimeError, match="local diarization failed"),
+    ):
+        await ctl._transcribe_file_to_canonical_artifact(
+            rec,
+            file_path,
+            provider="gladia",
+        )
+
+    assert terminated_attempts == [(provider_attempt, False)]
+    assert guard_active is False
+
+
+@pytest.mark.asyncio
 async def test_file_auto_summary_failure_is_exposed_as_summary_state(monkeypatch, tmp_path):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)

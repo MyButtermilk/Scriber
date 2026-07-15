@@ -86,6 +86,7 @@ def test_five_hour_meeting_capability_tracks_the_implemented_transport_route():
     assert meeting_max_duration_seconds("mistral_async") == 10_800
     assert meeting_max_duration_seconds("mistral_async", "voxtral-mini-2507") == 1_800
     assert meeting_max_duration_seconds("gladia_async") == 8_100
+    assert meeting_max_duration_seconds("modulate_async") == 10_800
     assert meeting_max_duration_seconds("deepgram_async") is None
     assert all(
         not supports_five_hour_meeting(provider)

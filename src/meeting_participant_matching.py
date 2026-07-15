@@ -163,6 +163,11 @@ def build_assignment_context(
             continue
         speaker_id = str(speaker.get("id") or "")
         profile = profiles_by_id.get(str(speaker.get("profileId") or ""))
+        voice_match = (
+            speaker.get("voiceMatch")
+            if isinstance(speaker.get("voiceMatch"), dict)
+            else None
+        )
         profile_match = None
         suggestions: list[dict[str, Any]] = []
         confirmed = speaker.get("confirmedAttendee")
@@ -178,21 +183,39 @@ def build_assignment_context(
                 confirmed,
             )
         if profile is not None and bool(profile.get("isNamed")):
+            confidence = speaker.get("confidence")
+            confidence = (
+                max(0.0, min(1.0, float(confidence)))
+                if isinstance(confidence, (int, float))
+                and math.isfinite(float(confidence))
+                else None
+            )
+            can_preselect = bool(
+                voice_match.get("canPreselect")
+                if voice_match is not None
+                else confidence is not None and confidence >= 0.82
+            )
             profile_match = {
                 "profileId": str(profile["id"]),
                 "displayName": str(profile.get("displayName") or "")[:200],
-                "confidence": speaker.get("confidence"),
+                "confidence": confidence,
+                "evidenceCount": int(
+                    voice_match.get("evidenceCount", 0)
+                    if voice_match is not None
+                    else 0
+                ),
+                "matchState": str(
+                    voice_match.get("matchState") or "suggested"
+                    if voice_match is not None
+                    else "suggested"
+                ),
+                "canPreselect": can_preselect,
+                "requiresConfirmation": True,
             }
             exact_people = people_by_name.get(
                 _name_key(profile_match["displayName"]), []
             )
-            if not confirmed and len(exact_people) == 1:
-                confidence = speaker.get("confidence")
-                confidence = (
-                    max(0.0, min(1.0, float(confidence)))
-                    if isinstance(confidence, (int, float)) and math.isfinite(float(confidence))
-                    else None
-                )
+            if not confirmed and can_preselect and len(exact_people) == 1:
                 suggestions.append(
                     {
                         "attendee": exact_people[0],
