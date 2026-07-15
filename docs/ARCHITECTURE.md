@@ -38,6 +38,18 @@ Live mic:
    after provider finalization. File and YouTube jobs do not use this path.
 7. Frontend receives versioned WebSocket state, audio, transcript, and history
    events.
+8. On stop, Always-on capture hands the endpoint back to a replacement idle
+   prewarm before releasing the recording stream. Provider finalization then
+   continues without turning off the Windows microphone indicator. Only real
+   Pipecat `SegmentedSTTService` instances and providers explicitly classified
+   as `vad_flush_before_end` finalize a VAD segment before EndFrame. Segmented
+   HTTP services finish inside the awaited flush; asynchronous realtime commits
+   continue immediately when their newer final-generation event arrives, with
+   no fixed settle delay.
+   Terminal-buffered providers such as Azure MAI finalize through EndFrame
+   without entering that path. The old capture pipe is marked as a pending
+   external handoff before Tauri starts the replacement, so its expected EOF is
+   not reported as a Rust mid-session audio failure.
 
 YouTube:
 

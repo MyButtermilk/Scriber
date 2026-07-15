@@ -3626,6 +3626,7 @@ async def test_shutdown_during_cold_start_drains_transition_without_starting_pip
 async def test_plain_live_start_stays_raw_when_post_processing_feature_is_enabled(monkeypatch):
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(web_api.Config, "POST_PROCESSING_ENABLED", True)
+    monkeypatch.setattr(web_api.Config, "SEGMENT_SPEECH_WITH_VAD", False)
     ctl = ScriberWebController(loop)
     _PrewarmAwarePipeline.instances.clear()
 
@@ -3635,6 +3636,7 @@ async def test_plain_live_start_stays_raw_when_post_processing_feature_is_enable
         patch.object(ctl, "_validate_live_provider_ready", return_value=None),
         patch.object(ctl, "broadcast", new=AsyncMock()),
         patch.object(ctl, "_get_overlay", return_value=None),
+        patch.object(ctl, "_emit_workflow_event") as emit_workflow_event,
         patch("src.web_api.show_initializing_overlay"),
         patch("src.web_api.show_recording_overlay"),
     ):
@@ -3642,6 +3644,12 @@ async def test_plain_live_start_stays_raw_when_post_processing_feature_is_enable
         pipeline = _PrewarmAwarePipeline.instances[-1]
         assert pipeline.text_injection_enabled is True
         assert ctl._session_id not in ctl._post_processing_session_ids
+        start_event = next(
+            call
+            for call in emit_workflow_event.call_args_list
+            if call.kwargs.get("event") == "api.session.start_requested"
+        )
+        assert start_event.kwargs["meta"]["silero_vad_setting_enabled"] is False
 
         pipeline.stop_gate.set()
         await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)

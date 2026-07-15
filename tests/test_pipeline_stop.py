@@ -2,6 +2,7 @@ import asyncio
 import gc
 import io
 import inspect
+import threading
 import weakref
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -15,6 +16,7 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
+from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.turns.user_start import VADUserTurnStartStrategy
 from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 from pipecat.transcriptions.language import Language
@@ -24,6 +26,9 @@ from src.config import Config
 from src.microphone import MicrophoneInput
 import src.pipeline as pipeline_module
 from src.pipeline import (
+    LIVE_STT_STOP_END_FRAME_FINALIZES,
+    LIVE_STT_STOP_PROVIDER_MANUAL,
+    LIVE_STT_STOP_VAD_FLUSH_BEFORE_END,
     _AnalyzerCache,
     _create_soniox_smart_turn_processor,
     PipecatVadSpeechObserver,
@@ -32,8 +37,10 @@ from src.pipeline import (
     SonioxAsyncProcessor,
     TranscriptionCallbackProcessor,
     _format_speaker_transcript_tokens,
+    _live_analyzer_diagnostics,
     _live_analyzer_requirements,
     _live_recording_gate_needed,
+    _live_stt_stop_strategy,
     _ordered_live_pipeline_steps,
     direct_file_workflow_timeout_seconds,
 )
@@ -66,6 +73,27 @@ def test_live_analyzer_requirements_enable_only_requested_paths(monkeypatch):
     assert _live_analyzer_requirements("soniox") == (True, True)
 
 
+def test_live_analyzer_diagnostics_distinguish_disabled_silero_from_gate(monkeypatch):
+    monkeypatch.setattr(Config, "SEGMENT_SPEECH_WITH_VAD", False)
+    monkeypatch.setattr(pipeline_module, "HAS_SILERO_VAD", True)
+    monkeypatch.setattr(pipeline_module, "SileroVADAnalyzer", object)
+    gate = SegmentedSTTRecordingGate(vad_segmentation_enabled=False)
+
+    diagnostics = _live_analyzer_diagnostics(
+        vad_processor=None,
+        segmented_gate=gate,
+        segmented_provider=False,
+        stop_strategy=LIVE_STT_STOP_END_FRAME_FINALIZES,
+        smart_turn_processor=None,
+    )
+
+    assert diagnostics["sileroVadSettingEnabled"] is False
+    assert diagnostics["sileroVadAvailable"] is True
+    assert diagnostics["sileroVadAttached"] is False
+    assert diagnostics["recordingGateAttached"] is True
+    assert diagnostics["syntheticRecordingBoundary"] is True
+
+
 def test_live_recording_gate_preserves_one_turn_without_vad(monkeypatch):
     monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
 
@@ -79,6 +107,32 @@ def test_live_recording_gate_preserves_one_turn_without_vad(monkeypatch):
         segmented_service=False,
         vad_attached=True,
     ) is False
+
+
+@pytest.mark.parametrize(
+    ("service_name", "expected"),
+    [
+        ("openai", LIVE_STT_STOP_VAD_FLUSH_BEFORE_END),
+        ("deepgram", LIVE_STT_STOP_VAD_FLUSH_BEFORE_END),
+        ("elevenlabs", LIVE_STT_STOP_VAD_FLUSH_BEFORE_END),
+        ("azure_mai", LIVE_STT_STOP_END_FRAME_FINALIZES),
+        ("gladia", LIVE_STT_STOP_END_FRAME_FINALIZES),
+        ("openai_async", LIVE_STT_STOP_END_FRAME_FINALIZES),
+        ("soniox_async", LIVE_STT_STOP_END_FRAME_FINALIZES),
+    ],
+)
+def test_live_stt_stop_strategy_records_provider_capability(service_name, expected):
+    assert _live_stt_stop_strategy(service_name) == expected
+
+
+def test_live_stt_stop_strategy_keeps_provider_manual_soniox_path(monkeypatch):
+    monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
+
+    assert _live_stt_stop_strategy("soniox") == LIVE_STT_STOP_PROVIDER_MANUAL
+    assert (
+        _live_stt_stop_strategy("azure_mai", segmented_service=True)
+        == LIVE_STT_STOP_VAD_FLUSH_BEFORE_END
+    )
     assert _live_recording_gate_needed(
         "soniox",
         segmented_service=False,
@@ -645,12 +699,34 @@ class _DummyFileInput:
 class _SegmentedFinalizationAudioInput:
     def __init__(self, events: list[str]) -> None:
         self.events = events
+        self.external_handoff_prepare_calls = 0
+        self.external_handoff_confirm_calls = 0
+        self.external_handoff_cancel_calls = 0
+
+    def prepare_external_capture_handoff(self) -> bool:
+        self.external_handoff_prepare_calls += 1
+        self.events.append("external_handoff_prepare")
+        return True
+
+    def confirm_external_capture_handoff(self) -> None:
+        self.external_handoff_confirm_calls += 1
+        self.events.append("external_handoff_confirm")
+
+    def cancel_external_capture_handoff(self) -> None:
+        self.external_handoff_cancel_calls += 1
+        self.events.append("external_handoff_cancel")
 
     async def stop_capture_for_finalization(self, *, close_stream=None):
         self.events.append("capture_stop")
 
     async def stop(self, frame, *, close_stream=None):
         self.events.append("audio_cleanup_stop")
+
+
+class _DummySegmentedSTTService(SegmentedSTTService):
+    async def run_stt(self, audio):
+        if False:
+            yield None
 
 
 class _RecordingStopTask(_DummyTask):
@@ -1311,7 +1387,88 @@ async def test_stop_times_out_and_cancels():
 
 @pytest.mark.asyncio
 async def test_segmented_stt_stop_waits_for_final_before_pipeline_shutdown(monkeypatch):
-    monkeypatch.setenv("SCRIBER_SEGMENTED_STT_STOP_FINAL_TIMEOUT_SEC", "1")
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    events: list[str] = []
+    prewarm = _DummyPrewarmManager(events)
+    pipeline = ScriberPipeline(
+        service_name="openai",
+        on_status_change=None,
+        mic_prewarm_manager=prewarm,
+    )
+    pipeline.is_active = True
+    pipeline._start_done.clear()
+    pipeline.task = _RecordingStopTask(pipeline._start_done, events)
+    audio_input = _SegmentedFinalizationAudioInput(events)
+    pipeline.audio_input = audio_input
+
+    class _FinalizingGate(SegmentedSTTRecordingGate):
+        async def flush_segment(self, *, direction=FrameDirection.DOWNSTREAM) -> bool:
+            events.append("segment_flush")
+            await asyncio.sleep(0.03)
+            events.append("provider_final")
+            pipeline._mark_final_transcription_received()
+            return True
+
+    pipeline.pipeline = _DummyRuntimePipelineGraph(
+        [
+            _FinalizingGate(vad_segmentation_enabled=False),
+            _DummySegmentedSTTService(sample_rate=16000),
+        ]
+    )
+
+    await pipeline.stop(timeout_secs=1.0)
+
+    assert events.index("prewarm_detach") < events.index("prewarm_resume")
+    assert events.index("prewarm_resume") < events.index("capture_stop")
+    assert events.index("capture_stop") < events.index("segment_flush")
+    assert events.index("segment_flush") < events.index("provider_final")
+    assert events.index("provider_final") < events.index("audio_cleanup_stop")
+    assert events.index("provider_final") < events.index("task_stop_when_done")
+    assert prewarm.detach_calls == 1
+    assert prewarm.resume_calls == 1
+    assert audio_input.external_handoff_prepare_calls == 1
+    assert audio_input.external_handoff_confirm_calls == 1
+    assert audio_input.external_handoff_cancel_calls == 0
+
+
+def test_vad_disabled_terminal_provider_gate_does_not_enable_segment_wait(monkeypatch):
+    monkeypatch.setattr(Config, "SEGMENT_SPEECH_WITH_VAD", False)
+    needs_vad, _uses_smart_turn = _live_analyzer_requirements("azure_mai")
+
+    assert needs_vad is False
+    assert _live_recording_gate_needed(
+        "azure_mai",
+        segmented_service=False,
+        vad_attached=needs_vad,
+    ) is True
+
+    pipeline = ScriberPipeline(service_name="azure_mai", on_status_change=None)
+    pipeline.pipeline = _DummyRuntimePipelineGraph(
+        [SegmentedSTTRecordingGate(vad_segmentation_enabled=False)]
+    )
+
+    assert pipeline._requires_pre_endframe_stt_finalization() is False
+
+
+@pytest.mark.parametrize("service_name", ["openai", "deepgram", "elevenlabs"])
+def test_gate_committing_realtime_provider_keeps_pre_endframe_wait(service_name):
+    pipeline = ScriberPipeline(service_name=service_name, on_status_change=None)
+    pipeline.pipeline = _DummyRuntimePipelineGraph(
+        [
+            SegmentedSTTRecordingGate(
+                vad_segmentation_enabled=False,
+                stop_strategy=_live_stt_stop_strategy(service_name),
+            )
+        ]
+    )
+
+    assert pipeline._requires_pre_endframe_stt_finalization() is True
+
+
+@pytest.mark.asyncio
+async def test_gate_committing_realtime_provider_flushes_before_endframe(monkeypatch):
+    monkeypatch.setenv("SCRIBER_LIVE_STT_FINAL_FAILURE_TIMEOUT_SECONDS", "1")
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", False, raising=False)
     events: list[str] = []
     pipeline = ScriberPipeline(service_name="openai", on_status_change=None)
     pipeline.is_active = True
@@ -1319,28 +1476,143 @@ async def test_segmented_stt_stop_waits_for_final_before_pipeline_shutdown(monke
     pipeline.task = _RecordingStopTask(pipeline._start_done, events)
     pipeline.audio_input = _SegmentedFinalizationAudioInput(events)
 
-    class _FinalizingGate(SegmentedSTTRecordingGate):
+    class _GateOnlyRealtimeFinalizer(SegmentedSTTRecordingGate):
         async def flush_segment(self, *, direction=FrameDirection.DOWNSTREAM) -> bool:
-            events.append("segment_flush")
+            events.append("gate_commit")
 
             async def _mark_final():
-                await asyncio.sleep(0.03)
+                await asyncio.sleep(0.01)
                 events.append("provider_final")
                 pipeline._mark_final_transcription_received()
 
             asyncio.create_task(_mark_final())
             return True
 
-    pipeline.pipeline = _DummyRuntimePipelineGraph([
-        _FinalizingGate(vad_segmentation_enabled=False)
-    ])
+    pipeline.pipeline = _DummyRuntimePipelineGraph(
+        [
+            _GateOnlyRealtimeFinalizer(
+                vad_segmentation_enabled=False,
+                stop_strategy=LIVE_STT_STOP_VAD_FLUSH_BEFORE_END,
+            )
+        ]
+    )
+    pipeline._mark_final_transcription_received()
 
     await pipeline.stop(timeout_secs=1.0)
 
-    assert events.index("capture_stop") < events.index("segment_flush")
-    assert events.index("segment_flush") < events.index("provider_final")
-    assert events.index("provider_final") < events.index("audio_cleanup_stop")
+    assert events.index("capture_stop") < events.index("gate_commit")
+    assert events.index("gate_commit") < events.index("provider_final")
     assert events.index("provider_final") < events.index("task_stop_when_done")
+
+
+@pytest.mark.asyncio
+async def test_async_vad_commit_timeout_is_a_provider_failure(monkeypatch):
+    monkeypatch.setenv("SCRIBER_LIVE_STT_FINAL_FAILURE_TIMEOUT_SECONDS", "1")
+    pipeline = ScriberPipeline(service_name="openai", on_status_change=None)
+    pipeline.pipeline = _DummyRuntimePipelineGraph([])
+    pipeline._wait_for_new_final_transcription_or_done = AsyncMock(
+        return_value="timeout"
+    )
+
+    result = await pipeline._await_async_vad_commit_final(
+        after_generation=0,
+        final_response_pending=True,
+    )
+
+    assert result == "timeout"
+    assert pipeline._terminal_error is not None
+    assert "did not return its committed final result" in pipeline._terminal_error
+
+
+@pytest.mark.asyncio
+async def test_terminal_buffered_provider_skips_segmented_final_wait():
+    events: list[str] = []
+    pipeline = ScriberPipeline(service_name="azure_mai", on_status_change=None)
+    pipeline.is_active = True
+    pipeline._start_done.clear()
+    pipeline.task = _RecordingStopTask(pipeline._start_done, events)
+    pipeline.audio_input = _DummyAudioInput(events)
+    pipeline.pipeline = _DummyRuntimePipelineGraph(
+        [SegmentedSTTRecordingGate(vad_segmentation_enabled=False)]
+    )
+    pipeline._wait_for_new_final_transcription_or_done = AsyncMock(
+        side_effect=AssertionError("terminal-buffered providers must not enter segmented wait")
+    )
+
+    await pipeline.stop(timeout_secs=1.0)
+
+    pipeline._wait_for_new_final_transcription_or_done.assert_not_awaited()
+    assert events.index("audio_stop") < events.index("task_stop_when_done")
+
+
+@pytest.mark.asyncio
+async def test_segmented_stop_uses_normal_cleanup_when_prewarm_handoff_fails(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    events: list[str] = []
+    prewarm = _DummyPrewarmManager(events, resume_result=False)
+    pipeline = ScriberPipeline(
+        service_name="openai",
+        on_status_change=None,
+        mic_prewarm_manager=prewarm,
+    )
+    audio_input = _SegmentedFinalizationAudioInput(events)
+    pipeline.audio_input = audio_input
+
+    await pipeline._stop_audio_capture_for_segmented_finalization()
+
+    assert "capture_stop" not in events
+    assert events.index("prewarm_detach") < events.index("audio_cleanup_stop")
+    assert prewarm.detach_calls == 1
+    assert prewarm.resume_calls == 3
+    assert audio_input.external_handoff_prepare_calls == 2
+    assert audio_input.external_handoff_confirm_calls == 0
+    assert audio_input.external_handoff_cancel_calls == 2
+    assert pipeline.audio_input is None
+
+
+@pytest.mark.asyncio
+async def test_segmented_stop_serializes_prewarm_handoff_with_cleanup(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    events: list[str] = []
+
+    class _BlockingPrewarmManager(_DummyPrewarmManager):
+        def __init__(self):
+            super().__init__(events)
+            self.resume_started = threading.Event()
+            self.release_resume = threading.Event()
+
+        def resume_after_active_capture(self) -> bool:
+            self.resume_calls += 1
+            events.append("prewarm_resume")
+            self.resume_started.set()
+            assert self.release_resume.wait(timeout=1.0)
+            return True
+
+    prewarm = _BlockingPrewarmManager()
+    audio_input = _SegmentedFinalizationAudioInput(events)
+    pipeline = ScriberPipeline(
+        service_name="openai",
+        on_status_change=None,
+        mic_prewarm_manager=prewarm,
+    )
+    pipeline.audio_input = audio_input
+
+    segmented_stop = asyncio.create_task(
+        pipeline._stop_audio_capture_for_segmented_finalization()
+    )
+    assert await asyncio.to_thread(prewarm.resume_started.wait, 1.0)
+    full_cleanup = asyncio.create_task(pipeline._cleanup_audio_input())
+    await asyncio.sleep(0.02)
+    assert full_cleanup.done() is False
+    prewarm.release_resume.set()
+    await asyncio.gather(segmented_stop, full_cleanup)
+
+    assert prewarm.detach_calls == 1
+    assert prewarm.resume_calls == 1
+    assert audio_input.external_handoff_prepare_calls == 1
+    assert audio_input.external_handoff_confirm_calls == 1
+    assert events.index("external_handoff_confirm") < events.index("capture_stop")
+    assert events.index("capture_stop") < events.index("audio_cleanup_stop")
 
 
 @pytest.mark.asyncio

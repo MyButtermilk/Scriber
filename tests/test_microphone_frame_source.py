@@ -798,6 +798,59 @@ def test_rust_prototype_frame_source_records_pipe_closed_mid_session_failure(mon
     assert snapshot["midSessionFailureReason"] == "pipeClosed"
 
 
+def test_rust_frame_source_classifies_confirmed_external_handoff_as_expected():
+    import io
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=lambda *_args, **_kwargs: None,
+        reader_factory=lambda *_args, **_kwargs: io.BytesIO(b""),
+    )
+    source._frame_pipe = "memory-pipe"
+    source._live_capture_ready = True
+    source.callback_count = 5
+
+    assert source.prepare_external_stop() is True
+    source._read_frame_pipe()
+    pending = source.diagnostic_snapshot()
+    source.confirm_external_stop()
+    confirmed = source.diagnostic_snapshot()
+
+    assert pending["framePipeReaderEndReason"] == "externalHandoffPending"
+    assert pending["midSessionFailureReason"] == ""
+    assert confirmed["framePipeReaderEndReason"] == "externalHandoff"
+    assert confirmed["externalStopState"] == "confirmed"
+    assert confirmed["midSessionFailureReason"] == ""
+
+
+def test_rust_frame_source_restores_failure_when_external_handoff_is_rejected():
+    import io
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=lambda *_args, **_kwargs: None,
+        reader_factory=lambda *_args, **_kwargs: io.BytesIO(b""),
+    )
+    source._frame_pipe = "memory-pipe"
+    source._live_capture_ready = True
+    source.callback_count = 5
+
+    assert source.prepare_external_stop() is True
+    source._read_frame_pipe()
+    source.cancel_external_stop()
+    snapshot = source.diagnostic_snapshot()
+
+    assert snapshot["framePipeReaderEndReason"] == "pipeClosed"
+    assert snapshot["externalStopState"] == "idle"
+    assert snapshot["midSessionFailureReason"] == "pipeClosed"
+
+
 def test_rust_prototype_frame_source_tracks_prebuffer_before_live_frames(monkeypatch):
     prebuffer_audio = np.full((16, 1), 100, dtype=np.int16)
     live_audio = np.full((16, 1), 200, dtype=np.int16)

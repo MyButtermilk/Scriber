@@ -6307,6 +6307,19 @@ class ScriberWebController:
                         "Persistent native-audio admission release after pipeline exit failed: {}",
                         type(release_exc).__name__,
                     )
+                # Keep the completed pipeline registered until its temporary
+                # capture-first prewarm is released. Otherwise a new start (or
+                # shutdown) can observe an idle controller while the old
+                # microphone sidecar is still being cleaned up.
+                try:
+                    await self._stop_unretained_mic_prewarm(
+                        reason="live_mic_pipeline_ended_before_audio_cleanup"
+                    )
+                except BaseException as prewarm_cleanup_exc:
+                    logger.warning(
+                        "Temporary microphone prewarm cleanup after pipeline exit failed: {}",
+                        type(prewarm_cleanup_exc).__name__,
+                    )
                 self._is_listening = False
                 self._is_stopping = False
                 self._pipeline = None
@@ -6321,15 +6334,6 @@ class ScriberWebController:
                 await replay_execution.close()
             self._overlay_audio_enabled = False
             self._hide_recording_overlay_async(session_id=session_id)
-            try:
-                await self._stop_unretained_mic_prewarm(
-                    reason="live_mic_pipeline_ended_before_audio_cleanup"
-                )
-            except BaseException as prewarm_cleanup_exc:
-                logger.warning(
-                    "Temporary microphone prewarm cleanup after pipeline exit failed: {}",
-                    type(prewarm_cleanup_exc).__name__,
-                )
             self._resume_idle_mic_prewarm_after_capture()
         
         async def _broadcast_error(payload: dict[str, Any]):
@@ -8742,7 +8746,12 @@ class ScriberWebController:
                 record=rec,
                 milestone=True,
                 outcome="started",
-                meta={"post_processing": bool(post_process and Config.POST_PROCESSING_ENABLED)},
+                meta={
+                    "post_processing": bool(post_process and Config.POST_PROCESSING_ENABLED),
+                    "silero_vad_setting_enabled": bool(
+                        getattr(Config, "SEGMENT_SPEECH_WITH_VAD", False)
+                    ),
+                },
             )
             self._pipeline = pipeline
             self._provider_replay_execution = provider_replay_execution

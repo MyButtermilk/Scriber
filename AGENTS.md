@@ -492,7 +492,29 @@ Packaging and scripts:
   a replacement prewarm must successfully call `IAudioClient.Start()` and
   report ready before Tauri drains the active capture sidecar. A failed prewarm
   start leaves capture running until normal cleanup; never close capture first
-  and reopen idle prewarm afterwards. When the first explicit Live Mic start
+  and reopen idle prewarm afterwards. This ordering also applies to segmented
+  STT providers: resume idle prewarm before stopping physical capture, then let
+  provider finalization continue independently. Before Tauri starts that
+  replacement, Python must mark the active frame pipe as a pending external
+  handoff; confirm it only when prewarm start succeeds, and restore normal
+  `pipeClosed` failure classification when it fails. This prevents the expected
+  old-sidecar EOF from polluting mid-session failure diagnostics. A
+  `SegmentedSTTRecordingGate` alone does not prove that a provider can finalize
+  before EndFrame. Only a real `SegmentedSTTService` or a provider with the
+  explicit `vad_flush_before_end` stop capability may enter pre-EndFrame
+  finalization; realtime OpenAI, Deepgram, and ElevenLabs use the latter path.
+  Completion is event-driven with no fixed settle sleep: capture the final
+  generation before issuing the commit, continue immediately when a newer
+  final arrives, and do not let a stale earlier final satisfy the last commit.
+  A real `SegmentedSTTService` completes synchronously inside its awaited flush;
+  only asynchronous VAD-commit providers use the short failure deadline.
+  Terminal-buffered
+  services such as Azure MAI, and Gladia's bounded custom EndFrame stop, must go
+  directly through EndFrame finalization instead of entering the VAD-commit
+  wait. Each Live Mic start must log both the persisted
+  Silero setting and the actual analyzer attachment state so support logs can
+  distinguish a synthetic protocol boundary from local VAD execution. When
+  the first explicit Live Mic start
   encounters the lazily unloaded Pipecat runtime, first confirm a temporary
   Rust prewarm, then import Pipecat off the aiohttp event loop; do not submit
   both to the same executor concurrently because a one-worker executor can run

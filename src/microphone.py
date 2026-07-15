@@ -357,6 +357,9 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self._stop_event = threading.Event()
         self._first_frame_event = threading.Event()
         self._live_capture_ready_event = threading.Event()
+        self._external_stop_lock = threading.Lock()
+        self._external_stop_state = "idle"
+        self._pending_external_stop_error = ""
         self._live_capture_ready = False
         self._sequence_guard = AudioFrameSequenceGuard()
         self._reader_started_at = 0.0
@@ -372,6 +375,61 @@ class RustPrototypeFrameSource(AudioFrameSource):
     @property
     def is_active(self) -> bool:
         return bool(self._stream and self._stream.active)
+
+    def prepare_external_stop(self) -> bool:
+        """Mark a Tauri-owned replacement handoff before it closes this pipe."""
+        with self._external_stop_lock:
+            if self._stop_event.is_set() or self._closed:
+                return False
+            self._external_stop_state = "pending"
+            self._pending_external_stop_error = ""
+            return True
+
+    def confirm_external_stop(self) -> None:
+        """Confirm that a pending pipe close came from a ready replacement."""
+        with self._external_stop_lock:
+            if self._external_stop_state != "pending":
+                return
+            self._external_stop_state = "confirmed"
+            self._pending_external_stop_error = ""
+            if self.frame_pipe_reader_end_reason == "externalHandoffPending":
+                self.frame_pipe_reader_end_reason = "externalHandoff"
+
+    def cancel_external_stop(self) -> None:
+        """Restore normal failure classification when replacement start fails."""
+        report_pipe_closed = False
+        pending_error = ""
+        with self._external_stop_lock:
+            if self._external_stop_state != "pending":
+                return
+            self._external_stop_state = "idle"
+            if self.frame_pipe_reader_end_reason == "externalHandoffPending":
+                report_pipe_closed = True
+                pending_error = self._pending_external_stop_error
+                self.frame_pipe_reader_end_reason = "pipeClosed"
+            self._pending_external_stop_error = ""
+        if not report_pipe_closed:
+            return
+        self._last_error = pending_error
+        if not self._live_capture_ready and not self.fallback_reason:
+            self.fallback_reason = "rustFramePipeClosedBeforeFirstLiveFrame"
+        if self._live_capture_ready:
+            self.mid_session_failure_reason = "pipeClosed"
+            logger.warning(
+                "Rust audio frame pipe stopped during a failed external handoff "
+                f"after {self.callback_count} frame(s): {pending_error}"
+            )
+
+    def _classify_expected_external_eof(self, exc: EOFError) -> bool:
+        with self._external_stop_lock:
+            if self._external_stop_state not in {"pending", "confirmed"}:
+                return False
+            if self._external_stop_state == "pending":
+                self._pending_external_stop_error = str(exc)
+                self.frame_pipe_reader_end_reason = "externalHandoffPending"
+            else:
+                self.frame_pipe_reader_end_reason = "externalHandoff"
+            return True
 
     def open(self, callback):
         self._callback = callback
@@ -477,6 +535,9 @@ class RustPrototypeFrameSource(AudioFrameSource):
                 raise RuntimeError("Rust audio frame source callback is not configured")
             self.open(self._callback)
         self._stop_event.clear()
+        with self._external_stop_lock:
+            self._external_stop_state = "idle"
+            self._pending_external_stop_error = ""
         self._first_frame_event.clear()
         self._live_capture_ready_event.clear()
         self._live_capture_ready = False
@@ -590,6 +651,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
             self._last_error = str(self.sidecar_writer_error)
 
     def diagnostic_snapshot(self) -> dict:
+        with self._external_stop_lock:
+            external_stop_state = self._external_stop_state
         return {
             "engine": self.engine,
             "frameSource": self.name,
@@ -643,6 +706,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "framePipeFirstLiveSequence": self.frame_pipe_first_live_sequence,
             "liveCaptureReady": self._live_capture_ready,
             "framePipeReaderEndReason": self.frame_pipe_reader_end_reason,
+            "externalStopState": external_stop_state,
             "framePipeFirstFrameReadMs": self.frame_pipe_first_frame_read_ms,
             "midSessionFailureReason": self.mid_session_failure_reason,
             "fallbackReason": self.fallback_reason,
@@ -744,6 +808,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
         except EOFError as exc:
             if self._stop_event.is_set():
                 self.frame_pipe_reader_end_reason = "stopRequested"
+            elif self._classify_expected_external_eof(exc):
+                pass
             else:
                 self.frame_pipe_reader_end_reason = "pipeClosed"
                 self._last_error = str(exc)
@@ -1460,6 +1526,21 @@ class MicrophoneInput(BaseInputTransport):
             except Exception:
                 pass
 
+    def prepare_external_capture_handoff(self) -> bool:
+        """Prepare diagnostics for Tauri replacing the active capture sidecar."""
+        prepare = getattr(self._frame_source, "prepare_external_stop", None)
+        return bool(prepare()) if callable(prepare) else False
+
+    def confirm_external_capture_handoff(self) -> None:
+        confirm = getattr(self._frame_source, "confirm_external_stop", None)
+        if callable(confirm):
+            confirm()
+
+    def cancel_external_capture_handoff(self) -> None:
+        cancel = getattr(self._frame_source, "cancel_external_stop", None)
+        if callable(cancel):
+            cancel()
+
     def diagnostic_snapshot(self) -> dict:
         stream = self.stream
         source_snapshot = (
@@ -1823,6 +1904,14 @@ class MicrophoneInput(BaseInputTransport):
 
     async def stop(self, frame: EndFrame, *, close_stream: bool | None = None):
         await self.stop_capture_for_finalization(close_stream=close_stream)
+        audio_queue = getattr(self, "_audio_in_queue", None)
+        if audio_queue is not None and callable(getattr(audio_queue, "join", None)):
+            try:
+                await asyncio.wait_for(audio_queue.join(), timeout=1.0)
+            except asyncio.TimeoutError:
+                logger.debug(
+                    "Timed out waiting for downstream microphone audio to drain"
+                )
         await super().stop(frame)
 
     def _stop_capture_source_blocking(self, *, close_stream: bool) -> None:

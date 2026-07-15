@@ -257,6 +257,25 @@ def _live_service_uses_smart_turn(service_name: str) -> bool:
     return str(service_name or "") == "soniox" and Config.SONIOX_MODE == "realtime"
 
 
+LIVE_STT_STOP_VAD_FLUSH_BEFORE_END = "vad_flush_before_end"
+LIVE_STT_STOP_END_FRAME_FINALIZES = "end_frame_finalizes"
+LIVE_STT_STOP_PROVIDER_MANUAL = "provider_manual"
+
+
+def _live_stt_stop_strategy(
+    service_name: str,
+    *,
+    segmented_service: bool = False,
+) -> str:
+    """Describe how one live STT service produces its final result on stop."""
+    normalized = str(service_name or "")
+    if segmented_service or normalized in {"openai", "deepgram", "elevenlabs"}:
+        return LIVE_STT_STOP_VAD_FLUSH_BEFORE_END
+    if normalized == "soniox" and Config.SONIOX_MODE == "realtime":
+        return LIVE_STT_STOP_PROVIDER_MANUAL
+    return LIVE_STT_STOP_END_FRAME_FINALIZES
+
+
 def _live_analyzer_requirements(
     service_name: str,
     *,
@@ -291,6 +310,34 @@ def _live_recording_gate_needed(
         segmented_service
         or (not vad_attached and _live_service_needs_local_vad(service_name))
     )
+
+
+def _live_analyzer_diagnostics(
+    *,
+    vad_processor: Any,
+    segmented_gate: Any,
+    segmented_provider: bool,
+    stop_strategy: str,
+    smart_turn_processor: Any,
+) -> dict[str, Any]:
+    """Return explicit, structured analyzer state for support diagnostics."""
+    return {
+        "sileroVadSettingEnabled": bool(Config.SEGMENT_SPEECH_WITH_VAD),
+        "sileroVadAvailable": bool(
+            HAS_SILERO_VAD and SileroVADAnalyzer is not None
+        ),
+        "sileroVadAttached": vad_processor is not None,
+        "recordingGateAttached": segmented_gate is not None,
+        "syntheticRecordingBoundary": bool(
+            segmented_gate is not None
+            and not bool(
+                getattr(segmented_gate, "vad_segmentation_enabled", False)
+            )
+        ),
+        "segmentedProvider": bool(segmented_provider),
+        "stopStrategy": str(stop_strategy),
+        "smartTurnAttached": smart_turn_processor is not None,
+    }
 
 
 def _analyzer_warmup_enabled() -> bool:
@@ -1442,9 +1489,15 @@ class SegmentedSTTRecordingGate(FrameProcessor):
     required start/stop frames itself without loading a local analyzer.
     """
 
-    def __init__(self, *, vad_segmentation_enabled: bool):
+    def __init__(
+        self,
+        *,
+        vad_segmentation_enabled: bool,
+        stop_strategy: str = LIVE_STT_STOP_END_FRAME_FINALIZES,
+    ):
         super().__init__()
         self.vad_segmentation_enabled = bool(vad_segmentation_enabled)
+        self.stop_strategy = str(stop_strategy or LIVE_STT_STOP_END_FRAME_FINALIZES)
         self._whole_recording_open = False
         self._whole_recording_closed = False
         self._vad_user_speaking = False
@@ -1463,7 +1516,10 @@ class SegmentedSTTRecordingGate(FrameProcessor):
             await self.push_frame(frame, direction)
             if not self.vad_segmentation_enabled:
                 self._whole_recording_open = True
-                logger.debug("Opening recording-wide segment for segmented STT service")
+                logger.debug(
+                    "Opening recording-wide STT upload boundary "
+                    "(local VAD segmentation disabled)"
+                )
                 await self.push_frame(VADUserStartedSpeakingFrame(), direction)
             return
 
@@ -1502,7 +1558,7 @@ class SegmentedSTTRecordingGate(FrameProcessor):
             self._whole_recording_open = True
             await self.push_frame(VADUserStartedSpeakingFrame(), direction)
         self._whole_recording_closed = True
-        logger.debug("Closing recording-wide segment for segmented STT service")
+        logger.debug("Closing recording-wide STT upload boundary")
         await self.push_frame(VADUserStoppedSpeakingFrame(), direction)
         return True
 
@@ -1652,9 +1708,13 @@ class ScriberPipeline:
         self.is_active = False
         self._terminal_error: str | None = None
         self._audio_cleanup_lock = asyncio.Lock()
+        self._mic_prewarm_handoff_prepared = False
+        self._mic_prewarm_handoff_resumed = False
         self._start_done = asyncio.Event()
         self._start_done.set()
         self._final_transcription_received = asyncio.Event()
+        self._final_transcription_generation = 0
+        self._last_final_transcription_at = 0.0
         # Provider-native timing/diarization data for meeting finalization.
         # It remains process-local and is not exposed through the REST API.
         self.last_structured_transcript_payload: dict[str, Any] | None = None
@@ -1708,6 +1768,8 @@ class ScriberPipeline:
             self._terminal_error = normalized
 
     def _mark_final_transcription_received(self) -> None:
+        self._final_transcription_generation += 1
+        self._last_final_transcription_at = time.monotonic()
         self._final_transcription_received.set()
 
     @staticmethod
@@ -1774,34 +1836,92 @@ class ScriberPipeline:
             return "final"
         return "timeout"
 
+    async def _prepare_mic_prewarm_for_capture_stop_locked(self) -> bool:
+        """Start idle prewarm before the active WASAPI client is stopped.
+
+        Segmented providers keep their downstream pipeline alive while a final
+        HTTP request runs.  The microphone handoff must not wait for that
+        provider work: starting the replacement client first keeps the Windows
+        privacy indicator continuous.  The state flags make the later full
+        audio cleanup idempotent while still allowing a failed start to retry.
+        Callers must hold ``_audio_cleanup_lock`` so provider-failure cleanup
+        cannot race a user-requested segmented stop.
+        """
+        manager = self.mic_prewarm_manager
+        if manager is None:
+            return False
+
+        if not self._mic_prewarm_handoff_prepared:
+            detach_active_capture = getattr(manager, "detach_active_capture", None)
+            if callable(detach_active_capture):
+                try:
+                    await asyncio.to_thread(detach_active_capture, None)
+                except Exception as exc:
+                    logger.debug(f"Mic prewarm detach before audio cleanup warning: {exc}")
+            self._mic_prewarm_handoff_prepared = True
+
+        if not Config.MIC_ALWAYS_ON:
+            return False
+        if self._mic_prewarm_handoff_resumed:
+            return True
+
+        audio_input = self.audio_input
+        external_handoff_prepared = False
+        prepare_external_handoff = getattr(
+            audio_input,
+            "prepare_external_capture_handoff",
+            None,
+        )
+        if callable(prepare_external_handoff):
+            try:
+                external_handoff_prepared = bool(prepare_external_handoff())
+            except Exception as exc:
+                logger.debug(
+                    f"Mic external handoff diagnostic preparation warning: {exc}"
+                )
+
+        try:
+            self._mic_prewarm_handoff_resumed = bool(
+                await asyncio.to_thread(manager.resume_after_active_capture)
+            )
+        except Exception as exc:
+            logger.debug(f"Mic prewarm pre-resume before audio cleanup warning: {exc}")
+            self._mic_prewarm_handoff_resumed = False
+        if external_handoff_prepared:
+            handoff_resolution = (
+                "confirm_external_capture_handoff"
+                if self._mic_prewarm_handoff_resumed
+                else "cancel_external_capture_handoff"
+            )
+            resolve_external_handoff = getattr(
+                audio_input,
+                handoff_resolution,
+                None,
+            )
+            if callable(resolve_external_handoff):
+                try:
+                    resolve_external_handoff()
+                except Exception as exc:
+                    logger.debug(
+                        f"Mic external handoff diagnostic resolution warning: {exc}"
+                    )
+        return self._mic_prewarm_handoff_resumed
+
     async def _cleanup_audio_input(self) -> None:
         audio_input = self.audio_input
         if not audio_input:
             return
         has_prewarm_manager = self.mic_prewarm_manager is not None
         resume_prewarm = bool(Config.MIC_ALWAYS_ON and has_prewarm_manager)
-        prewarm_resumed_before_stop = False
+        prewarm_resumed_before_stop = self._mic_prewarm_handoff_resumed
         async with self._audio_cleanup_lock:
             audio_input = self.audio_input
             if not audio_input:
                 return
             if has_prewarm_manager:
-                try:
-                    detach_active_capture = getattr(
-                        self.mic_prewarm_manager,
-                        "detach_active_capture",
-                        None,
-                    )
-                    if callable(detach_active_capture):
-                        await asyncio.to_thread(detach_active_capture, None)
-                    if resume_prewarm:
-                        prewarm_resumed_before_stop = bool(
-                            await asyncio.to_thread(
-                                self.mic_prewarm_manager.resume_after_active_capture
-                            )
-                        )
-                except Exception as exc:
-                    logger.debug(f"Mic prewarm pre-resume before audio cleanup warning: {exc}")
+                prewarm_resumed_before_stop = bool(
+                    await self._prepare_mic_prewarm_for_capture_stop_locked()
+                )
             try:
                 # Pipeline instances are per-session, so keep_alive streams cannot
                 # be safely reused here. Always close to avoid orphaned PortAudio
@@ -1811,6 +1931,8 @@ class ScriberPipeline:
                 logger.debug(f"Audio input cleanup warning: {exc}")
             finally:
                 self.audio_input = None
+                self._mic_prewarm_handoff_prepared = False
+                self._mic_prewarm_handoff_resumed = False
         if resume_prewarm and not prewarm_resumed_before_stop:
             try:
                 await asyncio.to_thread(self.mic_prewarm_manager.resume_after_active_capture)
@@ -1826,38 +1948,75 @@ class ScriberPipeline:
         TranscriptionFrame. This helper stops the physical mic and drains queued
         audio frames while keeping the downstream pipeline open for finalization.
         """
-        audio_input = self.audio_input
-        if not audio_input:
-            return
-        stop_capture = getattr(audio_input, "stop_capture_for_finalization", None)
-        if callable(stop_capture):
-            try:
-                await stop_capture(close_stream=True)
-            except Exception as exc:
-                logger.debug(f"Segmented STT capture-stop warning: {exc}")
-        try:
-            audio_queue = getattr(audio_input, "_audio_in_queue", None)
-            if audio_queue is not None and callable(getattr(audio_queue, "join", None)):
-                await asyncio.wait_for(audio_queue.join(), timeout=1.0)
-        except asyncio.TimeoutError:
-            logger.debug("Timed out waiting for segmented STT audio queue to drain")
-        except Exception as exc:
-            logger.debug(f"Segmented STT audio queue drain warning: {exc}")
+        use_normal_cleanup = False
+        async with self._audio_cleanup_lock:
+            audio_input = self.audio_input
+            if not audio_input:
+                return
+            prewarm_resumed = (
+                await self._prepare_mic_prewarm_for_capture_stop_locked()
+            )
+            if (
+                Config.MIC_ALWAYS_ON
+                and self.mic_prewarm_manager is not None
+                and not prewarm_resumed
+            ):
+                # Do not create a deliberate privacy-indicator gap when the
+                # overlap-first start fails. Release the lock before falling
+                # back to normal cleanup, which retries before capture closes.
+                use_normal_cleanup = True
+            else:
+                stop_capture = getattr(
+                    audio_input,
+                    "stop_capture_for_finalization",
+                    None,
+                )
+                if callable(stop_capture):
+                    try:
+                        await stop_capture(close_stream=True)
+                    except Exception as exc:
+                        logger.debug(f"Segmented STT capture-stop warning: {exc}")
+                try:
+                    audio_queue = getattr(audio_input, "_audio_in_queue", None)
+                    if audio_queue is not None and callable(
+                        getattr(audio_queue, "join", None)
+                    ):
+                        await asyncio.wait_for(audio_queue.join(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    logger.debug(
+                        "Timed out waiting for segmented STT audio queue to drain"
+                    )
+                except Exception as exc:
+                    logger.debug(f"Segmented STT audio queue drain warning: {exc}")
 
-    def _segmented_stt_stop_final_timeout_seconds(self) -> float:
+        if use_normal_cleanup:
+            logger.warning(
+                "Segmented STT prewarm handoff was not ready; using normal audio cleanup"
+            )
+            await self._cleanup_audio_input()
+
+    def _live_stt_final_failure_timeout_seconds(self) -> float:
         return _env_float(
-            "SCRIBER_SEGMENTED_STT_STOP_FINAL_TIMEOUT_SEC",
-            20.0,
+            "SCRIBER_LIVE_STT_FINAL_FAILURE_TIMEOUT_SECONDS",
+            5.0,
             minimum=0.5,
-            maximum=120.0,
+            maximum=30.0,
         )
 
-    async def _wait_for_segmented_stt_final_or_done(self, *, timeout_seconds: float) -> str:
-        if self._final_transcription_received.is_set():
+    async def _wait_for_new_final_transcription_or_done(
+        self,
+        *,
+        after_generation: int,
+        timeout_seconds: float,
+    ) -> str:
+        if self._final_transcription_generation > after_generation:
             return "final"
+        self._final_transcription_received.clear()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(0.0, timeout_seconds)
         while True:
+            if self._final_transcription_generation > after_generation:
+                return "final"
             if self._terminal_error:
                 return "error"
             if self.task and self.task.has_finished():
@@ -1872,8 +2031,37 @@ class ScriberPipeline:
                 )
             except asyncio.TimeoutError:
                 continue
-            if self._final_transcription_received.is_set():
+            if self._final_transcription_generation > after_generation:
                 return "final"
+            self._final_transcription_received.clear()
+
+    async def _await_async_vad_commit_final(
+        self,
+        *,
+        after_generation: int,
+        final_response_pending: bool,
+    ) -> str:
+        if not final_response_pending or not self._uses_async_vad_commit_finalization():
+            return "not_required"
+        timeout_seconds = self._live_stt_final_failure_timeout_seconds()
+        result = await self._wait_for_new_final_transcription_or_done(
+            after_generation=after_generation,
+            timeout_seconds=timeout_seconds,
+        )
+        if result == "final":
+            logger.debug("Committed live STT final received; continuing immediately")
+        elif result == "timeout":
+            message = (
+                "The live transcription provider did not return its committed "
+                f"final result within {timeout_seconds:g} seconds."
+            )
+            logger.warning(message)
+            self._record_terminal_error(message)
+        else:
+            logger.debug(
+                f"Committed live STT final wait ended without a final result ({result})"
+            )
+        return result
 
     def audio_diagnostics(self) -> dict[str, Any] | None:
         audio_input = self.audio_input
@@ -1976,7 +2164,7 @@ class ScriberPipeline:
             or not _live_service_needs_local_vad(self.service_name)
         ):
             return False
-        if self._has_segmented_stt_buffers():
+        if self._requires_pre_endframe_stt_finalization():
             return False
 
         vad_snapshot = None
@@ -2006,12 +2194,47 @@ class ScriberPipeline:
             logger.debug(f"Live STT finalization flush warning: {exc}")
             return False
 
-    def _has_segmented_stt_buffers(self) -> bool:
+    def _requires_pre_endframe_stt_finalization(self) -> bool:
         return any(
             isinstance(processor, SegmentedSTTService)
-            or isinstance(processor, SegmentedSTTRecordingGate)
+            or (
+                isinstance(processor, SegmentedSTTRecordingGate)
+                and processor.stop_strategy == LIVE_STT_STOP_VAD_FLUSH_BEFORE_END
+            )
             for processor in self._iter_pipeline_processors()
         )
+
+    def _uses_async_vad_commit_finalization(self) -> bool:
+        if any(
+            isinstance(processor, SegmentedSTTService)
+            for processor in self._iter_pipeline_processors()
+        ):
+            return False
+        return (
+            _live_stt_stop_strategy(self.service_name)
+            == LIVE_STT_STOP_VAD_FLUSH_BEFORE_END
+        )
+
+    def _local_vad_final_response_pending(self) -> bool:
+        observer = self._vad_observer
+        if observer is None:
+            return False
+        try:
+            snapshot = observer.snapshot()
+        except Exception:
+            return False
+        if not snapshot.get("speechObserved"):
+            return False
+        if snapshot.get("speaking"):
+            return True
+        stopped_ago = snapshot.get("lastSpeechStoppedAgoSeconds")
+        if stopped_ago is None:
+            return False
+        try:
+            stopped_at = time.monotonic() - max(0.0, float(stopped_ago))
+        except (TypeError, ValueError):
+            return False
+        return self._last_final_transcription_at < stopped_at
 
     def _mark_provider_terminal_transcription_skip(self) -> None:
         for processor in self._iter_pipeline_processors():
@@ -2682,17 +2905,54 @@ class ScriberPipeline:
                 # need one deterministic turn when Silero is off. The same gate
                 # synthesizes that recording-wide start/stop pair, preserving
                 # provider finalization without loading a model.
+                segmented_provider = isinstance(stt_service, SegmentedSTTService)
+                stop_strategy = _live_stt_stop_strategy(
+                    self.service_name,
+                    segmented_service=segmented_provider,
+                )
                 needs_recording_gate = _live_recording_gate_needed(
                     self.service_name,
-                    segmented_service=isinstance(stt_service, SegmentedSTTService),
-                    vad_attached=needs_vad,
+                    segmented_service=segmented_provider,
+                    vad_attached=vad_processor is not None,
                 )
                 segmented_gate = (
                     SegmentedSTTRecordingGate(
-                        vad_segmentation_enabled=bool(Config.SEGMENT_SPEECH_WITH_VAD)
+                        vad_segmentation_enabled=bool(
+                            Config.SEGMENT_SPEECH_WITH_VAD
+                            and vad_processor is not None
+                        ),
+                        stop_strategy=stop_strategy,
                     )
                     if needs_recording_gate
                     else None
+                )
+                analyzer_diagnostics = _live_analyzer_diagnostics(
+                    vad_processor=vad_processor,
+                    segmented_gate=segmented_gate,
+                    segmented_provider=segmented_provider,
+                    stop_strategy=stop_strategy,
+                    smart_turn_processor=smart_turn_processor,
+                )
+                logger.bind(
+                    component="pipeline",
+                    event="live_mic.analyzers.configured",
+                    workflow="live_mic",
+                    stage="analyzer_configuration",
+                    provider=self.service_name,
+                    meta=analyzer_diagnostics,
+                ).info(
+                    "Live mic analyzer configuration: Silero setting={}, "
+                    "attached={}, available={}; recording gate={}; "
+                    "synthetic boundary={}; segmented provider={}; stop strategy={}; "
+                    "Smart Turn attached={}",
+                    analyzer_diagnostics["sileroVadSettingEnabled"],
+                    analyzer_diagnostics["sileroVadAttached"],
+                    analyzer_diagnostics["sileroVadAvailable"],
+                    analyzer_diagnostics["recordingGateAttached"],
+                    analyzer_diagnostics["syntheticRecordingBoundary"],
+                    analyzer_diagnostics["segmentedProvider"],
+                    analyzer_diagnostics["stopStrategy"],
+                    analyzer_diagnostics["smartTurnAttached"],
                 )
 
                 if vad_processor is not None:
@@ -3446,35 +3706,33 @@ class ScriberPipeline:
         if self.on_status_change:
             self.on_status_change("Transcribing..." if is_async_finalization else "Stopping...")
 
-        has_segmented_stt_buffers = self._has_segmented_stt_buffers()
-        if has_segmented_stt_buffers:
-            # Give audio frames time to propagate before closing the upload segment.
-            # This is critical for short recordings where stop is called very quickly.
-            await asyncio.sleep(0.15)
+        requires_pre_endframe_finalization = (
+            self._requires_pre_endframe_stt_finalization()
+        )
+        if requires_pre_endframe_finalization:
+            final_generation_before_commit = self._final_transcription_generation
             await self._stop_audio_capture_for_segmented_finalization()
-            await self._flush_segmented_stt_buffers()
-            segmented_wait_result = await self._wait_for_segmented_stt_final_or_done(
-                timeout_seconds=self._segmented_stt_stop_final_timeout_seconds()
+            boundary_flushed = await self._flush_segmented_stt_buffers()
+            await self._await_async_vad_commit_final(
+                after_generation=final_generation_before_commit,
+                final_response_pending=boundary_flushed,
             )
-            if segmented_wait_result == "final":
-                logger.debug("Segmented STT final transcription received before pipeline shutdown")
-            elif segmented_wait_result == "timeout":
-                logger.warning("Timed out waiting for segmented STT final transcription before pipeline shutdown")
-            else:
-                logger.debug(
-                    f"Segmented STT stop wait completed without final transcription ({segmented_wait_result})"
-                )
             await self._cleanup_audio_input()
         else:
+            final_generation_before_commit = self._final_transcription_generation
+            final_response_pending = self._local_vad_final_response_pending()
             # Hand active capture back to the app-level idle prewarm before
             # closing this session. With MIC_ALWAYS_ON the native layer starts
             # the replacement WASAPI client first, so the Windows privacy light
             # remains continuous while transcription finalizes.
             await self._cleanup_audio_input()
-            # Give non-segmented providers time to consume the final transport frames.
-            await asyncio.sleep(0.15)
-            if await self._flush_live_vad_finalization_turn():
-                await asyncio.sleep(0.15)
+            boundary_flushed = await self._flush_live_vad_finalization_turn()
+            await self._await_async_vad_commit_final(
+                after_generation=final_generation_before_commit,
+                final_response_pending=(
+                    final_response_pending or boundary_flushed
+                ),
+            )
 
         # For Soniox real-time: send stop_recording and wait for final tokens BEFORE pipeline shutdown.
         # This ensures all spoken audio is transcribed and injected before we close.
