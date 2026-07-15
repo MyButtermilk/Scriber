@@ -1182,6 +1182,7 @@ struct PrewarmSession {
     endpoint_selection: Value,
     mix_format_payload: Value,
     resampler_payload: Value,
+    microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
 }
 
 impl PrewarmSession {
@@ -1202,6 +1203,7 @@ impl PrewarmSession {
             endpoint_selection: self.endpoint_selection.clone(),
             mix_format_payload: self.mix_format_payload.clone(),
             resampler_payload: self.resampler_payload.clone(),
+            microphone_channel_selection: Arc::clone(&self.microphone_channel_selection),
         }
     }
 
@@ -1290,6 +1292,7 @@ struct AdoptedPrewarm {
     endpoint_selection: Value,
     mix_format_payload: Value,
     resampler_payload: Value,
+    microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
 }
 
 impl AdoptedPrewarm {
@@ -1475,6 +1478,10 @@ fn start_wasapi_capture_impl(
     let writer_request = request.clone();
     let writer_pipe_path = pipe_path.clone();
     let pipe_handle_value = pipe_handle as isize;
+    let microphone_channel_selection = adopted_prewarm
+        .as_ref()
+        .map(|(adopted, _)| Arc::clone(&adopted.microphone_channel_selection))
+        .unwrap_or_else(|| Arc::new(Mutex::new(MicrophoneChannelSelectionState::default())));
     let adopted_blocks = adopted_prewarm
         .as_mut()
         .map(|(adopted, _)| std::mem::take(&mut adopted.blocks))
@@ -1496,6 +1503,7 @@ fn start_wasapi_capture_impl(
                 ready_tx,
                 adopted_blocks,
                 defer_wasapi_ready,
+                microphone_channel_selection,
                 writer_deferred_prewarm_session,
             )
         })
@@ -1707,11 +1715,29 @@ impl WasapiMixFormat {
 }
 
 #[cfg(windows)]
+const MICROPHONE_CHANNEL_SWITCH_ENERGY_RATIO: f64 = 1.35;
+
+#[derive(Debug, Default)]
+struct MicrophoneChannelSelectionState {
+    selected_channel: Option<usize>,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WasapiChannelMixPolicy {
+    StrongestMicrophoneChannel,
+    AverageAllChannels,
+}
+
+#[cfg(windows)]
 struct WasapiPcmConverter {
     source: WasapiMixFormat,
     target_sample_rate: u32,
     target_channels: u16,
     block_size: u32,
+    channel_mix_policy: WasapiChannelMixPolicy,
+    microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
+    channel_energy: Vec<f64>,
     mono_buffer: Vec<f32>,
     next_source_index: f64,
     pending_samples: Vec<i16>,
@@ -1719,12 +1745,34 @@ struct WasapiPcmConverter {
 
 #[cfg(windows)]
 impl WasapiPcmConverter {
+    #[cfg(test)]
     fn new(source: WasapiMixFormat, request: &CaptureRequest) -> Self {
+        Self::with_channel_selection(
+            source,
+            request,
+            Arc::new(Mutex::new(MicrophoneChannelSelectionState::default())),
+        )
+    }
+
+    fn with_channel_selection(
+        source: WasapiMixFormat,
+        request: &CaptureRequest,
+        microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
+    ) -> Self {
+        let channel_mix_policy = if request.capture_kind.eq_ignore_ascii_case("loopback") {
+            WasapiChannelMixPolicy::AverageAllChannels
+        } else {
+            WasapiChannelMixPolicy::StrongestMicrophoneChannel
+        };
+        let source_channels = usize::from(source.channels);
         Self {
             source,
             target_sample_rate: request.sample_rate,
             target_channels: request.channels,
             block_size: request.block_size,
+            channel_mix_policy,
+            microphone_channel_selection,
+            channel_energy: vec![0.0; source_channels],
             mono_buffer: Vec::new(),
             next_source_index: 0.0,
             pending_samples: Vec::new(),
@@ -1775,27 +1823,73 @@ impl WasapiPcmConverter {
             ));
         }
 
-        for frame in 0..frame_count {
-            let mut sum = 0.0_f32;
-            for channel in 0..channels {
-                let offset = (frame * channels + channel) * sample_bytes;
-                let sample = match self.source.sample_format {
-                    WasapiSampleFormat::Float32 => {
-                        let raw = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-                        raw.clamp(-1.0, 1.0)
+        match self.channel_mix_policy {
+            WasapiChannelMixPolicy::AverageAllChannels => {
+                for frame in 0..frame_count {
+                    let mut sum = 0.0_f32;
+                    for channel in 0..channels {
+                        sum += decode_wasapi_sample(
+                            bytes,
+                            (frame * channels + channel) * sample_bytes,
+                            self.source.sample_format,
+                        );
                     }
-                    WasapiSampleFormat::Pcm16 => {
-                        let raw = i16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap());
-                        f32::from(raw) / f32::from(i16::MAX)
-                    }
-                    WasapiSampleFormat::Pcm32 => {
-                        let raw = i32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-                        raw as f32 / i32::MAX as f32
-                    }
-                };
-                sum += sample;
+                    self.mono_buffer.push(sum / channels as f32);
+                }
             }
-            self.mono_buffer.push(sum / channels as f32);
+            WasapiChannelMixPolicy::StrongestMicrophoneChannel => {
+                self.channel_energy.fill(0.0);
+                for frame in 0..frame_count {
+                    for channel in 0..channels {
+                        let sample = decode_wasapi_sample(
+                            bytes,
+                            (frame * channels + channel) * sample_bytes,
+                            self.source.sample_format,
+                        );
+                        self.channel_energy[channel] += f64::from(sample).powi(2);
+                    }
+                }
+
+                let best_channel = self
+                    .channel_energy
+                    .iter()
+                    .enumerate()
+                    .max_by(|left, right| left.1.total_cmp(right.1))
+                    .map(|(channel, _)| channel)
+                    .unwrap_or(0);
+                let best_energy = self.channel_energy[best_channel];
+                let chosen_channel = {
+                    let mut selection = self
+                        .microphone_channel_selection
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let previous_channel = selection
+                        .selected_channel
+                        .filter(|channel| *channel < channels);
+                    let chosen = match previous_channel {
+                        Some(previous) if best_energy <= f64::EPSILON => previous,
+                        Some(previous)
+                            if self.channel_energy[previous] > 0.0
+                                && best_energy
+                                    < self.channel_energy[previous]
+                                        * MICROPHONE_CHANNEL_SWITCH_ENERGY_RATIO =>
+                        {
+                            previous
+                        }
+                        _ => best_channel,
+                    };
+                    selection.selected_channel = Some(chosen);
+                    chosen
+                };
+
+                for frame in 0..frame_count {
+                    self.mono_buffer.push(decode_wasapi_sample(
+                        bytes,
+                        (frame * channels + chosen_channel) * sample_bytes,
+                        self.source.sample_format,
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -1831,6 +1925,23 @@ impl WasapiPcmConverter {
             blocks.push(bytes);
         }
         blocks
+    }
+}
+
+#[cfg(windows)]
+fn decode_wasapi_sample(bytes: &[u8], offset: usize, sample_format: WasapiSampleFormat) -> f32 {
+    match sample_format {
+        WasapiSampleFormat::Float32 => {
+            f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()).clamp(-1.0, 1.0)
+        }
+        WasapiSampleFormat::Pcm16 => {
+            let raw = i16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap());
+            f32::from(raw) / f32::from(i16::MAX)
+        }
+        WasapiSampleFormat::Pcm32 => {
+            let raw = i32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            raw as f32 / i32::MAX as f32
+        }
     }
 }
 
@@ -1896,6 +2007,9 @@ fn start_synthetic_prewarm_impl(
         endpoint_selection: endpoint_selection.clone(),
         mix_format_payload: Value::Null,
         resampler_payload: Value::Null,
+        microphone_channel_selection: Arc::new(Mutex::new(
+            MicrophoneChannelSelectionState::default(),
+        )),
     };
     let payload = json!({
         "sidecar": SIDECAR_NAME,
@@ -1927,9 +2041,20 @@ fn start_wasapi_prewarm_impl(request: CaptureRequest) -> Result<(PrewarmSession,
         requested_prebuffer_frame_count(&request),
     )));
     let worker_buffer = Arc::clone(&buffer);
+    let microphone_channel_selection =
+        Arc::new(Mutex::new(MicrophoneChannelSelectionState::default()));
+    let worker_channel_selection = Arc::clone(&microphone_channel_selection);
     let join_handle = thread::Builder::new()
         .name("scriber-audio-wasapi-prewarm".to_string())
-        .spawn(move || run_wasapi_prewarm_worker(worker_request, stop_rx, ready_tx, worker_buffer))
+        .spawn(move || {
+            run_wasapi_prewarm_worker(
+                worker_request,
+                stop_rx,
+                ready_tx,
+                worker_buffer,
+                worker_channel_selection,
+            )
+        })
         .map_err(|err| format!("WASAPI prewarm worker thread spawn failed: {err}"))?;
 
     let ready = match ready_rx.recv_timeout(Duration::from_secs(3)) {
@@ -1968,6 +2093,7 @@ fn start_wasapi_prewarm_impl(request: CaptureRequest) -> Result<(PrewarmSession,
         endpoint_selection: ready_endpoint_selection.clone(),
         mix_format_payload: ready_mix_format.clone(),
         resampler_payload: ready_resampler.clone(),
+        microphone_channel_selection,
     };
     let payload = json!({
         "sidecar": SIDECAR_NAME,
@@ -2626,6 +2752,7 @@ fn run_wasapi_capture_writer(
     ready_tx: Sender<Result<WasapiReady, String>>,
     adopted_prebuffer_blocks: Vec<Vec<u8>>,
     defer_ready_until_after_pipe: bool,
+    microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
     mut deferred_prewarm_session: Option<PrewarmSession>,
 ) -> CaptureWriterStats {
     let mut stats = CaptureWriterStats::default();
@@ -2641,6 +2768,7 @@ fn run_wasapi_capture_writer(
         started,
         adopted_prebuffer_blocks,
         defer_ready_until_after_pipe,
+        microphone_channel_selection,
         &mut deferred_prewarm_session,
     );
     if let Err(err) = result {
@@ -2669,6 +2797,7 @@ fn run_wasapi_prewarm_worker(
     stop_rx: mpsc::Receiver<()>,
     ready_tx: Sender<Result<WasapiReady, String>>,
     buffer: Arc<Mutex<PrewarmBuffer>>,
+    microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
 ) -> PrewarmStats {
     let mut stats = PrewarmStats::default();
     let mut ready_sent = false;
@@ -2679,6 +2808,7 @@ fn run_wasapi_prewarm_worker(
         &mut ready_sent,
         &mut stats,
         buffer,
+        microphone_channel_selection,
     );
     if let Err(err) = result {
         if !ready_sent {
@@ -2796,6 +2926,7 @@ fn run_wasapi_capture_writer_inner(
     started: Instant,
     adopted_prebuffer_blocks: Vec<Vec<u8>>,
     defer_ready_until_after_pipe: bool,
+    microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
     deferred_prewarm_session: &mut Option<PrewarmSession>,
 ) -> Result<(), String> {
     let mut sequence = 0_u64;
@@ -2894,6 +3025,7 @@ fn run_wasapi_capture_writer_inner(
                 stream_started_micros,
                 sequence,
                 adopted_prebuffer_blocks.is_empty(),
+                microphone_channel_selection,
             )
         })();
         let stop_result = unsafe { client.Stop() };
@@ -2919,6 +3051,7 @@ fn run_wasapi_prewarm_worker_inner(
     ready_sent: &mut bool,
     stats: &mut PrewarmStats,
     buffer: Arc<Mutex<PrewarmBuffer>>,
+    microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
 ) -> Result<(), String> {
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
         .ok()
@@ -2965,8 +3098,15 @@ fn run_wasapi_prewarm_worker_inner(
         *ready_sent = true;
 
         unsafe { client.Start() }.map_err(|err| format!("WASAPI Start failed: {err}"))?;
-        let prewarm_result =
-            pump_wasapi_prewarm(request, stop_rx, &capture_client, mix_format, stats, buffer);
+        let prewarm_result = pump_wasapi_prewarm(
+            request,
+            stop_rx,
+            &capture_client,
+            mix_format,
+            stats,
+            buffer,
+            microphone_channel_selection,
+        );
         let stop_result = unsafe { client.Stop() };
         if let Err(err) = stop_result {
             if prewarm_result.is_ok() {
@@ -2994,8 +3134,13 @@ fn pump_wasapi_capture(
     stream_started_micros: u64,
     initial_sequence: u64,
     use_live_prebuffer: bool,
+    microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
 ) -> Result<(), String> {
-    let mut converter = WasapiPcmConverter::new(mix_format, request);
+    let mut converter = WasapiPcmConverter::with_channel_selection(
+        mix_format,
+        request,
+        microphone_channel_selection,
+    );
     let loopback = request.capture_kind.eq_ignore_ascii_case("loopback");
     let loopback_frame_interval = Duration::from_secs_f64(
         f64::from(request.block_size) / f64::from(request.sample_rate.max(1)),
@@ -3141,8 +3286,13 @@ fn pump_wasapi_prewarm(
     mix_format: WasapiMixFormat,
     stats: &mut PrewarmStats,
     buffer: Arc<Mutex<PrewarmBuffer>>,
+    microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
 ) -> Result<(), String> {
-    let mut converter = WasapiPcmConverter::new(mix_format, request);
+    let mut converter = WasapiPcmConverter::with_channel_selection(
+        mix_format,
+        request,
+        microphone_channel_selection,
+    );
     let max_buffered_blocks = u64::from(requested_prebuffer_frame_count(request));
     loop {
         match stop_rx.try_recv() {
@@ -4207,6 +4357,147 @@ mod tests {
     }
 
     #[cfg(windows)]
+    fn stereo_float_mix_format(sample_rate: u32) -> WasapiMixFormat {
+        WasapiMixFormat {
+            format_tag: WAVE_FORMAT_IEEE_FLOAT_TAG,
+            channels: 2,
+            sample_rate,
+            average_bytes_per_second: sample_rate * 8,
+            block_align: 8,
+            bits_per_sample: 32,
+            extra_size: 0,
+            sample_format: WasapiSampleFormat::Float32,
+        }
+    }
+
+    #[cfg(windows)]
+    fn mono_capture_request(capture_kind: &str, block_size: u32) -> CaptureRequest {
+        CaptureRequest {
+            sample_rate: 16_000,
+            channels: 1,
+            block_size,
+            device_preference: "default".to_string(),
+            port_audio_label: "".to_string(),
+            native_endpoint_id_hash: "".to_string(),
+            prebuffer_ms: 0,
+            prewarm_id: "".to_string(),
+            capture_kind: capture_kind.to_string(),
+            clock_origin: None,
+        }
+    }
+
+    #[cfg(windows)]
+    fn stereo_float_bytes(frames: &[[f32; 2]]) -> Vec<u8> {
+        frames
+            .iter()
+            .flat_map(|frame| frame.iter().flat_map(|sample| sample.to_le_bytes()))
+            .collect()
+    }
+
+    #[cfg(windows)]
+    fn pcm_i16_block_samples(block: &[u8]) -> Vec<i16> {
+        block
+            .chunks_exact(2)
+            .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+            .collect()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn microphone_converter_preserves_antiphase_array_speech() {
+        let request = mono_capture_request("microphone", 4);
+        let frames = [[0.75, -0.75]; 4];
+        let bytes = stereo_float_bytes(&frames);
+        let mut converter = WasapiPcmConverter::new(stereo_float_mix_format(16_000), &request);
+
+        let blocks = converter
+            .push_packet(bytes.as_ptr(), frames.len() as u32, false)
+            .unwrap();
+        let samples = pcm_i16_block_samples(&blocks[0]);
+
+        assert!(samples.iter().all(|sample| sample.unsigned_abs() > 20_000));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn microphone_converter_selects_active_channel_beside_silent_channel() {
+        let request = mono_capture_request("microphone", 4);
+        let frames = [[0.0, 0.5]; 4];
+        let bytes = stereo_float_bytes(&frames);
+        let selection = Arc::new(Mutex::new(MicrophoneChannelSelectionState::default()));
+        let mut converter = WasapiPcmConverter::with_channel_selection(
+            stereo_float_mix_format(16_000),
+            &request,
+            Arc::clone(&selection),
+        );
+
+        let blocks = converter
+            .push_packet(bytes.as_ptr(), frames.len() as u32, false)
+            .unwrap();
+        let samples = pcm_i16_block_samples(&blocks[0]);
+
+        assert!(samples.iter().all(|sample| *sample > 15_000));
+        assert_eq!(selection.lock().unwrap().selected_channel, Some(1));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn loopback_converter_keeps_average_mix_for_antiphase_channels() {
+        let request = mono_capture_request("loopback", 4);
+        let frames = [[0.75, -0.75]; 4];
+        let bytes = stereo_float_bytes(&frames);
+        let mut converter = WasapiPcmConverter::new(stereo_float_mix_format(16_000), &request);
+
+        let blocks = converter
+            .push_packet(bytes.as_ptr(), frames.len() as u32, false)
+            .unwrap();
+        let samples = pcm_i16_block_samples(&blocks[0]);
+
+        assert!(samples.iter().all(|sample| sample.unsigned_abs() <= 1));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn microphone_channel_selection_survives_prewarm_handoff_with_hysteresis() {
+        let request = mono_capture_request("microphone", 4);
+        let selection = Arc::new(Mutex::new(MicrophoneChannelSelectionState::default()));
+        let prewarm_frames = [[0.2, 0.6]; 4];
+        let prewarm_bytes = stereo_float_bytes(&prewarm_frames);
+        let mut prewarm_converter = WasapiPcmConverter::with_channel_selection(
+            stereo_float_mix_format(16_000),
+            &request,
+            Arc::clone(&selection),
+        );
+        prewarm_converter
+            .push_packet(prewarm_bytes.as_ptr(), prewarm_frames.len() as u32, false)
+            .unwrap();
+        assert_eq!(selection.lock().unwrap().selected_channel, Some(1));
+
+        let live_frames = [[0.65, 0.6]; 4];
+        let live_bytes = stereo_float_bytes(&live_frames);
+        let mut live_converter = WasapiPcmConverter::with_channel_selection(
+            stereo_float_mix_format(16_000),
+            &request,
+            Arc::clone(&selection),
+        );
+        let blocks = live_converter
+            .push_packet(live_bytes.as_ptr(), live_frames.len() as u32, false)
+            .unwrap();
+        let samples = pcm_i16_block_samples(&blocks[0]);
+        assert!(samples
+            .iter()
+            .all(|sample| (19_000..20_500).contains(sample)));
+        assert_eq!(selection.lock().unwrap().selected_channel, Some(1));
+
+        let stronger_frames = [[0.9, 0.4]; 4];
+        let stronger_bytes = stereo_float_bytes(&stronger_frames);
+        live_converter
+            .push_packet(stronger_bytes.as_ptr(), stronger_frames.len() as u32, false)
+            .unwrap();
+        assert_eq!(selection.lock().unwrap().selected_channel, Some(0));
+    }
+
+    #[cfg(windows)]
     #[test]
     fn synthetic_capture_writes_prebuffer_then_live_frames() {
         use std::fs::OpenOptions;
@@ -4363,6 +4654,9 @@ mod tests {
                 "targetChannels": 1,
                 "method": "nearest",
             }),
+            microphone_channel_selection: Arc::new(Mutex::new(
+                MicrophoneChannelSelectionState::default(),
+            )),
         };
         let stop_payload = json!({
             "stopped": false,

@@ -476,6 +476,11 @@ Packaging and scripts:
   prebuffer. Do not reuse Pipecat session state across recordings.
 - `MicrophoneInput` still queues raw callback frames; only visualizer/input RMS
   work is throttled to about 60 Hz.
+- Native WASAPI microphone-array downmixing selects the strongest RMS source
+  channel with hysteresis instead of averaging all channels, because anti-phase
+  array channels can cancel audible speech. Preserve that selection across an
+  Always-On-Mic prewarm adoption. System loopback remains an all-channel
+  average; do not apply microphone selection semantics to rendered audio.
 
 ### Providers and Media
 
@@ -781,6 +786,11 @@ Packaging and scripts:
   provider time is then discontinuous relative to the Meeting clock. Keep span
   coalescing and boundary-aware mapping, and do not restore a single connection
   offset for token timestamps.
+- Stopping a Meeting live-STT preview uses one bounded deadline. Enqueue the
+  stop sentinel without awaiting queue capacity; if the best-effort preview
+  queue is full, discard at most one preview frame, report the gap, and reserve
+  time to cancel provider tasks and close the WebSocket. Durable Meeting audio
+  is upstream and must never be discarded or blocked by preview shutdown.
 - Process-local Meeting task maps are not durable ownership. Finalization,
   analysis, imports, and canonicalization use persisted attempt id, state
   version, lease owner/expiry, and CAS. A losing attempt exits `superseded` and

@@ -90,6 +90,7 @@ class SonioxMeetingStream:
         reconnect_initial_delay_s: float = 0.25,
         reconnect_max_delay_s: float = 5.0,
         smart_turn_analyzer: Any | None = None,
+        stop_timeout_s: float = 10.0,
     ) -> None:
         self.meeting_id = meeting_id
         self.source = source
@@ -121,6 +122,8 @@ class SonioxMeetingStream:
         )
         self._stop_event = asyncio.Event()
         self._stopping = False
+        self._stop_sentinel_queued = False
+        self._stop_timeout_s = min(30.0, max(0.05, float(stop_timeout_s)))
         self._backpressure_reported = False
         self._turn_emitted = False
         self._connection_timeline_offset_ms = self.timeline_offset_ms
@@ -142,6 +145,7 @@ class SonioxMeetingStream:
         if self.supervisor_task is not None:
             return
         self._stopping = False
+        self._stop_sentinel_queued = False
         self._stop_event.clear()
         websocket = await self._open_websocket()
         self.websocket = websocket
@@ -211,29 +215,125 @@ class SonioxMeetingStream:
         if self.on_status is not None:
             await self.on_status(self.source, "degraded", self.reconnect_count)
 
+    def _enqueue_stop_sentinel(self) -> None:
+        """Request preview shutdown without ever waiting on a full audio queue.
+
+        Durable Meeting audio is persisted before it reaches this best-effort
+        preview queue. Sacrificing one queued preview frame is therefore safer
+        than allowing finalization or app shutdown to wait indefinitely.
+        """
+        if self._stop_sentinel_queued:
+            return
+        try:
+            self.queue.put_nowait(None)
+        except asyncio.QueueFull:
+            try:
+                discarded = self.queue.get_nowait()
+                self.queue.task_done()
+                if discarded is not None:
+                    self.dropped_frames += 1
+            except asyncio.QueueEmpty:
+                pass
+            self.queue.put_nowait(None)
+        self._stop_sentinel_queued = True
+
+    @staticmethod
+    def _consume_task_result(task: asyncio.Task) -> None:
+        try:
+            task.exception()
+        except BaseException:
+            pass
+
+    async def _cleanup_until(
+        self,
+        *,
+        supervisor_task: asyncio.Task,
+        websocket: Any,
+        deadline: float,
+        force: bool,
+    ) -> None:
+        supervised_tasks = {
+            task
+            for task in (supervisor_task, self.send_task, self.receive_task)
+            if task is not None
+        }
+        if force:
+            for task in supervised_tasks:
+                if not task.done():
+                    task.cancel()
+
+        cleanup_tasks = set(supervised_tasks)
+        if websocket is not None:
+            close_task = asyncio.create_task(
+                websocket.close(),
+                name=f"meeting-live-close-{self.source}",
+            )
+            cleanup_tasks.add(close_task)
+
+        pending = {task for task in cleanup_tasks if not task.done()}
+        remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+        if pending and remaining > 0:
+            _, pending = await asyncio.wait(pending, timeout=remaining)
+
+        for task in cleanup_tasks - pending:
+            self._consume_task_result(task)
+        for task in pending:
+            task.cancel()
+            task.add_done_callback(self._consume_task_result)
+
     async def stop(self) -> None:
-        if self.dropped_frames and not self._backpressure_reported:
-            self._backpressure_reported = True
-            await self._report_backpressure()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._stop_timeout_s
+        # Keep part of the one total stop budget for forced task cancellation
+        # and WebSocket closure if graceful provider finalization stalls.
+        cleanup_reserve_s = min(1.0, max(0.01, self._stop_timeout_s * 0.2))
+        graceful_deadline = deadline - cleanup_reserve_s
         task = self.supervisor_task
         if task is None:
             return
         self._stopping = True
         self._stop_event.set()
-        await self.queue.put(None)
+        self._enqueue_stop_sentinel()
+
+        if self.dropped_frames and not self._backpressure_reported:
+            self._backpressure_reported = True
+            report_timeout = max(0.0, graceful_deadline - loop.time())
+            if report_timeout > 0:
+                try:
+                    await asyncio.wait_for(
+                        self._report_backpressure(), timeout=report_timeout
+                    )
+                except Exception:
+                    # Preview degradation reporting is best-effort. A callback
+                    # failure must never bypass supervised task/WebSocket cleanup.
+                    pass
+
+        graceful = False
+        task_error: BaseException | None = None
         try:
-            await asyncio.wait_for(task, timeout=10.0)
+            remaining = max(0.0, graceful_deadline - loop.time())
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
+            graceful = True
         except asyncio.TimeoutError:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            pass
+        except BaseException as exc:
+            task_error = exc
         finally:
+            websocket = self.websocket
+            await self._cleanup_until(
+                supervisor_task=task,
+                websocket=websocket,
+                deadline=deadline,
+                force=not graceful,
+            )
             self.supervisor_task = None
             self.send_task = None
             self.receive_task = None
-            websocket = self.websocket
             self.websocket = None
-            if websocket is not None:
-                await websocket.close()
+        if task_error is not None:
+            raise task_error
 
     async def _connection_loop(self, websocket: Any) -> None:
         outage_reported = False

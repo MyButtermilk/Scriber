@@ -653,6 +653,11 @@ through this piecewise mapping; a single connection-start offset is insufficient
 after a drop. Exact discontinuities map token starts to the right span and token
 ends to the left span. The spans are coalesced while clocks remain contiguous,
 so normal long meetings do not accumulate one mapping row per audio frame.
+Preview shutdown is bounded by one total deadline. Its stop marker is inserted
+without waiting for queue capacity; a full best-effort queue may lose one
+preview frame so finalization and application shutdown can still cancel the
+provider tasks and close the WebSocket. This never affects the durable recorder,
+which owns the audio before it enters the preview queue.
 
 ### Workflow ownership and admission
 

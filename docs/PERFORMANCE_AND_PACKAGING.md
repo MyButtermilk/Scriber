@@ -2663,6 +2663,10 @@ Rollback:
 - If the Rust audio sidecar fails before first audio frame, the recording fails
   visibly and preserves diagnostics. Do not silently corrupt frame ordering by
   switching engines mid-stream.
+- WASAPI microphone arrays are reduced to mono by selecting the strongest RMS
+  source channel with hysteresis, and the selection survives prewarm adoption.
+  This avoids phase cancellation from averaging opposing array channels.
+  Loopback/system audio continues to average all render channels.
 - Keep `sounddevice` packaged only for remaining microphone listing and
   PortAudio-to-native endpoint mapping helpers until those are fully native.
 

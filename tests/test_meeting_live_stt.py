@@ -372,6 +372,129 @@ async def test_soniox_meeting_stream_reports_live_queue_backpressure_immediately
 
 
 @pytest.mark.asyncio
+async def test_stop_is_bounded_when_full_preview_queue_and_websocket_send_stalls():
+    websocket = GatedFirstAudioWebSocket()
+    gaps = []
+
+    async def connect(_url):
+        return websocket
+
+    stream = SonioxMeetingStream(
+        meeting_id="meeting-stop-stall",
+        source="system",
+        api_key="secret",
+        model="stt-rt-v5",
+        language="en",
+        diarization=True,
+        on_segment=lambda segment: _append([], segment),
+        on_gap=lambda source, reason: _append(gaps, (source, reason)),
+        connect_factory=connect,
+        queue_frames=16,
+        stop_timeout_s=0.08,
+    )
+    await stream.start()
+    supervisor = stream.supervisor_task
+    stream.enqueue(b"\0\0" * 160)
+    await websocket.first_audio_started.wait()
+    for _ in range(16):
+        stream.enqueue(b"\0\0" * 160)
+    assert stream.queue.full()
+    assert stream.dropped_frames == 0
+
+    await asyncio.wait_for(stream.stop(), timeout=0.5)
+
+    assert supervisor is not None and supervisor.done()
+    assert websocket.closed is True
+    assert stream.dropped_frames == 1
+    assert gaps == [("system", "live_stt_backpressure")]
+    assert stream.supervisor_task is None
+    assert stream.send_task is None
+    assert stream.receive_task is None
+    assert stream.websocket is None
+
+
+@pytest.mark.asyncio
+async def test_stop_cleans_up_when_backpressure_callback_fails():
+    websocket = GatedFirstAudioWebSocket()
+    callback_attempts = []
+
+    async def connect(_url):
+        return websocket
+
+    async def fail_gap_callback(source, reason):
+        callback_attempts.append((source, reason))
+        raise RuntimeError("synthetic callback failure")
+
+    stream = SonioxMeetingStream(
+        meeting_id="meeting-stop-callback-failure",
+        source="system",
+        api_key="secret",
+        model="stt-rt-v5",
+        language="en",
+        diarization=True,
+        on_segment=lambda segment: _append([], segment),
+        on_gap=fail_gap_callback,
+        connect_factory=connect,
+        queue_frames=16,
+        stop_timeout_s=0.08,
+    )
+    await stream.start()
+    supervisor = stream.supervisor_task
+    stream.enqueue(b"\0\0" * 160)
+    await websocket.first_audio_started.wait()
+    for _ in range(16):
+        stream.enqueue(b"\0\0" * 160)
+    assert stream.queue.full()
+
+    await asyncio.wait_for(stream.stop(), timeout=0.5)
+
+    assert callback_attempts == [("system", "live_stt_backpressure")]
+    assert supervisor is not None and supervisor.done()
+    assert websocket.closed is True
+    assert stream.supervisor_task is None
+    assert stream.send_task is None
+    assert stream.receive_task is None
+    assert stream.websocket is None
+
+
+@pytest.mark.asyncio
+async def test_stop_gracefully_drains_preview_and_cleans_up_websocket_tasks():
+    websocket = FakeWebSocket()
+
+    async def connect(_url):
+        return websocket
+
+    stream = SonioxMeetingStream(
+        meeting_id="meeting-stop-normal",
+        source="system",
+        api_key="secret",
+        model="stt-rt-v5",
+        language="en",
+        diarization=True,
+        on_segment=lambda segment: _append([], segment),
+        on_gap=lambda source, reason: _append([], (source, reason)),
+        connect_factory=connect,
+        stop_timeout_s=0.5,
+    )
+    await stream.start()
+    supervisor = stream.supervisor_task
+    stream.enqueue(b"\0\0" * 160)
+    await _eventually(lambda: any(isinstance(item, bytes) for item in websocket.sent))
+
+    await asyncio.wait_for(stream.stop(), timeout=1.0)
+
+    assert supervisor is not None and supervisor.done()
+    assert supervisor.cancelled() is False
+    assert websocket.closed is True
+    assert websocket.sent[-1] == ""
+    assert stream.queue.empty()
+    assert stream.supervisor_task is None
+    assert stream.send_task is None
+    assert stream.receive_task is None
+    assert stream.websocket is None
+
+
+@pytest.mark.asyncio
 async def test_live_timestamps_preserve_dropped_frame_gap():
     websocket = GatedFirstAudioWebSocket()
     segments = []
