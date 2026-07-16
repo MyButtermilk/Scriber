@@ -48,6 +48,9 @@ from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pc
 from src.runtime.env_values import env_float as _safe_env_float
 from src.soniox_region import soniox_realtime_websocket_url, soniox_rest_api_base_url
 
+
+_SONIOX_MANUAL_FINALIZE_MESSAGE = '{"type": "finalize"}'
+
 try:
     from pipecat.audio.streams.input import SoundDeviceAudioInputStream
 except ImportError:
@@ -1948,9 +1951,16 @@ class ScriberPipeline:
         self,
         receive_task: asyncio.Task | None,
         *,
+        after_generation: int,
         timeout_seconds: float,
     ) -> str:
-        if self._final_transcription_received.is_set():
+        if self._final_transcription_generation > after_generation:
+            return "final"
+
+        # This event is shared across the session. A final token from an older
+        # semantic endpoint must never satisfy the explicit hotkey-stop wait.
+        self._final_transcription_received.clear()
+        if self._final_transcription_generation > after_generation:
             return "final"
 
         if receive_task and receive_task.done():
@@ -1984,7 +1994,10 @@ class ScriberPipeline:
                 final_task.cancel()
                 await asyncio.gather(final_task, return_exceptions=True)
 
-        if final_task in done and self._final_transcription_received.is_set():
+        if (
+            final_task in done
+            and self._final_transcription_generation > after_generation
+        ):
             return "final"
         if receive_wait is not None and receive_wait in done:
             try:
@@ -1995,7 +2008,7 @@ class ScriberPipeline:
                 logger.debug(f"Soniox receive task completed with error: {exc}")
                 return "error"
             return "receive_done"
-        if self._final_transcription_received.is_set():
+        if self._final_transcription_generation > after_generation:
             return "final"
         return "timeout"
 
@@ -2484,7 +2497,10 @@ class ScriberPipeline:
                     logger.info(f"Applying custom vocabulary: {terms}")
                     settings_candidates["context"] = soniox_context_cls(terms=terms)
             settings = settings_cls(**_filter_supported_kwargs(settings_cls, settings_candidates))
-            logger.info("Creating SonioxSTTService with Pipecat 1.5 settings and forced turn endpointing")
+            logger.info(
+                "Creating SonioxSTTService with Pipecat 1.5 settings and "
+                "Soniox semantic endpoint detection"
+            )
             service_kwargs: dict[str, Any] = {
                 "api_key": (
                     "local-replay"
@@ -2493,7 +2509,10 @@ class ScriberPipeline:
                 ),
                 "sample_rate": Config.SAMPLE_RATE,
                 "settings": settings,
-                "vad_force_turn_endpoint": True,
+                # Soniox v5 performs semantic endpoint detection itself. Local
+                # VAD may still support UI diagnostics, but must not force a
+                # transcript commit on every short pause.
+                "vad_force_turn_endpoint": False,
             }
             if self.soniox_replay_url is not None:
                 service_kwargs["url"] = self.soniox_replay_url
@@ -4011,7 +4030,16 @@ class ScriberPipeline:
                                 except Exception as e:
                                     logger.debug(f"Audio queue drain check error: {e}")
 
-                            # Send stop_recording (empty string) to trigger finalization
+                            # Push-to-talk stop uses Soniox's explicit manual
+                            # finalization contract first. The following empty
+                            # message ends the stream after the finalize request;
+                            # WebSocket ordering guarantees the provider sees
+                            # both in this order.
+                            final_generation_before_stop = (
+                                self._final_transcription_generation
+                            )
+                            logger.debug("Requesting manual finalization from Soniox")
+                            await websocket.send(_SONIOX_MANUAL_FINALIZE_MESSAGE)
                             logger.debug("Sending stop_recording to Soniox")
                             await websocket.send("")
 
@@ -4021,6 +4049,7 @@ class ScriberPipeline:
                                 final_timeout = self._soniox_realtime_stop_final_timeout_seconds()
                                 wait_result = await self._wait_for_soniox_realtime_final_or_receive_done(
                                     receive_task,
+                                    after_generation=final_generation_before_stop,
                                     timeout_seconds=final_timeout,
                                 )
                                 if wait_result in {"final", "receive_done"}:
@@ -4053,6 +4082,7 @@ class ScriberPipeline:
                                 if receive_task and receive_task.done():
                                     wait_result = await self._wait_for_soniox_realtime_final_or_receive_done(
                                         receive_task,
+                                        after_generation=final_generation_before_stop,
                                         timeout_seconds=0.25,
                                     )
                                     soniox_manual_stop_done = wait_result in {"final", "receive_done"}

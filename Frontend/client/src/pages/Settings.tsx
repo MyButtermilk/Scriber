@@ -1041,9 +1041,17 @@ function SonioxRegionPicker({
             <div>
               <p className="font-semibold">EU access must be enabled by Soniox first</p>
               <p className="mt-1">
-                Email Soniox and include your Organization ID so they can enable regional deployments for your account. Then create an EU project and paste that project's region-specific API key above.
+                Email Soniox with your Organization ID so they can enable regional deployments. Then open the Soniox API Console, create a new project with the European Union region, and paste that separate EU project's API key above. The selected region and API key must match.
               </p>
               <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+                <button
+                  type="button"
+                  onClick={() => void openExternalHelpUrl(API_KEY_HELP_LINKS.soniox.href)}
+                  className="inline-flex items-center gap-1 rounded-md font-semibold text-amber-950 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 dark:text-amber-100"
+                >
+                  Open Soniox API Console
+                  <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                </button>
                 <button
                   type="button"
                   onClick={() => void openExternalHelpUrl(SONIOX_REGION_SUPPORT_URL)}

@@ -844,6 +844,72 @@ async def test_stop_listening_finalizes_provider_when_audible_audio_was_seen(mon
     assert record.status == "completed"
 
 
+@pytest.mark.asyncio
+async def test_stop_listening_soniox_realtime_keeps_transcribing_hidden(monkeypatch):
+    monkeypatch.setattr(web_api.Config, "SONIOX_MODE", "realtime")
+
+    class _RealtimePipeline:
+        service_name = "soniox"
+
+        def __init__(self):
+            self.stop_called = False
+
+        def audio_diagnostics(self):
+            return {
+                "audioLevelSampleCount": 8,
+                "maxObservedRms": 0.03,
+                "speechObserved": True,
+            }
+
+        async def stop(self, **_kwargs):
+            self.stop_called = True
+
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    session_id = "soniox-rt-session"
+    record = _make_record(session_id)
+    pipeline = _RealtimePipeline()
+    broadcasts: list[dict] = []
+    hidden_overlay_calls: list[dict] = []
+
+    ctl._is_listening = True
+    ctl._pipeline = pipeline
+    ctl._pipeline_task = None
+    ctl._current = record
+    ctl._session_id = session_id
+    ctl._active_provider = "soniox"
+    ctl._set_recording_state(web_api.RecordingState.INITIALIZING, context="test")
+    ctl._set_recording_state(web_api.RecordingState.RECORDING, context="test")
+
+    async def _capture_broadcast(payload):
+        broadcasts.append(payload)
+
+    monkeypatch.setattr(ctl, "broadcast", AsyncMock(side_effect=_capture_broadcast))
+    monkeypatch.setattr(ctl, "_save_transcript_to_db_async", AsyncMock())
+    monkeypatch.setattr(ctl, "_broadcast_history_updated", AsyncMock())
+    monkeypatch.setattr(
+        ctl,
+        "_hide_recording_overlay_async",
+        lambda **kwargs: hidden_overlay_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        ctl,
+        "_show_transcribing_overlay_async",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("normal Soniox realtime stop must not show transcribing overlay")
+        ),
+    )
+    monkeypatch.setattr(ctl, "_resume_idle_mic_prewarm_after_capture", lambda: None)
+
+    await ctl.stop_listening()
+
+    assert pipeline.stop_called is True
+    assert any(call == {"session_id": session_id} for call in hidden_overlay_calls)
+    assert all(payload.get("type") != "transcribing" for payload in broadcasts)
+    assert all(payload.get("transcribing") is not True for payload in broadcasts)
+    assert record.status == "completed"
+
+
 class _ChunkUploadField:
     def __init__(self, chunks: list[bytes]):
         self._chunks = list(chunks)

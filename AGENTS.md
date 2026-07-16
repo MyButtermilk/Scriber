@@ -358,6 +358,12 @@ Packaging and scripts:
   keys, authenticated URLs, request payloads, or transcript text. Keep full
   pairwise hot-path matrices in the latency metrics store rather than normal
   human-facing log messages.
+- Soniox Realtime transcript insertion uses only finalized transcript frames.
+  Soniox owns semantic endpoint detection; local VAD may support diagnostics
+  but must not force provider turn endpoints or transcript commits. A Live Mic
+  hotkey stop must send Soniox manual finalization before ending the websocket
+  stream and must wait only for a final generation produced after that stop, not
+  a stale earlier endpoint.
 - Interactive Live Mic stop controls use the token-protected
   `POST /api/live-mic/stop-request` acknowledgement path. It must return a
   bounded `202` without awaiting provider finalization, remain idempotent for

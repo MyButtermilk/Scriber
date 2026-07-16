@@ -928,6 +928,9 @@ async def test_pipecat_1_5_live_factories_match_runtime_signatures(
             # SmartTurn sits after Soniox and relies on Pipecat's default audio
             # passthrough to receive the same InputAudioRawFrames.
             assert service._audio_passthrough is True
+            # Soniox Realtime uses native semantic endpoint detection. Local VAD
+            # may support diagnostics, but must not force transcript commits.
+            assert service._vad_force_turn_endpoint is False
     finally:
         cleanup = getattr(service, "cleanup", None)
         if callable(cleanup):
@@ -1680,6 +1683,8 @@ async def test_soniox_realtime_stop_does_not_wait_for_reconnecting_receive_task(
     receive_task = asyncio.create_task(_never_finishes())
     soniox = SonioxSTTService(receive_task)
     pipeline.pipeline = _DummyRuntimePipelineGraph([soniox])
+    pipeline._mark_final_transcription_received()
+    previous_final_generation = pipeline._final_transcription_generation
 
     async def _mark_final_after_stop_signal():
         await asyncio.sleep(0.2)
@@ -1689,7 +1694,8 @@ async def test_soniox_realtime_stop_does_not_wait_for_reconnecting_receive_task(
 
     await asyncio.wait_for(pipeline.stop(timeout_secs=1.0), timeout=1.0)
 
-    assert soniox._websocket.sent == [""]
+    assert soniox._websocket.sent == ['{"type": "finalize"}', ""]
+    assert pipeline._final_transcription_generation > previous_final_generation
     assert pipeline.task.cancel_called is True
     assert pipeline.task.stop_when_done_called is False
     assert receive_task.cancelled()

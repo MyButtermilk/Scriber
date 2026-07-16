@@ -3460,6 +3460,7 @@ class ScriberWebController:
 
         self._is_listening = False
         self._is_stopping = False  # Track if stop is in progress
+        self._live_transcribing_visible = False
         self._live_mic_stop_owner: object | None = None
         self._listening_lock = asyncio.Lock()  # Prevent race conditions on rapid hotkey presses
         self._mic_prewarm = _create_mic_prewarm_manager()
@@ -6184,7 +6185,7 @@ class ScriberWebController:
             "sessionId": self._session_id,
             "backgroundProcessing": has_background_processing,
             "recordingState": recording_state.value,
-            "transcribing": recording_state is RecordingState.FINALIZING,
+            "transcribing": bool(self._live_transcribing_visible),
         }
 
     def get_runtime_info(self) -> dict[str, Any]:
@@ -6764,7 +6765,7 @@ class ScriberWebController:
             session_id = self._session_id
         payload = status_event(status, self._is_listening, session_id=session_id)
         payload["recordingState"] = self._recording_state_machine.state.value
-        payload["transcribing"] = self._recording_state_machine.state is RecordingState.FINALIZING
+        payload["transcribing"] = bool(self._live_transcribing_visible)
         payload["inputWarning"] = self._mic_input_warning
         payload["inputWarningCode"] = self._mic_input_warning_code
         payload["inputWarningActions"] = [dict(item) for item in self._mic_input_warning_actions]
@@ -7057,6 +7058,7 @@ class ScriberWebController:
                     )
                 self._is_listening = False
                 self._is_stopping = False
+                self._live_transcribing_visible = False
                 self._pipeline = None
                 self._pipeline_task = None
                 self._active_provider = None
@@ -7083,6 +7085,7 @@ class ScriberWebController:
             logger.error(f"Pipeline error: {exc}")
             provider_used = self._active_provider
             self._record_provider_failure(provider_used or "", exc)
+            self._live_transcribing_visible = False
             self._set_recording_state(RecordingState.FAILED, context="_on_pipeline_done_error")
             self._set_status("Error", session_id=session_id)
             # Hide overlay when pipeline fails to prevent it staying stuck at "Preparing..."
@@ -9639,6 +9642,7 @@ class ScriberWebController:
             with self._current_lock:
                 self._current = rec
             self._session_id = session_id
+            self._live_transcribing_visible = False
             if post_process and Config.POST_PROCESSING_ENABLED:
                 self._post_processing_session_ids.add(session_id)
             self._clear_input_warning_state(session_id=session_id, broadcast=True)
@@ -9744,6 +9748,7 @@ class ScriberWebController:
                 self._live_mic_stop_owner = stop_owner
                 self._is_stopping = True
                 owns_stop = True
+                self._live_transcribing_visible = False
                 candidate_claim = self._persistent_audio_claim
                 if isinstance(candidate_claim, AudioAdmissionClaim):
                     audio_claim = candidate_claim
@@ -10060,6 +10065,30 @@ class ScriberWebController:
                 async_finalization=async_finalization,
                 quiet_recording=quiet_recording,
             )
+            is_realtime_service = (
+                pipeline
+                and pipeline.service_name == "soniox"
+                and (
+                    Config.SONIOX_MODE == "realtime"
+                    or (
+                        provider_replay_execution is not None
+                        and provider_replay_execution.provider == "soniox"
+                    )
+                )
+                and not post_processing_requested
+            )
+            current_has_text = bool(current and current.content_text().strip())
+            silent_early_exit = bool(
+                pipeline
+                and _audio_diagnostics_have_pipecat_vad_silence(pipeline_audio_diagnostics)
+                and not audible_audio_observed
+                and not is_realtime_service
+                and not current_has_text
+                and callable(getattr(pipeline, "cancel_silent_recording", None))
+            )
+            self._live_transcribing_visible = bool(
+                not is_realtime_service and not silent_early_exit
+            )
             self._mark_hot_path(session_id, "stop_requested")
             self._set_recording_state(RecordingState.FINALIZING, context="stop_listening")
             self._emit_workflow_event(
@@ -10101,30 +10130,6 @@ class ScriberWebController:
         
         # Now do the actual stopping work (outside the lock to not block hotkey checks)
         # But we've already cleared _is_listening so no new start will happen
-        
-        # Check if this is a real-time service (Soniox RT) - text is injected during recording
-        # For async services, show "Transcribing..." while processing
-        is_realtime_service = (
-            pipeline and 
-            pipeline.service_name == "soniox" and 
-            (
-                Config.SONIOX_MODE == "realtime"
-                or (
-                    provider_replay_execution is not None
-                    and provider_replay_execution.provider == "soniox"
-                )
-            )
-            and not post_processing_requested
-        )
-        current_has_text = bool(current and current.content_text().strip())
-        silent_early_exit = bool(
-            pipeline
-            and _audio_diagnostics_have_pipecat_vad_silence(pipeline_audio_diagnostics)
-            and not audible_audio_observed
-            and not is_realtime_service
-            and not current_has_text
-            and callable(getattr(pipeline, "cancel_silent_recording", None))
-        )
         
         if is_realtime_service:
             # For RT services, hide overlay immediately - text is already injected
@@ -10260,6 +10265,7 @@ class ScriberWebController:
                 if getattr(self, "_live_mic_stop_owner", None) is stop_owner:
                     self._live_mic_stop_owner = None
                     self._is_stopping = False
+                self._live_transcribing_visible = False
                 self._clear_input_warning_state(session_id=session_id, broadcast=True)
                 self._set_status("Error" if stop_error else "Stopped", session_id=session_id)
                 if session_id is None or self._session_id == session_id:

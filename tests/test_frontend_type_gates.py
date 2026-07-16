@@ -1940,8 +1940,13 @@ def test_soniox_region_is_selected_only_in_api_key_dialog() -> None:
     assert "EUR - Region (recommended for better latency)" in settings
     assert "EU access must be enabled by Soniox first" in settings
     assert "Organization ID" in settings
+    assert "create a new project with the European Union region" in settings
+    assert "separate EU project's API key" in settings
+    assert "selected region and API key must match" in settings
+    assert "Open Soniox API Console" in settings
     assert "mailto:support@soniox.com" in settings
     assert "https://soniox.com/docs/data-residency" in settings
+    assert "https://console.soniox.com/" in settings
     assert 'provider === "Soniox" ? { sonioxRegion } : {}' in settings
     assert 'sonioxRegion?: "us" | "eu"' in api_types
 
