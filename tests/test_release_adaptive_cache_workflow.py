@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from backend_runtime.contract import RUNTIME_CONTRACT_REVISION
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -249,7 +251,10 @@ def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
     deno.write_bytes(b"stable-deno-runtime")
 
     input_manifest = {
-        "runtimeContract": {"name": "scriber-frozen-python-runtime", "revision": 1},
+        "runtimeContract": {
+            "name": "scriber-frozen-python-runtime",
+            "revision": RUNTIME_CONTRACT_REVISION,
+        },
         "python": {"version": "3.13.14", "cacheTag": "cpython-313"},
     }
     inner_key = hashlib.sha256(_compact(input_manifest).encode()).hexdigest()
@@ -262,7 +267,10 @@ def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
         "schemaVersion": 1,
         "name": "scriber-backend-runtime-layer",
         "cacheKey": inner_key,
-        "runtimeContract": {"name": "scriber-frozen-python-runtime", "revision": 1},
+        "runtimeContract": {
+            "name": "scriber-frozen-python-runtime",
+            "revision": RUNTIME_CONTRACT_REVISION,
+        },
         "python": {"version": "3.13.14", "cacheTag": "cpython-313"},
         "executable": {"sha256": _sha256(executable), "length": executable.stat().st_size},
         "content": {"fileCount": 2, "treeSha256": tree_sha, "files": runtime_files},

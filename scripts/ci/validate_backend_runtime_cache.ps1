@@ -19,6 +19,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$contractSource = Get-Content -LiteralPath (Join-Path $repoRoot "backend_runtime\contract.py") -Raw
+$contractRevisionMatch = [regex]::Match(
+    $contractSource,
+    '(?m)^RUNTIME_CONTRACT_REVISION\s*=\s*(\d+)\s*$'
+)
+if (-not $contractRevisionMatch.Success -or [int]$contractRevisionMatch.Groups[1].Value -lt 1) {
+    throw "Frozen backend runtime contract revision could not be resolved."
+}
+$expectedRuntimeContractRevision = [int]$contractRevisionMatch.Groups[1].Value
 
 function Write-OutputValue {
     param([string]$Name, [string]$Value)
@@ -219,7 +229,7 @@ try {
         layerName = [string]$layerManifest.name -eq "scriber-backend-runtime-layer"
         layerIdentity = [string]$layerManifest.cacheKey -eq $innerCacheKey
         contractName = [string]$layerManifest.runtimeContract.name -eq "scriber-frozen-python-runtime"
-        contractRevision = [int]$layerManifest.runtimeContract.revision -eq 1
+        contractRevision = [int]$layerManifest.runtimeContract.revision -eq $expectedRuntimeContractRevision
         fileCount = [int]$layerManifest.content.fileCount -eq $actualFiles.Count
         treeIdentity = [string]$layerManifest.content.treeSha256 -eq (Get-FileIdentityTreeSha256 -Entries $actualFiles)
         cacheExecutableHash = [string]$cacheManifest.sidecarSha256 -eq $runtimeExeSha

@@ -57,6 +57,23 @@ $ErrorActionPreference = "Stop"
 $script:BuildTimingStarted = [System.Diagnostics.Stopwatch]::StartNew()
 $script:BuildTimingPhases = [System.Collections.Generic.List[object]]::new()
 
+function Get-BackendRuntimeContractRevisionFromSource {
+    param([string]$Root)
+
+    $contractPath = Join-Path $Root "backend_runtime\contract.py"
+    if (-not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
+        throw "Missing frozen backend runtime contract: $contractPath"
+    }
+    $match = [regex]::Match(
+        (Get-Content -LiteralPath $contractPath -Raw),
+        '(?m)^RUNTIME_CONTRACT_REVISION\s*=\s*(\d+)\s*$'
+    )
+    if (-not $match.Success -or [int]$match.Groups[1].Value -lt 1) {
+        throw "Frozen backend runtime contract revision is invalid: $contractPath"
+    }
+    return [int]$match.Groups[1].Value
+}
+
 function Convert-ToFullPath {
     param([string]$Path)
     return [System.IO.Path]::GetFullPath($Path)
@@ -985,7 +1002,7 @@ function Test-BackendRuntimeLayer {
             [string](Get-ObjectPropertyValue -Object $layerManifest -Name "name") -eq "scriber-backend-runtime-layer" -and
             [string](Get-ObjectPropertyValue -Object $layerManifest -Name "cacheKey") -eq $ExpectedCacheKey -and
             [string](Get-ObjectPropertyValue -Object $contract -Name "name") -eq "scriber-frozen-python-runtime" -and
-            [int](Get-ObjectPropertyValue -Object $contract -Name "revision") -eq 1 -and
+            [int](Get-ObjectPropertyValue -Object $contract -Name "revision") -eq $script:BackendRuntimeContractRevision -and
             [int](Get-ObjectPropertyValue -Object $content -Name "fileCount") -eq $actualFiles.Count -and
             [string](Get-ObjectPropertyValue -Object $content -Name "treeSha256") -eq (Get-FileIdentityTreeSha256 -Entries $actualFiles) -and
             [string](Get-ObjectPropertyValue -Object $identity -Name "sha256") -eq (Get-Sha256Hex -Path $runtimeExe) -and
@@ -1064,7 +1081,7 @@ function Test-BackendRuntimeCache {
             [string](Get-ObjectPropertyValue -Object $layerManifest -Name "name") -eq "scriber-backend-runtime-layer" -and
             [string](Get-ObjectPropertyValue -Object $layerManifest -Name "cacheKey") -eq $ExpectedCacheKey -and
             [string](Get-ObjectPropertyValue -Object $contract -Name "name") -eq "scriber-frozen-python-runtime" -and
-            [int](Get-ObjectPropertyValue -Object $contract -Name "revision") -eq 1 -and
+            [int](Get-ObjectPropertyValue -Object $contract -Name "revision") -eq $script:BackendRuntimeContractRevision -and
             [int](Get-ObjectPropertyValue -Object $content -Name "fileCount") -eq $actualRuntimeFiles.Count -and
             [string](Get-ObjectPropertyValue -Object $content -Name "treeSha256") -eq $actualTreeSha256 -and
             [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "sidecarSha256") -eq (Get-Sha256Hex -Path $runtimeExe) -and
@@ -1102,7 +1119,7 @@ function Write-BackendRuntimeCacheMetadata {
         cacheKey = $CacheKey
         runtimeContract = [ordered]@{
             name = "scriber-frozen-python-runtime"
-            revision = 1
+            revision = $script:BackendRuntimeContractRevision
         }
         python = ($pythonIdentity | ConvertFrom-Json)
         executable = $identity
@@ -2500,6 +2517,7 @@ function Copy-MediaTools {
 }
 
 $RepoRoot = (Resolve-Path $RepoRoot).Path
+$script:BackendRuntimeContractRevision = Get-BackendRuntimeContractRevisionFromSource -Root $RepoRoot
 $PythonPath = Resolve-PythonPath -Root $RepoRoot -Requested $PythonPath
 if (-not $DistRoot) {
     $DistRoot = Join-Path $RepoRoot "dist\tauri-sidecar"

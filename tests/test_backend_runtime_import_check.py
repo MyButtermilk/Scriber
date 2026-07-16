@@ -79,6 +79,21 @@ def test_frozen_runtime_contract_covers_direct_pipecat_pipeline_imports():
     } <= frozen_modules
 
 
+def test_runtime_build_and_cache_validators_read_the_contract_revision_from_source():
+    repo_root = Path(__file__).resolve().parents[1]
+    scripts = (
+        repo_root / "scripts" / "build_tauri_backend_sidecar.ps1",
+        repo_root / "scripts" / "ci" / "validate_backend_runtime_cache.ps1",
+        repo_root / "scripts" / "ci" / "validate_backend_sidecar_cache.ps1",
+    )
+
+    for script in scripts:
+        content = script.read_text(encoding="utf-8")
+        assert "RUNTIME_CONTRACT_REVISION" in content
+        assert "runtimeContract.revision -eq 1" not in content
+        assert "runtimeContract.revision -ne 1" not in content
+
+
 def test_backend_runtime_import_check_rejects_stale_pipecat():
     mismatches = check_package_versions(
         requirements=(("pipecat-ai", "1.5.0"),),

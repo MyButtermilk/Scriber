@@ -14,6 +14,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$contractSource = Get-Content -LiteralPath (Join-Path $repoRoot "backend_runtime\contract.py") -Raw
+$contractRevisionMatch = [regex]::Match(
+    $contractSource,
+    '(?m)^RUNTIME_CONTRACT_REVISION\s*=\s*(\d+)\s*$'
+)
+if (-not $contractRevisionMatch.Success -or [int]$contractRevisionMatch.Groups[1].Value -lt 1) {
+    throw "Frozen backend runtime contract revision could not be resolved."
+}
+$expectedRuntimeContractRevision = [int]$contractRevisionMatch.Groups[1].Value
 
 function Write-OutputValue {
     param([string]$Name, [string]$Value)
@@ -139,7 +149,7 @@ try {
         [string]$runtimeManifest.name -ne "scriber-backend-runtime-layer" -or
         [string]$runtimeManifest.cacheKey -ne $runtimeKey -or
         [string]$runtimeManifest.runtimeContract.name -ne "scriber-frozen-python-runtime" -or
-        [int]$runtimeManifest.runtimeContract.revision -ne 1 -or
+        [int]$runtimeManifest.runtimeContract.revision -ne $expectedRuntimeContractRevision -or
         [int]$appManifest.schemaVersion -ne 1 -or
         [string]$appManifest.name -ne "scriber-backend-application-layer" -or
         [string]$appManifest.runtimeCacheKey -ne $runtimeKey
