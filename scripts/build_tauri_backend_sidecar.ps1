@@ -173,7 +173,7 @@ function Get-FileIdentityTreeSha256 {
     )
     foreach ($entry in @($Entries)) {
         $path = [string](Get-ObjectPropertyValue -Object $entry -Name "path")
-        if (-not $path -or $path.Contains([char]0) -or $byPath.ContainsKey($path)) {
+        if (-not $path -or $path.IndexOf([char]0) -ge 0 -or $byPath.ContainsKey($path)) {
             throw "Runtime file identity contains an invalid or duplicate path."
         }
         $byPath.Add($path, $entry)

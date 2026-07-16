@@ -51,6 +51,40 @@ def test_release_workflow_uses_adaptive_parallel_cold_producers_and_safe_warm_fa
     assert "merge-multiple: true" in workflow
 
 
+def test_runtime_tree_identity_is_compatible_with_windows_powershell() -> None:
+    scripts = [
+        _read("scripts/build_tauri_backend_sidecar.ps1"),
+        _read("scripts/ci/validate_backend_runtime_cache.ps1"),
+        _read("scripts/ci/validate_backend_sidecar_cache.ps1"),
+    ]
+    for script in scripts:
+        assert "Get-FileIdentityTreeSha256" in script
+        assert ".IndexOf([char]0) -ge 0" in script
+        assert ".Contains([char]0)" not in script
+
+    windows_powershell = shutil.which("powershell")
+    if windows_powershell:
+        probe = subprocess.run(
+            [
+                windows_powershell,
+                "-NoProfile",
+                "-Command",
+                "$path = 'runtime/file'; "
+                "$byPath = [System.Collections.Generic.SortedDictionary[string, object]]::new([System.StringComparer]::Ordinal); "
+                "if ($path.IndexOf([char]0) -ge 0) { throw 'false NUL match' }; "
+                "$byPath.Add($path, [pscustomobject]@{ length = 1; sha256 = 'a' }); "
+                "if ($byPath.Count -ne 1) { throw 'sorted dictionary failed' }; "
+                "Write-Output 'OK'",
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert probe.returncode == 0, probe.stdout + probe.stderr
+        assert "OK" in probe.stdout
+
+
 def test_runtime_cache_binding_occurs_only_after_fresh_build_output() -> None:
     workflow = _read(".github/workflows/release-windows.yml")
 
