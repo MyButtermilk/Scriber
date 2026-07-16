@@ -105,10 +105,10 @@ $usable = $false
 $reason = "missing"
 try {
     $entries = @(Get-ChildItem -LiteralPath $resolvedCacheRoot -Directory -Force -ErrorAction SilentlyContinue)
-    if ($entries.Count -ne 1 -or $entries[0].Name -notmatch '^[0-9a-f]{64}$') {
+    if ($entries.Count -ne 1 -or $entries[0].Name -notmatch '^[0-9a-f]{24}$') {
         throw "full backend cache must contain exactly one keyed entry"
     }
-    $cacheKey = $entries[0].Name
+    $cacheEntryName = $entries[0].Name
     $entryRoot = $entries[0].FullName
     $sidecarRoot = Join-Path $entryRoot "scriber-backend"
     $cacheManifestPath = Join-Path $entryRoot "cache-manifest.json"
@@ -127,10 +127,12 @@ try {
     # Full-sidecar keys intentionally use depth 8 in the builder. Keep this
     # separate from the frozen-runtime key, whose canonical depth is 10.
     $inputJson = $cacheManifest.inputManifest | ConvertTo-Json -Depth 8 -Compress
+    $cacheKey = [string]$cacheManifest.cacheKey
     $runtimeKey = [string]$cacheManifest.inputManifest.runtimeCacheKey
     if (
         [string]$cacheManifest.apiVersion -ne "1" -or
-        [string]$cacheManifest.cacheKey -ne $cacheKey -or
+        $cacheKey -notmatch '^[0-9a-f]{64}$' -or
+        $cacheEntryName -ne $cacheKey.Substring(0, 24) -or
         (Get-StringSha256 -Value $inputJson) -ne $cacheKey -or
         $runtimeKey -notmatch '^[0-9a-f]{64}$' -or
         [int]$runtimeManifest.schemaVersion -ne 1 -or

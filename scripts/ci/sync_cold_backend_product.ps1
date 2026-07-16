@@ -127,7 +127,13 @@ function Get-FileAttestation {
 function Test-FileAttestation {
     param([string]$Root, [object]$Entry)
     $relative = [string]$Entry.path
-    if (-not $relative -or [System.IO.Path]::IsPathRooted($relative) -or $relative.Contains("..")) {
+    if (
+        -not $relative -or
+        [System.IO.Path]::IsPathRooted($relative) -or
+        $relative.Contains("\") -or
+        $relative.StartsWith("/") -or
+        $relative -match '(^|/)\.\.($|/)'
+    ) {
         return $false
     }
     $path = [System.IO.Path]::GetFullPath((Join-Path $Root $relative))
@@ -224,8 +230,18 @@ $manifestPath = Join-Path $resolvedProductRoot "product-manifest.json"
 
 if ($Mode -eq "Export") {
     $backendEntries = @(Get-ChildItem -LiteralPath $resolvedBackendCacheRoot -Directory -Force -ErrorAction Stop)
-    if ($backendEntries.Count -ne 1 -or $backendEntries[0].Name -notmatch '^[0-9a-f]{64}$') {
-        throw "Cold backend export requires exactly one selected SHA-256 backend cache entry."
+    if ($backendEntries.Count -ne 1 -or $backendEntries[0].Name -notmatch '^[0-9a-f]{24}$') {
+        throw "Cold backend export requires exactly one selected backend cache entry."
+    }
+
+    $backendCacheManifestPath = Join-Path $backendEntries[0].FullName "cache-manifest.json"
+    $backendCacheManifest = Get-Content -LiteralPath $backendCacheManifestPath -Raw | ConvertFrom-Json
+    $backendCacheKey = [string]$backendCacheManifest.cacheKey
+    if (
+        $backendCacheKey -notmatch '^[0-9a-f]{64}$' -or
+        $backendEntries[0].Name -ne $backendCacheKey.Substring(0, 24)
+    ) {
+        throw "Cold backend cache entry does not match its complete SHA-256 identity."
     }
 
     if (Test-Path -LiteralPath $resolvedProductRoot -PathType Container) {
@@ -243,7 +259,6 @@ if ($Mode -eq "Export") {
     Copy-Tree -Source $resolvedDiarizationCacheRoot -Destination $productDiarizationRoot
     Copy-FfmpegCacheAllowlist -Source $resolvedFfmpegCacheRoot -Destination $productFfmpegRoot
 
-    $backendCacheKey = $backendEntries[0].Name
     $runtimeManifestPath = Join-Path $productRuntimeRoot "runtime-cache-manifest.json"
     if (-not (Test-Path -LiteralPath $runtimeManifestPath -PathType Leaf)) {
         throw "Cold backend runtime cache manifest was not found."
@@ -293,6 +308,11 @@ try {
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     $expectedCommit = if ($SourceCommit) { $SourceCommit.Trim() } else { ([string]$env:GITHUB_SHA).Trim() }
     $backendCacheKey = [string]$manifest.backendCacheKey
+    $backendCacheEntryName = if ($backendCacheKey -match '^[0-9a-f]{64}$') {
+        $backendCacheKey.Substring(0, 24)
+    } else {
+        ""
+    }
     $runtimeCacheKey = [string]$manifest.runtimeCacheKey
     if (
         [string]$manifest.apiVersion -ne "1" -or
@@ -329,8 +349,8 @@ try {
     }
 
     $productBackendRoot = Join-Path $resolvedProductRoot "tauri-sidecar-cache"
-    $backendManifestPath = Join-Path $productBackendRoot "$backendCacheKey\cache-manifest.json"
-    $backendExePath = Join-Path $productBackendRoot "$backendCacheKey\scriber-backend\scriber-backend.exe"
+    $backendManifestPath = Join-Path $productBackendRoot "$backendCacheEntryName\cache-manifest.json"
+    $backendExePath = Join-Path $productBackendRoot "$backendCacheEntryName\scriber-backend\scriber-backend.exe"
     $backendManifest = Get-Content -LiteralPath $backendManifestPath -Raw | ConvertFrom-Json
     $backendExe = Get-Item -LiteralPath $backendExePath
     if (
@@ -412,7 +432,7 @@ try {
         throw "Cold backend runtime cache manifest did not validate."
     }
 
-    $fullBackendRoot = Join-Path $productBackendRoot "$backendCacheKey\scriber-backend"
+    $fullBackendRoot = Join-Path $productBackendRoot "$backendCacheEntryName\scriber-backend"
     $fullRuntimeLayerManifestPath = Join-Path $fullBackendRoot "runtime-layer-manifest.json"
     $applicationRoot = Join-Path $fullBackendRoot "app"
     $applicationManifestPath = Join-Path $applicationRoot "app-layer-manifest.json"
@@ -443,7 +463,7 @@ try {
     Copy-Tree -Source (Join-Path $resolvedProductRoot "rust-diarization-sidecar-cache") -Destination $resolvedDiarizationCacheRoot
     Copy-FfmpegCacheAllowlist -Source (Join-Path $resolvedProductRoot "ffmpeg-profile-b-msys2") -Destination $resolvedFfmpegCacheRoot
 
-    $mediaToolsDir = Join-Path $resolvedBackendCacheRoot "$backendCacheKey\scriber-backend\tools\ffmpeg"
+    $mediaToolsDir = Join-Path $resolvedBackendCacheRoot "$backendCacheEntryName\scriber-backend\tools\ffmpeg"
     Write-Host "Imported attested cold backend product for cache $($backendCacheKey.Substring(0, 12))."
     Write-GitHubOutput -Name "usable" -Value "true"
     Write-GitHubOutput -Name "backend-cache-key" -Value $backendCacheKey

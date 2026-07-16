@@ -419,6 +419,13 @@ function Get-ObjectPropertyValue {
     if ($null -eq $Object) {
         return $null
     }
+    # Windows PowerShell 5.1 does not adapt OrderedDictionary keys into
+    # PSObject properties the same way as PowerShell 7. Freshly generated file
+    # identities are ordered dictionaries, while JSON-restored identities are
+    # PSCustomObjects, so support both representations explicitly.
+    if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($Name)) {
+        return $Object[$Name]
+    }
     $property = $Object.PSObject.Properties[$Name]
     if ($property) {
         return $property.Value
@@ -2784,7 +2791,33 @@ if ($cacheEnabled) {
         $script:SidecarCacheKey = Get-StringSha256 -Value $inputManifestJson
     }
     $cacheKey = $script:SidecarCacheKey
-    $cacheDir = Join-Path $SidecarCacheRoot $cacheKey
+    # Keep the on-disk entry short enough for Windows PowerShell 5.1/.NET
+    # Framework MAX_PATH handling. The complete SHA-256 identity remains in
+    # cache-manifest.json and is always verified before an entry is reused.
+    $cacheEntryName = $cacheKey.Substring(0, 24)
+    $cacheDir = Join-Path $SidecarCacheRoot $cacheEntryName
+    $existingCacheManifestPath = Join-Path $cacheDir "cache-manifest.json"
+    if (Test-Path -LiteralPath $existingCacheManifestPath -PathType Leaf) {
+        try {
+            $existingCacheManifest = Get-Content -LiteralPath $existingCacheManifestPath -Raw | ConvertFrom-Json
+            $existingCacheKey = [string]$existingCacheManifest.cacheKey
+            $existingInputJson = $existingCacheManifest.inputManifest | ConvertTo-Json -Depth 8 -Compress
+            $existingIdentityValid = (
+                $existingCacheKey -match '^[0-9a-f]{64}$' -and
+                $existingCacheKey.StartsWith($cacheEntryName, [System.StringComparison]::Ordinal) -and
+                (Get-StringSha256 -Value $existingInputJson) -eq $existingCacheKey
+            )
+            if ($existingIdentityValid -and $existingCacheKey -ne $cacheKey) {
+                throw "Backend sidecar cache entry prefix collision; refusing to replace a different complete SHA-256 identity."
+            }
+        } catch {
+            if ($_.Exception.Message -like "Backend sidecar cache entry prefix collision*") {
+                throw
+            }
+            # A malformed or interrupted entry is not reusable. The normal
+            # exact validation and directory sync below will replace it.
+        }
+    }
     $cachedSidecarDir = Join-Path $cacheDir "scriber-backend"
     $cachedSidecarExe = Join-Path $cachedSidecarDir "scriber-backend.exe"
     $expectedFlags = Get-SidecarFlagState

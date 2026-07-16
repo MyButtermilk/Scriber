@@ -217,7 +217,9 @@ Packaging/build:
   integrity boundaries, not a replacement for release signing or an operating-
   system trust boundary.
 - The complete composed sidecar can still be reused through its existing exact
-  hash cache.
+  hash cache. Its Windows directory uses the first 24 hexadecimal characters
+  only to stay below legacy `MAX_PATH` limits; `cache-manifest.json` retains
+  and revalidates the complete SHA-256 identity before reuse.
 - PyInstaller sidecar release sync is content-aware, so unchanged files are not
   rewritten into the Tauri release tree.
 - When the Tauri release backend target already has the current sidecar cache

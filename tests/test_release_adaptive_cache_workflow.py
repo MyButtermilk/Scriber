@@ -61,6 +61,8 @@ def test_runtime_tree_identity_is_compatible_with_windows_powershell() -> None:
         assert "Get-FileIdentityTreeSha256" in script
         assert ".IndexOf([char]0) -ge 0" in script
         assert ".Contains([char]0)" not in script
+    assert "$Object -is [System.Collections.IDictionary]" in scripts[0]
+    assert "$Object.Contains($Name)" in scripts[0]
 
     windows_powershell = shutil.which("powershell")
     if windows_powershell:
@@ -69,10 +71,11 @@ def test_runtime_tree_identity_is_compatible_with_windows_powershell() -> None:
                 windows_powershell,
                 "-NoProfile",
                 "-Command",
-                "$path = 'runtime/file'; "
+                "$entry = [ordered]@{ path = 'runtime/file'; length = 1; sha256 = 'a' }; "
+                "$path = if ($entry -is [System.Collections.IDictionary] -and $entry.Contains('path')) { [string]$entry['path'] } else { [string]$entry.PSObject.Properties['path'].Value }; "
                 "$byPath = [System.Collections.Generic.SortedDictionary[string, object]]::new([System.StringComparer]::Ordinal); "
                 "if ($path.IndexOf([char]0) -ge 0) { throw 'false NUL match' }; "
-                "$byPath.Add($path, [pscustomobject]@{ length = 1; sha256 = 'a' }); "
+                "$byPath.Add($path, $entry); "
                 "if ($byPath.Count -ne 1) { throw 'sorted dictionary failed' }; "
                 "Write-Output 'OK'",
             ],
@@ -83,6 +86,51 @@ def test_runtime_tree_identity_is_compatible_with_windows_powershell() -> None:
         )
         assert probe.returncode == 0, probe.stdout + probe.stderr
         assert "OK" in probe.stdout
+
+
+def test_backend_cache_keeps_full_identity_but_uses_a_windows_safe_entry_name() -> None:
+    builder = _read("scripts/build_tauri_backend_sidecar.ps1")
+    validator = _read("scripts/ci/validate_backend_sidecar_cache.ps1")
+    selector = _read("scripts/ci/select_backend_sidecar_cache_entry.ps1")
+    cold_product = _read("scripts/ci/sync_cold_backend_product.ps1")
+
+    assert "$cacheEntryName = $cacheKey.Substring(0, 24)" in builder
+    assert "$existingIdentityValid" in builder
+    assert "$existingCacheKey.StartsWith($cacheEntryName" in builder
+    assert "(Get-StringSha256 -Value $existingInputJson) -eq $existingCacheKey" in builder
+    assert "cache entry prefix collision" in builder
+    assert "$cacheEntryName = $cacheKey.Substring(0, 24)" in selector
+    assert "$entries[0].Name -notmatch '^[0-9a-f]{24}$'" in validator
+    assert "$cacheEntryName -ne $cacheKey.Substring(0, 24)" in validator
+    assert "$backendEntries[0].Name -notmatch '^[0-9a-f]{24}$'" in cold_product
+    assert "$backendCacheKey -notmatch '^[0-9a-f]{64}$'" in cold_product
+    assert "$backendEntries[0].Name -ne $backendCacheKey.Substring(0, 24)" in cold_product
+    assert "$relative.Contains(\"..\")" not in cold_product
+    assert "$relative -match '(^|/)\\.\\.($|/)'" in cold_product
+
+    windows_powershell = shutil.which("powershell")
+    if windows_powershell:
+        path_probe = subprocess.run(
+            [
+                windows_powershell,
+                "-NoProfile",
+                "-Command",
+                "$relative = 'scriber-backend\\_internal\\pipecat\\cli\\templates\\client\\react-nextjs\\src\\app\\api\\sessions\\[sessionId]\\[...path]\\route.ts'; "
+                "$baseLength = 240 - 24 - 1 - $relative.Length; "
+                "$base = 'C:\\' + ('b' * ($baseLength - 3)); "
+                "$bounded = $base + ('f' * 24) + '\\' + $relative; "
+                "$legacy = $base + ('f' * 64) + '\\' + $relative; "
+                "try { [void][IO.Path]::GetFullPath($legacy); Write-Output 'LEGACY_OK' } catch { Write-Output 'LEGACY_TOO_LONG' }; "
+                "try { [void][IO.Path]::GetFullPath($bounded); Write-Output 'BOUNDED_OK' } catch { Write-Output 'BOUNDED_TOO_LONG' }",
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert path_probe.returncode == 0, path_probe.stdout + path_probe.stderr
+        assert "LEGACY_TOO_LONG" in path_probe.stdout
+        assert "BOUNDED_OK" in path_probe.stdout
 
 
 def test_runtime_cache_binding_occurs_only_after_fresh_build_output() -> None:

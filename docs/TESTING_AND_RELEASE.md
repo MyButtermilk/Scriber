@@ -767,7 +767,10 @@ It:
   bundle` path runs only after both complete,
 - prunes `build\tauri-sidecar-cache` to the one metadata-attested internal key
   before Actions save or durable publication, preventing cache generations
-  from recursively accumulating older complete PyInstaller sidecars,
+  from recursively accumulating older complete PyInstaller sidecars. The
+  entry directory is a 24-hex SHA-256 prefix for Windows PowerShell 5.1 path
+  safety; selection, cold-product transfer, and validation continue to bind it
+  to the complete 64-hex key stored in the manifest,
 - reports exact Actions hits, ambiguous Actions `restore-key-or-miss` outputs,
   release-artifact fallbacks, and cheap path evidence separately. In GitHub
   cache terminology, `cache-hit=false` can mean a restore-key hit or a true

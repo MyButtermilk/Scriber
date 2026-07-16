@@ -18,8 +18,10 @@ def test_backend_sidecar_cache_selection_keeps_only_attested_entry() -> None:
     metadata_path = fixture_root / "sidecar-build-metadata.json"
     selected_key = "a" * 64
     stale_key = "b" * 64
-    selected = cache_root / selected_key
-    stale = cache_root / stale_key
+    selected_entry = selected_key[:24]
+    stale_entry = stale_key[:24]
+    selected = cache_root / selected_entry
+    stale = cache_root / stale_entry
     try:
         (selected / "scriber-backend").mkdir(parents=True)
         selected_exe = selected / "scriber-backend" / "scriber-backend.exe"
@@ -62,6 +64,61 @@ def test_backend_sidecar_cache_selection_keeps_only_attested_entry() -> None:
         assert result.returncode == 0, result.stderr
         assert selected.is_dir()
         assert not stale.exists()
-        assert [path.name for path in cache_root.iterdir()] == [selected_key]
+        assert [path.name for path in cache_root.iterdir()] == [selected_entry]
+    finally:
+        shutil.rmtree(fixture_root, ignore_errors=True)
+
+
+def test_backend_sidecar_cache_selection_rejects_prefix_collision_before_pruning() -> None:
+    fixture_root = REPO_ROOT / "build" / f"cache-prefix-collision-test-{uuid.uuid4().hex}"
+    cache_root = fixture_root / "cache"
+    metadata_path = fixture_root / "sidecar-build-metadata.json"
+    selected_key = "a" * 64
+    colliding_key = ("a" * 24) + ("c" * 40)
+    selected = cache_root / selected_key[:24]
+    stale = cache_root / ("b" * 24)
+    try:
+        (selected / "scriber-backend").mkdir(parents=True)
+        selected_exe = selected / "scriber-backend" / "scriber-backend.exe"
+        selected_exe.write_bytes(b"collision")
+        (selected / "cache-manifest.json").write_text(
+            json.dumps(
+                {
+                    "cacheKey": colliding_key,
+                    "sidecarSha256": hashlib.sha256(b"collision").hexdigest(),
+                    "sidecarLength": selected_exe.stat().st_size,
+                }
+            ),
+            encoding="utf-8",
+        )
+        stale.mkdir(parents=True)
+        (stale / "stale.bin").write_bytes(b"stale")
+        metadata_path.write_text(
+            json.dumps({"cache": {"key": selected_key}}), encoding="utf-8"
+        )
+
+        result = subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(SELECT_BACKEND_CACHE),
+                "-CacheRoot",
+                str(cache_root.relative_to(REPO_ROOT)),
+                "-MetadataPath",
+                str(metadata_path.relative_to(REPO_ROOT)),
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode != 0
+        assert "manifest key does not match" in (result.stdout + result.stderr)
+        assert selected.is_dir()
+        assert stale.is_dir()
     finally:
         shutil.rmtree(fixture_root, ignore_errors=True)

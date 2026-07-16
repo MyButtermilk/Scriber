@@ -38,8 +38,9 @@ $cacheKey = [string]$metadata.cache.key
 if ($cacheKey -notmatch '^[0-9a-f]{64}$') {
     throw "Backend sidecar metadata contains an invalid cache key."
 }
+$cacheEntryName = $cacheKey.Substring(0, 24)
 
-$selectedPath = [System.IO.Path]::GetFullPath((Join-Path $resolvedCacheRoot $cacheKey))
+$selectedPath = [System.IO.Path]::GetFullPath((Join-Path $resolvedCacheRoot $cacheEntryName))
 $cacheRootPrefix = $resolvedCacheRoot.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
 if (-not $selectedPath.StartsWith($cacheRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Selected backend sidecar cache entry escaped the cache root."
@@ -77,7 +78,7 @@ $bytesBefore = if (Test-Path -LiteralPath $resolvedCacheRoot -PathType Container
 
 $removed = [System.Collections.Generic.List[string]]::new()
 foreach ($entry in $entriesBefore) {
-    if ($entry.Name -eq $cacheKey) {
+    if ($entry.Name -eq $cacheEntryName) {
         continue
     }
     $resolvedEntry = [System.IO.Path]::GetFullPath($entry.FullName)
@@ -91,7 +92,7 @@ foreach ($entry in $entriesBefore) {
 $entriesAfter = @(
     Get-ChildItem -LiteralPath $resolvedCacheRoot -Directory -Force -ErrorAction SilentlyContinue
 )
-if ($entriesAfter.Count -ne 1 -or $entriesAfter[0].Name -ne $cacheKey) {
+if ($entriesAfter.Count -ne 1 -or $entriesAfter[0].Name -ne $cacheEntryName) {
     throw "Backend sidecar cache pruning did not leave exactly the selected entry."
 }
 $bytesAfter = Get-DirectorySizeBytes -Path $resolvedCacheRoot
