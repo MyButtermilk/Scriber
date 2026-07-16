@@ -3,6 +3,7 @@ import json
 import pytest
 
 from src import summarization
+from src.summary_html import normalize_summary_html
 
 
 def _words(count: int) -> str:
@@ -227,10 +228,10 @@ def test_dynamic_length_instruction_contains_budget():
     assert "Längenregel" in instruction
 
 
-def test_normalize_summary_markdown_converts_unicode_bullets():
+def test_normalize_summary_html_converts_markdown_drift():
     raw = "Titel\n\n•\tErster Punkt\n• Zweiter Punkt"
-    normalized = summarization._normalize_summary_markdown(raw)
-    assert normalized == "Titel\n\n- Erster Punkt\n- Zweiter Punkt"
+    normalized = normalize_summary_html(raw)
+    assert normalized == "<p>Titel</p><ul><li>Erster Punkt</li><li>Zweiter Punkt</li></ul>"
 
 
 @pytest.mark.asyncio
@@ -247,12 +248,13 @@ async def test_summarize_text_passes_dynamic_budget_to_model(monkeypatch: pytest
 
     out = await summarization.summarize_text(_words(4000), model="gpt-5-mini")
 
-    assert out == "ok"
+    assert out == "<p>ok</p>"
     assert captured["model"] == "gpt-5-mini"
     assert isinstance(captured["max_output_tokens"], int)
     assert captured["max_output_tokens"] >= 512
     assert "Zusätzliche Längenregel" in str(captured["prompt"])
-    assert "niemals den Bullet-Charakter '•'" in str(captured["prompt"])
+    assert "Return only one semantic, static HTML fragment" in str(captured["prompt"])
+    assert "Do not return Markdown" in str(captured["prompt"])
     assert "Infer the dominant natural language from the transcript itself" in str(captured["prompt"])
     assert "UNTRUSTED_TRANSCRIPT_TEXT:" in str(captured["prompt"])
 
@@ -274,7 +276,7 @@ async def test_summarize_text_uses_configured_language_only_as_ambiguous_fallbac
         "Wir besprechen heute die nächsten Schritte.", model="gpt-5-mini"
     )
 
-    assert result == "Deutsche Zusammenfassung"
+    assert result == "<p>Deutsche Zusammenfassung</p>"
     assert "Only if the transcript is too short or language-neutral to decide, use de-DE" in captured["prompt"]
     assert "do not translate the transcript" in captured["prompt"]
 
@@ -319,7 +321,7 @@ async def test_summarize_text_uses_duration_based_boost(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
-async def test_summarize_text_normalizes_markdown_bullets(monkeypatch: pytest.MonkeyPatch):
+async def test_summarize_text_projects_markdown_model_drift_to_html(monkeypatch: pytest.MonkeyPatch):
     async def _fake_gemini(_prompt: str, _model: str, _max_output_tokens: int) -> str:
         return "Zusammenfassung\n\n•\tPunkt A\n• Punkt B"
 
@@ -327,7 +329,7 @@ async def test_summarize_text_normalizes_markdown_bullets(monkeypatch: pytest.Mo
 
     out = await summarization.summarize_text("x y z", model="gemini-flash-latest")
 
-    assert out == "Zusammenfassung\n\n- Punkt A\n- Punkt B"
+    assert out == "<p>Zusammenfassung</p><ul><li>Punkt A</li><li>Punkt B</li></ul>"
 
 
 @pytest.mark.asyncio
@@ -343,7 +345,7 @@ async def test_summarize_text_openrouter_model_uses_nitro(monkeypatch: pytest.Mo
 
     out = await summarization.summarize_text("x y z", model="minimax/minimax-m3")
 
-    assert out == "openrouter summary"
+    assert out == "<p>openrouter summary</p>"
     assert captured["models"] == "minimax/minimax-m3:nitro"
 
 
@@ -360,7 +362,7 @@ async def test_summarize_text_gpt_oss_120b_keeps_provider_routed_model(monkeypat
 
     out = await summarization.summarize_text("x y z", model="openai/gpt-oss-120b")
 
-    assert out == "openrouter summary"
+    assert out == "<p>openrouter summary</p>"
     assert captured["models"] == "openai/gpt-oss-120b"
 
 
@@ -616,7 +618,7 @@ async def test_summarize_text_falls_back_to_openrouter_when_primary_fails(monkey
 
     out = await summarization.summarize_text("x y z", model="gemini-3.5-flash")
 
-    assert out == "openrouter fallback"
+    assert out == "<p>openrouter fallback</p>"
     assert captured["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"]
 
 

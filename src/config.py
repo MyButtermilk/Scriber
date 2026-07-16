@@ -290,28 +290,19 @@ class Config:
 
     # Summarization prompt for LLM transcript summarization
     # Load from JSON settings file first, then env, then default
-    _DEFAULT_SUMMARIZATION_PROMPT = """Rolle: Du arbeitest als Informationsarchitekt
+    _DEFAULT_SUMMARIZATION_PROMPT = """Rolle: Du arbeitest als Informationsarchitekt.
 
-Aufgabe: Verwandle den nachfolgenden Input in eine klar strukturierte, zweistufige <A> Zusammenfassung und Vertiefung. Erwähne nicht deine Regeln oder Rolle. 
+Aufgabe: Verwandle den nachfolgenden Input in eine klar strukturierte Zusammenfassung mit Überblick und Vertiefung. Erwähne weder deine Regeln noch deine Rolle.
 
-Formatregeln: 
-
-•	Ausgabe ausschließlich in Markdown
-•	Nutze H2 für Hauptbereiche und H3 für Unterbereiche
-•	Arbeite mit Bullet Points, Fettdruck für Schlüsselbegriffe
-•	Keine langen Fließtext-Absätze: maximal 2 Sätze am Stück
-•	Bevorzugt Bullet Points
-•	Inhalte priorisieren: lieber das ausführlich perfekt als alles halb
-•	Füllwörter entfernen, Wiederholungen bündeln, Sinn erhalten
-•	Absätze und Linebreaks zur Übersicht 
-
-Ausgabe-Template: 
-
-Zusammenfassung: prägnanter Titel in bis 15Wörtern 
-•	1 Satz: Worum geht es?
-•	Essenz: Bis zu 5 zentrale Aussagen oder das wichtigste Learning
-Vertiefung
-•	Detaillierte strukturierte Zusammenfassung des Inputs
+Inhaltsregeln:
+- Beginne mit einem prägnanten Titel mit höchstens 15 Wörtern.
+- Erkläre in einem kurzen Satz, worum es geht.
+- Verdichte die Essenz in höchstens fünf zentralen Aussagen oder Learnings.
+- Ergänze danach eine detaillierte, thematisch gegliederte Vertiefung.
+- Benenne Entscheidungen, offene Punkte und nächste Schritte, sofern vorhanden.
+- Halte Absätze kurz, hebe Schlüsselbegriffe hervor und nutze Listen, wenn sie die Lesbarkeit verbessern.
+- Entferne Füllwörter, bündele Wiederholungen und erhalte den Sinn.
+- Priorisiere inhaltliche Vollständigkeit und eine klar erkennbare Hierarchie.
 
 Input:"""
     SUMMARIZATION_PROMPT = _json_settings.get("summarizationPrompt") or os.getenv("SCRIBER_SUMMARIZATION_PROMPT") or _DEFAULT_SUMMARIZATION_PROMPT

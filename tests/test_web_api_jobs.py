@@ -1400,9 +1400,31 @@ async def test_summary_state_update_avoids_full_transcript_rewrite(monkeypatch):
             "status": "completed",
             "error": "",
             "summary": "short summary",
+            "summary_format": "html",
             "step": "Completed",
         }
     ]
+
+
+def test_new_transcription_attempt_resets_summary_format_to_markdown():
+    rec = TranscriptRecord(
+        id="summary-format-reset",
+        title="Retry",
+        date="Today",
+        duration="00:10",
+        status="completed",
+        type="file",
+        language="en",
+        content="old content",
+    )
+    rec.mark_summary_completed("<section><h2>Old</h2></section>")
+    assert rec.summary_format == "html"
+
+    rec.reset_transcription_attempt()
+
+    assert rec.summary == ""
+    assert rec.summary_format == "markdown"
+    assert rec.summary_status == "idle"
 
 
 @pytest.mark.asyncio

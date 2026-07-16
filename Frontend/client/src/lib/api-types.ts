@@ -1,5 +1,6 @@
 export type TranscriptStatus = "completed" | "processing" | "failed" | "recording" | "stopped";
 export type SummaryStatus = "idle" | "pending" | "completed" | "failed";
+export type SummaryFormat = "html" | "markdown";
 
 export const REST_API_VERSION = "1";
 
@@ -866,6 +867,7 @@ export interface TranscriptHistoryItem {
   processingStartedAt?: string;
   preview?: string;
   summary?: string;
+  summaryFormat?: SummaryFormat;
   summaryStatus?: SummaryStatus;
   summaryError?: string;
   summaryUpdatedAt?: string;

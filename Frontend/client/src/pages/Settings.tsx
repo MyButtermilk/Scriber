@@ -3422,7 +3422,7 @@ export default function Settings() {
   const summarizationPromptSettings = (
     <FieldShell
       label="Summarization prompt"
-      detail="Used for automatic and manual transcript summaries."
+      detail="Controls content and emphasis. Scriber always applies a safe HTML structure for display."
     >
       <Textarea
         value={summarizationPrompt}

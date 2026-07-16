@@ -22,6 +22,8 @@ def _failed_summary_record() -> TranscriptRecord:
         language="de",
         step="Completed",
         content="This durable transcript must be summarized without rerunning STT.",
+        summary="## Previous summary",
+        summary_format="markdown",
         summary_status="failed",
         summary_error="previous provider timeout",
         created_at=now,
@@ -49,7 +51,7 @@ async def test_summary_retry_uses_durable_transcript_and_rejects_duplicate_reque
         captured.update(content=content, model=model, duration=duration or "")
         started.set()
         await release.wait()
-        return "## Summary\n\n- Recovered from the saved transcript."
+        return "<section><h2>Summary</h2><p>Recovered from the saved transcript.</p></section>"
 
     save_state = AsyncMock()
     broadcast = AsyncMock()
@@ -81,12 +83,17 @@ async def test_summary_retry_uses_durable_transcript_and_rejects_duplicate_reque
         await client.close()
 
     assert response.status == 200
-    assert payload == {"success": True, "summary": "## Summary\n\n- Recovered from the saved transcript."}
+    assert payload == {
+        "success": True,
+        "summary": "<section><h2>Summary</h2><p>Recovered from the saved transcript.</p></section>",
+        "summaryFormat": "html",
+    }
     assert captured["content"] == record.content
     assert captured["duration"] == "08:49"
     assert record.status == "completed"
     assert record.summary_status == "completed"
     assert record.summary_error == ""
+    assert record.summary_format == "html"
     assert record.id not in controller._summary_tasks
     reasons = [call.kwargs["reason"] for call in broadcast.await_args_list]
     assert reasons == ["summary_pending", "summary_completed"]
@@ -129,6 +136,8 @@ async def test_summary_retry_failure_keeps_transcript_completed_and_persists_err
     assert record.content.startswith("This durable transcript")
     assert record.summary_status == "failed"
     assert record.summary_error == "summary provider timed out"
+    assert record.summary == "## Previous summary"
+    assert record.summary_format == "markdown"
     reasons = [call.kwargs["reason"] for call in broadcast.await_args_list]
     assert reasons == ["summary_pending", "summary_failed"]
     assert save_state.await_count == 2

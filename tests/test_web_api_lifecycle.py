@@ -1006,6 +1006,7 @@ async def test_render_transcript_export_async_runs_renderer(monkeypatch):
     def fake_render(**kwargs):
         assert kwargs["export_format"] == "pdf"
         assert kwargs["title"] == "Title"
+        assert kwargs["summary_format"] == "html"
         assert kwargs["document_labels"] == labels
         return b"pdf", "application/pdf", "pdf"
 
@@ -1016,6 +1017,7 @@ async def test_render_transcript_export_async_runs_renderer(monkeypatch):
         title="Title",
         content="Body",
         summary="Summary",
+        summary_format="html",
         date="Today",
         duration="00:01",
         document_labels=labels,
@@ -1069,6 +1071,7 @@ def test_render_transcript_export_passes_localized_labels_to_document_renderer(
     assert content_type == expected_type
     assert extension == expected_ext
     assert captured["labels"] == labels
+    assert captured["summary_format"] == "markdown"
 
 
 def test_attachment_content_disposition_supports_unicode_safely():
@@ -2886,7 +2889,7 @@ class _StopOkNamedPipeline(_StopOkPipeline):
 
 
 @pytest.mark.asyncio
-async def test_emergency_stop_clears_state_and_stopping_flag():
+async def test_emergency_stop_clears_state_before_resuming_idle_prewarm(monkeypatch):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
 
@@ -2900,6 +2903,15 @@ async def test_emergency_stop_clears_state_and_stopping_flag():
     pipeline = _StopOkPipeline()
     ctl._pipeline = pipeline
     ctl._pipeline_task = asyncio.create_task(asyncio.sleep(10))
+    resume_states: list[tuple[bool, object | None]] = []
+
+    monkeypatch.setattr(
+        ctl,
+        "_resume_idle_mic_prewarm_after_capture",
+        lambda: resume_states.append(
+            (ctl._is_stopping, getattr(ctl, "_live_mic_stop_owner", None))
+        ),
+    )
 
     await ctl._emergency_stop_pipeline(session_id=session_id)
 
@@ -2910,6 +2922,7 @@ async def test_emergency_stop_clears_state_and_stopping_flag():
     assert ctl._pipeline_task is None
     assert ctl._session_id is None
     assert ctl._current is None
+    assert resume_states == [(False, None)]
 
 
 @pytest.mark.asyncio

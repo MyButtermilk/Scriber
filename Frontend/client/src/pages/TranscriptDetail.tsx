@@ -18,9 +18,11 @@ import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import ReactMarkdown from "react-markdown";
 import { QueryErrorState } from "@/components/ui/query-error-state";
+import { SummaryTableOfContents, TranscriptSummaryDocument } from "@/components/transcript-summary-document";
 import { DesktopTitleBar } from "@/components/DesktopTitleBar";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { extractFailureMessage, friendlyError, friendlyRequestMessage, responseErrorMessage } from "@/lib/request-errors";
+import { prepareSummaryHtml } from "@/lib/summary-html";
 import type { SettingsResponse, TranscriptDetailResponse, TranscriptHistoryItem } from "@/lib/api-types";
 
 function normalizeSummaryMarkdown(text: string): string {
@@ -332,6 +334,7 @@ export default function TranscriptDetail() {
   const [copiedSummary, setCopiedSummary] = useState(false);
   const copyResetTimerRef = useRef<number | null>(null);
   const summaryCopyResetTimerRef = useRef<number | null>(null);
+  const mainScrollRef = useRef<HTMLElement | null>(null);
   const [isRetryingYoutube, setIsRetryingYoutube] = useState(false);
   const queryClient = useQueryClient();
   const { isWsConnected } = useTranscriptAutoRefresh({
@@ -419,11 +422,23 @@ export default function TranscriptDetail() {
     startedAt: transcript.processingStartedAt,
     resetKey: transcript.id,
   });
-  const summaryMarkdown = useMemo(
-    () => normalizeSummaryMarkdown(String(transcript?.summary || "")),
+  const summarySource = useMemo(
+    () => String(transcript?.summary || "").trim(),
     [transcript?.summary],
   );
-  const hasSummary = summaryMarkdown.length > 0;
+  const summaryFormat = transcript.summaryFormat === "html" ? "html" : "markdown";
+  const preparedSummaryHtml = useMemo(
+    () => summaryFormat === "html"
+      ? prepareSummaryHtml(summarySource)
+      : { html: "", outline: [], plainText: "" },
+    [summaryFormat, summarySource],
+  );
+  const summaryMarkdown = useMemo(
+    () => normalizeSummaryMarkdown(summarySource),
+    [summarySource],
+  );
+  const summaryCopyText = summaryFormat === "html" ? preparedSummaryHtml.plainText : summaryMarkdown;
+  const hasSummary = summarySource.length > 0;
   const summaryStatus = String(transcript?.summaryStatus || (hasSummary ? "completed" : "idle")).toLowerCase();
   const summaryStepLower = String(transcript?.step || "").toLowerCase();
   const updatedAtMs = Date.parse(String(transcript?.updatedAt || ""));
@@ -555,7 +570,7 @@ export default function TranscriptDetail() {
       if (!navigator.clipboard?.writeText) {
         throw new Error("Clipboard API unavailable");
       }
-      await navigator.clipboard.writeText(summaryMarkdown || "");
+      await navigator.clipboard.writeText(summaryCopyText || "");
       setCopiedSummary(true);
       if (summaryCopyResetTimerRef.current !== null) {
         window.clearTimeout(summaryCopyResetTimerRef.current);
@@ -574,7 +589,7 @@ export default function TranscriptDetail() {
         variant: "destructive",
       });
     }
-  }, [summaryMarkdown, toast]);
+  }, [summaryCopyText, toast]);
 
   const getBackLink = () => {
     switch (transcript?.type) {
@@ -598,6 +613,9 @@ export default function TranscriptDetail() {
       setAccordionValue(["summary"]);
     }
   }, [transcript.summary]);
+  const showSummaryToc = summaryFormat === "html"
+    && preparedSummaryHtml.outline.length >= 2
+    && accordionValue.includes("summary");
 
   return (
     <div className="h-screen bg-background flex flex-col overflow-hidden">
@@ -719,8 +737,8 @@ export default function TranscriptDetail() {
       </header>
 
       {/* Main Content */}
-      <main className="min-h-0 flex-1 overflow-y-auto p-4 md:p-8 md:px-16 lg:px-32">
-        <div className="max-w-3xl mx-auto space-y-6">
+      <main ref={mainScrollRef} className="transcript-detail-scroll min-h-0 flex-1 overflow-y-auto p-4 md:p-8 md:px-12 lg:px-8 xl:px-12">
+        <div className={`transcript-detail-shell space-y-6${showSummaryToc ? " has-summary-toc" : ""}`}>
 
           {/* Meta Card */}
           <div className="flex flex-wrap gap-2">
@@ -781,8 +799,12 @@ export default function TranscriptDetail() {
             </div>
           )}
 
-          {/* Accordion with Summary and Transcript */}
-          <Accordion type="multiple" value={accordionValue} onValueChange={setAccordionValue} className="space-y-4">
+          <div className="transcript-summary-layout">
+            {showSummaryToc && (
+              <SummaryTableOfContents outline={preparedSummaryHtml.outline} scrollContainerRef={mainScrollRef} />
+            )}
+            {/* Accordion with Summary and Transcript */}
+            <Accordion type="multiple" value={accordionValue} onValueChange={setAccordionValue} className="transcript-detail-accordion space-y-4">
             {/* Summary Section */}
             <AccordionItem value="summary" className="neu-recording-row overflow-hidden">
               <AccordionTrigger className="px-4 py-3 hover:no-underline">
@@ -805,9 +827,13 @@ export default function TranscriptDetail() {
               </AccordionTrigger>
               <AccordionContent className="px-4 pb-4">
                 {hasSummary ? (
-                  <div className="prose dark:prose-invert max-w-none">
-                    <ReactMarkdown>{summaryMarkdown}</ReactMarkdown>
-                  </div>
+                  summaryFormat === "html" ? (
+                    <TranscriptSummaryDocument prepared={preparedSummaryHtml} />
+                  ) : (
+                    <div className="summary-document summary-document--markdown">
+                      <ReactMarkdown>{summaryMarkdown}</ReactMarkdown>
+                    </div>
+                  )
                 ) : (
                   <p className="text-base text-muted-foreground italic">
                     {transcript.status === "completed"
@@ -851,6 +877,7 @@ export default function TranscriptDetail() {
               </AccordionContent>
             </AccordionItem>
           </Accordion>
+          </div>
 
         </div>
       </main>

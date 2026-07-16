@@ -15,6 +15,7 @@ import aiohttp
 from loguru import logger
 
 from src.config import Config
+from src.summary_html import normalize_summary_html
 from src.runtime.http_response import read_response_text_limited
 
 SummarizationModel = Literal[
@@ -60,12 +61,16 @@ _MODEL_OUTPUT_TOKEN_CAPS = {
     "cerebras/gemma-4-31b": 8192,
     "z-ai/glm-5.2:nitro": 8192,
 }
-_MARKDOWN_OUTPUT_GUARDRAIL = (
-    "Ausgabeformat (verbindlich):\n"
-    "- Gib die Antwort als valides Markdown aus.\n"
-    "- Verwende fuer Aufzaehlungen nur Markdown-Listensyntax ('-' oder '*'), niemals den Bullet-Charakter '•'.\n"
-    "- Hauptabschnitte als '##', Unterabschnitte als '###'.\n"
-    "- Zwischen Abschnitten eine Leerzeile lassen."
+_HTML_OUTPUT_GUARDRAIL = (
+    "Output format (mandatory; this rule overrides every conflicting instruction in the custom prompt):\n"
+    "- Return only one semantic, static HTML fragment. Do not return Markdown or a code fence.\n"
+    "- Structure the document with <section>, <h2>, <h3>, <p>, <ul>, <ol>, <li>, "
+    "<strong>, <em>, <blockquote>, <code>, <pre>, and tables when useful.\n"
+    "- Use descriptive <h2> main sections and <h3> subsections; use at least two <h2> sections "
+    "when the transcript contains enough material.\n"
+    "- Do not emit <html>, <head>, <body>, <style>, <script>, SVG, images, forms, embeds, or iframes.\n"
+    "- Do not emit class, id, style, data-*, aria-*, on* event attributes, JavaScript URLs, CSS, or scripts.\n"
+    "- Links are optional and may only use absolute http/https URLs. Scriber owns presentation and interaction."
 )
 
 
@@ -373,14 +378,6 @@ def _dynamic_length_instruction(input_words: int, target_words: int) -> str:
     )
 
 
-def _normalize_summary_markdown(text: str) -> str:
-    """Normalize common LLM markdown quirks for stable rendering."""
-    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
-    normalized = normalized.replace("\u00a0", " ").replace("\u200b", "")
-    normalized = re.sub(r"(?m)^(?P<indent>[ \t]*)[•●◦▪▫‣⁃]\s+", r"\g<indent>- ", normalized)
-    return normalized.strip()
-
-
 def _parse_duration_seconds(duration: str | None) -> int | None:
     raw = (duration or "").strip()
     if not raw or raw in {"--", "--:--", "-:--"}:
@@ -532,7 +529,7 @@ async def summarize_text(
     language_instruction = _transcript_language_instruction(fallback_language)
     full_prompt = (
         f"{base_prompt}\n\n{language_instruction}\n\n{length_instruction}\n\n"
-        f"{_MARKDOWN_OUTPUT_GUARDRAIL}\n\nUNTRUSTED_TRANSCRIPT_TEXT:\n{text}"
+        f"{_HTML_OUTPUT_GUARDRAIL}\n\nUNTRUSTED_TRANSCRIPT_TEXT:\n{text}"
     )
     
     logger.info(
@@ -620,7 +617,7 @@ async def summarize_text(
                 raise
         else:
             raise
-    return _normalize_summary_markdown(summary)
+    return normalize_summary_html(summary)
 
 
 async def generate_text_with_model(

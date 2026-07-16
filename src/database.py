@@ -13,6 +13,7 @@ from datetime import datetime
 from loguru import logger
 
 from src.runtime.paths import database_path
+from src.summary_html import summary_visible_text
 
 _DB_PATH = database_path()
 
@@ -57,7 +58,8 @@ def _sync_fts_row(conn: sqlite3.Connection, transcript_id: str) -> None:
     conn.execute(
         """
         INSERT INTO transcripts_fts(rowid, id, title, content, summary, channel)
-        SELECT rowid, id, title, content, summary, channel
+        SELECT rowid, id, title, content,
+               scriber_summary_text(summary, summary_format), channel
         FROM transcripts
         WHERE id = ?
         """,
@@ -84,6 +86,12 @@ def _get_connection() -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.create_function(
+            "scriber_summary_text",
+            2,
+            summary_visible_text,
+            deterministic=True,
+        )
         _thread_local.conn = conn
         # Track all connections for cleanup on exit
         with _connections_lock:
@@ -136,6 +144,7 @@ def init_database() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 summary TEXT DEFAULT '',
+                summary_format TEXT DEFAULT 'markdown',
                 summary_status TEXT DEFAULT 'idle',
                 summary_error TEXT DEFAULT '',
                 summary_updated_at TEXT DEFAULT ''
@@ -151,6 +160,15 @@ def init_database() -> None:
             conn.execute("ALTER TABLE transcripts ADD COLUMN summary_error TEXT DEFAULT ''")
         if "summary_updated_at" not in cols:
             conn.execute("ALTER TABLE transcripts ADD COLUMN summary_updated_at TEXT DEFAULT ''")
+        if "summary_format" not in cols:
+            conn.execute("ALTER TABLE transcripts ADD COLUMN summary_format TEXT DEFAULT 'markdown'")
+        conn.execute(
+            """
+            UPDATE transcripts
+            SET summary_format = 'markdown'
+            WHERE COALESCE(summary_format, '') = ''
+            """
+        )
         conn.execute(
             """
             UPDATE transcripts
@@ -208,12 +226,28 @@ def init_database() -> None:
             LIMIT 1
             """
         ).fetchone()
-        if total_rows != total_fts or fts_missing_row is not None or fts_orphan_row is not None:
+        fts_content_mismatch = conn.execute(
+            """
+            SELECT 1
+            FROM transcripts t
+            JOIN transcripts_fts f ON f.rowid = t.rowid AND f.id = t.id
+            WHERE COALESCE(f.summary, '') <>
+                  scriber_summary_text(t.summary, t.summary_format)
+            LIMIT 1
+            """
+        ).fetchone()
+        if (
+            total_rows != total_fts
+            or fts_missing_row is not None
+            or fts_orphan_row is not None
+            or fts_content_mismatch is not None
+        ):
             conn.execute("DELETE FROM transcripts_fts")
             conn.execute(
                 """
                 INSERT INTO transcripts_fts(rowid, id, title, content, summary, channel)
-                SELECT rowid, id, title, content, summary, channel
+                SELECT rowid, id, title, content,
+                       scriber_summary_text(summary, summary_format), channel
                 FROM transcripts
                 """
             )
@@ -226,14 +260,18 @@ def save_transcript(record: Any) -> None:
     try:
         data = dict(record) if isinstance(record, dict) else record.to_public(include_content=True)
         preview = data.get("preview", "") or _compute_preview(data.get("content", ""))
+        summary = str(data.get("summary", "") or "")
+        summary_format = str(data.get("summaryFormat", "") or "").strip().lower()
+        if summary_format not in {"html", "markdown"}:
+            summary_format = "markdown"
         # Map camelCase to snake_case for database
         with _get_connection() as conn:
             conn.execute("""
                 INSERT INTO transcripts
                 (id, title, date, duration, status, type, language, step, 
                  source_url, channel, thumbnail_url, content, preview, created_at, updated_at,
-                 summary, summary_status, summary_error, summary_updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 summary, summary_format, summary_status, summary_error, summary_updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title,
                     date = excluded.date,
@@ -250,6 +288,7 @@ def save_transcript(record: Any) -> None:
                     created_at = excluded.created_at,
                     updated_at = excluded.updated_at,
                     summary = excluded.summary,
+                    summary_format = excluded.summary_format,
                     summary_status = excluded.summary_status,
                     summary_error = excluded.summary_error,
                     summary_updated_at = excluded.summary_updated_at
@@ -269,7 +308,8 @@ def save_transcript(record: Any) -> None:
                 preview,
                 data.get("createdAt", datetime.now().isoformat()),
                 data.get("updatedAt", datetime.now().isoformat()),
-                data.get("summary", ""),
+                summary,
+                summary_format,
                 data.get("summaryStatus", "completed" if data.get("summary") else "idle"),
                 data.get("summaryError", ""),
                 data.get("summaryUpdatedAt", ""),
@@ -312,6 +352,7 @@ def load_all_transcripts() -> List[dict]:
                     "createdAt": row["created_at"],
                     "updatedAt": row["updated_at"],
                     "summary": row["summary"],
+                    "summaryFormat": row["summary_format"] or "markdown",
                     "summaryStatus": row["summary_status"] or ("completed" if row["summary"] else "idle"),
                     "summaryError": row["summary_error"] or "",
                     "summaryUpdatedAt": row["summary_updated_at"] or "",
@@ -335,7 +376,7 @@ def load_transcript_metadata() -> List[dict]:
             cursor = conn.execute("""
                 SELECT id, title, date, duration, status, type, language, step,
                        source_url, channel, thumbnail_url, created_at, updated_at,
-                       preview, summary_status, summary_error, summary_updated_at
+                       preview, summary_format, summary_status, summary_error, summary_updated_at
                 FROM transcripts
                 ORDER BY created_at DESC
             """)
@@ -358,6 +399,7 @@ def load_transcript_metadata() -> List[dict]:
                     "createdAt": row["created_at"],
                     "updatedAt": row["updated_at"],
                     "summaryStatus": row["summary_status"] or "idle",
+                    "summaryFormat": row["summary_format"] or "markdown",
                     "summaryError": row["summary_error"] or "",
                     "summaryUpdatedAt": row["summary_updated_at"] or "",
                     # content and summary are NOT loaded - loaded on demand
@@ -415,7 +457,7 @@ def load_transcript_metadata_page(
                 conn.execute(
                     "SELECT id, title, date, duration, status, type, language, step, "
                     "source_url, channel, thumbnail_url, created_at, updated_at, preview, "
-                    "summary_status, summary_error, summary_updated_at "
+                    "summary_format, summary_status, summary_error, summary_updated_at "
                     "FROM transcripts" + where_clause +
                     " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                     [*params, limit, offset],
@@ -440,6 +482,7 @@ def load_transcript_metadata_page(
                 "createdAt": row["created_at"],
                 "updatedAt": row["updated_at"],
                 "summaryStatus": row["summary_status"] or "idle",
+                "summaryFormat": row["summary_format"] or "markdown",
                 "summaryError": row["summary_error"] or "",
                 "summaryUpdatedAt": row["summary_updated_at"] or "",
                 "content": "",
@@ -494,6 +537,7 @@ def get_transcript(transcript_id: str) -> Optional[dict]:
                     "createdAt": row["created_at"],
                     "updatedAt": row["updated_at"],
                     "summary": row["summary"],
+                    "summaryFormat": row["summary_format"] or "markdown",
                     "summaryStatus": row["summary_status"] or ("completed" if row["summary"] else "idle"),
                     "summaryError": row["summary_error"] or "",
                     "summaryUpdatedAt": row["summary_updated_at"] or "",
@@ -552,22 +596,30 @@ def delete_transcript(transcript_id: str) -> bool:
         return False
 
 
-def update_transcript_summary(transcript_id: str, summary: str) -> bool:
+def update_transcript_summary(
+    transcript_id: str,
+    summary: str,
+    summary_format: str = "html",
+) -> bool:
     """Update just the summary field of a transcript."""
     try:
         updated_at = datetime.now().isoformat()
+        normalized_format = (summary_format or "html").strip().lower()
+        if normalized_format not in {"html", "markdown"}:
+            normalized_format = "markdown"
         with _get_connection() as conn:
             cursor = conn.execute(
                 """
                 UPDATE transcripts
                 SET summary = ?,
+                    summary_format = ?,
                     summary_status = 'completed',
                     summary_error = '',
                     summary_updated_at = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (summary, updated_at, updated_at, transcript_id)
+                (summary, normalized_format, updated_at, updated_at, transcript_id)
             )
             _sync_fts_row(conn, transcript_id)
             conn.commit()
@@ -583,6 +635,7 @@ def update_transcript_summary_state(
     status: str,
     error: str = "",
     summary: Optional[str] = None,
+    summary_format: Optional[str] = None,
     step: Optional[str] = None,
 ) -> bool:
     """Update persisted summary lifecycle state without changing transcription status."""
@@ -600,6 +653,12 @@ def update_transcript_summary_state(
             if summary is not None:
                 set_parts.insert(0, "summary = ?")
                 params.insert(0, summary)
+            if summary_format is not None:
+                normalized_format = summary_format.strip().lower()
+                if normalized_format not in {"html", "markdown"}:
+                    normalized_format = "markdown"
+                set_parts.append("summary_format = ?")
+                params.append(normalized_format)
             if step is not None:
                 set_parts.append("step = ?")
                 params.append(step)
@@ -608,7 +667,7 @@ def update_transcript_summary_state(
                 f"UPDATE transcripts SET {', '.join(set_parts)} WHERE id = ?",
                 params,
             )
-            if summary is not None:
+            if summary is not None or summary_format is not None:
                 _sync_fts_row(conn, transcript_id)
             conn.commit()
             return int(cursor.rowcount or 0) > 0
@@ -649,7 +708,7 @@ def search_transcript_metadata(
                 rows_sql = (
                     "SELECT t.id, t.title, t.date, t.duration, t.status, t.type, t.language, t.step, "
                     "t.source_url, t.channel, t.thumbnail_url, t.created_at, t.updated_at, t.preview, "
-                    "t.summary_status, t.summary_error, t.summary_updated_at "
+                    "t.summary_format, t.summary_status, t.summary_error, t.summary_updated_at "
                     "FROM transcripts_fts f "
                     "JOIN transcripts t ON t.rowid = f.rowid "
                     "WHERE transcripts_fts MATCH ? " + type_clause +
@@ -665,15 +724,17 @@ def search_transcript_metadata(
                 like = f"%{q.lower()}%"
                 total_sql = (
                     "SELECT COUNT(*) AS c FROM transcripts t "
-                    "WHERE (LOWER(t.title) LIKE ? OR LOWER(t.content) LIKE ? OR LOWER(t.summary) LIKE ? OR LOWER(t.channel) LIKE ?) "
+                    "WHERE (LOWER(t.title) LIKE ? OR LOWER(t.content) LIKE ? OR "
+                    "LOWER(scriber_summary_text(t.summary, t.summary_format)) LIKE ? OR LOWER(t.channel) LIKE ?) "
                     + ("AND t.type = ?" if transcript_type else "")
                 )
                 rows_sql = (
                     "SELECT t.id, t.title, t.date, t.duration, t.status, t.type, t.language, t.step, "
                     "t.source_url, t.channel, t.thumbnail_url, t.created_at, t.updated_at, t.preview, "
-                    "t.summary_status, t.summary_error, t.summary_updated_at "
+                    "t.summary_format, t.summary_status, t.summary_error, t.summary_updated_at "
                     "FROM transcripts t "
-                    "WHERE (LOWER(t.title) LIKE ? OR LOWER(t.content) LIKE ? OR LOWER(t.summary) LIKE ? OR LOWER(t.channel) LIKE ?) "
+                    "WHERE (LOWER(t.title) LIKE ? OR LOWER(t.content) LIKE ? OR "
+                    "LOWER(scriber_summary_text(t.summary, t.summary_format)) LIKE ? OR LOWER(t.channel) LIKE ?) "
                     + ("AND t.type = ? " if transcript_type else "") +
                     "ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?"
                 )
@@ -701,6 +762,7 @@ def search_transcript_metadata(
                 "thumbnailUrl": row["thumbnail_url"],
                 "createdAt": row["created_at"],
                 "updatedAt": row["updated_at"],
+                "summaryFormat": row["summary_format"] or "markdown",
                 "summaryStatus": row["summary_status"] or "idle",
                 "summaryError": row["summary_error"] or "",
                 "summaryUpdatedAt": row["summary_updated_at"] or "",

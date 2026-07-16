@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -8,7 +9,12 @@ from unittest.mock import AsyncMock, patch
 import aiohttp
 import pytest
 
-from pipecat.frames.frames import AudioRawFrame, ErrorFrame, StartFrame, TranscriptionFrame
+from pipecat.frames.frames import (
+    AudioRawFrame,
+    ErrorFrame,
+    StartFrame,
+    TranscriptionFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection
 
 from src.config import Config
@@ -75,6 +81,27 @@ class _FakeWebSocket:
                 yield message
 
         return _messages()
+
+
+class _ClosableWebSocket:
+    def __init__(self) -> None:
+        self.closed = False
+        self.sent_strings: list[str] = []
+        self.sent_bytes: list[bytes] = []
+        self.close_count = 0
+        self.on_send_eos = None
+
+    async def send_str(self, value: str) -> None:
+        self.sent_strings.append(value)
+        if self.on_send_eos:
+            self.on_send_eos()
+
+    async def send_bytes(self, value: bytes) -> None:
+        self.sent_bytes.append(value)
+
+    async def close(self) -> None:
+        self.close_count += 1
+        self.closed = True
 
 
 def _form_fields(form: aiohttp.FormData) -> dict[str, object]:
@@ -360,6 +387,189 @@ async def test_modulate_stream_surfaces_premature_close_with_safe_code():
     assert isinstance(frame, ErrorFrame)
     assert "close code 4001" in frame.error
     assert "secret-key" not in frame.error
+
+
+@pytest.mark.asyncio
+async def test_modulate_stream_classifies_1011_as_provider_server_error():
+    service = ModulateRealtimeSTTService(api_key="secret-key")
+    service.push_frame = AsyncMock()  # type: ignore[method-assign]
+    service._ws = _FakeWebSocket(  # type: ignore[assignment]
+        [aiohttp.WSMessage(aiohttp.WSMsgType.CLOSE, 1011, "")]
+    )
+
+    await service._receive_responses(FrameDirection.DOWNSTREAM)
+
+    frame = service.push_frame.await_args.args[0]
+    assert isinstance(frame, ErrorFrame)
+    assert "internal server error" in frame.error
+    assert "close code 1011" in frame.error
+    assert service.push_frame.await_count == 1
+    error = provider_user_error("modulate", frame.error)
+    assert error.category.value == "transient_provider"
+
+
+@pytest.mark.asyncio
+async def test_modulate_error_is_forwarded_before_terminal_waiters_are_released():
+    service = ModulateRealtimeSTTService(api_key="secret-key")
+    release_push = asyncio.Event()
+
+    async def slow_push(_frame, _direction):
+        await release_push.wait()
+
+    service.push_frame = slow_push  # type: ignore[method-assign]
+    emit_task = asyncio.create_task(
+        service._emit_error("provider failure", FrameDirection.DOWNSTREAM)
+    )
+    await asyncio.sleep(0)
+
+    assert service._terminal_error_emitted is True
+    assert service._terminal_event.is_set() is False
+
+    release_push.set()
+    assert await emit_task is True
+    assert service._terminal_event.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_modulate_empty_stream_shutdown_is_immediate_and_sends_no_eos():
+    service = ModulateRealtimeSTTService(api_key="secret-key")
+    websocket = _ClosableWebSocket()
+    receiver = asyncio.create_task(asyncio.Event().wait())
+    service._ws = websocket  # type: ignore[assignment]
+    service._receive_task = receiver
+    service._final_timeout_secs = 30.0
+    service.push_frame = AsyncMock()  # type: ignore[method-assign]
+
+    await asyncio.wait_for(
+        service._close_stream(
+            FrameDirection.DOWNSTREAM,
+            wait_for_final=True,
+        ),
+        timeout=0.25,
+    )
+
+    assert websocket.sent_strings == []
+    assert websocket.close_count == 1
+    assert receiver.done()
+    assert service._stream_closed is True
+    service.push_frame.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_modulate_cancel_path_does_not_request_final_transcript():
+    service = ModulateRealtimeSTTService(api_key="secret-key")
+    websocket = _ClosableWebSocket()
+    receiver = asyncio.create_task(asyncio.Event().wait())
+    service._ws = websocket  # type: ignore[assignment]
+    service._receive_task = receiver
+    service._audio_bytes_sent = 640
+    service.push_frame = AsyncMock()  # type: ignore[method-assign]
+
+    await asyncio.wait_for(
+        service._close_stream(
+            FrameDirection.DOWNSTREAM,
+            wait_for_final=False,
+        ),
+        timeout=0.25,
+    )
+
+    assert websocket.sent_strings == []
+    assert websocket.close_count == 1
+    assert receiver.done()
+    service.push_frame.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_modulate_nonempty_stream_waits_for_done_after_eos():
+    service = ModulateRealtimeSTTService(api_key="secret-key")
+    websocket = _ClosableWebSocket()
+    eos_sent = asyncio.Event()
+    websocket.on_send_eos = eos_sent.set
+    service._ws = websocket  # type: ignore[assignment]
+    service._audio_bytes_sent = 640
+    service.push_frame = AsyncMock()  # type: ignore[method-assign]
+
+    async def receive_done() -> None:
+        await eos_sent.wait()
+        await service._handle_response(
+            json.dumps({"type": "done", "duration_ms": 20}),
+            FrameDirection.DOWNSTREAM,
+        )
+
+    receiver = asyncio.create_task(receive_done())
+    service._receive_task = receiver
+
+    await service._close_stream(
+        FrameDirection.DOWNSTREAM,
+        wait_for_final=True,
+    )
+
+    assert websocket.sent_strings == [""]
+    assert service._done_received is True
+    assert receiver.done()
+    assert websocket.closed is True
+    service.push_frame.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_modulate_final_timeout_emits_once_and_reclaims_receiver():
+    service = ModulateRealtimeSTTService(api_key="secret-key")
+    websocket = _ClosableWebSocket()
+    receiver = asyncio.create_task(asyncio.Event().wait())
+    service._ws = websocket  # type: ignore[assignment]
+    service._receive_task = receiver
+    service._audio_bytes_sent = 640
+    service._final_timeout_secs = 0.01
+    service.push_frame = AsyncMock()  # type: ignore[method-assign]
+
+    await service._close_stream(
+        FrameDirection.DOWNSTREAM,
+        wait_for_final=True,
+    )
+    await service._close_stream(
+        FrameDirection.DOWNSTREAM,
+        wait_for_final=True,
+    )
+
+    errors = [
+        call.args[0]
+        for call in service.push_frame.await_args_list
+        if isinstance(call.args[0], ErrorFrame)
+    ]
+    assert len(errors) == 1
+    assert "timed out waiting for the final transcript" in errors[0].error
+    assert receiver.done()
+    assert websocket.sent_strings == [""]
+    assert websocket.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_modulate_cancelled_final_wait_still_reclaims_websocket():
+    service = ModulateRealtimeSTTService(api_key="secret-key")
+    websocket = _ClosableWebSocket()
+    eos_sent = asyncio.Event()
+    websocket.on_send_eos = eos_sent.set
+    receiver = asyncio.create_task(asyncio.Event().wait())
+    service._ws = websocket  # type: ignore[assignment]
+    service._receive_task = receiver
+    service._audio_bytes_sent = 640
+    service._final_timeout_secs = 30.0
+
+    close_task = asyncio.create_task(
+        service._close_stream(
+            FrameDirection.DOWNSTREAM,
+            wait_for_final=True,
+        )
+    )
+    await asyncio.wait_for(eos_sent.wait(), timeout=0.25)
+    close_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+
+    assert receiver.done()
+    assert websocket.closed is True
+    assert service._stream_closed is True
 
 
 @pytest.mark.asyncio

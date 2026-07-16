@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Optional, List, Tuple
 
+from src.summary_html import summary_html_to_markdown
+
 
 _DEFAULT_DOCUMENT_LABELS = {
     "date": "Date",
@@ -20,6 +22,15 @@ def _document_labels(labels: Optional[Mapping[str, str]]) -> dict[str, str]:
     if labels:
         resolved.update({key: str(value) for key, value in labels.items() if str(value)})
     return resolved
+
+
+def _summary_for_export(summary: Optional[str], summary_format: str) -> Optional[str]:
+    if not summary:
+        return summary
+    if (summary_format or "markdown").strip().lower() == "html":
+        return summary_html_to_markdown(summary)
+    return summary
+
 
 # Lazy imports for export libraries
 def _get_docx():
@@ -139,6 +150,7 @@ def export_to_docx(
     date: Optional[str] = None,
     duration: Optional[str] = None,
     labels: Optional[Mapping[str, str]] = None,
+    summary_format: str = "markdown",
 ) -> bytes:
     """Export transcript to DOCX format with markdown support.
     
@@ -154,6 +166,7 @@ def export_to_docx(
     """
     Document, Inches, Pt, WD_ALIGN_PARAGRAPH, RGBColor = _get_docx()
     document_labels = _document_labels(labels)
+    summary = _summary_for_export(summary, summary_format)
     
     doc = Document()
     
@@ -239,6 +252,7 @@ def export_to_pdf(
     date: Optional[str] = None,
     duration: Optional[str] = None,
     labels: Optional[Mapping[str, str]] = None,
+    summary_format: str = "markdown",
 ) -> bytes:
     """Export transcript to PDF format with markdown support.
     
@@ -254,6 +268,7 @@ def export_to_pdf(
     """
     A4, getSampleStyleSheet, ParagraphStyle, inch, SimpleDocTemplate, Paragraph, Spacer, TA_LEFT, TA_JUSTIFY, ListFlowable, ListItem = _get_reportlab()
     document_labels = _document_labels(labels)
+    summary = _summary_for_export(summary, summary_format)
     
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(

@@ -318,3 +318,111 @@ def test_existing_transcript_ids_chunks_large_input(monkeypatch, tmp_path):
         ) == set(transcript_ids)
     finally:
         database._close_all_connections()
+
+
+def _summary_record(record_id: str, summary: str, summary_format: str) -> dict:
+    return {
+        "id": record_id,
+        "title": record_id,
+        "date": "Today",
+        "duration": "00:10",
+        "status": "completed",
+        "type": "file",
+        "language": "en",
+        "content": "transcript body",
+        "summary": summary,
+        "summaryFormat": summary_format,
+        "summaryStatus": "completed",
+        "createdAt": "2026-07-16T00:00:00",
+        "updatedAt": "2026-07-16T00:00:00",
+    }
+
+
+def test_summary_format_roundtrip_and_fts_indexes_visible_html_only(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
+    try:
+        database.init_database()
+        database.save_transcript(
+            _summary_record(
+                "html-summary",
+                "<section><h2>Quantum overview</h2><p>Needle finding</p></section>",
+                "html",
+            )
+        )
+        persisted = database.get_transcript("html-summary")
+        assert persisted["summaryFormat"] == "html"
+        assert database.search_transcript_metadata("Needle")["total"] == 1
+        assert database.search_transcript_metadata("section")["total"] == 0
+
+        assert database.update_transcript_summary(
+            "html-summary",
+            "<section><h2>Updated</h2><p>Fresh detail</p></section>",
+        )
+        assert database.get_transcript("html-summary")["summaryFormat"] == "html"
+        assert database.search_transcript_metadata("Fresh")["total"] == 1
+    finally:
+        database._close_all_connections()
+
+
+def test_database_migrates_existing_nonempty_summary_to_markdown(monkeypatch, tmp_path):
+    database._close_all_connections()
+    db_path = tmp_path / "transcripts.db"
+    monkeypatch.setattr(database, "_DB_PATH", db_path)
+    try:
+        database.init_database()
+        database.save_transcript(
+            _summary_record("legacy", "## Legacy summary", "markdown")
+        )
+        database._close_all_connections()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("ALTER TABLE transcripts DROP COLUMN summary_format")
+
+        database.init_database()
+
+        assert database.get_transcript("legacy")["summaryFormat"] == "markdown"
+    finally:
+        database._close_all_connections()
+
+
+def test_database_init_repairs_equal_count_fts_summary_projection(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
+    try:
+        database.init_database()
+        html = "<section><h2>Repair heading</h2><p>Visible repair term</p></section>"
+        database.save_transcript(_summary_record("repair-html", html, "html"))
+        conn = database._get_connection()
+        conn.execute(
+            "UPDATE transcripts_fts SET summary = ? WHERE id = ?",
+            (html, "repair-html"),
+        )
+        conn.commit()
+        assert database.search_transcript_metadata("section")["total"] == 1
+
+        database.init_database()
+
+        assert database.search_transcript_metadata("section")["total"] == 0
+        assert database.search_transcript_metadata("Visible")["total"] == 1
+    finally:
+        database._close_all_connections()
+
+
+def test_summary_state_failure_preserves_existing_format(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
+    try:
+        database.init_database()
+        database.save_transcript(
+            _summary_record("preserve-format", "## Legacy", "markdown")
+        )
+        assert database.update_transcript_summary_state(
+            "preserve-format",
+            status="failed",
+            error="provider unavailable",
+        )
+        persisted = database.get_transcript("preserve-format")
+        assert persisted["summary"] == "## Legacy"
+        assert persisted["summaryFormat"] == "markdown"
+    finally:
+        database._close_all_connections()

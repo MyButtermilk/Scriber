@@ -1,6 +1,6 @@
 {
   "name": "rest-express",
-  "version": "0.5.28",
+  "version": "0.5.29",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -63,6 +63,7 @@
     "cmdk": "^1.1.1",
     "connect-pg-simple": "^10.0.0",
     "date-fns": "^3.6.0",
+    "dompurify": "^3.4.12",
     "drizzle-orm": "^0.45.2",
     "drizzle-zod": "^0.7.0",
     "embla-carousel-react": "^8.6.0",

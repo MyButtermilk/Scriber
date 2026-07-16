@@ -353,6 +353,13 @@ class ModulateRealtimeSTTService(FrameProcessor):
         self._connect_failed = False
         self._terminal_error_emitted = False
         self._terminal_event = asyncio.Event()
+        self._audio_bytes_sent = 0
+        self._close_requested = False
+        self._local_close_requested = False
+        self._stream_closed = False
+        self._error_publish_task: asyncio.Task | None = None
+        self._close_lock = asyncio.Lock()
+        self._connect_lock = asyncio.Lock()
         self._final_timeout_secs = env_float(
             "SCRIBER_MODULATE_STREAM_FINAL_TIMEOUT_SECONDS",
             30.0,
@@ -384,57 +391,130 @@ class ModulateRealtimeSTTService(FrameProcessor):
             self._owned_session = aiohttp.ClientSession()
         return self._owned_session
 
+    async def _publish_error_frame(
+        self,
+        safe_error: str,
+        direction: FrameDirection,
+    ) -> None:
+        try:
+            await self.push_frame(
+                ErrorFrame(error=f"modulate realtime error: {safe_error}"), direction
+            )
+        finally:
+            # This event means either a provider ``done`` was received or the
+            # terminal ErrorFrame finished traversing this processor.  It must
+            # never be set merely because the receiver task exited.
+            self._terminal_event.set()
+
     async def _emit_error(self, value: object, direction: FrameDirection) -> bool:
         if self._terminal_error_emitted:
-            self._terminal_event.set()
             return False
         self._connect_failed = True
         self._terminal_error_emitted = True
-        self._terminal_event.set()
         safe_error = redact_modulate_error(value, self._api_key)
         logger.error(f"Modulate realtime transcription failed: {safe_error}")
-        await self.push_frame(
-            ErrorFrame(error=f"modulate realtime error: {safe_error}"), direction
+        publish_task = asyncio.create_task(
+            self._publish_error_frame(safe_error, direction),
+            name="modulate_realtime_terminal_error",
         )
-        return True
-
-    async def _ensure_connected(self, direction: FrameDirection) -> bool:
-        if self._connect_failed:
-            return False
-        if self._ws and not self._ws.closed:
-            return True
-        if not self._api_key:
-            self._connect_failed = True
-            await self._emit_error("Modulate API Key is missing.", direction)
-            self._terminal_event.set()
-            return False
+        self._error_publish_task = publish_task
         try:
-            session = await self._get_session()
-            # The credential is required in the URL by Modulate.  Never log or
-            # otherwise expose this URL.
-            self._ws = await session.ws_connect(
-                self._ws_url(),
-                heartbeat=20,
-                timeout=30,
-                max_msg_size=_MAX_RESPONSE_BYTES,
-            )
-            self._eos_sent = False
-            self._done_received = False
-            self._terminal_error_emitted = False
-            self._terminal_event.clear()
-            self._receive_task = asyncio.create_task(
-                self._receive_responses(direction),
-                name="modulate_realtime_receive",
-            )
-            logger.info("Modulate multilingual realtime websocket connected")
-            return True
+            # Shield publication from cancellation of the receive loop.  The
+            # close path also joins this task before reclaiming the websocket.
+            await asyncio.shield(publish_task)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._connect_failed = True
-            self._terminal_event.set()
-            await self._emit_error(exc, direction)
+            logger.debug(
+                "Modulate terminal error delivery warning: "
+                f"{redact_modulate_error(exc, self._api_key)}"
+            )
+        return True
+
+    async def _prepare_for_start(self) -> None:
+        """Reset a fully closed stream before a first or post-Stop start."""
+
+        async with self._close_lock:
+            async with self._connect_lock:
+                if self._ws and not self._ws.closed:
+                    # A duplicate StartFrame for an already active stream does
+                    # not create a second provider connection.
+                    return
+                self._eos_sent = False
+                self._done_received = False
+                self._connect_failed = False
+                self._terminal_error_emitted = False
+                self._audio_bytes_sent = 0
+                self._close_requested = False
+                self._local_close_requested = False
+                self._stream_closed = False
+                self._error_publish_task = None
+                self._terminal_event.clear()
+
+    async def _ensure_connected(self, direction: FrameDirection) -> bool:
+        if (
+            self._connect_failed
+            or self._stream_closed
+            or self._close_requested
+            or self._local_close_requested
+        ):
             return False
+        async with self._connect_lock:
+            if (
+                self._connect_failed
+                or self._stream_closed
+                or self._close_requested
+                or self._local_close_requested
+            ):
+                return False
+            if self._ws and not self._ws.closed:
+                return True
+            if self._receive_task is not None:
+                # A connection that has already started is never silently
+                # replaced.  Reconnecting would lose unfinalized audio and let
+                # the old receiver mutate the new connection's terminal state.
+                if (
+                    not self._terminal_error_emitted
+                    and not self._done_received
+                    and not self._local_close_requested
+                ):
+                    await self._emit_error(
+                        "websocket closed before the final done message", direction
+                    )
+                return False
+            if not self._api_key:
+                self._connect_failed = True
+                await self._emit_error("Modulate API Key is missing.", direction)
+                return False
+            websocket: aiohttp.ClientWebSocketResponse | None = None
+            try:
+                session = await self._get_session()
+                # The credential is required in the URL by Modulate.  Never log
+                # or otherwise expose this URL.
+                websocket = await session.ws_connect(
+                    self._ws_url(),
+                    heartbeat=20,
+                    timeout=30,
+                    max_msg_size=_MAX_RESPONSE_BYTES,
+                )
+                if self._close_requested or self._local_close_requested:
+                    await websocket.close()
+                    return False
+                self._ws = websocket
+                self._receive_task = asyncio.create_task(
+                    self._receive_responses(direction),
+                    name="modulate_realtime_receive",
+                )
+                logger.info("Modulate multilingual realtime websocket connected")
+                return True
+            except asyncio.CancelledError:
+                if websocket and not websocket.closed:
+                    await websocket.close()
+                raise
+            except Exception as exc:
+                self._connect_failed = True
+                await self._emit_error(exc, direction)
+                return False
 
     async def _handle_response(self, raw: str, direction: FrameDirection) -> bool:
         try:
@@ -508,13 +588,23 @@ class ModulateRealtimeSTTService(FrameProcessor):
                     if isinstance(message.data, int) and 1000 <= message.data <= 4999:
                         close_code = int(message.data)
                     break
-            if not self._done_received and not self._terminal_error_emitted:
+            if (
+                not self._done_received
+                and not self._terminal_error_emitted
+                and not self._local_close_requested
+            ):
                 if close_code is None:
                     candidate = getattr(ws, "close_code", None)
                     if isinstance(candidate, int) and 1000 <= candidate <= 4999:
                         close_code = int(candidate)
                 detail = "websocket closed before the final done message"
-                if close_code is not None:
+                if close_code == 1011:
+                    # RFC 6455 defines 1011 as a server-side unexpected
+                    # condition.  Name it accurately so the shared provider
+                    # classifier does not blame the user's network.
+                    detail = "internal server error before the final done message"
+                    detail = f"{detail} (close code {close_code})"
+                elif close_code is not None:
                     detail = f"{detail} (close code {close_code})"
                 await self._emit_error(detail, direction)
         except asyncio.CancelledError:
@@ -530,34 +620,91 @@ class ModulateRealtimeSTTService(FrameProcessor):
         *,
         wait_for_final: bool,
     ) -> None:
-        ws = self._ws
-        if ws and not ws.closed and not self._eos_sent:
-            try:
-                await ws.send_str("")
-                self._eos_sent = True
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                await self._emit_error(exc, direction)
+        async with self._close_lock:
+            if self._stream_closed:
+                return
 
-        if wait_for_final and self._receive_task and not self._receive_task.done():
+            ws = self._ws
+            task = self._receive_task
             try:
-                await asyncio.wait_for(
-                    self._terminal_event.wait(), timeout=self._final_timeout_secs
+                should_finalize = (
+                    wait_for_final
+                    and self._audio_bytes_sent > 0
+                    and not self._done_received
+                    and not self._terminal_error_emitted
+                    and ws is not None
+                    and not ws.closed
                 )
-            except asyncio.TimeoutError:
-                await self._emit_error(
-                    "timed out waiting for the final transcript", direction
-                )
+                if should_finalize and not self._eos_sent:
+                    try:
+                        await ws.send_str("")
+                        self._eos_sent = True
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        await self._emit_error(exc, direction)
 
-        task = self._receive_task
-        if task and not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-        if ws and not ws.closed:
-            await ws.close()
-        if self._owned_session and not self._owned_session.closed:
-            await self._owned_session.close()
+                # An upstream capture failure can deliver EndFrame after the
+                # websocket connected but before a single audio frame arrived.
+                # Modulate cannot produce a transcript for that empty stream;
+                # waiting for its 30-second final timeout blocks Pipecat's
+                # EndFrame lane and makes an emergency CancelFrame queue behind
+                # it.  Close immediately and let the original capture error
+                # remain authoritative.
+                if wait_for_final and self._audio_bytes_sent == 0:
+                    logger.debug(
+                        "Modulate realtime stream closed without final wait "
+                        "because no audio reached the provider"
+                    )
+                should_wait = (
+                    should_finalize
+                    and self._eos_sent
+                    and not self._terminal_error_emitted
+                    and task is not None
+                    and not task.done()
+                )
+                if should_wait:
+                    try:
+                        await asyncio.wait_for(
+                            self._terminal_event.wait(), timeout=self._final_timeout_secs
+                        )
+                    except asyncio.TimeoutError:
+                        await self._emit_error(
+                            "timed out waiting for the final transcript", direction
+                        )
+            finally:
+                # From this point on an expected local close must not be turned
+                # back into a second remote-close ErrorFrame by the receiver.
+                self._local_close_requested = True
+                try:
+                    if task and task is not asyncio.current_task() and not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                    if ws and not ws.closed:
+                        try:
+                            await ws.close()
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            logger.debug(
+                                "Modulate websocket cleanup warning: "
+                                f"{redact_modulate_error(exc, self._api_key)}"
+                            )
+                    if self._owned_session and not self._owned_session.closed:
+                        try:
+                            await self._owned_session.close()
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            logger.debug(
+                                "Modulate session cleanup warning: "
+                                f"{redact_modulate_error(exc, self._api_key)}"
+                            )
+                finally:
+                    self._receive_task = None
+                    self._ws = None
+                    self._stream_closed = True
+                    self._terminal_event.set()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -575,6 +722,7 @@ class ModulateRealtimeSTTService(FrameProcessor):
             if frame.audio and await self._ensure_connected(direction):
                 try:
                     await self._ws.send_bytes(frame.audio)  # type: ignore[union-attr]
+                    self._audio_bytes_sent += len(frame.audio)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:

@@ -1792,6 +1792,7 @@ def _render_transcript_export(
     summary: str,
     date: str,
     duration: str,
+    summary_format: str = "markdown",
     document_labels: dict[str, str] | None = None,
 ) -> tuple[bytes, str, str]:
     from src.export import export_to_docx, export_to_pdf
@@ -1802,6 +1803,7 @@ def _render_transcript_export(
                 title=title or "Transcript",
                 content=content,
                 summary=summary,
+                summary_format=summary_format,
                 date=date,
                 duration=duration,
                 labels=document_labels,
@@ -1814,6 +1816,7 @@ def _render_transcript_export(
             title=title or "Transcript",
             content=content,
             summary=summary,
+            summary_format=summary_format,
             date=date,
             duration=duration,
             labels=document_labels,
@@ -1831,6 +1834,7 @@ async def _render_transcript_export_async(
     summary: str,
     date: str,
     duration: str,
+    summary_format: str = "markdown",
     document_labels: dict[str, str] | None = None,
 ) -> tuple[bytes, str, str]:
     return await asyncio.to_thread(
@@ -1839,6 +1843,7 @@ async def _render_transcript_export_async(
         title=title,
         content=content,
         summary=summary,
+        summary_format=summary_format,
         date=date,
         duration=duration,
         document_labels=document_labels,
@@ -2126,6 +2131,7 @@ class TranscriptRecord:
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
     processing_started_at: str = ""
     summary: str = ""
+    summary_format: str = "markdown"
     summary_status: SummaryStatus = "idle"
     summary_error: str = ""
     summary_updated_at: str = ""
@@ -2187,6 +2193,7 @@ class TranscriptRecord:
             "summaryStatus": self.summary_status,
             "summaryError": self.summary_error,
             "summaryUpdatedAt": self.summary_updated_at,
+            "summaryFormat": self.summary_format,
         }
         
         content = self.content_text() if include_content or not self._preview else self.content
@@ -2213,9 +2220,11 @@ class TranscriptRecord:
         self.step = "Summarizing..."
         self.updated_at = now
 
-    def mark_summary_completed(self, summary: str) -> None:
+    def mark_summary_completed(self, summary: str, summary_format: str = "html") -> None:
         now = datetime.now().isoformat()
         self.summary = summary
+        normalized_format = (summary_format or "").strip().lower()
+        self.summary_format = normalized_format if normalized_format in {"html", "markdown"} else "markdown"
         self.summary_status = "completed"
         self.summary_error = ""
         self.summary_updated_at = now
@@ -2284,6 +2293,7 @@ class TranscriptRecord:
         """Discard provider output that belongs to an unsuccessful attempt."""
         self.replace_content("")
         self.summary = ""
+        self.summary_format = "markdown"
         self.summary_status = "idle"
         self.summary_error = ""
         self.summary_updated_at = ""
@@ -5988,6 +5998,7 @@ class ScriberWebController:
             updated_at=str(data.get("updatedAt", "") or ""),
             processing_started_at=str(data.get("processingStartedAt", "") or ""),
             summary=str(data.get("summary", "") or ""),
+            summary_format=str(data.get("summaryFormat", "") or "markdown"),
             summary_status=data.get("summaryStatus", "idle"),
             summary_error=str(data.get("summaryError", "") or ""),
             summary_updated_at=str(data.get("summaryUpdatedAt", "") or ""),
@@ -6072,6 +6083,7 @@ class ScriberWebController:
                         status=record.summary_status,
                         error=record.summary_error,
                         summary=record.summary if include_summary else None,
+                        summary_format=record.summary_format if include_summary else None,
                         step=record.step,
                     )
                     if not updated:
@@ -9785,20 +9797,33 @@ class ScriberWebController:
                     await asyncio.wait_for(asyncio.shield(pipeline_task), timeout=1.0)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     pass
-            self._resume_idle_mic_prewarm_after_capture()
         except Exception as e:
             logger.error(f"Emergency stop error: {e}")
-            self._resume_idle_mic_prewarm_after_capture()
         finally:
             if owns_stop:
                 # Release only the claim captured by this exact session. A
                 # stale cleanup must never release a later recording's claim.
-                if audio_claim is not None:
-                    await _release_persistent_audio(self, audio_claim)
-                async with self._listening_lock:
-                    if getattr(self, "_live_mic_stop_owner", None) is stop_owner:
-                        self._live_mic_stop_owner = None
-                        self._is_stopping = False
+                try:
+                    if audio_claim is not None:
+                        await _release_persistent_audio(self, audio_claim)
+                finally:
+                    resume_idle_prewarm = False
+                    async with self._listening_lock:
+                        if getattr(self, "_live_mic_stop_owner", None) is stop_owner:
+                            self._live_mic_stop_owner = None
+                            self._is_stopping = False
+                            resume_idle_prewarm = True
+
+                    if resume_idle_prewarm:
+                        # Schedule the replacement idle capture only after
+                        # releasing the serialized stop gate. The scheduling
+                        # helper treats an active stop as an active capture and
+                        # deliberately pauses prewarm. Calling it before this
+                        # state transition therefore stopped the overlap-first
+                        # prewarm that pipeline cleanup had just made ready,
+                        # leaving the next hotkey on a cold WASAPI route and
+                        # prone to a first-live-frame timeout.
+                        self._resume_idle_mic_prewarm_after_capture()
 
     def _live_mic_stop_timeout_seconds(
         self,
@@ -12863,6 +12888,7 @@ class ScriberWebController:
                     rec.content = full_data.get("content", rec.content)
                     rec._pending_content_segments.clear()
                     rec.summary = full_data.get("summary", rec.summary)
+                    rec.summary_format = full_data.get("summaryFormat", rec.summary_format)
                     rec.summary_status = full_data.get("summaryStatus", rec.summary_status)
                     rec.summary_error = full_data.get("summaryError", rec.summary_error)
                     rec.summary_updated_at = full_data.get("summaryUpdatedAt", rec.summary_updated_at)
@@ -14179,7 +14205,9 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 if not updated:
                     return web.json_response({"message": "Transcript not found"}, status=404)
                 logger.info(f"Summarized transcript: {transcript_id} ({len(summary)} chars)")
-            return web.json_response({"success": True, "summary": summary})
+            return web.json_response(
+                {"success": True, "summary": summary, "summaryFormat": "html"}
+            )
         except asyncio.CancelledError:
             if rec:
                 rec.mark_summary_failed("Summary canceled")
@@ -14243,6 +14271,9 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         content = rec.content_text() if rec else (full_data.get("content", "") if isinstance(full_data, dict) else "")
         summary = rec.summary if rec else (full_data.get("summary", "") if isinstance(full_data, dict) else "")
+        summary_format = rec.summary_format if rec else (
+            full_data.get("summaryFormat", "markdown") if isinstance(full_data, dict) else "markdown"
+        )
         title = rec.title if rec else (full_data.get("title", "") if isinstance(full_data, dict) else "")
         date = rec.date if rec else (full_data.get("date", "") if isinstance(full_data, dict) else "")
         duration = rec.duration if rec else (full_data.get("duration", "") if isinstance(full_data, dict) else "")
@@ -14256,6 +14287,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 title=title or "Transcript",
                 content=content,
                 summary=summary,
+                summary_format=summary_format or "markdown",
                 date=date,
                 duration=duration,
             )
