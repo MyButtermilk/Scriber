@@ -11,6 +11,7 @@ from scripts.check_backend_runtime_imports import (
     check_imports,
     check_package_versions,
 )
+from backend_runtime.contract import RUNTIME_CONTRACT_REVISION, RUNTIME_REQUIRED_IMPORTS
 
 
 def test_backend_worker_startup_timeout_simulation_is_once(monkeypatch, tmp_path):
@@ -35,6 +36,11 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "yt_dlp_ejs" in required_modules
     assert "sherpa_onnx" not in required_modules
     assert "pipecat.audio.vad.silero" in required_modules
+    assert "pipecat.pipeline.pipeline" in required_modules
+    assert "pipecat.pipeline.task" in required_modules
+    assert "pipecat.pipeline.runner" in required_modules
+    assert "pipecat.services.stt_service" in required_modules
+    assert "pipecat.transcriptions.language" in required_modules
     assert "pipecat.processors.audio.vad_processor" in required_modules
     assert "pipecat.turns.user_turn_processor" in required_modules
     assert "pipecat.turns.user_turn_strategies" in required_modules
@@ -50,6 +56,27 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert ("pipecat-ai", "1.5.0") in REQUIRED_PACKAGE_VERSIONS
     assert ("yt-dlp", "2026.7.4") in REQUIRED_PACKAGE_VERSIONS
     assert ("yt-dlp-ejs", "0.8.0") in REQUIRED_PACKAGE_VERSIONS
+
+
+def test_frozen_runtime_contract_covers_direct_pipecat_pipeline_imports():
+    frozen_modules = {module for module, _reason in RUNTIME_REQUIRED_IMPORTS}
+
+    assert RUNTIME_CONTRACT_REVISION == 2
+    assert {
+        "pipecat.pipeline.pipeline",
+        "pipecat.pipeline.task",
+        "pipecat.pipeline.runner",
+        "pipecat.processors.frame_processor",
+        "pipecat.services.ai_service",
+        "pipecat.services.settings",
+        "pipecat.services.stt_service",
+        "pipecat.transcriptions.language",
+        "pipecat.transports.base_transport",
+        "pipecat.utils.time",
+        "pipecat.audio.vad.vad_analyzer",
+        "pipecat.turns.user_start",
+        "pipecat.turns.user_stop",
+    } <= frozen_modules
 
 
 def test_backend_runtime_import_check_rejects_stale_pipecat():

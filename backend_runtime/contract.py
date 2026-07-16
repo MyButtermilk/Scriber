@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 RUNTIME_CONTRACT_NAME = "scriber-frozen-python-runtime"
-RUNTIME_CONTRACT_REVISION = 1
+RUNTIME_CONTRACT_REVISION = 2
 APPLICATION_LAYER_SCHEMA_VERSION = 1
 RUNTIME_LAYER_SCHEMA_VERSION = 1
 APPLICATION_ENTRY_POINT = "src.backend_worker:main"
@@ -28,12 +28,25 @@ RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     ("onnxruntime", "Silero and local ONNX native runtime"),
     ("openai", "OpenAI API runtime"),
     ("pipecat.frames.frames", "Pipecat frame runtime"),
+    ("pipecat.pipeline.pipeline", "Pipecat pipeline graph runtime"),
+    ("pipecat.pipeline.task", "Pipecat pipeline task runtime"),
+    ("pipecat.pipeline.runner", "Pipecat pipeline runner runtime"),
+    ("pipecat.processors.frame_processor", "Pipecat frame processor runtime"),
+    ("pipecat.services.ai_service", "Pipecat AI service runtime"),
+    ("pipecat.services.settings", "Pipecat STT settings runtime"),
+    ("pipecat.services.stt_service", "Pipecat STT base runtime"),
+    ("pipecat.transcriptions.language", "Pipecat transcription language runtime"),
+    ("pipecat.transports.base_transport", "Pipecat audio transport runtime"),
+    ("pipecat.utils.time", "Pipecat timestamp runtime"),
+    ("pipecat.audio.vad.vad_analyzer", "Pipecat VAD analyzer runtime"),
     ("pipecat.audio.vad.silero", "Silero VAD runtime"),
     (
         "pipecat.audio.turn.smart_turn.local_smart_turn_v3",
         "Smart Turn V3 runtime",
     ),
     ("pipecat.processors.audio.vad_processor", "Pipecat VAD processor runtime"),
+    ("pipecat.turns.user_start", "Pipecat user-turn start runtime"),
+    ("pipecat.turns.user_stop", "Pipecat user-turn stop runtime"),
     ("pipecat.turns.user_turn_processor", "Pipecat turn processor runtime"),
     ("pipecat.turns.user_turn_strategies", "Pipecat turn strategy runtime"),
     ("pipecat.services.soniox.stt", "Soniox realtime STT provider"),
