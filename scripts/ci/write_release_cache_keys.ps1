@@ -11,9 +11,11 @@ New-Item -ItemType Directory -Force -Path $resolvedOutputDir | Out-Null
 function Get-RelativePath {
     param([string]$Path)
     $resolved = (Resolve-Path -LiteralPath $Path).Path
-    $rootWithSeparator = $repoRoot.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
-    $relativeUri = ([Uri]$rootWithSeparator).MakeRelativeUri([Uri]$resolved).ToString()
-    return [Uri]::UnescapeDataString($relativeUri).Replace("\", "/")
+    # System.Uri treats POSIX paths such as /home/runner/... as relative unless
+    # they are converted to file:// URIs first. Path.GetRelativePath is native
+    # on both GitHub's Linux planner and Windows release runners and avoids that
+    # platform-specific ambiguity entirely.
+    return [System.IO.Path]::GetRelativePath($repoRoot, $resolved).Replace("\", "/")
 }
 
 function Get-StringSha256 {

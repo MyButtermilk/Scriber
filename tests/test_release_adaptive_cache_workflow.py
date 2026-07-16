@@ -137,6 +137,8 @@ def test_release_cache_key_files_are_lf_utf8_without_bom(tmp_path: Path) -> None
     assert '$normalized = $Value -replace "\\r\\n", "`n" -replace "\\r", "`n"' in writer
     assert "[System.Text.UTF8Encoding]::new($false)" in writer
     assert "[System.StringComparer]::Ordinal" in writer
+    assert "[System.IO.Path]::GetRelativePath" in writer
+    assert "MakeRelativeUri" not in writer
 
 
 def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
