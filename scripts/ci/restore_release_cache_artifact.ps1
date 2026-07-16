@@ -25,7 +25,13 @@ function Invoke-GhCommand {
     try {
         $ErrorActionPreference = "Continue"
         & gh @Arguments
-        return $LASTEXITCODE
+        $exitCode = $LASTEXITCODE
+        # A missing cache release/asset is an expected cache miss. PowerShell
+        # otherwise propagates the last native gh exit code from this script
+        # even after we handled it, which turns first-generation restores into
+        # fatal workflow failures.
+        $global:LASTEXITCODE = 0
+        return $exitCode
     } finally {
         $ErrorActionPreference = $previousPreference
     }
@@ -103,6 +109,7 @@ try {
             $ErrorActionPreference = "Continue"
             $releaseJson = & gh release view $Tag --repo $Repo --json assets 2>$null
             $releaseViewExitCode = $LASTEXITCODE
+            $global:LASTEXITCODE = 0
         } finally {
             $ErrorActionPreference = $previousPreference
         }
@@ -126,4 +133,7 @@ try {
     if (Test-Path -LiteralPath $artifactDir -PathType Container) {
         Remove-Item -LiteralPath $artifactDir -Recurse -Force
     }
+    # Preserve cache-miss semantics for callers that execute this file with
+    # `pwsh -File`: handled gh misses must leave the host process successful.
+    $global:LASTEXITCODE = 0
 }

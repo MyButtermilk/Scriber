@@ -79,6 +79,52 @@ def test_release_powershell_scripts_parse(script: Path) -> None:
     assert "OK" in result.stdout
 
 
+def test_release_cache_restore_treats_missing_artifact_as_cache_miss(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    if os.name == "nt":
+        fake_gh = fake_bin / "gh.cmd"
+        fake_gh.write_text(
+            "@echo off\r\necho release not found 1^>^&2\r\nexit /b 1\r\n",
+            encoding="utf-8",
+        )
+    else:
+        fake_gh = fake_bin / "gh"
+        fake_gh.write_text(
+            "#!/bin/sh\necho 'release not found' >&2\nexit 1\n",
+            encoding="utf-8",
+        )
+        fake_gh.chmod(0o755)
+
+    github_output = tmp_path / "github-output.txt"
+    destination = tmp_path / "restored"
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RESTORE_RELEASE_CACHE_SCRIPT),
+        "-Repo",
+        "example/missing",
+        "-Tag",
+        "missing-cache-generation",
+        "-AssetName",
+        "missing.zip",
+        "-DestinationPath",
+        str(destination),
+        env={
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "GITHUB_OUTPUT": str(github_output),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not destination.exists()
+    outputs = github_output.read_text(encoding="utf-8-sig")
+    assert "restored=false" in outputs
+    assert "source=none" in outputs
+
+
 @pytest.mark.parametrize(
     ("script", "extra_args", "expected"),
     [
