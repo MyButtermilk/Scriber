@@ -43,6 +43,31 @@ function Get-StringSha256 {
     }
 }
 
+function Get-FileIdentityTreeSha256 {
+    param([object[]]$Entries)
+
+    $byPath = [System.Collections.Generic.SortedDictionary[string, object]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($entry in @($Entries)) {
+        $path = [string]$entry.path
+        if (-not $path -or $path.Contains([char]0) -or $byPath.ContainsKey($path)) {
+            throw "runtime file identity contains an invalid or duplicate path"
+        }
+        $byPath.Add($path, $entry)
+    }
+    $builder = [System.Text.StringBuilder]::new()
+    foreach ($pair in $byPath.GetEnumerator()) {
+        [void]$builder.Append($pair.Key)
+        [void]$builder.Append([char]0)
+        [void]$builder.Append(([int64]$pair.Value.length).ToString([System.Globalization.CultureInfo]::InvariantCulture))
+        [void]$builder.Append([char]0)
+        [void]$builder.Append([string]$pair.Value.sha256)
+        [void]$builder.Append([char]0)
+    }
+    return Get-StringSha256 -Value $builder.ToString()
+}
+
 function Get-FileEntries {
     param([string]$Root)
     $prefix = $Root.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
@@ -185,26 +210,31 @@ try {
         throw "stable media-tool inventory differs or deno.exe is absent"
     }
 
-    $treeJson = $actualFiles | ConvertTo-Json -Depth 4 -Compress
     $runtimeExe = Get-Item -LiteralPath $runtimeExePath
     $runtimeExeSha = Get-Sha256 -Path $runtimeExePath
-    $usable = (
-        [int]$cacheManifest.apiVersion -eq 1 -and
-        [string]$cacheManifest.cacheKey -eq $innerCacheKey -and
-        [int]$layerManifest.schemaVersion -eq 1 -and
-        [string]$layerManifest.name -eq "scriber-backend-runtime-layer" -and
-        [string]$layerManifest.cacheKey -eq $innerCacheKey -and
-        [string]$layerManifest.runtimeContract.name -eq "scriber-frozen-python-runtime" -and
-        [int]$layerManifest.runtimeContract.revision -eq 1 -and
-        [int]$layerManifest.content.fileCount -eq $actualFiles.Count -and
-        [string]$layerManifest.content.treeSha256 -eq (Get-StringSha256 -Value $treeJson) -and
-        [string]$cacheManifest.sidecarSha256 -eq $runtimeExeSha -and
-        [int64]$cacheManifest.sidecarLength -eq [int64]$runtimeExe.Length -and
-        [string]$layerManifest.executable.sha256 -eq $runtimeExeSha -and
-        [int64]$layerManifest.executable.length -eq [int64]$runtimeExe.Length
+    $manifestChecks = [ordered]@{
+        cacheApiVersion = [int]$cacheManifest.apiVersion -eq 1
+        cacheIdentity = [string]$cacheManifest.cacheKey -eq $innerCacheKey
+        layerSchema = [int]$layerManifest.schemaVersion -eq 1
+        layerName = [string]$layerManifest.name -eq "scriber-backend-runtime-layer"
+        layerIdentity = [string]$layerManifest.cacheKey -eq $innerCacheKey
+        contractName = [string]$layerManifest.runtimeContract.name -eq "scriber-frozen-python-runtime"
+        contractRevision = [int]$layerManifest.runtimeContract.revision -eq 1
+        fileCount = [int]$layerManifest.content.fileCount -eq $actualFiles.Count
+        treeIdentity = [string]$layerManifest.content.treeSha256 -eq (Get-FileIdentityTreeSha256 -Entries $actualFiles)
+        cacheExecutableHash = [string]$cacheManifest.sidecarSha256 -eq $runtimeExeSha
+        cacheExecutableLength = [int64]$cacheManifest.sidecarLength -eq [int64]$runtimeExe.Length
+        layerExecutableHash = [string]$layerManifest.executable.sha256 -eq $runtimeExeSha
+        layerExecutableLength = [int64]$layerManifest.executable.length -eq [int64]$runtimeExe.Length
+    }
+    $failedManifestChecks = @(
+        $manifestChecks.GetEnumerator() |
+            Where-Object { -not [bool]$_.Value } |
+            ForEach-Object { [string]$_.Key }
     )
+    $usable = $failedManifestChecks.Count -eq 0
     if (-not $usable) {
-        throw "runtime cache manifests are not self-consistent"
+        throw "runtime cache manifests are not self-consistent (failed=$($failedManifestChecks -join ','))"
     }
 
     $runtimeManifestSha = Get-Sha256 -Path $cacheManifestPath
@@ -236,6 +266,7 @@ try {
     )
     $reason = if ($usable) { "validated" } else { "workflow-envelope-mismatch" }
 } catch {
+    $usable = $false
     $reason = "invalid"
     Write-Warning "Backend runtime cache is not usable: $($_.Exception.Message)"
 }

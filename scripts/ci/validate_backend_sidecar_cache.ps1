@@ -38,6 +38,31 @@ function Get-StringSha256 {
     }
 }
 
+function Get-FileIdentityTreeSha256 {
+    param([object[]]$Entries)
+
+    $byPath = [System.Collections.Generic.SortedDictionary[string, object]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($entry in @($Entries)) {
+        $path = [string]$entry.path
+        if (-not $path -or $path.Contains([char]0) -or $byPath.ContainsKey($path)) {
+            throw "runtime file identity contains an invalid or duplicate path"
+        }
+        $byPath.Add($path, $entry)
+    }
+    $builder = [System.Text.StringBuilder]::new()
+    foreach ($pair in $byPath.GetEnumerator()) {
+        [void]$builder.Append($pair.Key)
+        [void]$builder.Append([char]0)
+        [void]$builder.Append(([int64]$pair.Value.length).ToString([System.Globalization.CultureInfo]::InvariantCulture))
+        [void]$builder.Append([char]0)
+        [void]$builder.Append([string]$pair.Value.sha256)
+        [void]$builder.Append([char]0)
+    }
+    return Get-StringSha256 -Value $builder.ToString()
+}
+
 function Add-ExpectedEntries {
     param(
         [hashtable]$Target,
@@ -148,13 +173,12 @@ try {
         ) { throw "full backend cache checksum inventory differs" }
     }
 
-    $runtimeEntriesJson = @($runtimeManifest.content.files) | ConvertTo-Json -Depth 4 -Compress
     $exe = Get-Item -LiteralPath $exePath
     $exeSha = Get-Sha256 -Path $exePath
     $hasDeno = @($cacheManifest.mediaFiles | Where-Object { [string]$_.path -eq "deno.exe" }).Count -eq 1
     $usable = (
         [int]$runtimeManifest.content.fileCount -eq @($runtimeManifest.content.files).Count -and
-        [string]$runtimeManifest.content.treeSha256 -eq (Get-StringSha256 -Value $runtimeEntriesJson) -and
+        [string]$runtimeManifest.content.treeSha256 -eq (Get-FileIdentityTreeSha256 -Entries @($runtimeManifest.content.files)) -and
         [string]$runtimeManifest.executable.sha256 -eq $exeSha -and
         [int64]$runtimeManifest.executable.length -eq [int64]$exe.Length -and
         [string]$cacheManifest.sidecarSha256 -eq $exeSha -and
@@ -164,6 +188,7 @@ try {
     if (-not $usable) { throw "full backend cache critical attestations differ" }
     $reason = "validated"
 } catch {
+    $usable = $false
     $reason = "invalid"
     Write-Warning "Backend sidecar cache is not usable: $($_.Exception.Message)"
 }

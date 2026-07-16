@@ -25,6 +25,14 @@ def _compact(value: object) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
+def _runtime_identity_tree_sha256(entries: list[dict[str, object]]) -> str:
+    canonical = "".join(
+        f"{entry['path']}\0{entry['length']}\0{entry['sha256']}\0"
+        for entry in sorted(entries, key=lambda item: str(item["path"]))
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def test_release_workflow_uses_adaptive_parallel_cold_producers_and_safe_warm_fallback() -> None:
     workflow = _read(".github/workflows/release-windows.yml")
 
@@ -167,7 +175,7 @@ def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
         {"path": "_internal/runtime.dat", "length": runtime_data.stat().st_size, "sha256": _sha256(runtime_data)},
         {"path": "scriber-backend.exe", "length": executable.stat().st_size, "sha256": _sha256(executable)},
     ]
-    tree_sha = hashlib.sha256(_compact(runtime_files).encode()).hexdigest()
+    tree_sha = _runtime_identity_tree_sha256(runtime_files)
     layer_manifest = {
         "schemaVersion": 1,
         "name": "scriber-backend-runtime-layer",
@@ -207,6 +215,13 @@ def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
         "-FailIfUnusable",
     ]
     try:
+        missing_envelope = subprocess.run(
+            command[:-1], cwd=REPO_ROOT, check=True, capture_output=True, text=True
+        )
+        missing_payload = json.loads(missing_envelope.stdout.strip().splitlines()[-1])
+        assert missing_payload["usable"] is False
+        assert missing_payload["reason"] == "invalid"
+
         subprocess.run(command + ["-BindIfMissing"], cwd=REPO_ROOT, check=True, capture_output=True, text=True)
         envelope = json.loads((cache_root / "workflow-cache-envelope.json").read_text(encoding="utf-8"))
         assert envelope["workflowFingerprint"] == workflow_fingerprint

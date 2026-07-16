@@ -161,6 +161,37 @@ function Get-StringSha256 {
     }
 }
 
+function Get-FileIdentityTreeSha256 {
+    param([object[]]$Entries)
+
+    # Do not hash ConvertTo-Json output here. Windows PowerShell 5.1 builds the
+    # frozen layer, while cache validation runs in PowerShell 7; their JSON
+    # serializers are not byte-identical for every filename/value. This
+    # NUL-delimited, ordinally sorted representation is stable across both.
+    $byPath = [System.Collections.Generic.SortedDictionary[string, object]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($entry in @($Entries)) {
+        $path = [string](Get-ObjectPropertyValue -Object $entry -Name "path")
+        if (-not $path -or $path.Contains([char]0) -or $byPath.ContainsKey($path)) {
+            throw "Runtime file identity contains an invalid or duplicate path."
+        }
+        $byPath.Add($path, $entry)
+    }
+    $builder = [System.Text.StringBuilder]::new()
+    foreach ($pair in $byPath.GetEnumerator()) {
+        $length = [int64](Get-ObjectPropertyValue -Object $pair.Value -Name "length")
+        $sha256 = [string](Get-ObjectPropertyValue -Object $pair.Value -Name "sha256")
+        [void]$builder.Append($pair.Key)
+        [void]$builder.Append([char]0)
+        [void]$builder.Append($length.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+        [void]$builder.Append([char]0)
+        [void]$builder.Append($sha256)
+        [void]$builder.Append([char]0)
+    }
+    return Get-StringSha256 -Value $builder.ToString()
+}
+
 function Get-Sha256Hex {
     param([string]$Path)
 
@@ -941,7 +972,6 @@ function Test-BackendRuntimeLayer {
             }
         }
 
-        $actualTreeJson = $actualFiles | ConvertTo-Json -Depth 4 -Compress
         $identity = Get-ObjectPropertyValue -Object $layerManifest -Name "executable"
         return (
             [int](Get-ObjectPropertyValue -Object $layerManifest -Name "schemaVersion") -eq 1 -and
@@ -950,7 +980,7 @@ function Test-BackendRuntimeLayer {
             [string](Get-ObjectPropertyValue -Object $contract -Name "name") -eq "scriber-frozen-python-runtime" -and
             [int](Get-ObjectPropertyValue -Object $contract -Name "revision") -eq 1 -and
             [int](Get-ObjectPropertyValue -Object $content -Name "fileCount") -eq $actualFiles.Count -and
-            [string](Get-ObjectPropertyValue -Object $content -Name "treeSha256") -eq (Get-StringSha256 -Value $actualTreeJson) -and
+            [string](Get-ObjectPropertyValue -Object $content -Name "treeSha256") -eq (Get-FileIdentityTreeSha256 -Entries $actualFiles) -and
             [string](Get-ObjectPropertyValue -Object $identity -Name "sha256") -eq (Get-Sha256Hex -Path $runtimeExe) -and
             [int64](Get-ObjectPropertyValue -Object $identity -Name "length") -eq [int64](Get-Item -LiteralPath $runtimeExe).Length
         )
@@ -1018,8 +1048,7 @@ function Test-BackendRuntimeCache {
                 return $false
             }
         }
-        $actualTreeJson = $actualRuntimeFiles | ConvertTo-Json -Depth 4 -Compress
-        $actualTreeSha256 = Get-StringSha256 -Value $actualTreeJson
+        $actualTreeSha256 = Get-FileIdentityTreeSha256 -Entries $actualRuntimeFiles
         $executableIdentity = Get-ObjectPropertyValue -Object $layerManifest -Name "executable"
         return (
             [int](Get-ObjectPropertyValue -Object $cacheManifest -Name "apiVersion") -eq 1 -and
@@ -1060,7 +1089,6 @@ function Write-BackendRuntimeCacheMetadata {
         throw "Failed to resolve Python runtime identity."
     }
     $runtimeFiles = @(Get-BackendRuntimeFileIdentityEntries -RuntimeDir $RuntimeDir)
-    $runtimeTreeJson = $runtimeFiles | ConvertTo-Json -Depth 4 -Compress
     $layerManifest = [ordered]@{
         schemaVersion = 1
         name = "scriber-backend-runtime-layer"
@@ -1073,7 +1101,7 @@ function Write-BackendRuntimeCacheMetadata {
         executable = $identity
         content = [ordered]@{
             fileCount = $runtimeFiles.Count
-            treeSha256 = Get-StringSha256 -Value $runtimeTreeJson
+            treeSha256 = Get-FileIdentityTreeSha256 -Entries $runtimeFiles
             files = $runtimeFiles
         }
     }
