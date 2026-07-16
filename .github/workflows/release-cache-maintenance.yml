@@ -1,0 +1,355 @@
+name: Release Cache Maintenance
+
+on:
+  workflow_run:
+    workflows:
+      - Release Windows
+    types:
+      - completed
+
+concurrency:
+  group: release-cache-maintenance
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+
+env:
+  SCRIBER_RELEASE_PYTHON_VERSION: "3.13.14"
+  SCRIBER_RELEASE_RUST_TOOLCHAIN: "1.97.0"
+  SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG: ffmpeg-profile-b-n7.0-v4
+  SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME: scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip
+  SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG: release-cache-backend-sidecar-v2
+  SCRIBER_BACKEND_RUNTIME_ARTIFACT_TAG: release-cache-backend-runtime-v1
+  SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG: release-cache-rust-audio-sidecar-v1
+  SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG: release-cache-rust-diarization-sidecar-v1
+
+jobs:
+  publish-finished-caches:
+    name: Publish finished release caches
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: windows-latest
+    steps:
+      # This is intentionally before checkout. Only the trusted workflow text
+      # from the default branch parses the downloaded JSON and hashes passive
+      # payload bytes. No downloaded file is invoked.
+      - name: Download and prevalidate passive maintenance handoff
+        id: handoff
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_TAG: ${{ github.event.workflow_run.head_branch }}
+          SOURCE_WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $downloadRoot = Join-Path $env:RUNNER_TEMP "scriber-release-cache-handoff"
+          New-Item -ItemType Directory -Force -Path $downloadRoot | Out-Null
+          & gh run download $env:SOURCE_RUN_ID `
+            --repo $env:SOURCE_REPOSITORY `
+            --name scriber-release-cache-handoff `
+            --dir $downloadRoot
+          if ($LASTEXITCODE -ne 0) {
+            throw "Downloading the release-cache handoff failed."
+          }
+
+          $manifestMatches = @(Get-ChildItem -LiteralPath $downloadRoot -Recurse -File -Filter handoff-manifest.json -Force)
+          if ($manifestMatches.Count -ne 1) {
+            throw "Expected exactly one release-cache handoff manifest, found $($manifestMatches.Count)."
+          }
+          $manifestPath = $manifestMatches[0].FullName
+          $handoffRoot = $manifestMatches[0].Directory.FullName
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+          $expectedRef = "refs/tags/$($env:SOURCE_TAG)"
+          if (
+            [int]$manifest.apiVersion -ne 1 -or
+            [string]$manifest.repository -ne $env:SOURCE_REPOSITORY -or
+            [string]$manifest.workflowName -ne "Release Windows" -or
+            [string]$manifest.workflowName -ne $env:SOURCE_WORKFLOW_NAME -or
+            [string]$manifest.sourceRunId -ne $env:SOURCE_RUN_ID -or
+            [string]$manifest.sourceSha -ne $env:SOURCE_SHA -or
+            [string]$manifest.sourceRef -ne $expectedRef -or
+            [string]$manifest.sourceTag -ne $env:SOURCE_TAG -or
+            [string]$manifest.sourceTag -notmatch '^v[0-9A-Za-z.+-]+$' -or
+            [string]$manifest.pythonVersion -ne $env:SCRIBER_RELEASE_PYTHON_VERSION -or
+            [string]$manifest.sourceKind -notin @("embedded", "cold-backend-product") -or
+            [string]$manifest.fingerprints.backendRuntime -notmatch '^[0-9a-f]{64}$' -or
+            [string]$manifest.fingerprints.backend -notmatch '^[0-9a-f]{64}$' -or
+            [string]$manifest.fingerprints.rustAudio -notmatch '^[0-9a-f]{64}$' -or
+            [string]$manifest.fingerprints.rustDiarization -notmatch '^[0-9a-f]{64}$'
+          ) {
+            throw "Release-cache handoff identity did not match the completed source workflow."
+          }
+          if (
+            ([string]$manifest.sourceKind -eq "cold-backend-product" -and [string]$manifest.coldArtifactName -ne "scriber-cold-backend-product") -or
+            ([string]$manifest.sourceKind -eq "embedded" -and -not [string]::IsNullOrWhiteSpace([string]$manifest.coldArtifactName))
+          ) {
+            throw "Release-cache handoff source-kind metadata is invalid."
+          }
+          foreach ($name in @("ffmpeg", "rustAudio", "rustDiarization", "backendRuntime", "backend")) {
+            if ($manifest.publish.$name -isnot [bool]) {
+              throw "Release-cache handoff publish flag '$name' is not Boolean."
+            }
+          }
+
+          $prefix = $handoffRoot.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
+          $actualByPath = @{}
+          foreach ($file in @(Get-ChildItem -LiteralPath $handoffRoot -Recurse -File -Force | Where-Object { $_.FullName -ne $manifestPath })) {
+            if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Release-cache handoff contains a reparse point."
+            }
+            $relative = $file.FullName.Substring($prefix.Length).Replace("\", "/")
+            if ($actualByPath.ContainsKey($relative)) {
+              throw "Release-cache handoff contains a duplicate file path."
+            }
+            $actualByPath[$relative] = $file
+          }
+          $entries = @($manifest.files)
+          if ($entries.Count -ne $actualByPath.Count) {
+            throw "Release-cache handoff file count differs from its manifest."
+          }
+          $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+          foreach ($entry in $entries) {
+            $relative = [string]$entry.path
+            if (
+              -not $relative -or
+              -not $seen.Add($relative) -or
+              [System.IO.Path]::IsPathRooted($relative) -or
+              $relative.Contains("\") -or
+              $relative -match '(^|/)\.\.($|/)' -or
+              [string]$entry.sha256 -notmatch '^[0-9a-f]{64}$' -or
+              [int64]$entry.length -lt 0
+            ) {
+              throw "Release-cache handoff contains an invalid or duplicate inventory path."
+            }
+            $file = $actualByPath[$relative]
+            if (
+              $null -eq $file -or
+              [int64]$entry.length -ne [int64]$file.Length -or
+              [string]$entry.sha256 -ne (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            ) {
+              throw "Release-cache handoff checksum inventory did not validate."
+            }
+          }
+
+          # A completed but older release must never overwrite cache products
+          # from a newer successful tag run.
+          $runsJson = & gh api "repos/$($env:SOURCE_REPOSITORY)/actions/workflows/release-windows.yml/runs?event=push&status=completed&per_page=100"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not evaluate the stale-release guard."
+          }
+          $newerRun = @(
+            ($runsJson | ConvertFrom-Json).workflow_runs |
+              Where-Object {
+                [string]$_.conclusion -eq "success" -and
+                [string]$_.head_branch -match '^v' -and
+                [string]$_.head_repository.full_name -eq $env:SOURCE_REPOSITORY -and
+                [int64]$_.id -gt [int64]$env:SOURCE_RUN_ID
+              } |
+              Select-Object -First 1
+          )
+          $current = $newerRun.Count -eq 0
+          "current=$($current.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "handoff-root=$handoffRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "source-kind=$([string]$manifest.sourceKind)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "publish-ffmpeg=$(([bool]$manifest.publish.ffmpeg).ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "publish-rust-audio=$(([bool]$manifest.publish.rustAudio).ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "publish-rust-diarization=$(([bool]$manifest.publish.rustDiarization).ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "publish-backend-runtime=$(([bool]$manifest.publish.backendRuntime).ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "publish-backend=$(([bool]$manifest.publish.backend).ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if (-not $current) {
+            Write-Warning "A newer successful tag release exists; this maintenance run will not mutate cache releases."
+          }
+
+      - name: Checkout exact completed release source
+        if: steps.handoff.outputs.current == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - name: Verify exact source checkout
+        if: steps.handoff.outputs.current == 'true'
+        shell: pwsh
+        run: |
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne "${{ github.event.workflow_run.head_sha }}") {
+            throw "Maintenance checkout does not match the completed release SHA."
+          }
+
+      - name: Recompute source-bound cache identities
+        if: steps.handoff.outputs.current == 'true'
+        shell: pwsh
+        env:
+          SCRIBER_OUTLOOK_CLIENT_ID: ${{ vars.SCRIBER_OUTLOOK_CLIENT_ID }}
+          SCRIBER_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.SCRIBER_TAURI_UPDATER_PUBLIC_KEY }}
+          SCRIBER_TAURI_UPDATER_ENDPOINT: ${{ vars.SCRIBER_TAURI_UPDATER_ENDPOINT }}
+        run: |
+          & .\scripts\ci\write_release_cache_keys.ps1
+          & .\scripts\ci\finalize_release_cache_keys.ps1 `
+            -SourceCommit "${{ github.event.workflow_run.head_sha }}" `
+            -UpdaterPublicKey $env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY `
+            -UpdaterEndpoint $env:SCRIBER_TAURI_UPDATER_ENDPOINT `
+            -OutlookClientId $env:SCRIBER_OUTLOOK_CLIENT_ID `
+            -RustToolchain $env:SCRIBER_RELEASE_RUST_TOOLCHAIN
+
+      - name: Stage the prevalidated passive payload under the checkout
+        if: steps.handoff.outputs.current == 'true'
+        shell: pwsh
+        run: |
+          $source = "${{ steps.handoff.outputs.handoff-root }}"
+          $destination = Join-Path $env:GITHUB_WORKSPACE "build\release-cache-handoff"
+          if (-not (Test-Path -LiteralPath $source -PathType Container)) {
+            throw "The prevalidated handoff disappeared before staging."
+          }
+          if (Test-Path -LiteralPath $destination -PathType Container) {
+            Remove-Item -LiteralPath $destination -Recurse -Force
+          }
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse -Force
+          }
+
+      - name: Download attested cold backend product
+        if: steps.handoff.outputs.current == 'true' && steps.handoff.outputs.source-kind == 'cold-backend-product'
+        uses: actions/download-artifact@v8
+        with:
+          name: scriber-cold-backend-product
+          path: build/cold-transfer
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Import attested cold backend product
+        id: cold-import
+        if: steps.handoff.outputs.current == 'true' && steps.handoff.outputs.source-kind == 'cold-backend-product'
+        shell: pwsh
+        run: |
+          & .\scripts\ci\sync_cold_backend_product.ps1 `
+            -Mode Import `
+            -PythonVersion $env:SCRIBER_RELEASE_PYTHON_VERSION `
+            -BackendWorkflowFingerprint "${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}" `
+            -RuntimeWorkflowFingerprint "${{ hashFiles('build/cache-keys/backend-runtime.txt') }}" `
+            -SourceCommit "${{ github.event.workflow_run.head_sha }}" `
+            -ProductRoot "build\cold-transfer\backend-product"
+
+      - name: Import embedded passive cache payload
+        id: embedded-import
+        if: steps.handoff.outputs.current == 'true' && steps.handoff.outputs.source-kind == 'embedded'
+        shell: pwsh
+        run: |
+          & .\scripts\ci\sync_release_cache_handoff.ps1 `
+            -Mode Import `
+            -Repository "${{ github.repository }}" `
+            -SourceRunId "${{ github.event.workflow_run.id }}" `
+            -SourceSha "${{ github.event.workflow_run.head_sha }}" `
+            -SourceRef "refs/tags/${{ github.event.workflow_run.head_branch }}" `
+            -PythonVersion $env:SCRIBER_RELEASE_PYTHON_VERSION `
+            -HandoffRoot "build\release-cache-handoff"
+
+      - name: Validate imported cache payload without executing it
+        if: steps.handoff.outputs.current == 'true'
+        shell: pwsh
+        run: |
+          if ("${{ steps.handoff.outputs.source-kind }}" -eq "cold-backend-product" -and "${{ steps.cold-import.outputs.usable }}" -ne "true") {
+            throw "Cold cache import did not complete."
+          }
+          if ("${{ steps.handoff.outputs.source-kind }}" -eq "embedded" -and "${{ steps.embedded-import.outputs.stage-ready }}" -ne "true") {
+            throw "Embedded cache import did not complete."
+          }
+          if ("${{ steps.handoff.outputs.publish-backend-runtime }}" -eq "true") {
+            & .\scripts\ci\validate_backend_runtime_cache.ps1 `
+              -ExpectedWorkflowFingerprint "${{ hashFiles('build/cache-keys/backend-runtime.txt') }}" `
+              -FailIfUnusable
+          }
+          if ("${{ steps.handoff.outputs.publish-backend }}" -eq "true") {
+            & .\scripts\ci\validate_backend_sidecar_cache.ps1 -FailIfUnusable
+          }
+
+      - name: Recheck stale-release guard immediately before mutation
+        id: mutation-guard
+        if: steps.handoff.outputs.current == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          $runsJson = & gh api "repos/$($env:SOURCE_REPOSITORY)/actions/workflows/release-windows.yml/runs?event=push&status=completed&per_page=100"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not re-evaluate the stale-release guard before mutation."
+          }
+          $newerRun = @(
+            ($runsJson | ConvertFrom-Json).workflow_runs |
+              Where-Object {
+                [string]$_.conclusion -eq "success" -and
+                [string]$_.head_branch -match '^v' -and
+                [string]$_.head_repository.full_name -eq $env:SOURCE_REPOSITORY -and
+                [int64]$_.id -gt [int64]$env:SOURCE_RUN_ID
+              } |
+              Select-Object -First 1
+          )
+          $current = $newerRun.Count -eq 0
+          "current=$($current.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if (-not $current) {
+            Write-Warning "A newer successful release completed during validation; cache mutation is skipped."
+          }
+
+      - name: Publish validated finished caches in parallel
+        id: publish-finished-caches
+        if: >-
+          steps.mutation-guard.outputs.current == 'true' &&
+          (steps.handoff.outputs.publish-ffmpeg == 'true' ||
+           steps.handoff.outputs.publish-rust-audio == 'true' ||
+           steps.handoff.outputs.publish-rust-diarization == 'true' ||
+           steps.handoff.outputs.publish-backend-runtime == 'true' ||
+           steps.handoff.outputs.publish-backend == 'true')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $arguments = @{
+            Repo = "${{ github.repository }}"
+            FfmpegTag = $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG
+            FfmpegAssetName = $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME
+            RustAudioTag = $env:SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG
+            RustAudioAssetName = "scriber-rust-audio-sidecar-Windows-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}.zip"
+            RustDiarizationTag = $env:SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG
+            RustDiarizationAssetName = "scriber-rust-diarization-sidecar-Windows-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}.zip"
+            BackendRuntimeTag = $env:SCRIBER_BACKEND_RUNTIME_ARTIFACT_TAG
+            BackendRuntimeAssetName = "scriber-backend-runtime-Windows-python-$($env:SCRIBER_RELEASE_PYTHON_VERSION)-${{ hashFiles('build/cache-keys/backend-runtime.txt') }}.zip"
+            BackendTag = $env:SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG
+            BackendAssetName = "scriber-backend-sidecar-Windows-python-$($env:SCRIBER_RELEASE_PYTHON_VERSION)-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip"
+          }
+          if ("${{ steps.handoff.outputs.publish-ffmpeg }}" -eq "true") { $arguments.PublishFfmpeg = $true }
+          if ("${{ steps.handoff.outputs.publish-rust-audio }}" -eq "true") { $arguments.PublishRustAudio = $true }
+          if ("${{ steps.handoff.outputs.publish-rust-diarization }}" -eq "true") { $arguments.PublishRustDiarization = $true }
+          if ("${{ steps.handoff.outputs.publish-backend-runtime }}" -eq "true") { $arguments.PublishBackendRuntime = $true }
+          if ("${{ steps.handoff.outputs.publish-backend }}" -eq "true") { $arguments.PublishBackend = $true }
+          & .\scripts\ci\publish_finished_component_caches_parallel.ps1 @arguments
+
+      - name: Require every requested cache publication
+        if: steps.mutation-guard.outputs.current == 'true' && steps.publish-finished-caches.outcome == 'success'
+        shell: pwsh
+        run: |
+          if ("${{ steps.publish-finished-caches.outputs.failed-count }}" -ne "0") {
+            throw "One or more requested cache publications failed; superseded-cache pruning is blocked."
+          }
+
+      - name: Prune superseded release-cache generations
+        if: >-
+          steps.mutation-guard.outputs.current == 'true' &&
+          (steps.publish-finished-caches.outcome == 'skipped' ||
+           steps.publish-finished-caches.outputs.failed-count == '0')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & .\scripts\ci\prune_obsolete_release_caches.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Apply

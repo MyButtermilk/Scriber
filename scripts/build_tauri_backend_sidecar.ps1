@@ -35,6 +35,7 @@ param(
     [switch]$ValidateSlimMediaTools,
     [switch]$ReuseSidecarIfUnchanged,
     [string]$SidecarCacheRoot = "",
+    [string]$RuntimeCacheRoot = "",
     [switch]$BundleRustAudioSidecar,
     [switch]$BundleRustDiarizationSidecar,
     [string]$RustDiarizationSidecarCacheRoot = "",
@@ -240,11 +241,12 @@ function Get-ContentHashEntry {
         [string]$Content
     )
 
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Content)
+    $canonicalContent = $Content -replace "\r\n", "`n" -replace "\r", "`n"
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonicalContent)
     return [ordered]@{
         path = (Get-RelativePath -Root $Root -Path $Path)
         length = [int64]$bytes.Length
-        sha256 = Get-StringSha256 -Value $Content
+        sha256 = Get-StringSha256 -Value $canonicalContent
     }
 }
 
@@ -268,6 +270,19 @@ function Get-FileHashEntry {
     )
 
     $item = Get-Item -LiteralPath $Path
+    $textExtensions = @(
+        ".c", ".cc", ".cmake", ".conf", ".cpp", ".css", ".csv", ".h", ".hpp",
+        ".html", ".ini", ".js", ".json", ".jsx", ".md", ".mjs", ".ps1",
+        ".psd1", ".psm1", ".py", ".rs", ".scss", ".svg", ".toml", ".ts",
+        ".tsx", ".txt", ".xml", ".yaml", ".yml"
+    )
+    $isText = (
+        $item.Extension -in $textExtensions -or
+        $item.Name -in @("Cargo.lock", "Dockerfile", "LICENSE", "Makefile", ".node-version")
+    )
+    if ($isText) {
+        return Get-ContentHashEntry -Root $Root -Path $item.FullName -Content ([System.IO.File]::ReadAllText($item.FullName))
+    }
     return [ordered]@{
         path = (Get-RelativePath -Root $Root -Path $item.FullName)
         length = [int64]$item.Length
@@ -278,7 +293,8 @@ function Get-FileHashEntry {
 function Get-InputFileEntries {
     param(
         [string]$Root,
-        [string[]]$RelativePaths
+        [string[]]$RelativePaths,
+        [bool]$NormalizeApplicationVersion = $true
     )
 
     $entries = @()
@@ -298,7 +314,7 @@ function Get-InputFileEntries {
             foreach ($file in $files) {
                 $relative = Get-RelativePath -Root $Root -Path $file.FullName
                 $normalizedRelative = $relative -replace '/', '\'
-                if ($normalizedRelative -eq "src\version.py") {
+                if ($NormalizeApplicationVersion -and $normalizedRelative -eq "src\version.py") {
                     $entries += Get-ContentHashEntry -Root $Root -Path $file.FullName -Content (Normalize-PythonVersionForCache -Text (Get-Content -LiteralPath $file.FullName -Raw))
                 } else {
                     $entries += Get-FileHashEntry -Root $Root -Path $file.FullName
@@ -307,7 +323,7 @@ function Get-InputFileEntries {
         } else {
             $relative = Get-RelativePath -Root $Root -Path $item.FullName
             $normalizedRelative = $relative -replace '/', '\'
-            if ($normalizedRelative -eq "src\version.py") {
+            if ($NormalizeApplicationVersion -and $normalizedRelative -eq "src\version.py") {
                 $entries += Get-ContentHashEntry -Root $Root -Path $item.FullName -Content (Normalize-PythonVersionForCache -Text (Get-Content -LiteralPath $item.FullName -Raw))
             } else {
                 $entries += Get-FileHashEntry -Root $Root -Path $item.FullName
@@ -315,6 +331,52 @@ function Get-InputFileEntries {
         }
     }
     return $entries
+}
+
+function Get-GitTrackedFileEntries {
+    param(
+        [string]$Root,
+        [string[]]$RelativePaths
+    )
+
+    $trackedPaths = @(& git -C $Root ls-files -- @RelativePaths)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not enumerate tracked backend application files."
+    }
+    $entries = @()
+    foreach ($relativePath in @($trackedPaths | Where-Object { $_ } | Sort-Object -Unique)) {
+        $candidate = Join-Path $Root ($relativePath -replace '/', '\')
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            throw "Tracked backend application file is missing: $relativePath"
+        }
+        if ($relativePath -match '(^|/)__pycache__(/|$)' -or [System.IO.Path]::GetExtension($relativePath) -in @(".pyc", ".pyo")) {
+            throw "Tracked bytecode is not allowed in the backend application layer: $relativePath"
+        }
+        $entries += Get-FileHashEntry -Root $Root -Path $candidate
+    }
+    return @($entries)
+}
+
+function Get-PythonFileEntries {
+    param(
+        [string]$Root,
+        [string[]]$RelativeDirectories
+    )
+
+    $entries = @()
+    foreach ($relativeDirectory in $RelativeDirectories) {
+        $directory = Join-Path $Root $relativeDirectory
+        if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+            throw "Required Python source directory is missing: $relativeDirectory"
+        }
+        foreach ($file in Get-ChildItem -LiteralPath $directory -Recurse -File -Filter "*.py" | Sort-Object FullName) {
+            if ($file.FullName -match "\\__pycache__\\") {
+                throw "Python source enumeration encountered bytecode cache content: $($file.FullName)"
+            }
+            $entries += Get-FileHashEntry -Root $Root -Path $file.FullName
+        }
+    }
+    return @($entries)
 }
 
 function Get-ObjectPropertyValue {
@@ -401,10 +463,58 @@ function Get-ToolMetadataEntry {
     }
 }
 
-function Get-SidecarInputManifest {
+function Get-BackendRuntimeInputManifest {
     param(
         [string]$Root,
         [string]$Python,
+        [bool]$PyInstallerClean
+    )
+
+    $pythonVersion = (& $Python -c "import sys; print(sys.version); print(sys.implementation.cache_tag)" 2>$null) -join "`n"
+    $inputPaths = @(
+        "packaging\scriber-backend.spec",
+        "packaging\backend-sidecar-output-contract.json",
+        "requirements-base.txt",
+        "requirements-build.txt"
+    )
+    $files = @(Get-InputFileEntries -Root $Root -RelativePaths $inputPaths)
+    $files += @(Get-PythonFileEntries -Root $Root -RelativeDirectories @("backend_runtime", "pyloudnorm"))
+    return [ordered]@{
+        apiVersion = "1"
+        name = "scriber-backend-runtime-layer"
+        outputContract = Get-BackendSidecarOutputContract -Root $Root
+        python = $pythonVersion
+        flags = [ordered]@{
+            pyInstallerClean = $PyInstallerClean
+        }
+        files = $files
+    }
+}
+
+function Get-BackendApplicationInputManifest {
+    param([string]$Root)
+
+    $files = @(
+        Get-GitTrackedFileEntries -Root $Root -RelativePaths @(
+            "src",
+            "scripts/__init__.py",
+            "scripts/check_backend_runtime_imports.py"
+        )
+    )
+    $files += @(Get-InputFileEntries -Root $Root -NormalizeApplicationVersion $false -RelativePaths @(
+        "scripts\stage_backend_application_layer.py"
+    ))
+    return [ordered]@{
+        apiVersion = "1"
+        name = "scriber-backend-application-layer"
+        files = $files
+    }
+}
+
+function Get-SidecarInputManifest {
+    param(
+        [string]$Root,
+        [string]$RuntimeCacheKey,
         [string]$SearchDir,
         [bool]$BundleTools,
         [bool]$UseProfileB,
@@ -414,30 +524,27 @@ function Get-SidecarInputManifest {
         [bool]$PyInstallerClean
     )
 
-    $pythonVersion = (& $Python -c "import sys; print(sys.version)" 2>$null) -join "`n"
-    $inputPaths = @(
-        "src",
-        "packaging\scriber-backend.spec",
-        "requirements-base.txt",
-        "requirements-build.txt",
-        "pyloudnorm",
-        "scripts\check_backend_runtime_imports.py"
-    )
     $tools = @()
     if ($BundleTools -or $SearchDir) {
+        if ($SearchDir) {
+            foreach ($dll in Get-ChildItem -LiteralPath $SearchDir -Filter "*.dll" -File -ErrorAction SilentlyContinue | Sort-Object Name) {
+                $tools += Get-ToolMetadataEntry -Path $dll.FullName -Name ("dll:{0}" -f $dll.Name)
+            }
+        }
         $tools += Get-ToolMetadataEntry -Path (Resolve-MediaTool -Names @("ffmpeg.exe", "ffmpeg") -SearchDir $SearchDir) -Name "ffmpeg"
         if (-not $SkipFfprobe) {
             $tools += Get-ToolMetadataEntry -Path (Resolve-MediaTool -Names @("ffprobe.exe", "ffprobe") -SearchDir $SearchDir) -Name "ffprobe"
         }
-        # yt-dlp and Deno are exact pins in requirements-base.txt, which is
-        # already hashed above. Do not resolve them from the active Python
-        # environment here: signed tag builds intentionally skip restoring a
-        # venv when the backend sidecar cache is exact.
+        $resolvedYtDlp = Resolve-BackendStableMediaTool -Names @("yt-dlp.exe", "yt-dlp") -Python $PythonPath -ExpectedRuntimeCacheKey $RuntimeCacheKey
+        $tools += Get-ToolMetadataEntry -Path $resolvedYtDlp -Name "yt-dlp"
+        $resolvedDeno = Resolve-BackendStableMediaTool -Names @("deno.exe", "deno") -Python $PythonPath -ExpectedRuntimeCacheKey $RuntimeCacheKey -Required
+        $tools += Get-ToolMetadataEntry -Path $resolvedDeno -Name "deno"
     }
     return [ordered]@{
-        apiVersion = "2"
+        apiVersion = "3"
         outputContract = Get-BackendSidecarOutputContract -Root $Root
-        python = $pythonVersion
+        runtimeCacheKey = $RuntimeCacheKey
+        application = Get-BackendApplicationInputManifest -Root $Root
         flags = [ordered]@{
             bundleMediaTools = $BundleTools
             useProfileBFfmpeg = $UseProfileB
@@ -446,8 +553,588 @@ function Get-SidecarInputManifest {
             validateSlimMediaTools = $ValidateSlimBundle
             pyInstallerClean = $PyInstallerClean
         }
-        files = Get-InputFileEntries -Root $Root -RelativePaths $inputPaths
         tools = $tools
+    }
+}
+
+function Get-BackendRuntimeFileIdentityEntries {
+    param([string]$RuntimeDir)
+
+    $entries = @()
+    foreach ($file in Get-ChildItem -LiteralPath $RuntimeDir -Recurse -File | Sort-Object FullName) {
+        $relative = (Get-RelativePath -Root $RuntimeDir -Path $file.FullName) -replace '\\', '/'
+        if ($relative -eq "runtime-layer-manifest.json") {
+            continue
+        }
+        $entries += [ordered]@{
+            path = $relative
+            length = [int64]$file.Length
+            sha256 = Get-Sha256Hex -Path $file.FullName
+        }
+    }
+    return @($entries)
+}
+
+function Get-BackendMediaFileIdentityEntries {
+    param([string]$SidecarDir)
+
+    $mediaRoot = Join-Path $SidecarDir "tools\ffmpeg"
+    if (-not (Test-Path -LiteralPath $mediaRoot -PathType Container)) {
+        return @()
+    }
+    $entries = @()
+    foreach ($file in Get-ChildItem -LiteralPath $mediaRoot -Recurse -File | Sort-Object FullName) {
+        $entries += [ordered]@{
+            path = ((Get-RelativePath -Root $mediaRoot -Path $file.FullName) -replace '\\', '/')
+            length = [int64]$file.Length
+            sha256 = Get-Sha256Hex -Path $file.FullName
+        }
+    }
+    return @($entries)
+}
+
+function Get-BackendStableMediaFileIdentityEntries {
+    param([string]$CacheRoot)
+
+    $stableRoot = Join-Path $CacheRoot "media-tools"
+    if (-not (Test-Path -LiteralPath $stableRoot -PathType Container)) {
+        return @()
+    }
+    $entries = @()
+    foreach ($file in Get-ChildItem -LiteralPath $stableRoot -Recurse -File | Sort-Object FullName) {
+        $relativeWithinMedia = (Get-RelativePath -Root $stableRoot -Path $file.FullName) -replace '\\', '/'
+        $entries += [ordered]@{
+            path = "media-tools/$relativeWithinMedia"
+            length = [int64]$file.Length
+            sha256 = Get-Sha256Hex -Path $file.FullName
+        }
+    }
+    return @($entries)
+}
+
+function Test-BackendStableMediaFiles {
+    param(
+        [string]$CacheRoot,
+        [object[]]$ExpectedFiles
+    )
+
+    $expected = @($ExpectedFiles)
+    $actual = @(Get-BackendStableMediaFileIdentityEntries -CacheRoot $CacheRoot)
+    if ($expected.Count -lt 1 -or $expected.Count -ne $actual.Count) {
+        return $false
+    }
+    $actualByPath = @{}
+    foreach ($entry in $actual) {
+        $actualByPath[[string]$entry.path] = $entry
+    }
+    $seen = @{}
+    $denoFound = $false
+    foreach ($entry in $expected) {
+        $relative = [string](Get-ObjectPropertyValue -Object $entry -Name "path")
+        $length = Get-ObjectPropertyValue -Object $entry -Name "length"
+        $sha256 = [string](Get-ObjectPropertyValue -Object $entry -Name "sha256")
+        $found = $actualByPath[$relative]
+        if (
+            -not $relative -or
+            $relative.Contains("\") -or
+            $relative.StartsWith("/") -or
+            $relative -match '(^|/)\.\.($|/)' -or
+            $seen.ContainsKey($relative) -or
+            $null -eq $length -or
+            [int64]$length -lt 0 -or
+            $sha256 -notmatch '^[0-9a-f]{64}$' -or
+            $null -eq $found -or
+            [int64]$length -ne [int64]$found.length -or
+            $sha256 -ne [string]$found.sha256
+        ) {
+            return $false
+        }
+        $seen[$relative] = $true
+        if ([System.IO.Path]::GetFileName($relative) -in @("deno", "deno.exe")) {
+            $denoFound = $true
+        }
+    }
+    return $denoFound
+}
+
+function Resolve-BackendSidecarCandidateMediaTool {
+    param(
+        [string[]]$Names,
+        [string]$ExpectedRuntimeCacheKey
+    )
+
+    if ($script:SidecarCandidateMediaCacheKey -ne $ExpectedRuntimeCacheKey) {
+        $script:SidecarCandidateMediaCacheKey = $ExpectedRuntimeCacheKey
+        $script:SidecarCandidateMediaCandidates = @()
+        if ($SidecarCacheRoot -and (Test-Path -LiteralPath $SidecarCacheRoot -PathType Container)) {
+            foreach ($cacheDirectory in Get-ChildItem -LiteralPath $SidecarCacheRoot -Directory -ErrorAction SilentlyContinue | Sort-Object FullName) {
+                $backendDir = Join-Path $cacheDirectory.FullName "scriber-backend"
+                $manifestPath = Join-Path $cacheDirectory.FullName "cache-manifest.json"
+                if (
+                    -not (Test-Path -LiteralPath $backendDir -PathType Container) -or
+                    -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)
+                ) {
+                    continue
+                }
+                try {
+                    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+                    if (
+                        [string]$manifest.inputManifest.runtimeCacheKey -ne $ExpectedRuntimeCacheKey -or
+                        -not (Test-BackendMediaFiles -SidecarDir $backendDir -ExpectedFiles @($manifest.mediaFiles))
+                    ) {
+                        continue
+                    }
+                    $stableMap = @{}
+                    foreach ($entry in @($manifest.mediaFiles)) {
+                        $leaf = [System.IO.Path]::GetFileName([string]$entry.path).ToLowerInvariant()
+                        if ($leaf -in @("deno", "deno.exe", "yt-dlp", "yt-dlp.exe")) {
+                            $stableMap[$leaf] = [pscustomobject]@{
+                                path = Join-Path $backendDir ("tools\ffmpeg\{0}" -f [string]$entry.path)
+                                length = [int64]$entry.length
+                                sha256 = [string]$entry.sha256
+                            }
+                        }
+                    }
+                    $script:SidecarCandidateMediaCandidates += [pscustomobject]@{
+                        cacheRoot = $cacheDirectory.FullName
+                        files = $stableMap
+                    }
+                } catch {
+                    continue
+                }
+            }
+        }
+    }
+
+    $matches = @()
+    foreach ($candidate in @($script:SidecarCandidateMediaCandidates)) {
+        foreach ($name in $Names) {
+            $entry = $candidate.files[$name.ToLowerInvariant()]
+            if ($entry) {
+                $matches += [pscustomobject]@{
+                    cacheRoot = $candidate.cacheRoot
+                    path = $entry.path
+                    identity = "{0}:{1}" -f $entry.sha256, $entry.length
+                }
+                break
+            }
+        }
+    }
+    $distinctIdentities = @($matches | Select-Object -ExpandProperty identity -Unique)
+    if ($distinctIdentities.Count -gt 1) {
+        throw "Full-sidecar cache generations disagree about the requested stable media tool bytes."
+    }
+    if ($matches.Count -ge 1) {
+        return ($matches | Sort-Object cacheRoot | Select-Object -First 1).path
+    }
+    return $null
+}
+
+function Resolve-BackendStableMediaTool {
+    param(
+        [string[]]$Names,
+        [string]$Python,
+        [string]$ExpectedRuntimeCacheKey,
+        [switch]$Required
+    )
+
+    $sidecarCandidate = Resolve-BackendSidecarCandidateMediaTool `
+        -Names $Names `
+        -ExpectedRuntimeCacheKey $ExpectedRuntimeCacheKey
+    if ($sidecarCandidate) {
+        return $sidecarCandidate
+    }
+
+    $stableRoot = Join-Path $RuntimeCacheRoot "media-tools"
+    if (Test-Path -LiteralPath $stableRoot -PathType Container) {
+        if ($script:StableMediaCacheKey -ne $ExpectedRuntimeCacheKey) {
+            $script:StableMediaCacheKey = $ExpectedRuntimeCacheKey
+            $script:StableMediaMap = @{}
+            $manifestPath = Join-Path $RuntimeCacheRoot "runtime-cache-manifest.json"
+            if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+                throw "The stable media runtime cache has no attestation manifest."
+            }
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            if (
+                [string]$manifest.cacheKey -ne $ExpectedRuntimeCacheKey -or
+                -not (Test-BackendStableMediaFiles -CacheRoot $RuntimeCacheRoot -ExpectedFiles @($manifest.stableMediaFiles))
+            ) {
+                throw "The stable media runtime cache is incomplete, modified, or belongs to another runtime generation."
+            }
+            foreach ($file in Get-ChildItem -LiteralPath $stableRoot -File) {
+                $script:StableMediaMap[$file.Name.ToLowerInvariant()] = $file.FullName
+            }
+        }
+        foreach ($name in $Names) {
+            $candidate = $script:StableMediaMap[$name.ToLowerInvariant()]
+            if ($candidate) {
+                return $candidate
+            }
+        }
+    }
+
+    $resolved = Resolve-PythonInstalledTool -Names $Names -Python $Python
+    if (-not $resolved) {
+        $resolved = Resolve-MediaTool -Names $Names -SearchDir ""
+    }
+    if (-not $resolved -and $Required) {
+        throw "Required stable media tool was not found: $($Names -join ', ')"
+    }
+    return $resolved
+}
+
+function Initialize-BackendRuntimeStableMediaTools {
+    param(
+        [string]$CacheRoot,
+        [string]$Python
+    )
+
+    $stableRoot = Join-Path $CacheRoot "media-tools"
+    if (Test-Path -LiteralPath $stableRoot -PathType Container) {
+        Remove-Item -LiteralPath $stableRoot -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $stableRoot | Out-Null
+    $deno = Resolve-PythonInstalledTool -Names @("deno.exe", "deno") -Python $Python
+    if (-not $deno) {
+        throw "Deno was not installed with the frozen backend dependencies."
+    }
+    $denoName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "deno.exe" } else { "deno" }
+    Copy-Item -LiteralPath $deno -Destination (Join-Path $stableRoot $denoName) -Force
+
+    $ytDlp = Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp") -SearchDir ""
+    if ($ytDlp) {
+        $ytDlpName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "yt-dlp.exe" } else { "yt-dlp" }
+        Copy-Item -LiteralPath $ytDlp -Destination (Join-Path $stableRoot $ytDlpName) -Force
+    }
+}
+
+function Test-BackendMediaFiles {
+    param(
+        [string]$SidecarDir,
+        [object[]]$ExpectedFiles
+    )
+
+    try {
+        $expected = @($ExpectedFiles)
+        $actual = @(Get-BackendMediaFileIdentityEntries -SidecarDir $SidecarDir)
+        if ($expected.Count -ne $actual.Count) {
+            return $false
+        }
+        $actualByPath = @{}
+        foreach ($entry in $actual) {
+            $actualByPath[[string]$entry.path] = $entry
+        }
+        $seen = @{}
+        foreach ($entry in $expected) {
+            $relative = [string](Get-ObjectPropertyValue -Object $entry -Name "path")
+            $length = Get-ObjectPropertyValue -Object $entry -Name "length"
+            $sha256 = [string](Get-ObjectPropertyValue -Object $entry -Name "sha256")
+            if (
+                -not $relative -or
+                $relative.Contains("\") -or
+                $relative.StartsWith("/") -or
+                $relative -match '(^|/)\.\.($|/)' -or
+                $seen.ContainsKey($relative) -or
+                $null -eq $length -or
+                [int64]$length -lt 0 -or
+                $sha256 -notmatch '^[0-9a-f]{64}$'
+            ) {
+                return $false
+            }
+            $seen[$relative] = $true
+            $found = $actualByPath[$relative]
+            if (
+                $null -eq $found -or
+                [int64]$length -ne [int64]$found.length -or
+                $sha256 -ne [string]$found.sha256
+            ) {
+                return $false
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Test-BackendRuntimeLayer {
+    param(
+        [string]$RuntimeDir,
+        [string]$ExpectedCacheKey,
+        [switch]$PureRuntime
+    )
+
+    $layerManifestPath = Join-Path $RuntimeDir "runtime-layer-manifest.json"
+    $runtimeExe = Join-Path $RuntimeDir "scriber-backend.exe"
+    if (-not (Test-Path -LiteralPath $runtimeExe -PathType Leaf)) {
+        $runtimeExe = Join-Path $RuntimeDir "scriber-backend"
+    }
+    if (
+        -not (Test-Path -LiteralPath $layerManifestPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $runtimeExe -PathType Leaf)
+    ) {
+        return $false
+    }
+    try {
+        $layerManifest = Get-Content -LiteralPath $layerManifestPath -Raw | ConvertFrom-Json
+        $contract = Get-ObjectPropertyValue -Object $layerManifest -Name "runtimeContract"
+        $content = Get-ObjectPropertyValue -Object $layerManifest -Name "content"
+        $expectedFiles = @((Get-ObjectPropertyValue -Object $content -Name "files"))
+        if ($expectedFiles.Count -lt 1 -or $expectedFiles.Count -gt 32768) {
+            return $false
+        }
+
+        $actualFiles = @()
+        foreach ($file in Get-ChildItem -LiteralPath $RuntimeDir -Recurse -File | Sort-Object FullName) {
+            $relative = (Get-RelativePath -Root $RuntimeDir -Path $file.FullName) -replace '\\', '/'
+            if ($relative -eq "runtime-layer-manifest.json") {
+                continue
+            }
+            if (-not $PureRuntime) {
+                if (
+                    $relative.StartsWith("app/", [System.StringComparison]::Ordinal) -or
+                    $relative.StartsWith("tools/", [System.StringComparison]::Ordinal) -or
+                    $relative -eq "sidecar-build-metadata.json"
+                ) {
+                    continue
+                }
+            }
+            $actualFiles += [ordered]@{
+                path = $relative
+                length = [int64]$file.Length
+                sha256 = Get-Sha256Hex -Path $file.FullName
+            }
+        }
+        if ($expectedFiles.Count -ne $actualFiles.Count) {
+            return $false
+        }
+
+        $actualByPath = @{}
+        foreach ($entry in $actualFiles) {
+            $actualByPath[[string]$entry.path] = $entry
+        }
+        $seen = @{}
+        foreach ($expected in $expectedFiles) {
+            $relative = [string](Get-ObjectPropertyValue -Object $expected -Name "path")
+            $expectedLength = Get-ObjectPropertyValue -Object $expected -Name "length"
+            $expectedSha256 = [string](Get-ObjectPropertyValue -Object $expected -Name "sha256")
+            if (
+                -not $relative -or
+                $relative.Contains("\") -or
+                $relative.StartsWith("/") -or
+                $relative -match '(^|/)\.\.($|/)' -or
+                $seen.ContainsKey($relative) -or
+                $null -eq $expectedLength -or
+                [int64]$expectedLength -lt 0 -or
+                $expectedSha256 -notmatch '^[0-9a-f]{64}$'
+            ) {
+                return $false
+            }
+            $seen[$relative] = $true
+            $actual = $actualByPath[$relative]
+            if (
+                $null -eq $actual -or
+                [int64]$expectedLength -ne [int64]$actual.length -or
+                $expectedSha256 -ne [string]$actual.sha256
+            ) {
+                return $false
+            }
+        }
+
+        $actualTreeJson = $actualFiles | ConvertTo-Json -Depth 4 -Compress
+        $identity = Get-ObjectPropertyValue -Object $layerManifest -Name "executable"
+        return (
+            [int](Get-ObjectPropertyValue -Object $layerManifest -Name "schemaVersion") -eq 1 -and
+            [string](Get-ObjectPropertyValue -Object $layerManifest -Name "name") -eq "scriber-backend-runtime-layer" -and
+            [string](Get-ObjectPropertyValue -Object $layerManifest -Name "cacheKey") -eq $ExpectedCacheKey -and
+            [string](Get-ObjectPropertyValue -Object $contract -Name "name") -eq "scriber-frozen-python-runtime" -and
+            [int](Get-ObjectPropertyValue -Object $contract -Name "revision") -eq 1 -and
+            [int](Get-ObjectPropertyValue -Object $content -Name "fileCount") -eq $actualFiles.Count -and
+            [string](Get-ObjectPropertyValue -Object $content -Name "treeSha256") -eq (Get-StringSha256 -Value $actualTreeJson) -and
+            [string](Get-ObjectPropertyValue -Object $identity -Name "sha256") -eq (Get-Sha256Hex -Path $runtimeExe) -and
+            [int64](Get-ObjectPropertyValue -Object $identity -Name "length") -eq [int64](Get-Item -LiteralPath $runtimeExe).Length
+        )
+    } catch {
+        return $false
+    }
+}
+
+function Test-BackendRuntimeCache {
+    param(
+        [string]$CacheRoot,
+        [string]$ExpectedCacheKey
+    )
+
+    $runtimeDir = Join-Path $CacheRoot "scriber-backend"
+    $runtimeExe = Join-Path $runtimeDir "scriber-backend.exe"
+    if (-not (Test-Path -LiteralPath $runtimeExe -PathType Leaf)) {
+        $runtimeExe = Join-Path $runtimeDir "scriber-backend"
+    }
+    $cacheManifestPath = Join-Path $CacheRoot "runtime-cache-manifest.json"
+    $layerManifestPath = Join-Path $runtimeDir "runtime-layer-manifest.json"
+    if (
+        -not (Test-Path -LiteralPath $runtimeExe -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $cacheManifestPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $layerManifestPath -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $runtimeDir "app"))
+    ) {
+        return $false
+    }
+    if (-not (Test-BackendRuntimeLayer -RuntimeDir $runtimeDir -ExpectedCacheKey $ExpectedCacheKey -PureRuntime)) {
+        return $false
+    }
+    try {
+        $cacheManifest = Get-Content -LiteralPath $cacheManifestPath -Raw | ConvertFrom-Json
+        $layerManifest = Get-Content -LiteralPath $layerManifestPath -Raw | ConvertFrom-Json
+        $contract = Get-ObjectPropertyValue -Object $layerManifest -Name "runtimeContract"
+        $content = Get-ObjectPropertyValue -Object $layerManifest -Name "content"
+        $runtimeInputJson = (Get-ObjectPropertyValue -Object $cacheManifest -Name "inputManifest") | ConvertTo-Json -Depth 10 -Compress
+        if ($runtimeInputJson -match '"path":"src[\\/]') {
+            return $false
+        }
+        $expectedRuntimeFiles = @((Get-ObjectPropertyValue -Object $cacheManifest -Name "runtimeFiles"))
+        if (-not (Test-BackendStableMediaFiles -CacheRoot $CacheRoot -ExpectedFiles @($cacheManifest.stableMediaFiles))) {
+            return $false
+        }
+        $actualRuntimeFiles = @(Get-BackendRuntimeFileIdentityEntries -RuntimeDir $runtimeDir)
+        if ($expectedRuntimeFiles.Count -ne $actualRuntimeFiles.Count) {
+            return $false
+        }
+        $actualByPath = @{}
+        foreach ($entry in $actualRuntimeFiles) {
+            $actualByPath[[string]$entry.path] = $entry
+        }
+        foreach ($expected in $expectedRuntimeFiles) {
+            $relative = [string](Get-ObjectPropertyValue -Object $expected -Name "path")
+            if (-not $relative -or $relative.Contains("\") -or $relative.StartsWith("/") -or $relative -match '(^|/)\.\.($|/)') {
+                return $false
+            }
+            $actual = $actualByPath[$relative]
+            if (
+                $null -eq $actual -or
+                [int64](Get-ObjectPropertyValue -Object $expected -Name "length") -ne [int64]$actual.length -or
+                [string](Get-ObjectPropertyValue -Object $expected -Name "sha256") -ne [string]$actual.sha256
+            ) {
+                return $false
+            }
+        }
+        $actualTreeJson = $actualRuntimeFiles | ConvertTo-Json -Depth 4 -Compress
+        $actualTreeSha256 = Get-StringSha256 -Value $actualTreeJson
+        $executableIdentity = Get-ObjectPropertyValue -Object $layerManifest -Name "executable"
+        return (
+            [int](Get-ObjectPropertyValue -Object $cacheManifest -Name "apiVersion") -eq 1 -and
+            [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "cacheKey") -eq $ExpectedCacheKey -and
+            [int](Get-ObjectPropertyValue -Object $layerManifest -Name "schemaVersion") -eq 1 -and
+            [string](Get-ObjectPropertyValue -Object $layerManifest -Name "name") -eq "scriber-backend-runtime-layer" -and
+            [string](Get-ObjectPropertyValue -Object $layerManifest -Name "cacheKey") -eq $ExpectedCacheKey -and
+            [string](Get-ObjectPropertyValue -Object $contract -Name "name") -eq "scriber-frozen-python-runtime" -and
+            [int](Get-ObjectPropertyValue -Object $contract -Name "revision") -eq 1 -and
+            [int](Get-ObjectPropertyValue -Object $content -Name "fileCount") -eq $actualRuntimeFiles.Count -and
+            [string](Get-ObjectPropertyValue -Object $content -Name "treeSha256") -eq $actualTreeSha256 -and
+            [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "sidecarSha256") -eq (Get-Sha256Hex -Path $runtimeExe) -and
+            [int64](Get-ObjectPropertyValue -Object $cacheManifest -Name "sidecarLength") -eq [int64](Get-Item -LiteralPath $runtimeExe).Length -and
+            [string](Get-ObjectPropertyValue -Object $executableIdentity -Name "sha256") -eq (Get-Sha256Hex -Path $runtimeExe) -and
+            [int64](Get-ObjectPropertyValue -Object $executableIdentity -Name "length") -eq [int64](Get-Item -LiteralPath $runtimeExe).Length
+        )
+    } catch {
+        return $false
+    }
+}
+
+function Write-BackendRuntimeCacheMetadata {
+    param(
+        [string]$RuntimeDir,
+        [string]$RuntimeExe,
+        [string]$CacheRoot,
+        [string]$CacheKey,
+        [object]$InputManifest,
+        [string]$Python
+    )
+
+    $identity = [ordered]@{
+        sha256 = Get-Sha256Hex -Path $RuntimeExe
+        length = [int64](Get-Item -LiteralPath $RuntimeExe).Length
+    }
+    $pythonIdentity = (& $Python -c "import json,sys; print(json.dumps({'version':sys.version,'cacheTag':sys.implementation.cache_tag},separators=(',',':')))" 2>$null) -join "`n"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to resolve Python runtime identity."
+    }
+    $runtimeFiles = @(Get-BackendRuntimeFileIdentityEntries -RuntimeDir $RuntimeDir)
+    $runtimeTreeJson = $runtimeFiles | ConvertTo-Json -Depth 4 -Compress
+    $layerManifest = [ordered]@{
+        schemaVersion = 1
+        name = "scriber-backend-runtime-layer"
+        cacheKey = $CacheKey
+        runtimeContract = [ordered]@{
+            name = "scriber-frozen-python-runtime"
+            revision = 1
+        }
+        python = ($pythonIdentity | ConvertFrom-Json)
+        executable = $identity
+        content = [ordered]@{
+            fileCount = $runtimeFiles.Count
+            treeSha256 = Get-StringSha256 -Value $runtimeTreeJson
+            files = $runtimeFiles
+        }
+    }
+    $layerManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $RuntimeDir "runtime-layer-manifest.json") -Encoding utf8
+
+    New-Item -ItemType Directory -Force -Path $CacheRoot | Out-Null
+    $cacheManifest = [ordered]@{
+        apiVersion = 1
+        generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+        cacheKey = $CacheKey
+        sidecarSha256 = $identity["sha256"]
+        sidecarLength = $identity["length"]
+        inputManifest = $InputManifest
+        runtimeFiles = $runtimeFiles
+        stableMediaFiles = @(Get-BackendStableMediaFileIdentityEntries -CacheRoot $CacheRoot)
+    }
+    $cacheManifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $CacheRoot "runtime-cache-manifest.json") -Encoding utf8
+}
+
+function Invoke-StageBackendApplicationLayer {
+    param(
+        [string]$Root,
+        [string]$Python,
+        [string]$BackendDir,
+        [string]$RuntimeCacheKey,
+        [string]$LogRoot
+    )
+
+    $scriptPath = Join-Path $Root "scripts\stage_backend_application_layer.py"
+    $resultPath = Join-Path $LogRoot "application-layer-stage.json"
+    & $Python $scriptPath `
+        --repo-root $Root `
+        --backend-root $BackendDir `
+        --runtime-cache-key $RuntimeCacheKey `
+        --output $resultPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Staging the Scriber backend application layer failed."
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $BackendDir "app\app-layer-manifest.json") -PathType Leaf)) {
+        throw "Staging the Scriber backend application layer did not produce its manifest."
+    }
+}
+
+function Invoke-ValidateBackendApplicationLayer {
+    param(
+        [string]$Root,
+        [string]$Python,
+        [string]$BackendDir,
+        [string]$RuntimeCacheKey,
+        [string]$LogRoot
+    )
+
+    $scriptPath = Join-Path $Root "scripts\stage_backend_application_layer.py"
+    $resultPath = Join-Path $LogRoot "application-layer-validation.json"
+    & $Python $scriptPath `
+        --backend-root $BackendDir `
+        --runtime-cache-key $RuntimeCacheKey `
+        --validate-only `
+        --output $resultPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "The Scriber backend application layer changed during its frozen import check."
     }
 }
 
@@ -1099,6 +1786,8 @@ function Test-SidecarTargetCurrent {
     param(
         [string]$TargetDir,
         [string]$ExpectedCacheKey,
+        [string]$ExpectedRuntimeCacheKey,
+        [string]$ExpectedApplicationLayerKey,
         [object]$ExpectedFlags,
         [string]$ExpectedRustAudioCacheKey,
         [string]$ExpectedRustDiarizationCacheKey
@@ -1116,6 +1805,46 @@ function Test-SidecarTargetCurrent {
 
     $cache = Get-ObjectPropertyValue -Object $metadata -Name "cache"
     if ([string](Get-ObjectPropertyValue -Object $cache -Name "key") -ne $ExpectedCacheKey) {
+        return $false
+    }
+
+    $runtimeLayer = Get-ObjectPropertyValue -Object $metadata -Name "runtimeLayer"
+    $applicationLayer = Get-ObjectPropertyValue -Object $metadata -Name "applicationLayer"
+    if (
+        [string](Get-ObjectPropertyValue -Object $runtimeLayer -Name "cacheKey") -ne $ExpectedRuntimeCacheKey -or
+        [string](Get-ObjectPropertyValue -Object $applicationLayer -Name "key") -ne $ExpectedApplicationLayerKey
+    ) {
+        return $false
+    }
+
+    $runtimeManifestPath = Join-Path $TargetDir "runtime-layer-manifest.json"
+    $applicationManifestPath = Join-Path $TargetDir "app\app-layer-manifest.json"
+    if (
+        -not (Test-Path -LiteralPath $runtimeManifestPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $applicationManifestPath -PathType Leaf)
+    ) {
+        return $false
+    }
+    try {
+        $runtimeManifest = Get-Content -LiteralPath $runtimeManifestPath -Raw | ConvertFrom-Json
+        $applicationManifest = Get-Content -LiteralPath $applicationManifestPath -Raw | ConvertFrom-Json
+    } catch {
+        return $false
+    }
+    if (
+        [string](Get-ObjectPropertyValue -Object $runtimeManifest -Name "cacheKey") -ne $ExpectedRuntimeCacheKey -or
+        [string](Get-ObjectPropertyValue -Object $applicationManifest -Name "runtimeCacheKey") -ne $ExpectedRuntimeCacheKey -or
+        [string](Get-ObjectPropertyValue -Object $runtimeLayer -Name "manifestSha256") -ne (Get-Sha256Hex -Path $runtimeManifestPath) -or
+        [string](Get-ObjectPropertyValue -Object $applicationLayer -Name "manifestSha256") -ne (Get-Sha256Hex -Path $applicationManifestPath)
+    ) {
+        return $false
+    }
+    $mediaTools = Get-ObjectPropertyValue -Object $metadata -Name "mediaTools"
+    $expectedMediaFiles = @((Get-ObjectPropertyValue -Object $mediaTools -Name "files"))
+    if (-not (Test-BackendMediaFiles -SidecarDir $TargetDir -ExpectedFiles $expectedMediaFiles)) {
+        return $false
+    }
+    if (-not (Test-BackendRuntimeLayer -RuntimeDir $TargetDir -ExpectedCacheKey $ExpectedRuntimeCacheKey)) {
         return $false
     }
 
@@ -1207,6 +1936,9 @@ function Write-SidecarBuildMetadata {
         [bool]$CacheEnabled,
         [bool]$CacheHit,
         [string]$CacheKey,
+        [bool]$RuntimeCacheHit,
+        [string]$RuntimeCacheKey,
+        [string]$ApplicationLayerKey,
         [object]$PreparedMediaTools,
         [object[]]$MediaToolsCopied,
         [object]$RustAudioSidecarCopied,
@@ -1214,6 +1946,23 @@ function Write-SidecarBuildMetadata {
         [string]$CopiedTo,
         [bool]$TargetCurrent = $false
     )
+
+    $runtimeManifestPath = Join-Path $SidecarDir "runtime-layer-manifest.json"
+    $applicationManifestPath = Join-Path $SidecarDir "app\app-layer-manifest.json"
+    if (
+        -not (Test-Path -LiteralPath $runtimeManifestPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $applicationManifestPath -PathType Leaf)
+    ) {
+        throw "Layered backend metadata cannot be written because a layer manifest is missing."
+    }
+    $runtimeManifest = Get-Content -LiteralPath $runtimeManifestPath -Raw | ConvertFrom-Json
+    $applicationManifest = Get-Content -LiteralPath $applicationManifestPath -Raw | ConvertFrom-Json
+    if (
+        [string](Get-ObjectPropertyValue -Object $runtimeManifest -Name "cacheKey") -ne $RuntimeCacheKey -or
+        [string](Get-ObjectPropertyValue -Object $applicationManifest -Name "runtimeCacheKey") -ne $RuntimeCacheKey
+    ) {
+        throw "Layered backend metadata does not match the expected frozen runtime identity."
+    }
 
     $script:BuildTimingStarted.Stop()
     $metadata = [ordered]@{
@@ -1231,6 +1980,24 @@ function Write-SidecarBuildMetadata {
             enabled = $CacheEnabled
             hit = $CacheHit
             key = $CacheKey
+        }
+        runtimeLayer = [ordered]@{
+            cacheHit = [bool]$RuntimeCacheHit
+            cacheKey = $RuntimeCacheKey
+            contract = Get-ObjectPropertyValue -Object $runtimeManifest -Name "runtimeContract"
+            manifestSha256 = Get-Sha256Hex -Path $runtimeManifestPath
+            manifestLength = [int64](Get-Item -LiteralPath $runtimeManifestPath).Length
+        }
+        mediaTools = [ordered]@{
+            files = @(Get-BackendMediaFileIdentityEntries -SidecarDir $SidecarDir)
+        }
+        applicationLayer = [ordered]@{
+            key = $ApplicationLayerKey
+            applicationVersion = Get-ObjectPropertyValue -Object $applicationManifest -Name "applicationVersion"
+            runtimeCacheKey = Get-ObjectPropertyValue -Object $applicationManifest -Name "runtimeCacheKey"
+            fileCount = @((Get-ObjectPropertyValue -Object $applicationManifest -Name "files")).Count
+            manifestSha256 = Get-Sha256Hex -Path $applicationManifestPath
+            manifestLength = [int64](Get-Item -LiteralPath $applicationManifestPath).Length
         }
         flags = [ordered]@{
             bundleMediaTools = [bool]$BundleMediaTools
@@ -1308,6 +2075,33 @@ function Invoke-BackendRuntimeImportCheck {
     }
     if ($LASTEXITCODE -ne 0) {
         throw "Backend runtime dependency check failed. Install the standard build dependencies with: $Python -m pip install -r requirements-base.txt"
+    }
+}
+
+function Invoke-FrozenBackendRuntimeLayerCheck {
+    param(
+        [string]$SidecarExe,
+        [string]$SidecarDir,
+        [string]$LogRoot
+    )
+
+    New-Item -ItemType Directory -Force -Path $LogRoot | Out-Null
+    $stdoutPath = Join-Path $LogRoot "frozen-runtime-layer-check.out"
+    $stderrPath = Join-Path $LogRoot "frozen-runtime-layer-check.err"
+    Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    $process = Start-Process `
+        -FilePath $SidecarExe `
+        -ArgumentList @("--runtime-layer-check") `
+        -WorkingDirectory $SidecarDir `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $stdoutPath `
+        -RedirectStandardError $stderrPath `
+        -Wait `
+        -PassThru
+    if ($process.ExitCode -ne 0) {
+        $stdout = if (Test-Path $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
+        $stderr = if (Test-Path $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
+        throw "Frozen backend runtime-layer check failed with exit code $($process.ExitCode). stdout: $stdout stderr: $stderr"
     }
 }
 
@@ -1655,16 +2449,13 @@ function Copy-MediaTools {
         $copied += $profileManifestPath
     }
 
-    $ytDlp = Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp") -SearchDir $SearchDir
+    $ytDlp = Resolve-BackendStableMediaTool -Names @("yt-dlp.exe", "yt-dlp") -Python $PythonPath -ExpectedRuntimeCacheKey $runtimeCacheKey
     if ($ytDlp) {
         Copy-Item -LiteralPath $ytDlp -Destination (Join-Path $toolsTarget (Split-Path $ytDlp -Leaf)) -Force
         $copied += (Join-Path $toolsTarget (Split-Path $ytDlp -Leaf))
     }
 
-    $deno = Resolve-PythonInstalledTool -Names @("deno.exe", "deno") -Python $PythonPath
-    if (-not $deno) {
-        throw "Deno was not installed with yt-dlp. Install requirements-base.txt before building the backend sidecar."
-    }
+    $deno = Resolve-BackendStableMediaTool -Names @("deno.exe", "deno") -Python $PythonPath -ExpectedRuntimeCacheKey $runtimeCacheKey -Required
     $copiedDeno = Join-Path $toolsTarget "deno.exe"
     Copy-Item -LiteralPath $deno -Destination $copiedDeno -Force
     Test-MediaToolExecutable -Path $copiedDeno -Name "deno" -VersionArguments @("--version")
@@ -1684,6 +2475,9 @@ if (-not $WorkRoot) {
 if (-not $SidecarCacheRoot) {
     $SidecarCacheRoot = Join-Path $RepoRoot "build\tauri-sidecar-cache"
 }
+if (-not $RuntimeCacheRoot) {
+    $RuntimeCacheRoot = Join-Path $RepoRoot "build\tauri-sidecar-runtime-cache"
+}
 if (-not $RustDiarizationSidecarCacheRoot) {
     $RustDiarizationSidecarCacheRoot = Join-Path $RepoRoot "build\rust-diarization-sidecar-cache"
 }
@@ -1696,6 +2490,7 @@ if (-not $RustDiarizationTargetRoot) {
 $DistRoot = Convert-ToFullPath -Path $DistRoot
 $WorkRoot = Convert-ToFullPath -Path $WorkRoot
 $SidecarCacheRoot = Convert-ToFullPath -Path $SidecarCacheRoot
+$RuntimeCacheRoot = Convert-ToFullPath -Path $RuntimeCacheRoot
 $RustDiarizationSidecarCacheRoot = Convert-ToFullPath -Path $RustDiarizationSidecarCacheRoot
 $SherpaOnnxArchiveCacheRoot = Convert-ToFullPath -Path $SherpaOnnxArchiveCacheRoot
 $RustDiarizationTargetRoot = Convert-ToFullPath -Path $RustDiarizationTargetRoot
@@ -1707,6 +2502,7 @@ $SpecPath = Join-Path $RepoRoot "packaging\scriber-backend.spec"
 Assert-UnderRoot -Root $RepoRoot -Path $DistRoot -Label "DistRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $WorkRoot -Label "WorkRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $SidecarCacheRoot -Label "SidecarCacheRoot"
+Assert-UnderRoot -Root $RepoRoot -Path $RuntimeCacheRoot -Label "RuntimeCacheRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationSidecarCacheRoot -Label "RustDiarizationSidecarCacheRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $SherpaOnnxArchiveCacheRoot -Label "SherpaOnnxArchiveCacheRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationTargetRoot -Label "RustDiarizationTargetRoot"
@@ -1924,12 +2720,29 @@ $cacheEnabled = [bool]$ReuseSidecarIfUnchanged
 $cacheHit = $false
 $cacheKey = $null
 $cacheDir = $null
+$runtimeCacheHit = $false
+$runtimeCacheKey = $null
+$applicationLayerKey = $null
+
+Invoke-TimedStep -Label "backend-runtime-cache-key" -Command {
+    $script:BackendRuntimeInputManifest = Get-BackendRuntimeInputManifest `
+        -Root $RepoRoot `
+        -Python $PythonPath `
+        -PyInstallerClean (-not [bool]$LocalPyInstallerNoClean)
+    $runtimeManifestJson = $script:BackendRuntimeInputManifest | ConvertTo-Json -Depth 10 -Compress
+    $script:BackendRuntimeCacheKey = Get-StringSha256 -Value $runtimeManifestJson
+    $script:BackendApplicationInputManifest = Get-BackendApplicationInputManifest -Root $RepoRoot
+    $applicationManifestJson = $script:BackendApplicationInputManifest | ConvertTo-Json -Depth 10 -Compress
+    $script:BackendApplicationLayerKey = Get-StringSha256 -Value $applicationManifestJson
+}
+$runtimeCacheKey = $script:BackendRuntimeCacheKey
+$applicationLayerKey = $script:BackendApplicationLayerKey
 
 if ($cacheEnabled) {
     Invoke-TimedStep -Label "sidecar-cache-key" -Command {
         $inputManifest = Get-SidecarInputManifest `
             -Root $RepoRoot `
-            -Python $PythonPath `
+            -RuntimeCacheKey $runtimeCacheKey `
             -SearchDir $MediaToolsDir `
             -BundleTools ([bool]$BundleMediaTools) `
             -UseProfileB ([bool]$UseProfileBFfmpeg) `
@@ -1955,12 +2768,15 @@ if ($cacheEnabled) {
             $script:SidecarTargetCurrent = Test-SidecarTargetCurrent `
                 -TargetDir $targetDir `
                 -ExpectedCacheKey $cacheKey `
+                -ExpectedRuntimeCacheKey $runtimeCacheKey `
+                -ExpectedApplicationLayerKey $applicationLayerKey `
                 -ExpectedFlags $expectedFlags `
                 -ExpectedRustAudioCacheKey $expectedRustAudioCacheKey `
                 -ExpectedRustDiarizationCacheKey $expectedRustDiarizationCacheKey
         }
         if ($script:SidecarTargetCurrent) {
             $cacheHit = $true
+            $runtimeCacheHit = $true
             $sidecarDir = $targetDir
             $sidecarExe = Join-Path $sidecarDir "scriber-backend.exe"
             if (-not (Test-Path -LiteralPath $sidecarExe -PathType Leaf)) {
@@ -1973,6 +2789,12 @@ if ($cacheEnabled) {
             }
             $targetMetadata = Get-Content -LiteralPath (Join-Path $targetDir "sidecar-build-metadata.json") -Raw | ConvertFrom-Json
             Invoke-FrozenBackendRuntimeImportCheck -SidecarExe $sidecarExe -SidecarDir $sidecarDir -LogRoot $WorkRoot
+            Invoke-ValidateBackendApplicationLayer `
+                -Root $RepoRoot `
+                -Python $PythonPath `
+                -BackendDir $sidecarDir `
+                -RuntimeCacheKey $runtimeCacheKey `
+                -LogRoot $WorkRoot
             if ($BundleRustAudioSidecar) {
                 $targetAudioExeName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "scriber-audio-sidecar.exe" } else { "scriber-audio-sidecar" }
                 $targetAudioExe = Join-Path (Split-Path -Parent $targetDir) $targetAudioExeName
@@ -1996,6 +2818,9 @@ if ($cacheEnabled) {
                 -CacheEnabled $cacheEnabled `
                 -CacheHit $true `
                 -CacheKey $cacheKey `
+                -RuntimeCacheHit $true `
+                -RuntimeCacheKey $runtimeCacheKey `
+                -ApplicationLayerKey $applicationLayerKey `
                 -PreparedMediaTools $preparedMediaTools `
                 -MediaToolsCopied $mediaToolsCopied `
                 -RustAudioSidecarCopied $targetMetadata.rustAudioSidecarCopied `
@@ -2010,6 +2835,9 @@ if ($cacheEnabled) {
                 cacheEnabled = $cacheEnabled
                 cacheHit = $true
                 cacheKey = $cacheKey
+                runtimeCacheHit = $true
+                runtimeCacheKey = $runtimeCacheKey
+                applicationLayerKey = $applicationLayerKey
                 targetCurrent = $true
                 mediaToolsCopied = $mediaToolsCopied
                 rustAudioSidecarCopied = $targetMetadata.rustAudioSidecarCopied
@@ -2028,7 +2856,9 @@ if ($cacheEnabled) {
             $backendCacheValid = (
                 [string]$backendCacheManifest.cacheKey -eq $cacheKey -and
                 [string]$backendCacheManifest.sidecarSha256 -eq (Get-Sha256Hex -Path $cachedSidecarExe) -and
-                [int64]$backendCacheManifest.sidecarLength -eq [int64](Get-Item -LiteralPath $cachedSidecarExe).Length
+                [int64]$backendCacheManifest.sidecarLength -eq [int64](Get-Item -LiteralPath $cachedSidecarExe).Length -and
+                (Test-BackendRuntimeLayer -RuntimeDir $cachedSidecarDir -ExpectedCacheKey $runtimeCacheKey) -and
+                (Test-BackendMediaFiles -SidecarDir $cachedSidecarDir -ExpectedFiles @($backendCacheManifest.mediaFiles))
             )
         } catch {
             $backendCacheValid = $false
@@ -2039,6 +2869,7 @@ if ($cacheEnabled) {
             Copy-DirectoryContents -SourceDir $cachedSidecarDir -TargetDir (Join-Path $DistRoot "scriber-backend") -TargetLabel "Restored sidecar dist target"
         }
         $cacheHit = $true
+        $runtimeCacheHit = $true
     }
 }
 
@@ -2164,41 +2995,129 @@ if (($ParallelizeIndependentBuilds -or $ParallelizeRustDiarizationBuild) -and $B
 }
 
 if (-not $cacheHit) {
-    if (-not (Test-PyInstaller -Python $PythonPath)) {
-        if (-not $InstallPyInstaller) {
-            throw "PyInstaller is not installed for $PythonPath. Re-run with -InstallPyInstaller or install pyinstaller manually."
-        }
-        & $PythonPath -m pip install pyinstaller
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to install PyInstaller."
-        }
+    Invoke-TimedStep -Label "backend-runtime-cache-check" -Command {
+        $script:BackendRuntimeCacheHit = Test-BackendRuntimeCache `
+            -CacheRoot $RuntimeCacheRoot `
+            -ExpectedCacheKey $runtimeCacheKey
     }
+    $runtimeCacheHit = [bool]$script:BackendRuntimeCacheHit
 
-    Invoke-TimedStep -Label "backend-runtime-import-check" -Command {
-        Invoke-BackendRuntimeImportCheck -Python $PythonPath -Root $RepoRoot
-    }
-
-    Invoke-TimedStep -Label "pyinstaller-build" -Command {
-        $oldRepoRoot = $env:SCRIBER_REPO_ROOT
-        $env:SCRIBER_REPO_ROOT = $RepoRoot
-        try {
-            Push-Location $RepoRoot
-            try {
-                $pyInstallerArgs = @("--noconfirm")
-                if (-not $LocalPyInstallerNoClean) {
-                    $pyInstallerArgs += "--clean"
-                }
-                $pyInstallerArgs += @("--distpath", $DistRoot, "--workpath", $WorkRoot, $SpecPath)
-                & $PythonPath -m PyInstaller @pyInstallerArgs
-            } finally {
-                Pop-Location
+    if (-not $runtimeCacheHit) {
+        if (-not (Test-PyInstaller -Python $PythonPath)) {
+            if (-not $InstallPyInstaller) {
+                throw "PyInstaller is not installed for $PythonPath. Re-run with -InstallPyInstaller or install pyinstaller manually."
             }
-        } finally {
-            $env:SCRIBER_REPO_ROOT = $oldRepoRoot
+            & $PythonPath -m pip install pyinstaller
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to install PyInstaller."
+            }
         }
-        if ($LASTEXITCODE -ne 0) {
-            throw "PyInstaller sidecar build failed."
+
+        Invoke-TimedStep -Label "backend-runtime-import-check" -Command {
+            Invoke-BackendRuntimeImportCheck -Python $PythonPath -Root $RepoRoot
         }
+
+        $runtimeBuildDistRoot = Join-Path $WorkRoot "runtime-dist"
+        $runtimeBuildWorkRoot = Join-Path $WorkRoot "runtime-work"
+        foreach ($runtimeBuildPath in @($runtimeBuildDistRoot, $runtimeBuildWorkRoot)) {
+            Assert-UnderRoot -Root $RepoRoot -Path $runtimeBuildPath -Label "Frozen backend runtime build path"
+            if (Test-Path -LiteralPath $runtimeBuildPath -PathType Container) {
+                Remove-Item -LiteralPath $runtimeBuildPath -Recurse -Force
+            }
+        }
+
+        Invoke-TimedStep -Label "pyinstaller-build" -Command {
+            $oldRepoRoot = $env:SCRIBER_REPO_ROOT
+            $env:SCRIBER_REPO_ROOT = $RepoRoot
+            try {
+                Push-Location $RepoRoot
+                try {
+                    $pyInstallerArgs = @("--noconfirm")
+                    if (-not $LocalPyInstallerNoClean) {
+                        $pyInstallerArgs += "--clean"
+                    }
+                    $pyInstallerArgs += @(
+                        "--distpath", $runtimeBuildDistRoot,
+                        "--workpath", $runtimeBuildWorkRoot,
+                        $SpecPath
+                    )
+                    & $PythonPath -m PyInstaller @pyInstallerArgs
+                } finally {
+                    Pop-Location
+                }
+            } finally {
+                $env:SCRIBER_REPO_ROOT = $oldRepoRoot
+            }
+            if ($LASTEXITCODE -ne 0) {
+                throw "PyInstaller frozen runtime build failed."
+            }
+        }
+
+        $builtRuntimeDir = Join-Path $runtimeBuildDistRoot "scriber-backend"
+        $builtRuntimeExe = Join-Path $builtRuntimeDir "scriber-backend.exe"
+        if (-not (Test-Path -LiteralPath $builtRuntimeExe -PathType Leaf)) {
+            $builtRuntimeExe = Join-Path $builtRuntimeDir "scriber-backend"
+        }
+        if (-not (Test-Path -LiteralPath $builtRuntimeExe -PathType Leaf)) {
+            throw "PyInstaller completed but the frozen runtime executable was not found."
+        }
+        Invoke-TimedStep -Label "frozen-runtime-layer-check" -Command {
+            Invoke-FrozenBackendRuntimeLayerCheck `
+                -SidecarExe $builtRuntimeExe `
+                -SidecarDir $builtRuntimeDir `
+                -LogRoot $WorkRoot
+        }
+
+        Invoke-TimedStep -Label "backend-runtime-cache-save" -Command {
+            $cachedRuntimeDir = Join-Path $RuntimeCacheRoot "scriber-backend"
+            Copy-DirectoryContents `
+                -SourceDir $builtRuntimeDir `
+                -TargetDir $cachedRuntimeDir `
+                -TargetLabel "Frozen backend runtime cache target"
+            $cachedRuntimeExe = Join-Path $cachedRuntimeDir "scriber-backend.exe"
+            if (-not (Test-Path -LiteralPath $cachedRuntimeExe -PathType Leaf)) {
+                $cachedRuntimeExe = Join-Path $cachedRuntimeDir "scriber-backend"
+            }
+            Initialize-BackendRuntimeStableMediaTools `
+                -CacheRoot $RuntimeCacheRoot `
+                -Python $PythonPath
+            Write-BackendRuntimeCacheMetadata `
+                -RuntimeDir $cachedRuntimeDir `
+                -RuntimeExe $cachedRuntimeExe `
+                -CacheRoot $RuntimeCacheRoot `
+                -CacheKey $runtimeCacheKey `
+                -InputManifest $script:BackendRuntimeInputManifest `
+                -Python $PythonPath
+            if (-not (Test-BackendRuntimeCache -CacheRoot $RuntimeCacheRoot -ExpectedCacheKey $runtimeCacheKey)) {
+                throw "The newly built frozen backend runtime cache failed validation."
+            }
+        }
+    }
+
+    $cachedRuntimeDir = Join-Path $RuntimeCacheRoot "scriber-backend"
+    $cachedRuntimeExe = Join-Path $cachedRuntimeDir "scriber-backend.exe"
+    if (-not (Test-Path -LiteralPath $cachedRuntimeExe -PathType Leaf)) {
+        $cachedRuntimeExe = Join-Path $cachedRuntimeDir "scriber-backend"
+    }
+    Invoke-TimedStep -Label "frozen-runtime-cache-import-check" -Command {
+        Invoke-FrozenBackendRuntimeLayerCheck `
+            -SidecarExe $cachedRuntimeExe `
+            -SidecarDir $cachedRuntimeDir `
+            -LogRoot $WorkRoot
+    }
+    Invoke-TimedStep -Label "backend-runtime-stage" -Command {
+        Copy-DirectoryContents `
+            -SourceDir $cachedRuntimeDir `
+            -TargetDir (Join-Path $DistRoot "scriber-backend") `
+            -TargetLabel "Frozen backend runtime dist target"
+    }
+    Invoke-TimedStep -Label "backend-application-stage" -Command {
+        Invoke-StageBackendApplicationLayer `
+            -Root $RepoRoot `
+            -Python $PythonPath `
+            -BackendDir (Join-Path $DistRoot "scriber-backend") `
+            -RuntimeCacheKey $runtimeCacheKey `
+            -LogRoot $WorkRoot
     }
 }
 
@@ -2211,8 +3130,22 @@ if (-not (Test-Path $sidecarExe)) {
     throw "Sidecar build completed but executable was not found under $sidecarDir."
 }
 
+Invoke-TimedStep -Label "backend-runtime-final-validation" -Command {
+    if (-not (Test-BackendRuntimeLayer -RuntimeDir $sidecarDir -ExpectedCacheKey $runtimeCacheKey)) {
+        throw "The assembled backend contains a missing, extra, or modified frozen runtime file."
+    }
+}
+
 Invoke-TimedStep -Label "frozen-runtime-import-check" -Command {
     Invoke-FrozenBackendRuntimeImportCheck -SidecarExe $sidecarExe -SidecarDir $sidecarDir -LogRoot $WorkRoot
+}
+Invoke-TimedStep -Label "backend-application-post-import-validation" -Command {
+    Invoke-ValidateBackendApplicationLayer `
+        -Root $RepoRoot `
+        -Python $PythonPath `
+        -BackendDir $sidecarDir `
+        -RuntimeCacheKey $runtimeCacheKey `
+        -LogRoot $WorkRoot
 }
 
 $mediaToolsCopied = @()
@@ -2244,6 +3177,7 @@ if ($cacheEnabled -and -not $cacheHit) {
             sidecarSha256 = Get-Sha256Hex -Path $cachedSidecarExe
             sidecarLength = [int64](Get-Item -LiteralPath $cachedSidecarExe).Length
             inputManifest = $script:SidecarInputManifest
+            mediaFiles = @(Get-BackendMediaFileIdentityEntries -SidecarDir (Join-Path $cacheDir "scriber-backend"))
         }
         $cacheManifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $cacheDir "cache-manifest.json") -Encoding utf8
     }
@@ -2258,6 +3192,9 @@ if ($CopyToTauriRelease) {
     Invoke-TimedStep -Label "copy-to-tauri-release" -Command {
         $targetDir = Join-Path $RepoRoot "Frontend\src-tauri\target\release\backend"
         Copy-DirectoryContents -SourceDir $sidecarDir -TargetDir $targetDir -TargetLabel "Tauri release backend target"
+        if (-not (Test-BackendRuntimeLayer -RuntimeDir $targetDir -ExpectedCacheKey $runtimeCacheKey)) {
+            throw "The Tauri release backend contains a missing, extra, or modified frozen runtime file."
+        }
         $script:CopiedToTauriRelease = $targetDir
     }
     $copiedTo = $script:CopiedToTauriRelease
@@ -2429,6 +3366,9 @@ if ($CopyToTauriRelease) {
         -CacheEnabled $cacheEnabled `
         -CacheHit $cacheHit `
         -CacheKey $cacheKey `
+        -RuntimeCacheHit $runtimeCacheHit `
+        -RuntimeCacheKey $runtimeCacheKey `
+        -ApplicationLayerKey $applicationLayerKey `
         -PreparedMediaTools $preparedMediaTools `
         -MediaToolsCopied $mediaToolsCopied `
         -RustAudioSidecarCopied $rustAudioSidecarCopied `
@@ -2444,6 +3384,9 @@ if ($CopyToTauriRelease) {
         -CacheEnabled $cacheEnabled `
         -CacheHit $cacheHit `
         -CacheKey $cacheKey `
+        -RuntimeCacheHit $runtimeCacheHit `
+        -RuntimeCacheKey $runtimeCacheKey `
+        -ApplicationLayerKey $applicationLayerKey `
         -PreparedMediaTools $preparedMediaTools `
         -MediaToolsCopied $mediaToolsCopied `
         -RustAudioSidecarCopied $rustAudioSidecarCopied `
@@ -2458,6 +3401,9 @@ if ($CopyToTauriRelease) {
     cacheEnabled = $cacheEnabled
     cacheHit = $cacheHit
     cacheKey = $cacheKey
+    runtimeCacheHit = $runtimeCacheHit
+    runtimeCacheKey = $runtimeCacheKey
+    applicationLayerKey = $applicationLayerKey
     mediaToolsCopied = $mediaToolsCopied
     rustAudioSidecarCopied = $rustAudioSidecarCopied
     rustDiarizationSidecarCopied = $rustDiarizationSidecarCopied

@@ -18,7 +18,11 @@ function Get-RelativePath {
 
 function Get-StringSha256 {
     param([string]$Value)
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+    # Git may materialize text as LF on Linux and CRLF on Windows. Cache
+    # identities describe source content, not checkout policy, so text hashes
+    # always use one LF/UTF-8 representation.
+    $normalized = $Value -replace "\r\n", "`n" -replace "\r", "`n"
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
         return [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()
@@ -29,6 +33,26 @@ function Get-StringSha256 {
 
 function Get-FileSha256 {
     param([string]$Path)
+
+    $textExtensions = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($extension in @(
+        ".c", ".cc", ".cmake", ".conf", ".cpp", ".css", ".csv", ".h", ".hpp",
+        ".html", ".ini", ".js", ".json", ".jsx", ".md", ".mjs", ".ps1",
+        ".psd1", ".psm1", ".py", ".rs", ".scss", ".svg", ".toml", ".ts",
+        ".tsx", ".txt", ".xml", ".yaml", ".yml"
+    )) {
+        [void]$textExtensions.Add($extension)
+    }
+    $fileName = [System.IO.Path]::GetFileName($Path)
+    $isText = (
+        $textExtensions.Contains([System.IO.Path]::GetExtension($Path)) -or
+        $fileName -in @("Cargo.lock", "Dockerfile", "LICENSE", "Makefile", ".node-version")
+    )
+    if ($isText) {
+        return Get-StringSha256 -Value ([System.IO.File]::ReadAllText($Path))
+    }
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
@@ -169,13 +193,37 @@ function Add-FileGlobEntries {
         }
 }
 
+function Add-GitTrackedEntries {
+    param(
+        [System.Collections.Generic.List[string]]$Entries,
+        [string[]]$Paths
+    )
+    $trackedPaths = @(& git -C $repoRoot ls-files -- @Paths)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not enumerate tracked backend application files."
+    }
+    foreach ($relativePath in @($trackedPaths | Where-Object { $_ } | Sort-Object -Unique)) {
+        $absolutePath = Join-Path $repoRoot ($relativePath -replace '/', '\')
+        if (-not (Test-Path -LiteralPath $absolutePath -PathType Leaf)) {
+            throw "Tracked backend application file is missing: $relativePath"
+        }
+        if ($relativePath -match '(^|/)__pycache__(/|$)' -or [System.IO.Path]::GetExtension($relativePath) -in @(".pyc", ".pyo")) {
+            throw "Tracked bytecode is not allowed in the backend application layer: $relativePath"
+        }
+        $Entries.Add("file`t$relativePath`t$(Get-FileSha256 $absolutePath)")
+    }
+}
+
 function Write-KeyFile {
     param(
         [string]$Name,
         [System.Collections.Generic.List[string]]$Entries
     )
     $path = Join-Path $resolvedOutputDir $Name
-    $Entries | Sort-Object | Set-Content -LiteralPath $path -Encoding utf8
+    [string[]]$sortedEntries = @($Entries)
+    [Array]::Sort($sortedEntries, [System.StringComparer]::Ordinal)
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($path, (($sortedEntries -join "`n") + "`n"), $encoding)
     Write-Host "Wrote release cache key input: $path ($($Entries.Count) entries)"
 }
 
@@ -273,41 +321,40 @@ $sherpaArchiveEntries.Add("constant`tname`tsherpa-onnx-v1.13.3-win-x64-static-MT
 $sherpaArchiveEntries.Add("constant`tsha256`tf6555701d6397d74f1302b0666a661f32708b599a14a5fde80835d4902fcd315")
 Write-KeyFile -Name "sherpa-onnx-archive.txt" -Entries $sherpaArchiveEntries
 
-$backendEntries = New-EntryList
+$backendRuntimeEntries = New-EntryList
 foreach ($path in @(
     "requirements-base.txt",
     "requirements-build.txt",
     "packaging/scriber-backend.spec",
-    "scripts/check_backend_runtime_imports.py"
+    "packaging/backend-sidecar-output-contract.json"
+)) {
+    Add-RawFileEntry -Entries $backendRuntimeEntries -Path $path
+}
+$backendContract = Get-BackendSidecarOutputContract
+$backendRuntimeEntries.Add("contract`tschema-version`t$($backendContract.schemaVersion)")
+$backendRuntimeEntries.Add("contract`tname`t$($backendContract.name)")
+$backendRuntimeEntries.Add("contract`trevision`t$($backendContract.revision)")
+$backendRuntimeEntries.Add("flag`tpyInstallerClean`ttrue")
+Add-FileGlobEntries -Entries $backendRuntimeEntries -Root "backend_runtime" -Filter "*.py"
+Add-FileGlobEntries -Entries $backendRuntimeEntries -Root "pyloudnorm" -Filter "*.py"
+Write-KeyFile -Name "backend-runtime.txt" -Entries $backendRuntimeEntries
+
+$backendEntries = New-EntryList
+foreach ($entry in $backendRuntimeEntries) {
+    $backendEntries.Add($entry)
+}
+foreach ($path in @(
+    "scripts/__init__.py",
+    "scripts/check_backend_runtime_imports.py",
+    "scripts/stage_backend_application_layer.py"
 )) {
     Add-RawFileEntry -Entries $backendEntries -Path $path
 }
-$backendContract = Get-BackendSidecarOutputContract
-$backendEntries.Add("contract`tschema-version`t$($backendContract.schemaVersion)")
-$backendEntries.Add("contract`tname`t$($backendContract.name)")
-$backendEntries.Add("contract`trevision`t$($backendContract.revision)")
-Add-FileGlobEntries -Entries $backendEntries -Root "pyloudnorm" -Filter "*.py"
-$backendSourceRoot = Join-Path $repoRoot "src"
-Get-ChildItem -LiteralPath $backendSourceRoot -Recurse -File |
-    Where-Object {
-        $_.FullName -notmatch "\\__pycache__\\" -and
-        $_.Extension -notin @(".pyc", ".pyo")
-    } |
-    Sort-Object FullName |
-    ForEach-Object {
-        $relative = Get-RelativePath $_.FullName
-        if ($relative -eq "src/version.py") {
-            $normalized = Normalize-PythonVersionFile -Text (Get-Content -LiteralPath $_.FullName -Raw)
-            $backendEntries.Add("content`t$relative`t$(Get-StringSha256 $normalized)")
-        } else {
-            $backendEntries.Add("file`t$relative`t$(Get-FileSha256 $_.FullName)")
-        }
-    }
+Add-GitTrackedEntries -Entries $backendEntries -Paths @("src")
 $backendEntries.Add("constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v4")
 $backendEntries.Add("flag`tbundleMediaTools`ttrue")
 $backendEntries.Add("flag`tuseProfileBFfmpeg`ttrue")
 $backendEntries.Add("flag`tuseGyanFfmpegEssentials`tfalse")
 $backendEntries.Add("flag`tskipBundledFfprobe`tfalse")
 $backendEntries.Add("flag`tvalidateSlimMediaTools`ttrue")
-$backendEntries.Add("flag`tpyInstallerClean`ttrue")
 Write-KeyFile -Name "backend-sidecar.txt" -Entries $backendEntries

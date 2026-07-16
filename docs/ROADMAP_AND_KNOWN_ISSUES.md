@@ -1186,6 +1186,18 @@ Signing/updater:
   release build as an evidence producer and reuse its Authenticode validation
   report, but it still depends on Authenticode signing when that gate is
   enabled and on public HTTPS updater publication.
+- The layered Python backend currently uses exact SHA-256 inventories for
+  cache/corruption integrity, not an independent same-user trust boundary. As
+  with the previous PyInstaller `onedir` runtime, a process that can rewrite
+  installed files can also rewrite their local manifests. Future hardening
+  should sign the application/runtime manifests with a release key and verify
+  them against a public key embedded in the frozen launcher before importing
+  physical application code.
+- Rebuilding an expired Python runtime cache is not yet byte-reproducible:
+  several direct and transitive packages are version ranges rather than one
+  Windows/Python-3.13 constraints lock with wheel hashes. Add that lock before
+  treating independently rebuilt runtime generations as identical release
+  evidence.
 
 Physical hardware evidence:
 

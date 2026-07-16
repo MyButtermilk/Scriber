@@ -56,6 +56,9 @@ def summarize_sidecar(sidecar: Any) -> dict[str, Any]:
     cache = sidecar.get("cache")
     if not isinstance(cache, dict):
         cache = {}
+    runtime_layer = sidecar.get("runtimeLayer")
+    if not isinstance(runtime_layer, dict):
+        runtime_layer = {}
     rust_audio = sidecar.get("rustAudioSidecarCopied")
     if not isinstance(rust_audio, dict):
         rust_audio = {}
@@ -69,6 +72,10 @@ def summarize_sidecar(sidecar: Any) -> dict[str, Any]:
         "cacheEnabled": cache.get("enabled"),
         "cacheHit": cache.get("hit"),
         "cacheKeyPrefix": str(cache.get("key", ""))[:12] if cache.get("key") else None,
+        "runtimeCacheHit": runtime_layer.get("cacheHit"),
+        "runtimeCacheKeyPrefix": str(runtime_layer.get("cacheKey", ""))[:12]
+        if runtime_layer.get("cacheKey")
+        else None,
         "rustAudioCacheHit": rust_audio.get("cacheHit"),
         "rustAudioCacheKeyPrefix": str(rust_audio.get("cacheKey", ""))[:12]
         if rust_audio.get("cacheKey")
@@ -210,6 +217,7 @@ def build_oracle_brief(summary: dict[str, Any]) -> list[str]:
                 f"cacheHit={sidecar.get('cacheHit')} "
                 f"targetCurrent={sidecar.get('targetCurrent')} "
                 f"pyInstallerRebuilt={sidecar.get('pyInstallerRebuilt')} "
+                f"runtimeCacheHit={sidecar.get('runtimeCacheHit')} "
                 f"rustAudioCacheHit={sidecar.get('rustAudioCacheHit')}"
             )
     else:
@@ -303,7 +311,11 @@ def analyze_summary(summary: dict[str, Any]) -> list[dict[str, str]]:
                 "rust-audio-rebuilt",
                 "Rust audio sidecar rebuilt; inspect rust-audio-sidecar cache inputs.",
             )
-        if sidecar.get("cacheHit") is not True and sidecar.get("targetCurrent") is not True:
+        if (
+            sidecar.get("cacheHit") is not True
+            and sidecar.get("targetCurrent") is not True
+            and sidecar.get("runtimeCacheHit") is not True
+        ):
             add_diagnostic(
                 diagnostics,
                 "warning",
@@ -331,7 +343,11 @@ def analyze_summary(summary: dict[str, Any]) -> list[dict[str, str]]:
 
     tauri_bundle_seconds = phase_seconds(build, "Tauri Windows bundle")
     build_total = build.get("totalSeconds")
-    sidecar_hot = sidecar.get("cacheHit") is True or sidecar.get("targetCurrent") is True
+    sidecar_hot = (
+        sidecar.get("cacheHit") is True
+        or sidecar.get("targetCurrent") is True
+        or sidecar.get("runtimeCacheHit") is True
+    )
     if isinstance(tauri_bundle_seconds, (int, float)) and tauri_bundle_seconds >= 120 and sidecar_hot:
         add_diagnostic(
             diagnostics,

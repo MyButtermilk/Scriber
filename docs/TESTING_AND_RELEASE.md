@@ -734,13 +734,14 @@ It:
   cache hit, the workflow checks npm install metadata only; `npm run check`
   remains the real frontend correctness gate inside
   `scripts\build_windows.ps1`,
-- restores the backend sidecar cache before Python `.venv` and wheelhouse
-  restore. When a prebuilt backend sidecar is available, the workflow skips the
-  Python dependency environment entirely and lets the sidecar builder perform
-  only the frozen-sidecar validation/copy path. The workflow-level backend
-  sidecar cache key includes the resolved Python version and mirrors the
-  builder's relevant source/build inputs closely enough that a restored cache
-  root should contain the expected internal sidecar key,
+- restores the exact complete-sidecar cache first, then the stable frozen
+  runtime cache, before Python `.venv` and wheelhouse restore. An exact complete
+  sidecar hit needs neither the runtime cache nor the dependency environment. A
+  runtime hit stages the tracked, concrete-version `backend\app` layer without
+  rerunning PyInstaller. Only a miss in both finished products restores or
+  constructs the dependency environment. The workflow fingerprint and the
+  builder's internal runtime key are separate identities and both must validate;
+  never attach a missing workflow fingerprint while restoring an older cache,
 - restores Python `.venv` from the internal `release-cache-python-venv-v1`
   artifact when the ref-scoped Actions cache is cold, so unchanged Python
   requirements can skip pip installation entirely after `pip check`,
@@ -824,11 +825,12 @@ It:
   the exact app-binary cache key records only a presence flag and SHA-256 so a
   configuration change cannot restore an older unconfigured binary and the raw
   identifier does not enter cache metadata,
-- keeps the backend sidecar version-neutral only because the Rust supervisor
-  injects `SCRIBER_VERSION` and `src.version.app_version()` prefers that runtime
-  value. The `tests/test_version_contract.py` regression tests protect this
-  contract; if they fail, stop normalizing `src/version.py` out of the backend
-  sidecar cache key until version reporting is fixed,
+- keeps only the expensive frozen Python runtime version-neutral. The physical
+  application layer and complete-sidecar key contain the concrete
+  `src/version.py` bytes and version manifest. The Rust supervisor still injects
+  `SCRIBER_VERSION`, and `tests/test_version_contract.py` protects installed
+  version reporting, but application/version changes must never be normalized
+  out of the application or complete-sidecar identity,
 - enables `CARGO_INCREMENTAL=1` for the main Tauri release binary and caches
   `Frontend\src-tauri\target\release\incremental` in both the Actions cache and
   the internal Rust release artifact. This gives version-bump and small
@@ -881,13 +883,28 @@ tag path. A manual `main` run with
 bounded products so missing or empty durable cache releases are repaired. The
 final GC keeps exactly one Actions-cache generation per allowlisted family,
 removes superseded internal cache-release tags, and retains only the globally
-newest asset inside each current cache release.
+newest asset inside each current cache release. Start that maintenance run only
+after the intended change is on `main`:
 
-The Python backend sidecar cache is allowed to be version-neutral for
-`src/version.py` because the Tauri supervisor passes the installed app version
-through `SCRIBER_VERSION` at runtime and `src.version.app_version()` reads that
-environment override. Keep that runtime contract intact when changing version
-reporting; otherwise a cached sidecar could report the wrong installed version.
+```powershell
+gh workflow run release-windows.yml --repo MyButtermilk/Scriber --ref main -f refresh_release_cache_artifacts=true
+```
+
+The refresh first saves any missing exact Actions caches, then applies the
+allowlisted GC. A final non-best-effort inventory pass requires the computed
+`scriber-rust-dependencies-v1-Windows-<sha256>` key to be the sole Rust
+dependency generation on `refs/heads/main` and fails if any Actions-cache,
+internal cache-release tag, or superseded cache-release asset still qualifies
+for deletion. This final verification is the authority for a clean cache
+maintenance run; do not infer success only from the earlier cache-save step.
+
+Only the separately frozen Python runtime cache is version-neutral for
+`src/version.py`; it contains no `src` application code. The application layer
+and full backend sidecar carry the concrete version and exact file inventory.
+The Tauri supervisor still passes the installed app version through
+`SCRIBER_VERSION`, and `src.version.app_version()` reads that environment
+override, but this runtime contract is not permission to normalize the concrete
+version out of application/full-sidecar keys.
 The Rust shell uses Tauri package metadata for that value, not
 `CARGO_PKG_VERSION`, because Cargo package metadata is deliberately stable for
 cache reuse. Its internal and GitHub-level cache keys share

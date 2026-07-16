@@ -15,7 +15,15 @@ Scriber is a hybrid desktop app:
 - Python `aiohttp` backend for local REST, WebSocket, mic recording, provider
   work, media preparation, persistence, logs, and support bundles.
 - SQLite database for transcripts and metadata.
-- PyInstaller onedir sidecar for the packaged backend.
+- Layered packaged backend: a stable PyInstaller onedir runtime plus a physical,
+  checksummed `backend/app` overlay containing current first-party Python code.
+
+The frozen runtime starts `backend_runtime.launcher`, validates its runtime
+manifest, validates the exact file set and SHA-256 of the application overlay,
+prepends `backend/app` to `sys.path`, checks the staged Scriber version, and only
+then imports `src.backend_worker`. The runtime cache therefore contains no
+`src` package and can survive ordinary backend-code changes; the complete
+composed sidecar remains independently cacheable for exact hits.
 
 The installed app is local-first. The backend binds to loopback, and the Tauri
 supervisor injects a per-run session token for local control endpoints.

@@ -40,6 +40,10 @@ def test_release_artifact_summary_combines_timing_and_cache_evidence(tmp_path: P
                     "hit": True,
                     "key": "4fe763b640f08b47aff8a7c1a7da3a3f0ff2a9fd33df8fa2c872a9d3b200da2d5",
                 },
+                "runtimeLayer": {
+                    "cacheHit": True,
+                    "cacheKey": "8fe763b640f08b47aff8a7c1a7da3a3f0ff2a9fd33df8fa2c872a9d3b200da2d5",
+                },
                 "rustAudioSidecarCopied": {
                     "cacheHit": True,
                     "cacheKey": "2109219f20c58d8e3dd80f2c8f9e07f846b7981760b44d4bf3e354d9ddbd0f34",
@@ -129,6 +133,8 @@ def test_release_artifact_summary_combines_timing_and_cache_evidence(tmp_path: P
     assert summary["buildTiming"]["sidecar"]["totalSeconds"] == 7.051
     assert summary["buildTiming"]["sidecar"]["cacheHit"] is True
     assert summary["buildTiming"]["sidecar"]["cacheKeyPrefix"] == "4fe763b640f0"
+    assert summary["buildTiming"]["sidecar"]["runtimeCacheHit"] is True
+    assert summary["buildTiming"]["sidecar"]["runtimeCacheKeyPrefix"] == "8fe763b640f0"
     assert summary["buildTiming"]["sidecar"]["rustAudioCacheHit"] is True
     assert summary["buildTiming"]["sidecar"]["rustAudioCacheKeyPrefix"] == "2109219f20c5"
     assert summary["buildTiming"]["sidecar"]["pyInstallerRebuilt"] is False
@@ -152,7 +158,7 @@ def test_release_artifact_summary_combines_timing_and_cache_evidence(tmp_path: P
     assert "build_windows total: 123.456s" in summary["oracleBrief"]
     assert (
         "sidecar: total=7.051s cacheHit=True targetCurrent=False "
-        "pyInstallerRebuilt=False rustAudioCacheHit=True"
+        "pyInstallerRebuilt=False runtimeCacheHit=True rustAudioCacheHit=True"
     ) in summary["oracleBrief"]
     assert "uncertain restore-key-or-miss rows: ['Rust build']" in summary["oracleBrief"]
     assert [item["code"] for item in summary["diagnostics"]] == ["ambiguous-actions-restore"]

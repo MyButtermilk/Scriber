@@ -2,10 +2,15 @@
 
 from pathlib import Path
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules, copy_metadata
 
 repo_root = Path(os.environ.get("SCRIBER_REPO_ROOT", Path.cwd())).resolve()
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from backend_runtime.contract import RUNTIME_REQUIRED_IMPORTS
 
 
 def exclude_datas(datas, excluded_destination_prefixes):
@@ -19,13 +24,8 @@ def exclude_datas(datas, excluded_destination_prefixes):
     return filtered
 
 
-hiddenimports = [
-    "src.assemblyai_async_stt",
-    "src.azure_mai_stt",
-    "src.cloud_async_stt",
-    "src.mistral_stt",
-    "src.smallest_stt",
-    "scripts.check_backend_runtime_imports",
+hiddenimports = [module for module, _reason in RUNTIME_REQUIRED_IMPORTS]
+hiddenimports += [
     "pyloudnorm",
     "pyloudnorm.meter",
     "pyloudnorm.normalize",
@@ -45,6 +45,8 @@ hiddenimports = [
     "pipecat.services.groq.stt",
     "pipecat.services.speechmatics.stt",
     "pipecat.services.elevenlabs.stt",
+    "huggingface_hub.file_download",
+    "huggingface_hub.utils.tqdm",
 ]
 
 for package in (
@@ -77,9 +79,6 @@ datas += copy_metadata("onnx-asr")
 datas += copy_metadata("huggingface-hub")
 datas += copy_metadata("yt-dlp")
 datas += copy_metadata("yt-dlp-ejs")
-assets_dir = repo_root / "src" / "assets"
-if assets_dir.exists():
-    datas.append((str(assets_dir), "src/assets"))
 
 for package in ("pipecat", "yt_dlp", "yt_dlp_ejs"):
     try:
@@ -115,7 +114,7 @@ except Exception:
 datas = exclude_datas(datas, ("tzdata",))
 
 a = Analysis(
-    [str(repo_root / "src" / "backend_worker.py")],
+    [str(repo_root / "backend_runtime" / "launcher.py")],
     pathex=[str(repo_root)],
     binaries=binaries,
     datas=datas,
@@ -172,6 +171,10 @@ a = Analysis(
         "botocore",
         "s3transfer",
         "pipecat.services.aws",
+        # First-party application modules are staged as a checksummed physical
+        # overlay after the stable frozen runtime has been restored or built.
+        "src",
+        "scripts",
         "nemo",
         "nemo_toolkit",
     ],

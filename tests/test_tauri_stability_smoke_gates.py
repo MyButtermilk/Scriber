@@ -276,6 +276,15 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "function Invoke-ScriberFfmpegFixtureSmoke" in sidecar
     assert "function Invoke-ScriberFfmpegProfileManifest" in sidecar
     assert "function Get-SidecarInputManifest" in sidecar
+    assert "function Get-BackendRuntimeInputManifest" in sidecar
+    assert "function Get-BackendApplicationInputManifest" in sidecar
+    assert "function Test-BackendRuntimeCache" in sidecar
+    assert "function Get-BackendRuntimeFileIdentityEntries" in sidecar
+    assert "function Invoke-StageBackendApplicationLayer" in sidecar
+    assert "[string]$RuntimeCacheRoot" in sidecar
+    assert "backend-runtime-cache-check" in sidecar
+    assert "backend-runtime-stage" in sidecar
+    assert "backend-application-stage" in sidecar
     assert "function Sync-DirectoryContents" in sidecar
     assert "function Copy-FileIfChanged" in sidecar
     assert "function Get-RustAudioSidecarInputManifest" in sidecar
@@ -416,14 +425,14 @@ def test_sidecar_cache_key_excludes_frontend_dist() -> None:
     sidecar = read_script("scripts/build_tauri_backend_sidecar.ps1")
     spec = read_script("packaging/scriber-backend.spec")
 
-    manifest_start = sidecar.index("function Get-SidecarInputManifest")
+    manifest_start = sidecar.index("function Get-BackendRuntimeInputManifest")
     manifest_end = sidecar.index("function Copy-DirectoryContents")
     manifest_block = sidecar[manifest_start:manifest_end]
 
     assert '"src"' in manifest_block
     assert '"Frontend\\dist\\public"' not in manifest_block
     assert '"packaging\\scriber-backend.spec"' in manifest_block
-    assert '"scripts\\check_backend_runtime_imports.py"' in manifest_block
+    assert '"scripts/check_backend_runtime_imports.py"' in manifest_block
     assert "Frontend/dist/public" not in spec
     assert "Frontend\" / \"dist\" / \"public" not in spec
 
@@ -573,6 +582,7 @@ def test_release_workflow_builds_profile_b_media_tools_for_standard_build() -> N
 
 def test_release_workflow_uses_incremental_dependency_caches() -> None:
     workflow = read_script(".github/workflows/release-windows.yml")
+    cache_key_finalizer = read_script("scripts/ci/finalize_release_cache_keys.ps1")
 
     assert "branches:\n      - main" not in workflow
     assert 'tags:\n      - "v*"' in workflow
@@ -617,8 +627,8 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     ) < workflow.index("Compute release cache keys")
     assert '[Guid]::TryParseExact($clientId, "D", [ref]$parsed)' in workflow
     assert "Official tag releases require a valid SCRIBER_OUTLOOK_CLIENT_ID" in workflow
-    assert '"runtime`toutlook-client-id-present`t$($outlookClientIdPresent.ToString().ToLowerInvariant())"' in workflow
-    assert '"runtime`toutlook-client-id-sha256`t$outlookClientIdHash"' in workflow
+    assert 'Add-DynamicRow -Path $tauriAppBinaryPath -Name "outlook-client-id-present"' in cache_key_finalizer
+    assert 'Add-DynamicRow -Path $tauriAppBinaryPath -Name "outlook-client-id-sha256"' in cache_key_finalizer
     assert '"runtime`toutlook-client-id`t$outlookClientId"' not in workflow
     assert "build/cache-keys/rust-audio-sidecar.txt" in workflow
     assert "build/cache-keys/rust-diarization-sidecar.txt" in workflow
@@ -947,7 +957,7 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert contract == {
         "schemaVersion": 1,
         "name": "scriber-backend-onedir",
-        "revision": 1,
+        "revision": 3,
     }
 
     assert "frontend-dependencies.txt" in script
@@ -957,6 +967,7 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert "rust-audio-sidecar.txt" in script
     assert "rust-diarization-sidecar.txt" in script
     assert "sherpa-onnx-archive.txt" in script
+    assert "backend-runtime.txt" in script
     assert "backend-sidecar.txt" in script
     assert "__app_version__" in script
     assert "Normalize-FirstJsonVersionProperties" in script
@@ -967,7 +978,8 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert 'Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/capabilities" -Filter "*.json"' in script
     assert 'Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/icons" -Filter "*"' in script
     assert '"scripts/check_backend_runtime_imports.py"' in script
-    assert 'Add-FileGlobEntries -Entries $backendEntries -Root "pyloudnorm" -Filter "*.py"' in script
+    assert 'Add-FileGlobEntries -Entries $backendRuntimeEntries -Root "backend_runtime" -Filter "*.py"' in script
+    assert 'Add-FileGlobEntries -Entries $backendRuntimeEntries -Root "pyloudnorm" -Filter "*.py"' in script
     assert 'constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v4' in script
     assert "Get-BackendSidecarOutputContract" in script
     assert 'packaging/backend-sidecar-output-contract.json' in script
@@ -979,8 +991,9 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert 'flag`tvalidateSlimMediaTools`ttrue' in script
     assert 'flag`tpyInstallerClean`ttrue' in script
     assert script.count('constant`ttoolchain`trust-1.97.0') == 3
-    assert '$_.FullName -notmatch "\\\\__pycache__\\\\"' in script
-    assert '$_.Extension -notin @(".pyc", ".pyo")' in script
+    assert "Add-GitTrackedEntries" in script
+    assert "__pycache__" in script
+    assert '@(".pyc", ".pyo")' in script
     backend_block = script.split("$backendEntries = New-EntryList", 1)[1]
     assert '"scripts/build_tauri_backend_sidecar.ps1"' not in backend_block
     assert "Frontend/src-tauri/Cargo.toml" not in backend_block
@@ -998,6 +1011,13 @@ def test_release_cache_gc_keeps_exactly_one_current_generation() -> None:
     assert "gh release delete-asset" in gc
     assert "--all" not in gc
     assert "refs/heads/main" in gc
+    assert "[string]$ExpectedRustDependencyKey" in gc
+    assert "[switch]$VerifyCurrentGeneration" in gc
+    assert "expected exactly one main Rust dependency cache" in gc
+    assert "Release cache generation verification passed" in gc
+    assert gc.index("if ($VerifyCurrentGeneration -and $Apply)") < gc.index(
+        "if (-not (Get-Command gh"
+    )
     assert "release-cache-backend-sidecar-v2" in gc
     assert "release-cache-rust-build-v2" in gc
     assert "ffmpeg-profile-b-n7.0-v4" in gc
@@ -1008,6 +1028,12 @@ def test_release_cache_gc_keeps_exactly_one_current_generation() -> None:
         "[DateTimeOffset]$_.lastAccessedAt"
     )
     assert "Prune obsolete release caches" in workflow
+    assert "Verify current release cache generation" in workflow
+    verify_block = workflow.split("- name: Verify current release cache generation", 1)[1]
+    assert "-ExpectedRustDependencyKey" in verify_block
+    assert "scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}" in verify_block
+    assert "-VerifyCurrentGeneration" in verify_block
+    assert "continue-on-error: true" not in verify_block.split("\n      - name:", 1)[0]
     assert "actions: write" in workflow
     assert "env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && github.ref == 'refs/heads/main'" in workflow
 
@@ -1132,8 +1158,12 @@ def test_release_cache_key_outputs_are_stable_for_version_only_churn() -> None:
 
         tauri_before = before.pop("tauri-app-binary.txt")
         tauri_after = after.pop("tauri-app-binary.txt")
+        backend_before = before.pop("backend-sidecar.txt")
+        backend_after = after.pop("backend-sidecar.txt")
         assert before == after
         assert tauri_before != tauri_after
+        assert backend_before != backend_after
+        assert before["backend-runtime.txt"] == after["backend-runtime.txt"]
     finally:
         for path, content in original_bytes.items():
             path.write_bytes(content)

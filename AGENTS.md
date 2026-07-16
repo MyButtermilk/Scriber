@@ -1131,17 +1131,23 @@ Already implemented and should not be regressed:
   `/api/meetings?limit=1`. `activeMeeting` is returned independently of the
   history page, so increasing that limit only transfers unused Meeting rows at
   every startup and tab preload.
-- Sidecar hash cache that avoids PyInstaller when inputs are unchanged.
-  The sidecar cache key normalizes `src/version.py`, uses media-tool content
-  hashes instead of timestamps, and must be computed before requiring
-  PyInstaller/backend runtime imports so restored sidecars skip Python
-  dependency work. Both the internal manifest and
+- Layered backend caches avoid PyInstaller when only application code changes.
+  `build\tauri-sidecar-runtime-cache` contains the stable frozen Python runtime
+  plus exact file-integrity metadata and stable Deno/yt-dlp media executables;
+  tracked current `src` files are staged separately under `backend\app` with a
+  concrete-version manifest. The full sidecar key uses media-tool content
+  hashes instead of timestamps. Both the internal manifests and
   `scripts\ci\write_release_cache_keys.ps1` use
   `packaging\backend-sidecar-output-contract.json` instead of hashing the whole
   sidecar orchestration script. Bump that contract revision whenever builder
   behavior can change frozen backend or bundled-media bytes without changing a
   hashed source/spec/requirements/tool/flag input. Do not bump it for logging,
   timing, or parallel-process orchestration changes.
+- Keep the runtime and application identities distinct. The expensive runtime
+  key excludes `src`; the application and full-sidecar keys include the exact
+  concrete version. The outer GitHub workflow fingerprint is an additional
+  cache-source binding and must never be treated as the builder's inner runtime
+  key or retroactively attached while validating a restored cache.
 - Target-current sidecar metadata that skips restoring/copying the backend tree
   when `target\release\backend` already matches the current cache key and
   release resource flags.
@@ -1238,7 +1244,10 @@ Already implemented and should not be regressed:
   read-only with respect to shared caches. That maintenance path retains
   exactly one Actions-cache generation per allowlisted family, removes
   superseded internal cache-release tags, and current cache publishers keep
-  only their replacement asset. Publish and verify
+  only their replacement asset. After best-effort GC, the maintenance workflow
+  must perform a fresh, non-best-effort inventory pass that requires the exact
+  computed Rust dependency key to be the sole main-branch Rust generation and
+  rejects any remaining allowlisted GC candidate. Publish and verify
   the app release first, then upload those four independent cache products in
   parallel with one private `GITHUB_OUTPUT` file per child. Cache publication
   is best-effort and must not delay or invalidate an already verified updater

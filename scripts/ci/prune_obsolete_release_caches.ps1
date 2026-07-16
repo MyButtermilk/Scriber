@@ -5,10 +5,23 @@ param(
     [ValidateRange(1, 10)]
     [int]$RetainPerRollingFamily = 1,
     [ValidateRange(10, 10000)]
-    [int]$ListLimit = 10000
+    [int]$ListLimit = 10000,
+    [string]$ExpectedRustDependencyKey = "",
+    [switch]$VerifyCurrentGeneration
 )
 
 $ErrorActionPreference = "Stop"
+$normalizedExpectedRustDependencyKey = ([string]$ExpectedRustDependencyKey).Trim()
+
+if ($VerifyCurrentGeneration -and $Apply) {
+    throw "Current-generation verification must run after apply in a fresh inventory pass."
+}
+if (
+    $VerifyCurrentGeneration -and
+    $normalizedExpectedRustDependencyKey -notmatch '^scriber-rust-dependencies-v1-Windows-[0-9a-f]{64}$'
+) {
+    throw "Current-generation verification requires the full expected Rust dependency cache key."
+}
 
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
     throw "GitHub CLI is required for release-cache pruning."
@@ -33,6 +46,7 @@ $currentReleaseTags = [System.Collections.Generic.HashSet[string]]::new(
 )
 foreach ($tag in @(
     'ffmpeg-profile-b-n7.0-v4',
+    'release-cache-backend-runtime-v1',
     'release-cache-backend-sidecar-v2',
     'release-cache-python-venv-v1',
     'release-cache-python-wheelhouse-v2',
@@ -44,6 +58,7 @@ foreach ($tag in @(
 }
 $cacheReleasePatterns = @(
     '^ffmpeg-profile-b-n7\.0-v\d+$',
+    '^release-cache-backend-runtime-v\d+$',
     '^release-cache-backend-sidecar-v\d+$',
     '^release-cache-python-venv-v\d+$',
     '^release-cache-python-wheelhouse-v\d+$',
@@ -88,6 +103,7 @@ foreach ($tag in $currentReleaseTags) {
 # workflow. Keep the allowlist explicit; never turn this into broad cache GC.
 $obsoletePatterns = @(
     '^scriber-backend-sidecar-Windows-',
+    '^scriber-backend-runtime-Windows-',
     '^scriber-ffmpeg-profile-b-msys2-n7\.0-v[23]-Windows$',
     '^scriber-rust-release-v2-Windows-',
     '^setup-python-',
@@ -99,6 +115,7 @@ $obsoletePatterns = @(
 # cache family, and durable release assets are pruned to the same invariant.
 $rollingFamilies = @(
     [pscustomobject]@{ Name = 'backend-v2'; Pattern = '^scriber-backend-sidecar-v2-Windows-'; Retain = $RetainPerRollingFamily },
+    [pscustomobject]@{ Name = 'backend-runtime-v1'; Pattern = '^scriber-backend-runtime-v1-Windows-python-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'audio'; Pattern = '^scriber-rust-audio-sidecar-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'tauri-app'; Pattern = '^scriber-tauri-app-binary-v1-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'frontend'; Pattern = '^scriber-frontend-node-modules-Windows-'; Retain = $RetainPerRollingFamily },
@@ -154,6 +171,17 @@ foreach ($cache in $caches) {
 
 $uniqueDeletions = @($deletions | Sort-Object { [int64]$_.Cache.id } -Unique)
 $bytes = [int64](($uniqueDeletions | ForEach-Object { [int64]$_.Cache.sizeInBytes } | Measure-Object -Sum).Sum)
+$mainRustDependencyCaches = @(
+    $caches |
+        Where-Object {
+            [string]$_.ref -eq 'refs/heads/main' -and
+            [string]$_.key -match '^scriber-rust-dependencies-v1-Windows-'
+        }
+)
+$expectedRustDependencyCaches = @(
+    $mainRustDependencyCaches |
+        Where-Object { [string]$_.key -ceq $normalizedExpectedRustDependencyKey }
+)
 Write-Host ("Release cache GC: candidates={0}; reclaimMiB={1:N1}; apply={2}" -f $uniqueDeletions.Count, ($bytes / 1MB), [bool]$Apply)
 foreach ($entry in $uniqueDeletions) {
     Write-Host ("  {0}: {1} ({2:N1} MiB)" -f $entry.Reason, $entry.Cache.key, ([int64]$entry.Cache.sizeInBytes / 1MB))
@@ -188,6 +216,32 @@ if ($Apply) {
     }
 }
 
+$verificationPassed = $null
+if ($VerifyCurrentGeneration) {
+    $verificationIssues = [System.Collections.Generic.List[string]]::new()
+    if ($mainRustDependencyCaches.Count -ne 1) {
+        $verificationIssues.Add("expected exactly one main Rust dependency cache, found $($mainRustDependencyCaches.Count)") | Out-Null
+    }
+    if ($expectedRustDependencyCaches.Count -ne 1) {
+        $verificationIssues.Add("expected Rust dependency cache '$normalizedExpectedRustDependencyKey' was not the sole exact match") | Out-Null
+    }
+    if ($uniqueDeletions.Count -ne 0) {
+        $verificationIssues.Add("$($uniqueDeletions.Count) obsolete Actions-cache entries remain") | Out-Null
+    }
+    if ($obsoleteReleaseTags.Count -ne 0) {
+        $verificationIssues.Add("$($obsoleteReleaseTags.Count) obsolete internal cache-release tags remain") | Out-Null
+    }
+    if ($obsoleteReleaseAssets.Count -ne 0) {
+        $verificationIssues.Add("$($obsoleteReleaseAssets.Count) superseded internal cache-release assets remain") | Out-Null
+    }
+
+    if ($verificationIssues.Count -gt 0) {
+        throw "Release cache generation verification failed: $($verificationIssues -join '; ')."
+    }
+    $verificationPassed = $true
+    Write-Host "Release cache generation verification passed: the expected Rust cache is the only main generation and no GC candidates remain."
+}
+
 [ordered]@{
     apiVersion = '1'
     mode = $(if ($Apply) { 'apply' } else { 'dry-run' })
@@ -197,4 +251,9 @@ if ($Apply) {
     releaseCandidates = $obsoleteReleaseTags.Count
     releaseAssetCandidates = $obsoleteReleaseAssets.Count
     retainedPerRollingFamily = $RetainPerRollingFamily
+    verifyCurrentGeneration = [bool]$VerifyCurrentGeneration
+    verificationPassed = $verificationPassed
+    expectedRustDependencyKey = $normalizedExpectedRustDependencyKey
+    expectedRustDependencyMatches = $expectedRustDependencyCaches.Count
+    mainRustDependencyGenerations = $mainRustDependencyCaches.Count
 } | ConvertTo-Json -Compress

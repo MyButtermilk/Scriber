@@ -203,7 +203,21 @@ I/O:
 
 Packaging/build:
 
-- PyInstaller sidecar can be reused through a hash cache.
+- The packaged backend has two cache boundaries. The stable PyInstaller runtime
+  lives under `build\tauri-sidecar-runtime-cache`; current `src` code and the
+  minimal runtime checker are staged afterwards as a physical, checksummed
+  `backend\app` layer. Ordinary backend edits therefore invalidate only the
+  cheap composed-sidecar key, not PyInstaller analysis or its dependency tree.
+- `runtime-cache-manifest.json` records and validates the runtime input key,
+  executable, exact runtime file inventory, and the stable media files under
+  `media-tools`. `scriber-backend\runtime-layer-manifest.json` carries the same
+  exact runtime inventory into the composed/installed tree;
+  `app\app-layer-manifest.json` records every first-party file and the concrete
+  application version against that runtime key. These are cache/corruption
+  integrity boundaries, not a replacement for release signing or an operating-
+  system trust boundary.
+- The complete composed sidecar can still be reused through its existing exact
+  hash cache.
 - PyInstaller sidecar release sync is content-aware, so unchanged files are not
   rewritten into the Tauri release tree.
 - When the Tauri release backend target already has the current sidecar cache
@@ -266,13 +280,15 @@ Packaging/build:
   not rewritten for every app release. Tauri receives the concrete app version
   from a generated minimal release config overlay, and the Rust shell passes
   that version to the Python backend through `SCRIBER_VERSION`.
-- The backend sidecar cache key is also stable inside
-  `scripts\build_tauri_backend_sidecar.ps1`: it normalizes `src/version.py`,
-  hashes bundled media tools by SHA-256 instead of file timestamps, and no
-  longer imports PyInstaller just to compute the cache key. On a restored
-  backend sidecar hit, PyInstaller checks and backend runtime import checks are
-  skipped because the frozen sidecar itself is validated instead. The internal
-  manifest and outer GitHub key share
+- The expensive backend runtime key inside
+  `scripts\build_tauri_backend_sidecar.ps1` excludes all `src` files and hashes
+  only the launcher/freeze contract, requirements, spec, vendored runtime
+  packages, Python identity, and clean-build flag. The composed sidecar key
+  includes the concrete application-layer hash and bundled media-tool identities.
+  On a runtime hit, PyInstaller and the source dependency environment are not
+  required; the builder validates the frozen runtime, mirrors it into the dist
+  tree, stages current application code, then runs the full frozen import gate.
+  The internal manifests and outer GitHub keys share
   `packaging\backend-sidecar-output-contract.json`; they do not hash the whole
   orchestration script. Increment its `revision` for output-affecting builder or
   media-copy behavior that is not already represented by a hashed input or
@@ -297,22 +313,36 @@ Packaging/build:
   Actions cache has no matching key. A non-empty Rust
   `cache-matched-key` suppresses the multi-GB fallback because a partial
   Actions restore is already useful incremental state.
-- The backend sidecar cache key includes the resolved Python version plus
-  builder-relevant inputs such as `requirements-build.txt`, `pyloudnorm`, the
-  runtime import checker, and release media/sidecar mode constants. This keeps
-  the workflow-level backend sidecar cache aligned with the internal PyInstaller
-  sidecar manifest, which matters because a restored backend sidecar skips
-  Python dependency installation. Rust/Cargo/AEC/audio/diarization inputs are
+- `build/cache-keys/backend-runtime.txt` contains only expensive frozen-runtime
+  inputs; `backend-sidecar.txt` adds concrete `src`, the staging/check scripts,
+  media profile, and output flags. A source or version change may therefore
+  miss the complete sidecar while retaining the expensive runtime. Both keys
+  also include the resolved Python version at the workflow boundary.
+  Rust/Cargo/AEC/audio/diarization inputs are
   deliberately excluded: those products are assembled after the frozen Python
   cache and have independent keys, manifests, and self-tests.
+- The 2026-07-16 local release-builder measurement for this split produced a
+  293,346,318-byte runtime cache and a 91-file / 2,805,152-byte application
+  layer. A cold build took 291.1 seconds, including 235.7 seconds in
+  PyInstaller. Forcing a complete-sidecar miss while retaining that runtime
+  took 27.5 seconds and contained no PyInstaller phase; an exact complete-
+  sidecar hit from a fresh runner took 19.2 seconds. Two frozen application
+  import checks took 7.0 and 5.0 seconds, produced no bytecode files, and direct
+  backend health became ready in 2.9 and 2.2 seconds.
 - Normal tag releases do not repack the multi-GB Cargo target, Python `.venv`,
-  or wheelhouse. They do self-heal missing exact finished-product snapshots for
-  Profile B FFmpeg, the frozen backend, and the focused Rust audio/diarization
-  sidecars after a successful build. Those bounded snapshots are usable by
-  sibling tags and prevent one cache miss from rebuilding the same unchanged
+  or wheelhouse. After the signed release is complete, they upload a small,
+  passive cache-handoff artifact for the separate
+  `release-cache-maintenance.yml` workflow. That workflow validates the source
+  repository, successful run, exact commit, tag/ref, manifest inventory, and
+  every imported product before it publishes missing exact finished-product
+  snapshots for Profile B FFmpeg, the frozen backend runtime/full sidecar, and
+  the focused Rust audio/diarization sidecars. Downloaded handoff content is
+  never executed. Publication failures block pruning, and a second stale-run
+  guard runs immediately before mutation. Those bounded snapshots are usable
+  by sibling tags and prevent one cache miss from rebuilding the same unchanged
   product on every later release. Manual cache publication is restricted to
   `main` with `refresh_release_cache_artifacts=true`; feature-branch diagnostics
-  cannot replace shared cache releases. The same maintenance run prunes every
+  cannot replace shared cache releases. Successful maintenance prunes every
   allowlisted Actions-cache family to exactly one current generation and
   removes superseded internal cache-release tags. Current cache publishers also
   delete sibling assets after a successful replacement upload, so each durable
@@ -332,12 +362,13 @@ Packaging/build:
   attempted before Python `.venv`/wheelhouse restore, so a durable prebuilt
   sidecar can skip the Python dependency install path entirely.
 - The signed installer, updater metadata, and publication evidence are
-  collected, published, and verified before bounded cache self-healing begins.
-  Missing Profile B FFmpeg, frozen backend, Rust audio, and Rust diarization
-  products then publish concurrently through
-  `scripts\ci\publish_finished_component_caches_parallel.ps1`, with a unique
-  child `GITHUB_OUTPUT` file and warning-only failure reporting. Cache ZIP or
-  upload latency therefore cannot delay update availability.
+  collected, published, and verified before the passive maintenance handoff is
+  emitted. Cache ZIP/upload work and cache pruning happen in the detached
+  maintenance workflow, so they cannot delay update availability. Independent
+  cache products publish concurrently through
+  `scripts\ci\publish_finished_component_caches_parallel.ps1`; the maintenance
+  job treats any child failure as fatal and does not prune the previous
+  generation.
 - Release artifact upload through `actions/upload-artifact` uses
   `compression-level: 0` because the Windows installer is already NSIS
   compressed and updater signatures/JSON reports are small. This avoids
@@ -361,12 +392,30 @@ Packaging/build:
   from `requirements-base.txt` and `requirements-build.txt`. It is restored only
   when the backend sidecar, `.venv`, and wheelhouse layers all miss; setup-python
   does not eagerly restore it on the hot path.
-- GitHub Actions restore steps within the Windows job are sequential. Once the
-  corresponding Actions-cache results are known, the internal release-artifact
-  fallbacks for Rust audio, Rust diarization, and Profile B FFmpeg may download
-  concurrently because their destinations are disjoint. Rust/main-target,
-  backend, `.venv`, and wheelhouse paths remain serialized due to overlapping
-  destinations or producer dependencies.
+- A lightweight Ubuntu planning job computes the deterministic keys and probes
+  the exact full-backend and Tauri products without provisioning a Windows
+  machine. Probe/API/parity failures conservatively select the normal one-runner
+  path. Only a genuine tag-release double miss selects the cold split path.
+- On that cold path, two complete Windows preparation groups now overlap on
+  separate runners. `prepare-tauri-cold` owns Node setup, frontend dependency
+  restore, Rust dependency restore, frontend type checking, and the exact Tauri
+  no-bundle application compile. At the same time,
+  `prepare-backend-cold` owns Python setup, frozen-runtime/venv/wheelhouse
+  restore, FFmpeg and Rust audio/diarization component restore/build, and
+  PyInstaller backend composition. Previously, the restores and setup preceding
+  those two heavy producers were serialized in the final Windows job even
+  though the compile and PyInstaller phases later overlapped.
+- The final Windows job downloads the two cold products with one merged artifact
+  pattern, validates their commit/key/file attestations, and then performs only
+  fresh final assembly, NSIS/updater signing, publication, and release
+  verification. A producer failure, corrupt artifact, or parity mismatch
+  discards the cold products and safely runs the normal warm build instead.
+- The common warm path remains a single Windows build runner; it does not pay
+  for two Windows setup/restore sequences or artifact transfers. Its only new
+  critical-path cost is the small Ubuntu planner, key computation, and exact
+  cache probes. Measure that added queue/probe time in real releases before
+  assigning a fixed number; it is intentionally bounded well below the two
+  several-minute cold producer phases it avoids serializing.
 - The standard GitHub release passes `-ParallelizeIndependentBuilds`. On one
   runner it starts frontend type checking, sidecar preparation, and the Tauri
   `--no-bundle` app compile together. The compile helper writes a generated
@@ -379,14 +428,10 @@ Packaging/build:
   preserve the base resource map. Rust audio then reuses the shared warmed
   Cargo target by default instead of building a second isolated dependency
   graph. Exact backend and Rust caches remain the main fast path.
-- Splitting that work across separate GitHub jobs is useful only for cold or
-  cache-refresh builds where independent heavy outputs have to be produced
-  again. A simple job split that only restores the same caches in several jobs is not
-  enough, because the final Tauri/NSIS runner still needs all build products on
-  its own filesystem. The useful split is artifact-based: prepare jobs must
-  upload the exact directories consumed by the final package job, and the
-  package job must download them into the same paths before invoking
-  `scripts\build_windows.ps1`.
+- Splitting work across separate GitHub jobs is useful only for the true cold
+  double miss where independent heavy outputs have to be produced again. A
+  simple unconditional job split would repeat Windows setup and cache transfers
+  on already-warm releases; the adaptive planner deliberately avoids it.
 - The safe target graph is:
   `frontend-webview` builds `Frontend\dist\public` only if the release config
   also removes Tauri's `beforeBuildCommand`; `backend-sidecar` prepares
@@ -397,12 +442,10 @@ Packaging/build:
   package phase restores that binary plus independently validated resources and
   runs `tauri bundle`, NSIS, updater signing, and publication checks. Do not
   transfer the multi-GB Rust target tree between runners by default.
-- Keep a future multi-runner artifact-transfer graph opt-in or limited to
-  cache-refresh experiments until measurements prove it beats the standard
-  same-runner parallel path. Hot runs with exact backend sidecar, Rust build,
-  Rust audio sidecar, FFmpeg, frontend dependency, and Tauri bundler hits are
+- Keep the multi-runner transfer graph limited to the planner-confirmed cold
+  double miss. Hot runs with exact backend sidecar and Tauri products are
   already dominated by final Tauri/NSIS packaging; forcing artifact
-  upload/download between jobs can make those runs slower.
+  upload/download between jobs would make those runs slower.
 - The Actions Rust cache is dependency/toolchain keyed rather than app-source
   keyed and includes `target\release\incremental`; CI builds set
   `CARGO_INCREMENTAL=1`. App/Rust/UI source changes therefore do not create a

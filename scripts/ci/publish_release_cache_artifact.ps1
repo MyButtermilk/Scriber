@@ -14,7 +14,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$allowedTagPattern = '^release-cache-(backend-sidecar|python-venv|python-wheelhouse|rust-build|rust-audio-sidecar|rust-diarization-sidecar)-v\d+$'
+$allowedTagPattern = '^release-cache-(backend-sidecar|backend-runtime|python-venv|python-wheelhouse|rust-build|rust-audio-sidecar|rust-diarization-sidecar)-v\d+$'
 if ($Tag -notmatch $allowedTagPattern) {
     throw "Refusing cache publication for non-cache release tag '$Tag'."
 }

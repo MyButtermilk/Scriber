@@ -156,8 +156,11 @@ def test_sidecar_build_runs_frozen_runtime_import_check():
     )
 
     assert "Invoke-FrozenBackendRuntimeImportCheck" in build_script
+    assert "Invoke-FrozenBackendRuntimeLayerCheck" in build_script
     assert "--runtime-import-check" in build_script
-    assert "scripts.check_backend_runtime_imports" in spec
+    assert "--runtime-layer-check" in build_script
+    assert 'repo_root / "backend_runtime" / "launcher.py"' in spec
+    assert "scripts.check_backend_runtime_imports" not in spec
 
 
 def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
@@ -201,7 +204,7 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert '"preprocessors/*.py"' in spec
     assert "collect_data_files(" in spec
     assert '"onnxruntime",' in spec
-    hidden_imports = spec.split("hiddenimports = [", 1)[1].split(
+    hidden_imports = spec.split("hiddenimports += [", 1)[1].split(
         "]\n\nfor package in (", 1
     )[0]
     excluded_imports = spec.split("excludes=[", 1)[1].split(
@@ -221,7 +224,7 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert 'exclude_datas(datas, ("tzdata",))' in spec
     assert '"PIL.AvifImagePlugin",' in spec.split("excludes=[", 1)[1]
     assert '"PIL._avif",' in spec.split("excludes=[", 1)[1]
-    hiddenimports_block = spec.split("hiddenimports = [", 1)[1].split("]", 1)[0]
+    hiddenimports_block = spec.split("hiddenimports += [", 1)[1].split("]", 1)[0]
     assert '"PySide6.QtCore"' not in hiddenimports_block
     assert '"PySide6",' in spec.split("excludes=[", 1)[1]
     assert '"tkinter",' in spec.split("excludes=[", 1)[1]
@@ -240,16 +243,47 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert 'Resolve-PythonInstalledTool -Names @("deno.exe", "deno")' in build_script
     assert "$pythonCommand = Get-Command $Python -ErrorAction SilentlyContinue" in build_script
     assert "if ($pythonDir)" in build_script
-    cache_manifest_source = build_script.split(
+    runtime_manifest_source = build_script.split(
+        "function Get-BackendRuntimeInputManifest", 1
+    )[1].split("function Get-BackendApplicationInputManifest", 1)[0]
+    assert 'Resolve-PythonInstalledTool -Names @("deno.exe", "deno")' not in runtime_manifest_source
+    assert 'Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp")' not in runtime_manifest_source
+    assert '"requirements-base.txt"' in runtime_manifest_source
+    assert "Get-PythonFileEntries" in runtime_manifest_source
+    sidecar_manifest_source = build_script.split(
         "function Get-SidecarInputManifest", 1
-    )[1].split("function Copy-DirectoryContents", 1)[0]
-    assert 'Resolve-PythonInstalledTool -Names @("deno.exe", "deno")' not in cache_manifest_source
-    assert 'Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp")' not in cache_manifest_source
-    assert '"requirements-base.txt"' in cache_manifest_source
-    assert "resolvedPath" not in cache_manifest_source
+    )[1].split("function Get-BackendRuntimeFileIdentityEntries", 1)[0]
+    assert 'Get-ToolMetadataEntry -Path $resolvedDeno -Name "deno"' in sidecar_manifest_source
+    assert 'Get-ToolMetadataEntry -Path $resolvedYtDlp -Name "yt-dlp"' in sidecar_manifest_source
     assert '$ErrorActionPreference = "Continue"' in build_script
     assert '& $Python -c "import PyInstaller" *> $null' in build_script
     assert 'Test-MediaToolExecutable -Path $copiedDeno -Name "deno"' in build_script
+
+
+def test_backend_media_resolution_supports_fresh_full_and_runtime_cache_hits():
+    repo_root = Path(__file__).resolve().parents[1]
+    build_script = (
+        repo_root / "scripts" / "build_tauri_backend_sidecar.ps1"
+    ).read_text(encoding="utf-8")
+    resolver = build_script.split(
+        "function Resolve-BackendStableMediaTool", 1
+    )[1].split("function Initialize-BackendRuntimeStableMediaTools", 1)[0]
+
+    assert "Resolve-BackendSidecarCandidateMediaTool" in resolver
+    assert resolver.index("Resolve-BackendSidecarCandidateMediaTool") < resolver.index(
+        'Join-Path $RuntimeCacheRoot "media-tools"'
+    )
+    assert resolver.index('Join-Path $RuntimeCacheRoot "media-tools"') < resolver.index(
+        "Resolve-PythonInstalledTool"
+    )
+    assert '[string]$manifest.cacheKey -ne $ExpectedRuntimeCacheKey' in resolver
+    assert "Test-BackendStableMediaFiles" in resolver
+    candidate = build_script.split(
+        "function Resolve-BackendSidecarCandidateMediaTool", 1
+    )[1].split("function Resolve-BackendStableMediaTool", 1)[0]
+    assert '[string]$manifest.inputManifest.runtimeCacheKey -ne $ExpectedRuntimeCacheKey' in candidate
+    assert "Test-BackendMediaFiles" in candidate
+    assert "Full-sidecar cache generations disagree" in candidate
 
 
 def test_local_stt_services_do_not_override_pipecat_settings_object():

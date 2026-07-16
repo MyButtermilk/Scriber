@@ -4,6 +4,7 @@ param(
     [switch]$PublishFfmpeg,
     [switch]$PublishRustAudio,
     [switch]$PublishRustDiarization,
+    [switch]$PublishBackendRuntime,
     [switch]$PublishBackend,
     [Parameter(Mandatory = $true)]
     [string]$FfmpegTag,
@@ -17,6 +18,10 @@ param(
     [string]$RustDiarizationTag,
     [Parameter(Mandatory = $true)]
     [string]$RustDiarizationAssetName,
+    [Parameter(Mandatory = $true)]
+    [string]$BackendRuntimeTag,
+    [Parameter(Mandatory = $true)]
+    [string]$BackendRuntimeAssetName,
     [Parameter(Mandatory = $true)]
     [string]$BackendTag,
     [Parameter(Mandatory = $true)]
@@ -111,6 +116,19 @@ $components = @(
         }
     },
     [pscustomobject]@{
+        Name = "Backend runtime"
+        Slug = "backend-runtime"
+        Enabled = [bool]$PublishBackendRuntime
+        ScriptPath = $genericPublisher
+        Arguments = [ordered]@{
+            Repo = $Repo
+            Tag = $BackendRuntimeTag
+            AssetName = $BackendRuntimeAssetName
+            SourcePath = "build\tauri-sidecar-runtime-cache"
+            Title = "Scriber Backend Runtime Cache v1"
+        }
+    },
+    [pscustomobject]@{
         Name = "Backend sidecar"
         Slug = "backend-sidecar"
         Enabled = [bool]$PublishBackend
@@ -186,7 +204,7 @@ foreach ($component in $components) {
                             -AssetName $AssetName `
                             -BuildRoot $BuildRoot 2>&1
                     )
-                } elseif ($ComponentSlug -in @("rust-audio-sidecar", "rust-diarization-sidecar", "backend-sidecar")) {
+                } elseif ($ComponentSlug -in @("rust-audio-sidecar", "rust-diarization-sidecar", "backend-runtime", "backend-sidecar")) {
                     $lines = @(
                         & powershell.exe -NoProfile -File $ScriptPath `
                             -Repo $Repository `
