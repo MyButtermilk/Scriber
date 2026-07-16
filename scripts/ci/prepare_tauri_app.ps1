@@ -39,9 +39,6 @@ function New-CompileOnlyTauriConfig {
     param([string]$SourcePath)
 
     $source = Get-Content -LiteralPath $SourcePath -Raw | ConvertFrom-Json
-    if (-not $source.bundle) {
-        throw "Generated Tauri config does not contain a bundle section: $SourcePath"
-    }
 
     # `tauri build --no-bundle` still validates bundle resources even though
     # it does not package them. The backend resource directory is prepared by
@@ -52,6 +49,14 @@ function New-CompileOnlyTauriConfig {
     # Tauri merges `--config` with the checked-in base config. An empty object
     # would preserve the existing resource map under JSON Merge Patch rules;
     # an empty array changes the value type and therefore replaces it.
+    $bundleProperty = $source.PSObject.Properties["bundle"]
+    if ($null -eq $bundleProperty -or $null -eq $source.bundle) {
+        Add-Member `
+            -InputObject $source `
+            -MemberType NoteProperty `
+            -Name "bundle" `
+            -Value ([PSCustomObject]@{ resources = @() })
+    }
     $resourcesProperty = $source.bundle.PSObject.Properties["resources"]
     if ($null -eq $resourcesProperty) {
         Add-Member `
