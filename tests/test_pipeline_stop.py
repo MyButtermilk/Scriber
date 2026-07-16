@@ -566,6 +566,27 @@ async def test_soniox_async_webm_upload_does_not_retry_as_wav_on_api_error():
 
 
 @pytest.mark.asyncio
+async def test_soniox_async_upload_uses_selected_eu_region():
+    session = _RejectedSonioxUploadSession()
+    processor = SonioxAsyncProcessor(
+        api_key="test-key",
+        session=session,
+        base_url="https://api.eu.soniox.com/v1",
+    )
+
+    async def encode_webm(_audio_bytes, *, prefer_webm=True):
+        assert prefer_webm is True
+        return b"webm-audio", "audio/webm", "audio.webm"
+
+    processor._encode_audio = encode_webm
+
+    with pytest.raises(RuntimeError, match="upload rejected"):
+        await processor._transcribe_async(b"\0\0" * 160)
+
+    assert session.post_calls[0][0] == "https://api.eu.soniox.com/v1/files"
+
+
+@pytest.mark.asyncio
 async def test_soniox_async_terminal_frame_streams_spooled_audio():
     processor = SonioxAsyncProcessor(api_key="test-key", session=object())
     captured = []
@@ -911,6 +932,21 @@ async def test_pipecat_1_5_live_factories_match_runtime_signatures(
         cleanup = getattr(service, "cleanup", None)
         if callable(cleanup):
             await cleanup()
+
+
+@pytest.mark.asyncio
+async def test_soniox_realtime_factory_uses_selected_eu_region(monkeypatch):
+    monkeypatch.setattr(Config, "SONIOX_API_KEY", "key")
+    monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
+    monkeypatch.setattr(Config, "SONIOX_REGION", "eu")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "")
+
+    service = ScriberPipeline(service_name="soniox")._create_stt_service(object())
+    try:
+        assert service._url == "wss://stt-rt.eu.soniox.com/transcribe-websocket"
+    finally:
+        await service.cleanup()
 
 
 def test_google_cloud_factory_uses_pipecat_1_5_settings(monkeypatch):

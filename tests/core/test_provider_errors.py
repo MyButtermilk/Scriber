@@ -102,3 +102,17 @@ def test_missing_api_key_uses_provider_specific_labels_for_async_and_optional_pr
         assert info.code == "missing_api_key"
         assert info.message == f"{label} API key is missing. Add it in Settings."
         assert info.retryable is False
+
+
+def test_modulate_aiohttp_connect_failure_is_retryable_network_error():
+    info = provider_user_error(
+        "modulate",
+        "modulate realtime error: Cannot connect to host "
+        "modulate-developer-apis.com:443 ssl:default",
+    )
+
+    assert info.provider == "modulate"
+    assert info.category is ErrorCategory.TRANSIENT_NETWORK
+    assert "Modulate connection" in info.message
+    assert info.code == ""
+    assert info.retryable is True

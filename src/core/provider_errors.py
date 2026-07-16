@@ -22,7 +22,10 @@ class ProviderUserError:
     retryable: bool = False
 
 
-_HTTP_STATUS_RE = re.compile(r"(?<!\d)([1-5]\d{2})(?!\d)")
+# Do not mistake a URI/host port such as ``example.com:443`` for an HTTP
+# status.  Provider exceptions commonly include that form without any response
+# having been received at all.
+_HTTP_STATUS_RE = re.compile(r"(?<![\d:])([1-5]\d{2})(?!\d)")
 _SAFE_CODE_RE = re.compile(r"^[A-Za-z0-9_.:-]{2,80}$")
 _KNOWN_CODES = (
     "model_not_available",
@@ -401,7 +404,16 @@ def _classify_soniox(provider: str, label: str, text: str, status: int | None, c
             "Soniox could not process the audio. Retry with a clearer or longer recording.",
             code=code,
         )
-    if _has(text, "websocket", "connection", "timeout", "timed out"):
+    if _has(
+        text,
+        "websocket",
+        "connection",
+        "cannot connect",
+        "could not connect",
+        "clientconnectorerror",
+        "timeout",
+        "timed out",
+    ):
         return _make_error(
             provider,
             label,
@@ -610,7 +622,16 @@ def _classify_modulate(
             "Modulate is temporarily unavailable. Please retry shortly.",
             code=code or str(status or ""),
         )
-    if _has(text, "websocket", "connection", "timeout", "timed out"):
+    if _has(
+        text,
+        "websocket",
+        "connection",
+        "cannot connect",
+        "could not connect",
+        "clientconnectorerror",
+        "timeout",
+        "timed out",
+    ):
         return _make_error(
             provider,
             label,

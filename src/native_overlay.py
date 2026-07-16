@@ -74,6 +74,25 @@ def _show_overlay_mode(mode: str) -> dict[str, Any]:
     return _call_overlay_response("overlayShow", {"mode": mode})
 
 
+def _hide_overlay() -> dict[str, Any]:
+    """Hide once, then reconcile a response lost after native application."""
+
+    response = _call_overlay_response("overlayHide", log_failure=False)
+    if response.get("success") is True:
+        return response
+    status = _call_overlay_response("overlayStatus", log_failure=False)
+    if _overlay_state_matches(status, mode="hidden", visible=False):
+        return status
+    retry = _call_overlay_response("overlayHide", log_failure=False)
+    if retry.get("success") is not True:
+        logger.debug(
+            "Tauri overlay command overlayHide failed after reconciliation: {} {}",
+            retry.get("errorCode"),
+            retry.get("fallbackReason"),
+        )
+    return retry
+
+
 class _OverlayAudioLevelPump:
     """Coalesce RMS updates onto a low-rate native overlay fallback channel."""
 
@@ -141,7 +160,7 @@ class RecordingOverlay:
 
     def stop(self) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            return _call_overlay_response("overlayHide")
+            return _hide_overlay()
         return None
 
     def show(self) -> dict[str, Any] | None:
@@ -161,7 +180,7 @@ class RecordingOverlay:
 
     def hide(self) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            return _call_overlay_response("overlayHide")
+            return _hide_overlay()
         return None
 
     def update_audio_level(self, rms: float) -> None:

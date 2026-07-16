@@ -1218,6 +1218,9 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     debug_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "DebugConsole.tsx").read_text(
         encoding="utf-8"
     )
+    structured_log_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "debug" / "RuntimeLogMessage.tsx"
+    ).read_text(encoding="utf-8")
     settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
         encoding="utf-8"
     )
@@ -1241,6 +1244,17 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     assert "Post-processing diagnostics" in debug_source
     assert "Raw fallback" in debug_source
     assert 'className="compact-impact-switch"' in debug_source
+    assert "entry.context ? JSON.stringify(entry.context)" in debug_source
+    assert "RuntimeLogMessage" in debug_source
+
+    assert "HOT_PATH_METRICS" in structured_log_source
+    assert "hotkey_received_to_mic_ready_ms" in structured_log_source
+    assert "stop_requested_to_provider_final_received_ms" in structured_log_source
+    assert "Technical details" in structured_log_source
+    assert "Raw structured data" in structured_log_source
+    assert "Copy raw structured log data" in structured_log_source
+    assert "Full message" in structured_log_source
+    assert "LONG_MESSAGE_PREVIEW_CHARS" in structured_log_source
 
     assert "settings-page" in settings_source
     assert "function SettingLine" in settings_source
@@ -1254,6 +1268,9 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     assert "padding: 1.5rem 1.5rem 1rem" in css
     assert "grid-template-columns: repeat(5, minmax(2.25rem, 1fr))" in css
     assert ".settings-page .mic-device-dropdown-header" in css
+    assert ".debug-log-key-metrics" in css
+    assert ".debug-log-raw-body pre" in css
+    assert ".debug-log-copy-detail:focus-visible" in css
     assert "@media (max-width: 720px)" in css
 
 
@@ -1908,6 +1925,25 @@ def test_meeting_defaults_and_voice_library_live_only_in_meeting_settings() -> N
     assert "checkpointed audio" not in meeting_settings
     assert "AEC3 echo control" not in meeting_settings
     assert "Voice embeddings" not in meeting_settings
+
+
+def test_soniox_region_is_selected_only_in_api_key_dialog() -> None:
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+        encoding="utf-8"
+    )
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'label="Data processing region"' in settings
+    assert "US - Region (default)" in settings
+    assert "EUR - Region (recommended for better latency)" in settings
+    assert "EU access must be enabled by Soniox first" in settings
+    assert "Organization ID" in settings
+    assert "mailto:support@soniox.com" in settings
+    assert "https://soniox.com/docs/data-residency" in settings
+    assert 'provider === "Soniox" ? { sonioxRegion } : {}' in settings
+    assert 'sonioxRegion?: "us" | "eu"' in api_types
 
 
 def test_meeting_transcription_modes_are_configured_only_in_settings() -> None:

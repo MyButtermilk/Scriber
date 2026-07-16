@@ -33,6 +33,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { RuntimeLogMessage } from "@/components/debug/RuntimeLogMessage";
 import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
@@ -210,11 +211,13 @@ export default function DebugConsole() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [error, setError] = useState("");
   const [actionStatus, setActionStatus] = useState("");
+  const [copiedLogDetailKey, setCopiedLogDetailKey] = useState("");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [truncated, setTruncated] = useState(false);
   const logScrollRef = useRef<HTMLElement | null>(null);
   const logLoadGenerationRef = useRef(0);
   const logLoadInFlightRef = useRef(false);
+  const copyResetTimerRef = useRef<number | null>(null);
 
   const loadLogs = useCallback(async () => {
     if (logLoadInFlightRef.current) return;
@@ -269,6 +272,12 @@ export default function DebugConsole() {
     void loadLogs();
   }, [loadLogs]);
 
+  useEffect(() => () => {
+    if (copyResetTimerRef.current !== null) {
+      window.clearTimeout(copyResetTimerRef.current);
+    }
+  }, []);
+
   useEffect(() => {
     if (!autoRefresh) return;
     let cancelled = false;
@@ -303,6 +312,7 @@ export default function DebugConsole() {
         entry.message,
         entry.source,
         entry.component || "",
+        entry.context ? JSON.stringify(entry.context) : "",
         level,
         entry.timestamp || "",
         String(entry.timestampMs || ""),
@@ -413,6 +423,23 @@ export default function DebugConsole() {
     try {
       await navigator.clipboard.writeText(text);
       setActionStatus(`Copied ${displayedLogs.length} visible log entries.`);
+    } catch (err: any) {
+      setError(`Copy failed: ${String(err?.message || err)}`);
+    }
+  };
+
+  const copyLogDetail = async (text: string, key: string) => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedLogDetailKey(key);
+      if (copyResetTimerRef.current !== null) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+      copyResetTimerRef.current = window.setTimeout(() => {
+        setCopiedLogDetailKey((current) => current === key ? "" : current);
+        copyResetTimerRef.current = null;
+      }, 1_600);
     } catch (err: any) {
       setError(`Copy failed: ${String(err?.message || err)}`);
     }
@@ -689,10 +716,16 @@ export default function DebugConsole() {
                           <Icon className="h-3 w-3" />
                           {level}
                         </span>
-                        <p className="debug-log-message">
+                        <div className="debug-log-message-cell">
                           {entry.component && <span className="debug-log-component">{entry.component}</span>}
-                          {entry.message}
-                        </p>
+                          <RuntimeLogMessage
+                            message={entry.message}
+                            context={entry.context}
+                            copyKey={logEntryKey(entry)}
+                            copiedKey={copiedLogDetailKey}
+                            onCopy={(text, key) => void copyLogDetail(text, key)}
+                          />
+                        </div>
                       </article>
                     );
                   })}

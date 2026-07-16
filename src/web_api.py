@@ -160,6 +160,10 @@ from src.transcript_artifacts import (
     stage_units_from_provider,
 )
 from src.speaker_intelligence import WeSpeakerModel
+from src.soniox_region import (
+    normalize_soniox_region,
+    soniox_realtime_websocket_url,
+)
 from src.speaker_enrollment import VoiceEnrollmentCapture, assess_voice_sample
 from src.speaker_diarization import (
     DiarizationIneligibleError,
@@ -1296,6 +1300,10 @@ def _validate_soniox_mode(raw_mode: str) -> str:
     if mode not in _VALID_SONIOX_MODES:
         raise ValueError(f"Invalid sonioxMode '{raw_mode}'. Allowed: {', '.join(sorted(_VALID_SONIOX_MODES))}")
     return mode
+
+
+def _validate_soniox_region(raw_region: str) -> str:
+    return normalize_soniox_region(raw_region, strict=True)
 
 
 def _validate_default_stt_service(raw_service: str) -> str:
@@ -3452,6 +3460,7 @@ class ScriberWebController:
 
         self._is_listening = False
         self._is_stopping = False  # Track if stop is in progress
+        self._live_mic_stop_owner: object | None = None
         self._listening_lock = asyncio.Lock()  # Prevent race conditions on rapid hotkey presses
         self._mic_prewarm = _create_mic_prewarm_manager()
         self._mic_prewarm_task: Optional[asyncio.Task] = None
@@ -4424,6 +4433,57 @@ class ScriberWebController:
             return int(value)
         return None
 
+    @staticmethod
+    def _mic_watchdog_log_summary(
+        diagnostics: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Reduce a large watchdog snapshot to human-facing diagnostic facts."""
+
+        if not isinstance(diagnostics, dict):
+            return {}
+        summary: dict[str, Any] = {}
+        engine = diagnostics.get("engine")
+        if isinstance(engine, str) and engine.strip():
+            summary["engine"] = engine.strip()[:80]
+
+        aliases = {
+            "configured": ("configured",),
+            "active": ("active", "running"),
+            "hasStream": ("hasStream", "streamActive"),
+            "lastStartSuccess": ("lastStartSuccess",),
+            "lastHealthCheckActive": ("lastHealthCheckActive",),
+        }
+        for public_key, candidates in aliases.items():
+            value = next(
+                (
+                    diagnostics.get(candidate)
+                    for candidate in candidates
+                    if isinstance(diagnostics.get(candidate), bool)
+                ),
+                None,
+            )
+            if isinstance(value, bool):
+                summary[public_key] = value
+
+        numeric_aliases = {
+            "restartCount": ("healthRestartCount", "healthRestartThrottleCount"),
+            "lastStartDurationMs": ("lastStartDurationMs",),
+            "lastHealthResponseMs": ("lastHealthResponseMs",),
+        }
+        for public_key, candidates in numeric_aliases.items():
+            value = next(
+                (
+                    diagnostics.get(candidate)
+                    for candidate in candidates
+                    if isinstance(diagnostics.get(candidate), (int, float))
+                    and not isinstance(diagnostics.get(candidate), bool)
+                ),
+                None,
+            )
+            if isinstance(value, (int, float)):
+                summary[public_key] = value
+        return summary
+
     def _log_mic_watchdog_warning(self, message: str, *, diagnostics: dict[str, Any] | None = None) -> None:
         now = time.monotonic()
         self._last_mic_watchdog_warning_snapshot = {
@@ -4435,11 +4495,33 @@ class ScriberWebController:
             "recordedAtUptimeSeconds": round(max(0.0, now - self._started_at_monotonic), 3),
             "diagnostics": copy.deepcopy(diagnostics) if isinstance(diagnostics, dict) else None,
         }
-        if now - self._last_mic_watchdog_warning_at < 15.0:
-            logger.debug(f"{message}: {diagnostics}")
-            return
-        self._last_mic_watchdog_warning_at = now
-        logger.warning(f"{message}: {diagnostics}")
+        summary = self._mic_watchdog_log_summary(diagnostics)
+        status_parts: list[str] = []
+        if isinstance(summary.get("engine"), str):
+            status_parts.append(f"engine={summary['engine']}")
+        if isinstance(summary.get("active"), bool):
+            status_parts.append(f"active={'yes' if summary['active'] else 'no'}")
+        if isinstance(summary.get("hasStream"), bool):
+            status_parts.append(f"stream={'yes' if summary['hasStream'] else 'no'}")
+        if isinstance(summary.get("restartCount"), (int, float)):
+            status_parts.append(f"restarts={summary['restartCount']}")
+        compact_message = str(message or "Microphone watchdog warning")
+        if status_parts:
+            compact_message = f"{compact_message} · {' · '.join(status_parts)}"
+
+        rate_limited = now - self._last_mic_watchdog_warning_at < 15.0
+        if not rate_limited:
+            self._last_mic_watchdog_warning_at = now
+        self._emit_workflow_event(
+            message=compact_message,
+            event="audio.watchdog.warning",
+            workflow="live_mic",
+            stage="mic_watchdog",
+            level="DEBUG" if rate_limited else "WARNING",
+            outcome="rate_limited" if rate_limited else "warning",
+            milestone=not rate_limited,
+            meta=summary or None,
+        )
 
     def _mic_watchdog_last_warning_diagnostics(self) -> dict[str, Any] | None:
         if not isinstance(self._last_mic_watchdog_warning_snapshot, dict):
@@ -5660,9 +5742,44 @@ class ScriberWebController:
             if report:
                 self._hot_path_reports_emitted.add(session_id)
         if report:
-            logger.info(f"Hot path timing ({session_id[:8]}): {report}")
+            key_metric_names = (
+                "hotkey_received_to_mic_ready_ms",
+                "hotkey_received_to_first_audible_audio_frame_ms",
+                "stop_requested_to_provider_final_received_ms",
+                "stop_requested_to_first_paste_ms",
+            )
+            key_metrics = {
+                key: report[key]
+                for key in key_metric_names
+                if key in report
+            }
+            labels = {
+                "hotkey_received_to_mic_ready_ms": "mic ready",
+                "hotkey_received_to_first_audible_audio_frame_ms": "audio ready",
+                "stop_requested_to_provider_final_received_ms": "final transcript",
+                "stop_requested_to_first_paste_ms": "text inserted",
+            }
+
+            def format_timing(value: float) -> str:
+                return (
+                    f"{value / 1000.0:.2f} s"
+                    if value >= 1000.0
+                    else f"{value:.0f} ms"
+                )
+
+            summary = " · ".join(
+                f"{labels[key]} {format_timing(value)}"
+                for key, value in key_metrics.items()
+            )
+            message = f"Live mic timing ({session_id[:8]})"
+            if summary:
+                message = f"{message} · {summary}"
+            total_duration_ms = (
+                report.get("hotkey_received_to_first_paste_ms")
+                or max(report.values(), default=0.0)
+            )
             self._emit_workflow_event(
-                message=f"Hot path timing captured ({session_id[:8]})",
+                message=message,
                 event="metrics.hot_path.reported",
                 workflow="live_mic",
                 stage="hot_path_report",
@@ -5671,8 +5788,11 @@ class ScriberWebController:
                 record=self._current,
                 milestone=True,
                 outcome="success",
-                duration_ms=report.get("hotkey_received_to_first_paste_ms") or max(report.values(), default=0.0),
-                meta=report,
+                duration_ms=total_duration_ms,
+                meta={
+                    **key_metrics,
+                    "measurement_count": len(report),
+                },
             )
             self._schedule_hot_path_metric_persist(session_id, report)
             return True
@@ -9548,8 +9668,30 @@ class ScriberWebController:
             self._arm_duplicate_start_toggle_guard()
             self._start_mic_watchdog()
             self._set_status("Preparing microphone...", session_id=session_id)
+            runtime_configuration_getter = getattr(
+                pipeline,
+                "stt_runtime_configuration",
+                None,
+            )
+            runtime_configuration = (
+                runtime_configuration_getter()
+                if callable(runtime_configuration_getter)
+                else {
+                    "provider": live_provider or "unknown",
+                    "model": str(getattr(pipeline, "model", "provider-default")),
+                    "mode": "unknown",
+                    "language": Config.LANGUAGE or "auto",
+                    "sampleRateHz": int(Config.SAMPLE_RATE),
+                    "channels": int(Config.CHANNELS),
+                }
+            )
             self._emit_workflow_event(
-                message=f"Pipeline session started ({live_provider})",
+                message=(
+                    "Pipeline session started · "
+                    f"provider={runtime_configuration['provider']} · "
+                    f"model={runtime_configuration['model']} · "
+                    f"mode={runtime_configuration['mode']}"
+                ),
                 event="pipeline.session.started",
                 workflow="live_mic",
                 stage="listening",
@@ -9559,6 +9701,7 @@ class ScriberWebController:
                 provider=live_provider,
                 milestone=True,
                 outcome="started",
+                meta=runtime_configuration,
             )
             session_payload = session_started_event(
                 rec.to_public(include_content=True),
@@ -9583,10 +9726,27 @@ class ScriberWebController:
         )
         pipeline = None
         pipeline_task = None
+        audio_claim: AudioAdmissionClaim | None = None
+        stop_owner = object()
+        owns_stop = False
         try:
             async with self._listening_lock:
                 if session_id is not None and session_id != self._session_id:
                     return
+                # A user stop may already own finalization. Never clear its
+                # references or lower the busy gate while it is running.
+                if getattr(self, "_live_mic_stop_owner", None) is not None:
+                    logger.debug(
+                        "Emergency pipeline stop ignored because a serialized stop is already in progress"
+                    )
+                    return
+
+                self._live_mic_stop_owner = stop_owner
+                self._is_stopping = True
+                owns_stop = True
+                candidate_claim = self._persistent_audio_claim
+                if isinstance(candidate_claim, AudioAdmissionClaim):
+                    audio_claim = candidate_claim
 
                 # Cancel the current recording session without saving.
                 with self._current_lock:
@@ -9595,7 +9755,6 @@ class ScriberWebController:
                 pipeline = self._pipeline
                 pipeline_task = self._pipeline_task
                 self._is_listening = False
-                self._is_stopping = False
                 self._pipeline = None
                 self._pipeline_task = None
                 self._active_provider = None
@@ -9626,7 +9785,15 @@ class ScriberWebController:
             logger.error(f"Emergency stop error: {e}")
             self._resume_idle_mic_prewarm_after_capture()
         finally:
-            await _release_persistent_audio(self)
+            if owns_stop:
+                # Release only the claim captured by this exact session. A
+                # stale cleanup must never release a later recording's claim.
+                if audio_claim is not None:
+                    await _release_persistent_audio(self, audio_claim)
+                async with self._listening_lock:
+                    if getattr(self, "_live_mic_stop_owner", None) is stop_owner:
+                        self._live_mic_stop_owner = None
+                        self._is_stopping = False
 
     def _live_mic_stop_timeout_seconds(
         self,
@@ -9843,6 +10010,7 @@ class ScriberWebController:
 
     async def stop_listening(self) -> ProviderUserError | None:
         # Acquire lock for entire operation - no parallel start/stop allowed
+        stop_owner = object()
         async with self._listening_lock:
             if not self._is_listening:
                 return None
@@ -9858,6 +10026,12 @@ class ScriberWebController:
             with self._current_lock:
                 current = self._current
             session_id = self._session_id
+            self._live_mic_stop_owner = stop_owner
+            audio_claim = (
+                self._persistent_audio_claim
+                if isinstance(self._persistent_audio_claim, AudioAdmissionClaim)
+                else None
+            )
             provider_used = self._active_provider
             provider_replay_execution = (
                 self._provider_replay_execution
@@ -10075,14 +10249,17 @@ class ScriberWebController:
             # lease is still active. Otherwise a queued toggle can construct a
             # new pipeline and then collide with this controller's old session.
             try:
-                await _release_persistent_audio(self)
+                if audio_claim is not None:
+                    await _release_persistent_audio(self, audio_claim)
             except Exception as release_exc:
                 logger.warning(
                     "Persistent native-audio admission release after stop failed: {}",
                     type(release_exc).__name__,
                 )
             async with self._listening_lock:
-                self._is_stopping = False
+                if getattr(self, "_live_mic_stop_owner", None) is stop_owner:
+                    self._live_mic_stop_owner = None
+                    self._is_stopping = False
                 self._clear_input_warning_state(session_id=session_id, broadcast=True)
                 self._set_status("Error" if stop_error else "Stopped", session_id=session_id)
                 if session_id is None or self._session_id == session_id:
@@ -11448,6 +11625,7 @@ class ScriberWebController:
             on_status=on_status,
             timeline_offsets=timeline_offsets,
             smart_turn_analyzer=smart_turn_analyzer,
+            realtime_url=soniox_realtime_websocket_url(Config.SONIOX_REGION),
         )
         try:
             await transcriber.start()
@@ -11935,6 +12113,7 @@ class ScriberWebController:
             "mode": Config.MODE,
             "defaultSttService": Config.DEFAULT_STT_SERVICE,
             "sonioxMode": Config.SONIOX_MODE,
+            "sonioxRegion": Config.SONIOX_REGION,
             "sonioxRealtimeModel": Config.SONIOX_RT_MODEL,
             "sonioxAsyncModel": Config.SONIOX_ASYNC_MODEL,
             "language": Config.LANGUAGE,
@@ -12012,6 +12191,7 @@ class ScriberWebController:
         validated_mode: str | None = None
         validated_service: str | None = None
         validated_soniox_mode: str | None = None
+        validated_soniox_region: str | None = None
         validated_summarization_model: str | None = None
         validated_meeting_analysis_model: str | None = None
         validated_meeting_transcription_mode: str | None = None
@@ -12029,6 +12209,10 @@ class ScriberWebController:
             _validate_local_provider_ready(validated_service)
         if "sonioxMode" in payload and isinstance(payload["sonioxMode"], str):
             validated_soniox_mode = _validate_soniox_mode(payload["sonioxMode"])
+        if "sonioxRegion" in payload:
+            if not isinstance(payload["sonioxRegion"], str):
+                raise ValueError("Soniox region must be text.")
+            validated_soniox_region = _validate_soniox_region(payload["sonioxRegion"])
         if "summarizationModel" in payload and isinstance(payload["summarizationModel"], str):
             validated_summarization_model = _validate_summarization_model(payload["summarizationModel"])
         if "meetingAnalysisModel" in payload and isinstance(payload["meetingAnalysisModel"], str):
@@ -12092,6 +12276,9 @@ class ScriberWebController:
 
         if validated_soniox_mode is not None:
             Config.set_soniox_mode(validated_soniox_mode)
+
+        if validated_soniox_region is not None:
+            Config.set_soniox_region(validated_soniox_region)
 
         if "sonioxAsyncModel" in payload and isinstance(payload["sonioxAsyncModel"], str):
             Config.SONIOX_ASYNC_MODEL = payload["sonioxAsyncModel"].strip()

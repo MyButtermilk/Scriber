@@ -74,6 +74,34 @@ async def _append(items, value):
     items.append(value)
 
 
+@pytest.mark.asyncio
+async def test_soniox_meeting_stream_uses_selected_realtime_region():
+    websocket = FakeWebSocket()
+    connected_urls = []
+
+    async def connect(url):
+        connected_urls.append(url)
+        return websocket
+
+    stream = SonioxMeetingStream(
+        meeting_id="meeting-eu",
+        source="microphone",
+        api_key="secret",
+        model="stt-rt-v5",
+        language="de",
+        diarization=False,
+        on_segment=lambda segment: _append([], segment),
+        on_gap=lambda source, reason: _append([], (source, reason)),
+        connect_factory=connect,
+        realtime_url="wss://stt-rt.eu.soniox.com/transcribe-websocket",
+    )
+
+    await stream.start()
+    await stream.stop()
+
+    assert connected_urls == ["wss://stt-rt.eu.soniox.com/transcribe-websocket"]
+
+
 class FakeTurnState:
     def __init__(self, name: str):
         self.name = name

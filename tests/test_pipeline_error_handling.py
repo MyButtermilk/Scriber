@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pipecat.frames.frames import ErrorFrame
@@ -48,6 +48,7 @@ async def test_error_handler_records_non_connection_provider_errors():
         cleanup_callback=cleanup,
         on_provider_error=recorded.append,
     )
+    processor.push_frame = AsyncMock()
 
     await processor.process_frame(
         ErrorFrame(
@@ -65,6 +66,36 @@ async def test_error_handler_records_non_connection_provider_errors():
     ]
     assert user_errors == []
     assert cleanup_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_error_handler_treats_aiohttp_cannot_connect_as_terminal_network_error():
+    recorded: list[str] = []
+    user_errors: list[str] = []
+    cleanup_calls = 0
+
+    def cleanup() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+
+    processor = ConnectionErrorHandlerProcessor(
+        on_error=user_errors.append,
+        cleanup_callback=cleanup,
+        on_provider_error=recorded.append,
+    )
+    processor.push_frame = AsyncMock()
+    error = (
+        "modulate realtime error: Cannot connect to host "
+        "modulate-developer-apis.com:443 ssl:default"
+    )
+
+    await processor.process_frame(ErrorFrame(error=error), MagicMock())
+    await processor.process_frame(ErrorFrame(error=error), MagicMock())
+
+    assert recorded == [error]
+    assert user_errors == [error]
+    assert cleanup_calls == 1
+    processor.push_frame.assert_not_awaited()
 
 
 def test_azure_mai_no_healthy_upstream_gets_friendly_provider_message():

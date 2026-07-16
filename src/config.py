@@ -7,6 +7,10 @@ from uuid import uuid4
 from dotenv import dotenv_values, load_dotenv
 
 from src.runtime.paths import env_path, migrate_legacy_runtime_data, repo_root, settings_path
+from src.soniox_region import (
+    DEFAULT_SONIOX_REGION as SONIOX_DEFAULT_REGION,
+    normalize_soniox_region,
+)
 
 _BOOTSTRAP_ENV_KEYS = {
     "SCRIBER_AUTO_MIGRATE_LEGACY_DATA",
@@ -131,6 +135,7 @@ _json_settings = _load_json_settings()
 class Config:
     DEFAULT_SONIOX_ASYNC_MODEL = "stt-async-v5"
     DEFAULT_SONIOX_RT_MODEL = "stt-rt-v5"
+    DEFAULT_SONIOX_REGION = SONIOX_DEFAULT_REGION
     _LEGACY_DEFAULT_SONIOX_ASYNC_MODELS = {
         "stt-async-preview",
         "stt-async-v3",
@@ -166,6 +171,7 @@ class Config:
     HOTKEY = os.getenv("SCRIBER_HOTKEY", DEFAULT_LIVE_MIC_HOTKEY)
     DEFAULT_STT_SERVICE = os.getenv("SCRIBER_DEFAULT_STT", "soniox")
     SONIOX_MODE = os.getenv("SCRIBER_SONIOX_MODE", "realtime").lower()  # realtime | async
+    SONIOX_REGION = normalize_soniox_region(os.getenv("SCRIBER_SONIOX_REGION"))
     SONIOX_ASYNC_MODEL = _versioned_model_env(
         "SCRIBER_SONIOX_ASYNC_MODEL",
         DEFAULT_SONIOX_ASYNC_MODEL,
@@ -572,6 +578,11 @@ ${output}"""
         os.environ["SCRIBER_SONIOX_MODE"] = cls.SONIOX_MODE
 
     @classmethod
+    def set_soniox_region(cls, region: str) -> None:
+        cls.SONIOX_REGION = normalize_soniox_region(region, strict=True)
+        os.environ["SCRIBER_SONIOX_REGION"] = cls.SONIOX_REGION
+
+    @classmethod
     def set_debug(cls, enabled: bool) -> None:
         cls.DEBUG = bool(enabled)
         os.environ["SCRIBER_DEBUG"] = "1" if enabled else "0"
@@ -742,6 +753,7 @@ ${output}"""
         add("SCRIBER_DEFAULT_STT", cls.DEFAULT_STT_SERVICE)
         add("SCRIBER_MODE", cls.MODE)
         add("SCRIBER_SONIOX_MODE", cls.SONIOX_MODE)
+        add("SCRIBER_SONIOX_REGION", cls.SONIOX_REGION)
         add("SCRIBER_SONIOX_ASYNC_MODEL", cls.SONIOX_ASYNC_MODEL)
         add("SCRIBER_SONIOX_RT_MODEL", cls.SONIOX_RT_MODEL)
         add("SCRIBER_ASSEMBLYAI_ASYNC_MODEL", cls.ASSEMBLYAI_ASYNC_MODEL)

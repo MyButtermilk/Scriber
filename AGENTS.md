@@ -345,6 +345,19 @@ Packaging and scripts:
 - Add or update contract tests when changing payload shape.
 - Frontend REST consumers should use `Frontend/client/src/lib/api-types.ts`
   instead of ad hoc `any` boundaries.
+- `/api/runtime/logs` may expose only a compact human-readable message plus
+  bounded, allowlisted structured context. Recursively redact public metadata,
+  omit identifiers, secrets, transcript/prompt content, and arbitrary extras,
+  and keep the complete machine record in the local log file. The Debug Console
+  keeps technical context and long legacy messages collapsed by default, shows
+  named hot-path startup/finalization timings, and offers per-entry copyable
+  redacted JSON rather than rendering dictionary dumps inline.
+- Every STT execution must log one credential-free runtime configuration with
+  workload, provider, exact effective model, mode, language, sample rate, and
+  channel count; Soniox also includes the selected region. Never include API
+  keys, authenticated URLs, request payloads, or transcript text. Keep full
+  pairwise hot-path matrices in the latency metrics store rather than normal
+  human-facing log messages.
 - Interactive Live Mic stop controls use the token-protected
   `POST /api/live-mic/stop-request` acknowledgement path. It must return a
   bounded `202` without awaiting provider finalization, remain idempotent for
@@ -686,6 +699,16 @@ Packaging and scripts:
 - Soniox realtime live transcription defaults to `stt-rt-v5`. Keep
   `SCRIBER_SONIOX_RT_MODEL` as an override for temporary compatibility, but do
   not restore `stt-rt-v4` as the code default.
+- Soniox data residency defaults to `SCRIBER_SONIOX_REGION=us`. Settings may
+  select only `us` or `eu`; persist the choice independently of the API key.
+  Every Soniox boundary in one session must resolve from that same choice:
+  Pipecat realtime, dual-stream Meeting preview, buffered async, and direct
+  file/YouTube/Meeting finalization. EU uses `api.eu.soniox.com` and
+  `stt-rt.eu.soniox.com`; US uses the unqualified Soniox domains. Never infer a
+  region from an API key, silently fail over across regions, or log credentials.
+  The API-key popup must explain that Soniox first enables regional deployment
+  for the organization and that the user must create an EU project and use its
+  region-specific key; keep the official docs and `support@soniox.com` links.
 - Meeting Soniox realtime uses two independent supervised streams. Provider
   preview is best-effort: start Native Capture plus the durable recorder before
   connecting live STT on initial start, every resume, and default-device

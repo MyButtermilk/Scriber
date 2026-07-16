@@ -46,6 +46,7 @@ from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_s
 from src.runtime.http_response import read_response_json_limited, read_response_text_limited
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.env_values import env_float as _safe_env_float
+from src.soniox_region import soniox_realtime_websocket_url, soniox_rest_api_base_url
 
 try:
     from pipecat.audio.streams.input import SoundDeviceAudioInputStream
@@ -584,8 +585,6 @@ def _diarized_text_from_frame_result(result: Any) -> str:
 class SonioxAsyncProcessor(FrameProcessor):
     """Async Soniox transcription using REST API; buffers audio and submits on EndFrame."""
 
-    BASE_URL = "https://api.soniox.com/v1"
-
     def __init__(
         self,
         api_key: str,
@@ -594,6 +593,7 @@ class SonioxAsyncProcessor(FrameProcessor):
         session: aiohttp.ClientSession = None,
         on_progress: Optional[Callable[[str], None]] = None,
         enable_speaker_diarization: bool = False,
+        base_url: str | None = None,
     ):
         super().__init__()
         self.api_key = api_key
@@ -602,6 +602,7 @@ class SonioxAsyncProcessor(FrameProcessor):
         self.session = session
         self.on_progress = on_progress
         self.enable_speaker_diarization = enable_speaker_diarization
+        self.base_url = base_url or soniox_rest_api_base_url(Config.SONIOX_REGION)
         self._buffer = self._create_buffer()
         self._buffer_size = 0
         self._sample_rate = None
@@ -730,7 +731,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                 content_type=upload_content_type,
             )
             async with self.session.post(
-                f"{self.BASE_URL}/files",
+                f"{self.base_url}/files",
                 data=data,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=120),
@@ -772,7 +773,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                 payload["enable_speaker_diarization"] = True
 
             async with self.session.post(
-                f"{self.BASE_URL}/transcriptions",
+                f"{self.base_url}/transcriptions",
                 json=payload,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=60),
@@ -792,7 +793,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                         raise TimeoutError("Soniox async transcription polling timed out")
 
                     async with self.session.get(
-                        f"{self.BASE_URL}/transcriptions/{transcription_id}",
+                        f"{self.base_url}/transcriptions/{transcription_id}",
                         headers=headers,
                         timeout=aiohttp.ClientTimeout(total=15),
                     ) as r:
@@ -836,7 +837,7 @@ class SonioxAsyncProcessor(FrameProcessor):
 
             self._report_progress("Retrieving transcript...")
             async with self.session.get(
-                f"{self.BASE_URL}/transcriptions/{transcription_id}/transcript",
+                f"{self.base_url}/transcriptions/{transcription_id}/transcript",
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=60),
             ) as r3:
@@ -1084,7 +1085,7 @@ class SonioxAsyncProcessor(FrameProcessor):
         if transcription_id:
             try:
                 async with self.session.delete(
-                    f"{self.BASE_URL}/transcriptions/{transcription_id}",
+                    f"{self.base_url}/transcriptions/{transcription_id}",
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
@@ -1099,7 +1100,7 @@ class SonioxAsyncProcessor(FrameProcessor):
         if file_id:
             try:
                 async with self.session.delete(
-                    f"{self.BASE_URL}/files/{file_id}",
+                    f"{self.base_url}/files/{file_id}",
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
@@ -1172,6 +1173,8 @@ from src.cloud_async_stt import (
     transcribe_with_speechmatics_batch,
 )
 from src.modulate_stt import (
+    MODULATE_BATCH_MODEL,
+    MODULATE_STREAMING_MODEL,
     ModulateAsyncProcessor,
     ModulateRealtimeSTTService,
     modulate_transcript_payload_to_text,
@@ -1423,26 +1426,36 @@ class ConnectionErrorHandlerProcessor(FrameProcessor):
 
         # Catch STT ErrorFrames. All provider errors are terminal for the active
         # live recording; connection failures additionally stop capture early.
-        if isinstance(frame, ErrorFrame) and not self._error_triggered:
+        if isinstance(frame, ErrorFrame):
             error_msg = str(frame.error) if hasattr(frame, 'error') else str(frame)
             error_lower = error_msg.lower()
-
-            if self.on_provider_error:
-                try:
-                    self.on_provider_error(error_msg)
-                except Exception as e:
-                    logger.warning(f"Provider error callback failed: {e}")
 
             # Check for connection-related errors
             is_connection_error = (
                 "timeout" in error_lower
                 or "handshake" in error_lower
                 or "connection" in error_lower
+                or "cannot connect" in error_lower
+                or "could not connect" in error_lower
+                or "clientconnectorerror" in error_lower
                 or "websocket" in error_lower
             )
 
             if is_connection_error:
+                # A failed socket can yield more than one ErrorFrame (for
+                # example, a send failure followed by a receive-loop close).
+                # Consume every duplicate so downstream processors see neither
+                # an error flood nor frames after terminal cleanup began.
+                if self._error_triggered:
+                    return
                 self._error_triggered = True
+
+                if self.on_provider_error:
+                    try:
+                        self.on_provider_error(error_msg)
+                    except Exception as e:
+                        logger.warning(f"Provider error callback failed: {e}")
+
                 logger.error(f"Connection error detected: {error_msg}")
 
                 # Trigger error callback
@@ -1461,6 +1474,12 @@ class ConnectionErrorHandlerProcessor(FrameProcessor):
 
                 # Don't propagate connection errors downstream
                 return
+
+            if not self._error_triggered and self.on_provider_error:
+                try:
+                    self.on_provider_error(error_msg)
+                except Exception as e:
+                    logger.warning(f"Provider error callback failed: {e}")
 
         await self.push_frame(frame, direction)
 
@@ -1784,6 +1803,104 @@ class ScriberPipeline:
     def _execution_model(self, fallback: str) -> str:
         value = str(self._execution_value("model", fallback) or "").strip()
         return value or fallback
+
+    def stt_runtime_configuration(self) -> dict[str, Any]:
+        """Return the effective, credential-free STT route for diagnostics."""
+
+        service = str(self.service_name or "").strip().lower()
+        soniox_async = service == "soniox_async" or (
+            service == "soniox"
+            and self.soniox_replay_url is None
+            and Config.SONIOX_MODE == "async"
+        )
+        mistral_live_model = (Config.MISTRAL_RT_MODEL or "").strip()
+        if "realtime" in mistral_live_model.lower():
+            mistral_live_model = Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602"
+
+        models: dict[str, str] = {
+            "soniox": (
+                Config.SONIOX_ASYNC_MODEL
+                if soniox_async
+                else self.soniox_replay_model or Config.SONIOX_RT_MODEL
+            ),
+            "soniox_async": Config.SONIOX_ASYNC_MODEL,
+            "mistral": mistral_live_model or Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602",
+            "mistral_async": Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602",
+            "smallest": "pulse",
+            "smallest_async": "pulse",
+            "assemblyai": Config.ASSEMBLYAI_ASYNC_MODEL,
+            "assemblyai_realtime": Config.ASSEMBLYAI_RT_MODEL,
+            "google": "provider-default",
+            "gemini_stt": Config.GEMINI_STT_MODEL,
+            "elevenlabs": "scribe_v2_realtime",
+            "deepgram": Config.DEEPGRAM_MODEL,
+            "deepgram_async": Config.DEEPGRAM_MODEL,
+            "openai": Config.OPENAI_REALTIME_STT_MODEL,
+            "openai_async": Config.OPENAI_STT_MODEL,
+            "azure_mai": Config.AZURE_MAI_MODEL,
+            "gladia": "solaria-1",
+            "gladia_async": "pre-recorded-v2",
+            "groq": "provider-default",
+            "speechmatics": "provider-default",
+            "speechmatics_async": "batch-v2",
+            "modulate": MODULATE_STREAMING_MODEL,
+            "modulate_async": MODULATE_BATCH_MODEL,
+            "onnx_local": Config.ONNX_MODEL,
+        }
+        modes: dict[str, str] = {
+            "soniox": "batch" if soniox_async else "realtime",
+            "soniox_async": "batch",
+            "mistral": "segmented",
+            "mistral_async": "batch",
+            "smallest": "realtime",
+            "smallest_async": "batch",
+            "assemblyai": "batch",
+            "assemblyai_realtime": "realtime",
+            "google": "realtime",
+            "gemini_stt": "batch",
+            "elevenlabs": "realtime",
+            "deepgram": "realtime",
+            "deepgram_async": "batch",
+            "openai": "realtime",
+            "openai_async": "batch",
+            "azure_mai": "segmented",
+            "gladia": "realtime",
+            "gladia_async": "batch",
+            "groq": "segmented",
+            "speechmatics": "realtime",
+            "speechmatics_async": "batch",
+            "modulate": "realtime",
+            "modulate_async": "batch",
+            "onnx_local": "local",
+        }
+        fallback_model = models.get(service, "provider-default")
+        configuration: dict[str, Any] = {
+            "provider": service or "unknown",
+            "model": self._execution_model(fallback_model),
+            "mode": modes.get(service, "unknown"),
+            "language": self._execution_language().strip() or "auto",
+            "sampleRateHz": int(Config.SAMPLE_RATE),
+            "channels": int(Config.CHANNELS),
+        }
+        if service in {"soniox", "soniox_async"}:
+            configuration["region"] = Config.SONIOX_REGION
+        return configuration
+
+    def _log_stt_runtime_configuration(self, *, workload: str) -> None:
+        configuration = self.stt_runtime_configuration()
+        logger.bind(
+            component="pipeline",
+            event="stt.runtime.configured",
+            workflow=workload,
+            provider=configuration["provider"],
+            meta=configuration,
+        ).info(
+            "STT configured · provider={} · model={} · mode={} · language={}",
+            configuration["provider"],
+            configuration["model"],
+            configuration["mode"],
+            configuration["language"],
+        )
 
     def _direct_file_batch_timeout_seconds(self) -> float:
         """Bound a provider request/job budget while retaining the 15-minute floor."""
@@ -2344,6 +2461,7 @@ class ScriberPipeline:
                     session=session,
                     on_progress=self.on_progress,
                     enable_speaker_diarization=self.enable_speaker_diarization,
+                    base_url=soniox_rest_api_base_url(Config.SONIOX_REGION),
                 )
             soniox_service_cls, soniox_context_cls = _load_soniox_realtime_classes()
             if not soniox_service_cls: raise RuntimeError("SonioxSTTService not available.")
@@ -2379,6 +2497,10 @@ class ScriberPipeline:
             }
             if self.soniox_replay_url is not None:
                 service_kwargs["url"] = self.soniox_replay_url
+            else:
+                service_kwargs["url"] = soniox_realtime_websocket_url(
+                    Config.SONIOX_REGION
+                )
             service = soniox_service_cls(**service_kwargs)
             if self.soniox_replay_url is not None:
                 from src.runtime.provider_replay import (
@@ -2854,6 +2976,7 @@ class ScriberPipeline:
         try:
             async with aiohttp.ClientSession() as session:
                 stt_service = self._create_stt_service(session)
+                self._log_stt_runtime_configuration(workload="live_mic")
 
                 vad_analyzer = None
                 # The Settings switch is the master opt-in for local Silero VAD.
@@ -2954,18 +3077,23 @@ class ScriberPipeline:
 
                 # Create cleanup callback to stop microphone on connection errors
                 def sync_cleanup():
-                    """Synchronous cleanup that schedules async cleanup."""
+                    """Stop accepting frames without blocking Pipecat's loop.
+
+                    Native WASAPI shutdown is owned by the serialized async
+                    pipeline stop.  Calling it here can block the event loop on
+                    the device guard and shell IPC exactly when an error must be
+                    broadcast promptly.
+                    """
                     if self.audio_input:
                         try:
-                            force_stop = getattr(
+                            request_stop = getattr(
                                 self.audio_input,
-                                "force_stop_from_external_error",
+                                "request_stop_from_external_error",
                                 None,
                             )
-                            if callable(force_stop):
-                                force_stop(reason="provider_connection_error")
-                            elif hasattr(self.audio_input, "stream") and self.audio_input.stream:
-                                self.audio_input.stream.stop()
+                            if callable(request_stop):
+                                request_stop(reason="provider_connection_error")
+                            else:
                                 self.audio_input._running = False
                         except Exception as e:
                             logger.debug(f"Sync cleanup warning: {e}")
@@ -3149,6 +3277,7 @@ class ScriberPipeline:
         try:
             async with aiohttp.ClientSession() as session:
                 stt_service = self._create_stt_service(session, for_file=True)
+                self._log_stt_runtime_configuration(workload="file")
 
                 file_input = FfmpegAudioFileInput(
                     file_path,
@@ -3245,6 +3374,7 @@ class ScriberPipeline:
             raise ValueError(f"File not found: {file_path}")
 
         logger.info(f"Transcribing file directly with {self.service_name}: {file_path}")
+        self._log_stt_runtime_configuration(workload="file_direct")
         self.is_active = True
 
         try:
@@ -3626,7 +3756,7 @@ class ScriberPipeline:
                 raise ValueError("Soniox API key is missing")
 
             headers = {"Authorization": f"Bearer {api_key}"}
-            base_url = "https://api.soniox.com/v1"
+            base_url = soniox_rest_api_base_url(Config.SONIOX_REGION)
             model = self._execution_model(
                 Config.SONIOX_ASYNC_MODEL or Config.DEFAULT_SONIOX_ASYNC_MODEL
             )

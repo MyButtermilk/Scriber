@@ -771,6 +771,27 @@ export interface RuntimeLogEntry {
   timestamp?: string | null;
   timestampMs?: number | null;
   component?: string | null;
+  context?: RuntimeLogContext | null;
+}
+
+export type RuntimeLogContextValue =
+  | string
+  | number
+  | boolean
+  | null
+  | RuntimeLogContextValue[]
+  | { [key: string]: RuntimeLogContextValue };
+
+export interface RuntimeLogContext {
+  event?: string;
+  workflow?: string;
+  stage?: string;
+  provider?: string;
+  durationMs?: number;
+  outcome?: string;
+  milestone?: boolean;
+  errorCategory?: string;
+  meta?: Record<string, RuntimeLogContextValue>;
 }
 
 export interface RuntimeLogsResponse {
@@ -965,6 +986,7 @@ export interface SettingsResponse {
   mode?: "toggle" | "push_to_talk" | string;
   defaultSttService?: string;
   sonioxMode?: "realtime" | "async" | string;
+  sonioxRegion?: "us" | "eu" | string;
   sonioxRealtimeModel?: string;
   sonioxAsyncModel?: string;
   language?: string;
@@ -1010,6 +1032,7 @@ export interface SettingsUpdatePayload {
   mode?: "toggle" | "push_to_talk";
   defaultSttService?: string;
   sonioxMode?: "realtime" | "async";
+  sonioxRegion?: "us" | "eu";
   sonioxAsyncModel?: string;
   language?: string;
   micDevice?: string;

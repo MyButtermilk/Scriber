@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from src.data.latency_metrics_store import LatencyMetricsStore
@@ -23,6 +23,39 @@ async def test_hot_path_report_persisted_only_once(tmp_path):
     assert len(rows) == 1
     assert rows[0].session_id == session_id
     assert rows[0].total_ms >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_hot_path_log_is_human_readable_and_keeps_full_report_out_of_message(tmp_path):
+    loop = asyncio.get_running_loop()
+    metrics_store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
+    ctl = ScriberWebController(loop, latency_metrics_store=metrics_store)
+    ctl._emit_workflow_event = MagicMock()
+    session_id = "af466854-long-timing-session"
+
+    ctl._start_hot_path_tracer(session_id)
+    ctl._mark_hot_path(session_id, "mic_ready")
+    ctl._mark_hot_path(session_id, "first_audible_audio_frame")
+    ctl._mark_hot_path(session_id, "stop_requested")
+    ctl._mark_hot_path(session_id, "provider_final_received")
+    ctl._mark_hot_path(session_id, "first_paste")
+
+    assert ctl._emit_hot_path_report_once(session_id) is True
+    call = ctl._emit_workflow_event.call_args.kwargs
+
+    assert call["message"].startswith("Live mic timing (af466854) · mic ready")
+    assert "{" not in call["message"]
+    assert len(call["message"]) < 240
+    assert set(call["meta"]) == {
+        "hotkey_received_to_mic_ready_ms",
+        "hotkey_received_to_first_audible_audio_frame_ms",
+        "stop_requested_to_provider_final_received_ms",
+        "stop_requested_to_first_paste_ms",
+        "measurement_count",
+    }
+    await ctl._wait_for_pending_metric_writes()
+    persisted = metrics_store.latest(limit=1)[0]
+    assert len(persisted.segments) > len(call["meta"])
 
 
 @pytest.mark.asyncio

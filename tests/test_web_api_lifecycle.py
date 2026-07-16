@@ -3148,6 +3148,88 @@ async def test_start_listening_missing_provider_key_returns_error_without_histor
 
 
 @pytest.mark.asyncio
+async def test_emergency_stop_does_not_race_a_stop_already_in_progress():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    session_id = "normal-stop-owns-session"
+    pipeline = _StopOkPipeline()
+    ctl._session_id = session_id
+    ctl._pipeline = pipeline
+    ctl._is_listening = False
+    ctl._is_stopping = True
+    ctl._live_mic_stop_owner = object()
+
+    await ctl._emergency_stop_pipeline(session_id=session_id)
+
+    assert pipeline.stopped is False
+    assert ctl._pipeline is pipeline
+    assert ctl._session_id == session_id
+    assert ctl._is_stopping is True
+
+
+@pytest.mark.asyncio
+async def test_stale_emergency_cleanup_releases_only_its_captured_audio_claim():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    session_id = "emergency-old-session"
+    stop_started = asyncio.Event()
+    allow_stop = asyncio.Event()
+
+    class _BarrierPipeline:
+        async def stop(self):
+            stop_started.set()
+            await allow_stop.wait()
+
+    class _RecordingStore:
+        def __init__(self):
+            self.released = []
+
+        def release(self, claim):
+            self.released.append(claim)
+            return True
+
+    old_claim = web_api.AudioAdmissionClaim(
+        owner_kind="live_mic",
+        owner_id=session_id,
+        controller_id="controller-emergency",
+        state_version=1,
+        lease_expires_at="2099-01-01T00:00:00Z",
+        updated_at="2026-07-16T00:00:00Z",
+    )
+    new_claim = web_api.AudioAdmissionClaim(
+        owner_kind="live_mic",
+        owner_id="new-session",
+        controller_id="controller-emergency",
+        state_version=2,
+        lease_expires_at="2099-01-01T00:00:00Z",
+        updated_at="2026-07-16T00:00:01Z",
+    )
+    store = _RecordingStore()
+    ctl._audio_admission_store = store
+    ctl._audio_controller_id = old_claim.controller_id
+    ctl._persistent_audio_claim = old_claim
+    ctl._session_id = session_id
+    ctl._current = _make_record(session_id)
+    ctl._pipeline = _BarrierPipeline()
+    ctl._pipeline_task = None
+    ctl._is_listening = True
+
+    task = asyncio.create_task(ctl._emergency_stop_pipeline(session_id=session_id))
+    await asyncio.wait_for(stop_started.wait(), timeout=1.0)
+    assert ctl._is_stopping is True
+
+    # Simulate a stale reference arriving from an external supervisor. The old
+    # cleanup must still target only its captured claim.
+    ctl._persistent_audio_claim = new_claim
+    allow_stop.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert store.released == [old_claim]
+    assert ctl._persistent_audio_claim == new_claim
+    assert ctl._is_stopping is False
+
+
+@pytest.mark.asyncio
 async def test_start_listening_does_not_wait_for_overlay_shell_ipc(monkeypatch):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
@@ -3264,6 +3346,62 @@ async def test_start_listening_passes_idle_prewarm_without_closing_it(monkeypatc
 
         pipeline.stop_gate.set()
         await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_mic_watchdog_log_is_compact_while_snapshot_keeps_full_diagnostics(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_MIC_WATCHDOG_INTERVAL_SEC", "0")
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        ctl,
+        "_emit_workflow_event",
+        lambda **payload: events.append(payload),
+    )
+    diagnostics = {
+        "configured": True,
+        "engine": "rust-wasapi",
+        "active": False,
+        "hasStream": False,
+        "healthRestartCount": 2,
+        "lastStartSuccess": False,
+        "recentEvents": [
+            {"event": "start_failed", "secretDetail": "not-for-the-log-message"}
+        ],
+    }
+
+    ctl._log_mic_watchdog_warning(
+        "Idle microphone watchdog could not verify prewarm stream",
+        diagnostics=diagnostics,
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event["message"] == (
+        "Idle microphone watchdog could not verify prewarm stream"
+        " · engine=rust-wasapi · active=no · stream=no · restarts=2"
+    )
+    assert "recentEvents" not in str(event["message"])
+    assert event["meta"] == {
+        "engine": "rust-wasapi",
+        "configured": True,
+        "active": False,
+        "hasStream": False,
+        "lastStartSuccess": False,
+        "restartCount": 2,
+    }
+    assert (
+        ctl.get_audio_diagnostics()["watchdog"]["lastWarning"]["diagnostics"]
+        == diagnostics
+    )
 
     ctl.shutdown()
 

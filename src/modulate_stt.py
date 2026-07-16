@@ -48,8 +48,17 @@ from src.runtime.env_values import env_float
 from src.runtime.http_response import read_response_text_limited
 
 
-MODULATE_BATCH_URL = "https://platform.modulate.ai/api/velma-2-stt-batch"
-MODULATE_STREAMING_URL = "wss://platform.modulate.ai/api/velma-2-stt-streaming"
+MODULATE_BATCH_MODEL = "velma-2-stt-batch"
+MODULATE_STREAMING_MODEL = "velma-2-stt-streaming"
+# Keep these hosts aligned with Modulate's public API reference.  The account
+# dashboard lives on platform.modulate.ai, but provider traffic is served by
+# modulate-developer-apis.com.
+MODULATE_BATCH_URL = (
+    f"https://modulate-developer-apis.com/api/{MODULATE_BATCH_MODEL}"
+)
+MODULATE_STREAMING_URL = (
+    f"wss://modulate-developer-apis.com/api/{MODULATE_STREAMING_MODEL}"
+)
 MODULATE_BATCH_MAX_BYTES = 100 * 1024 * 1024
 _MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 _MAX_PUBLIC_ERROR_CHARS = 500
@@ -375,19 +384,25 @@ class ModulateRealtimeSTTService(FrameProcessor):
             self._owned_session = aiohttp.ClientSession()
         return self._owned_session
 
-    async def _emit_error(self, value: object, direction: FrameDirection) -> None:
+    async def _emit_error(self, value: object, direction: FrameDirection) -> bool:
+        if self._terminal_error_emitted:
+            self._terminal_event.set()
+            return False
+        self._connect_failed = True
         self._terminal_error_emitted = True
+        self._terminal_event.set()
         safe_error = redact_modulate_error(value, self._api_key)
         logger.error(f"Modulate realtime transcription failed: {safe_error}")
         await self.push_frame(
             ErrorFrame(error=f"modulate realtime error: {safe_error}"), direction
         )
+        return True
 
     async def _ensure_connected(self, direction: FrameDirection) -> bool:
-        if self._ws and not self._ws.closed:
-            return True
         if self._connect_failed:
             return False
+        if self._ws and not self._ws.closed:
+            return True
         if not self._api_key:
             self._connect_failed = True
             await self._emit_error("Modulate API Key is missing.", direction)
@@ -426,10 +441,10 @@ class ModulateRealtimeSTTService(FrameProcessor):
             payload = json.loads(raw)
         except Exception:
             await self._emit_error("invalid JSON response", direction)
-            return False
+            return True
         if not isinstance(payload, dict):
             await self._emit_error("invalid response object", direction)
-            return False
+            return True
 
         message_type = str(payload.get("type") or "").strip().lower()
         if message_type == "utterance":
@@ -548,8 +563,12 @@ class ModulateRealtimeSTTService(FrameProcessor):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, StartFrame):
-            await self._ensure_connected(direction)
+            # Downstream processors must observe StartFrame before any
+            # connection ErrorFrame.  Otherwise Pipecat rejects the provider
+            # error as a lifecycle violation and Scriber's emergency cleanup
+            # never gets a chance to stop capture.
             await self.push_frame(frame, direction)
+            await self._ensure_connected(direction)
             return
 
         if isinstance(frame, AudioRawFrame):
@@ -560,6 +579,7 @@ class ModulateRealtimeSTTService(FrameProcessor):
                     raise
                 except Exception as exc:
                     await self._emit_error(exc, direction)
+                    return
             await self.push_frame(frame, direction)
             return
 

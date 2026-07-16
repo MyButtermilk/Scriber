@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 
 from src.runtime import debug_logs
@@ -104,6 +105,117 @@ def test_collect_debug_logs_applies_global_limit_by_time_not_source_name(monkeyp
 
     assert payload["truncated"] is True
     assert [item["message"] for item in payload["items"]] == ["newest failure"]
+
+
+def test_structured_logs_expose_only_bounded_redacted_debug_context(monkeypatch, tmp_path):
+    logs_dir = tmp_path / "logs"
+    data_dir = tmp_path / "data"
+    repo_dir = tmp_path / "repo"
+    logs_dir.mkdir()
+    data_dir.mkdir()
+    repo_dir.mkdir()
+    monkeypatch.setattr(debug_logs, "data_dir", lambda: data_dir)
+    monkeypatch.setattr(debug_logs, "logs_dir", lambda: logs_dir)
+    monkeypatch.setattr(debug_logs, "repo_root", lambda: repo_dir)
+
+    structured = {
+        "record": {
+            "message": "Hot path timing captured (af466854)",
+            "level": {"name": "INFO"},
+            "time": {"repr": "2026-07-16T09:10:11+02:00"},
+            "extra": {
+                "component": "web_api",
+                "event": "metrics.hot_path.reported",
+                "workflow": "live_mic",
+                "stage": "hot_path_report",
+                "provider": "modulate",
+                "duration_ms": 1281.0015,
+                "outcome": "success",
+                "milestone": True,
+                "session_id": "private-session-id",
+                "meta": {
+                    "hotkey_received_to_mic_ready_ms": 175.9594,
+                    "stop_requested_to_first_paste_ms": 1281.0015,
+                    "model": "velma-2-stt-streaming",
+                    "mode": "realtime",
+                    "api_key": "must-never-leave-the-log-file",
+                    "transcript": "private spoken words",
+                    "nested": {
+                        "provider_error_code": "network_error",
+                        "access_token": "also-secret",
+                    },
+                },
+            },
+        }
+    }
+    (logs_dir / "latest.structured.jsonl").write_text(
+        json.dumps(structured) + "\n",
+        encoding="utf-8",
+    )
+
+    payload = debug_logs.collect_debug_logs(limit=20)
+    entry = payload["items"][0]
+
+    assert entry["message"] == "Hot path timing captured (af466854)"
+    assert entry["context"] == {
+        "event": "metrics.hot_path.reported",
+        "workflow": "live_mic",
+        "stage": "hot_path_report",
+        "provider": "modulate",
+        "outcome": "success",
+        "durationMs": 1281.0015,
+        "milestone": True,
+        "meta": {
+            "hotkey_received_to_mic_ready_ms": 175.9594,
+            "stop_requested_to_first_paste_ms": 1281.0015,
+            "model": "velma-2-stt-streaming",
+            "mode": "realtime",
+            "nested": {"provider_error_code": "network_error"},
+        },
+    }
+    serialized = json.dumps(entry)
+    assert "private-session-id" not in serialized
+    assert "must-never-leave" not in serialized
+    assert "also-secret" not in serialized
+    assert "private spoken words" not in serialized
+
+
+def test_structured_log_context_caps_legacy_metric_dumps(monkeypatch, tmp_path):
+    logs_dir = tmp_path / "logs"
+    data_dir = tmp_path / "data"
+    repo_dir = tmp_path / "repo"
+    logs_dir.mkdir()
+    data_dir.mkdir()
+    repo_dir.mkdir()
+    monkeypatch.setattr(debug_logs, "data_dir", lambda: data_dir)
+    monkeypatch.setattr(debug_logs, "logs_dir", lambda: logs_dir)
+    monkeypatch.setattr(debug_logs, "repo_root", lambda: repo_dir)
+
+    oversized_meta = {
+        f"marker_{index}_to_next_ms": float(index)
+        for index in range(debug_logs._MAX_PUBLIC_META_ITEMS * 4)
+    }
+    structured = {
+        "record": {
+            "message": "Legacy hot path timing",
+            "level": {"name": "INFO"},
+            "extra": {
+                "component": "web_api",
+                "event": "metrics.hot_path.reported",
+                "meta": oversized_meta,
+            },
+        }
+    }
+    (logs_dir / "latest.structured.jsonl").write_text(
+        json.dumps(structured) + "\n",
+        encoding="utf-8",
+    )
+
+    payload = debug_logs.collect_debug_logs(limit=20)
+    public_meta = payload["items"][0]["context"]["meta"]
+
+    assert len(public_meta) <= debug_logs._MAX_PUBLIC_META_ITEMS
+    assert len(public_meta) < len(oversized_meta)
 
 
 def test_clear_marker_resets_when_log_file_is_replaced(monkeypatch, tmp_path):

@@ -154,6 +154,16 @@ the comparison benchmark and sorts models by their displayed error rate.
 [See Modulate's official API pricing.](https://www.modulate.ai/api-pricing)
 [Transcription quick start.](https://docs.modulate.ai/quickstart)
 
+### Soniox US and EU regions
+
+Soniox defaults to its US region. Open the Soniox API-key popup in Settings to
+switch both realtime and uploaded-audio transcription to the EU region. EU
+access must first be enabled for your Soniox organization: contact
+[support@soniox.com](mailto:support@soniox.com), create an EU project, and use
+that project's region-specific API key. The region selection and key must match;
+a US project key does not provide EU data residency.
+[Read the official Soniox data-residency guide.](https://soniox.com/docs/data-residency)
+
 ### Local ONNX
 
 Download supported ONNX models from Settings and transcribe locally without an STT API key. Scriber uses prepared model artifacts rather than asking end users to install or run NeMo and Torch.

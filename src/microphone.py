@@ -437,7 +437,12 @@ class RustPrototypeFrameSource(AudioFrameSource):
                 f"after {self.callback_count} frame(s): {pending_error}"
             )
 
-    def _classify_expected_external_eof(self, exc: EOFError) -> bool:
+    def _classify_expected_external_close(self, exc: BaseException) -> bool:
+        """Classify EOF/OSError closes owned by a prepared Tauri handoff."""
+
+        if not isinstance(exc, (EOFError, OSError)):
+            return False
+
         with self._external_stop_lock:
             if self._external_stop_state not in {"pending", "confirmed"}:
                 return False
@@ -865,7 +870,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
         except EOFError as exc:
             if self._stop_event.is_set():
                 self.frame_pipe_reader_end_reason = "stopRequested"
-            elif self._classify_expected_external_eof(exc):
+            elif self._classify_expected_external_close(exc):
                 pass
             else:
                 self.frame_pipe_reader_end_reason = "pipeClosed"
@@ -905,6 +910,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
         except Exception as exc:
             if self._stop_event.is_set():
                 self.frame_pipe_reader_end_reason = "stopRequested"
+            elif self._classify_expected_external_close(exc):
+                pass
             else:
                 self.frame_pipe_reader_end_reason = type(exc).__name__
                 self._last_error = str(exc)
@@ -912,7 +919,12 @@ class RustPrototypeFrameSource(AudioFrameSource):
                     self.fallback_reason = "rustFramePipeReadError"
             self._first_frame_event.set()
             self._live_capture_ready_event.set()
-            if self._live_capture_ready and not self._stop_event.is_set():
+            if (
+                self._live_capture_ready
+                and not self._stop_event.is_set()
+                and self.frame_pipe_reader_end_reason
+                not in {"externalHandoff", "externalHandoffPending"}
+            ):
                 self.mid_session_failure_reason = self.frame_pipe_reader_end_reason
                 logger.warning(
                     f"Rust audio frame pipe stopped after {self.callback_count} frame(s): {exc}"
@@ -1869,6 +1881,17 @@ class MicrophoneInput(BaseInputTransport):
                 except Exception as exc:
                     logger.debug(f"Microphone stream stop after pipeline error failed: {exc}")
             self._release_active_stream()
+
+    def request_stop_from_external_error(self, *, reason: str = "external_error") -> None:
+        """Stop queueing frames immediately; async teardown releases WASAPI.
+
+        This method is safe to call from Pipecat's event-loop processor path.
+        It deliberately avoids the device guard, shell IPC, and thread joins.
+        """
+
+        logger.warning(f"Microphone capture stop requested by pipeline error ({reason})")
+        self._running = False
+        self._signal_queue_wakeup()
 
     def _signal_queue_wakeup(self) -> None:
         loop = self._consumer_loop

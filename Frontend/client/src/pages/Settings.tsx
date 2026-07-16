@@ -389,6 +389,8 @@ type CredentialRequirement = {
 };
 
 const MISSING_CREDENTIAL_CTA = "Add API Key";
+const SONIOX_DATA_RESIDENCY_URL = "https://soniox.com/docs/data-residency";
+const SONIOX_REGION_SUPPORT_URL = "mailto:support@soniox.com?subject=Enable%20EU%20data%20residency%20for%20my%20Soniox%20organization&body=Hello%20Soniox%20Support%2C%0A%0APlease%20enable%20EU%20regional%20deployment%20access%20for%20my%20organization.%0A%0AOrganization%20ID%3A%20%0A%0AThank%20you.";
 
 async function openExternalHelpUrl(url: string): Promise<void> {
   if (isTauriRuntime()) {
@@ -975,6 +977,98 @@ function maskedSecret(value: string): string {
   return hasValue(value) ? "************" : "Not set";
 }
 
+function SonioxRegionPicker({
+  value,
+  onValueChange,
+}: {
+  value: "us" | "eu";
+  onValueChange: (value: "us" | "eu") => void;
+}) {
+  const options = [
+    {
+      value: "us" as const,
+      label: "US - Region (default)",
+      detail: "Use the standard Soniox US project and API endpoint.",
+    },
+    {
+      value: "eu" as const,
+      label: "EUR - Region (recommended for better latency)",
+      detail: "Process and store audio and transcripts in the European Union.",
+    },
+  ];
+
+  return (
+    <FieldShell
+      label="Data processing region"
+      detail="This selection applies to Soniox realtime and uploaded-audio transcription."
+    >
+      <fieldset className="space-y-2.5">
+        <legend className="sr-only">Soniox data processing region</legend>
+        <div className="grid gap-2">
+          {options.map((option) => {
+            const selected = value === option.value;
+            return (
+              <label
+                key={option.value}
+                className={cn(
+                  "flex min-h-[64px] cursor-pointer items-start gap-2.5 rounded-xl px-3 py-2.5 outline-none transition-[background-color,box-shadow,transform] duration-150 active:scale-[0.99]",
+                  selected
+                    ? "bg-blue-50 text-blue-950 shadow-[inset_0_0_0_1.5px_rgba(37,99,235,0.38)] dark:bg-blue-950/35 dark:text-blue-100"
+                    : "bg-slate-50 text-slate-800 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.08)] hover:bg-slate-100/80 dark:bg-[var(--live-card)] dark:text-slate-200 dark:hover:bg-[var(--live-card-hover)]",
+                )}
+              >
+                <input
+                  type="radio"
+                  name="soniox-data-region"
+                  value={option.value}
+                  checked={selected}
+                  onChange={() => onValueChange(option.value)}
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2"
+                />
+                <span className="min-w-0">
+                  <span className="block text-[11.5px] font-semibold leading-4">{option.label}</span>
+                  <span className="mt-1 block text-[10.5px] leading-[15px] text-slate-500 dark:text-slate-400">
+                    {option.detail}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        <div className="rounded-xl border border-amber-500/35 bg-amber-50 p-3 text-[11px] leading-[16px] text-amber-950 dark:bg-amber-950/30 dark:text-amber-100">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
+            <div>
+              <p className="font-semibold">EU access must be enabled by Soniox first</p>
+              <p className="mt-1">
+                Email Soniox and include your Organization ID so they can enable regional deployments for your account. Then create an EU project and paste that project's region-specific API key above.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+                <button
+                  type="button"
+                  onClick={() => void openExternalHelpUrl(SONIOX_REGION_SUPPORT_URL)}
+                  className="inline-flex items-center gap-1 rounded-md font-semibold text-amber-950 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 dark:text-amber-100"
+                >
+                  Email Soniox support
+                  <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void openExternalHelpUrl(SONIOX_DATA_RESIDENCY_URL)}
+                  className="inline-flex items-center gap-1 rounded-md font-semibold text-amber-950 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 dark:text-amber-100"
+                >
+                  Read the official setup guide
+                  <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </fieldset>
+    </FieldShell>
+  );
+}
+
 function ApiCredentialRow({
   provider,
   credentialId = provider,
@@ -1107,6 +1201,7 @@ export default function Settings() {
   const [cerebrasKey, setCerebrasKey] = useState("");
   const [youtubeKey, setYoutubeKey] = useState("");
   const [sonioxKey, setSonioxKey] = useState("");
+  const [sonioxRegion, setSonioxRegion] = useState<"us" | "eu">("us");
   const [modulateKey, setModulateKey] = useState("");
   const [mistralKey, setMistralKey] = useState("");
   const [smallestKey, setSmallestKey] = useState("");
@@ -1769,6 +1864,7 @@ export default function Settings() {
         setPostProcessingHotkey(settings.postProcessingHotkey || settings.postProcessingHotkeyRaw || "Ctrl + Shift + F");
         setMeetingHotkey(settings.meetingHotkey || settings.meetingHotkeyRaw || "Ctrl + Shift + M");
         setSonioxRealtimeModel(settings.sonioxRealtimeModel || "stt-rt-v5");
+        setSonioxRegion(settings.sonioxRegion === "eu" ? "eu" : "us");
         setMeetingTranscriptionMode(settings.meetingTranscriptionMode === "final_only" ? "final_only" : "live_final");
         setMeetingFinalProvider(settings.meetingFinalProvider || "soniox_async");
         setMeetingAnalysisModel(settings.meetingAnalysisModel || settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL);
@@ -2000,7 +2096,10 @@ export default function Settings() {
       if (provider === "Speechmatics") apiKeys.speechmatics = speechmaticsKey;
       if (provider === "Google Cloud") apiKeys.googleApplicationCredentials = googleApplicationCredentials;
 
-      await updateSettings({ apiKeys });
+      await updateSettings({
+        apiKeys,
+        ...(provider === "Soniox" ? { sonioxRegion } : {}),
+      });
 
       const credentialReady = (() => {
         switch (provider) {
@@ -4393,7 +4492,16 @@ export default function Settings() {
               <ApiCredentialRow provider="OpenRouter" icon="openrouter" value={openRouterKey} onValueChange={markCredentialChanged("OpenRouter", setOpenRouterKey)} show={showOpenRouterKey} onShowChange={setShowOpenRouterKey} helpKey="openrouter" saved={savedKeys.OpenRouter === true} onSave={() => handleSaveApiKey("OpenRouter")} {...credentialDialogProps("OpenRouter")} />
               <ApiCredentialRow provider="Cerebras" icon="cerebras" value={cerebrasKey} onValueChange={markCredentialChanged("Cerebras", setCerebrasKey)} show={showCerebrasKey} onShowChange={setShowCerebrasKey} helpKey="cerebras" saved={savedKeys.Cerebras === true} onSave={() => handleSaveApiKey("Cerebras")} note="Used for direct Cerebras summary and cleanup models." {...credentialDialogProps("Cerebras")} />
               <ApiCredentialRow provider="YouTube" icon="youtube" value={youtubeKey} onValueChange={markCredentialChanged("YouTube", setYoutubeKey)} show={showYoutubeKey} onShowChange={setShowYoutubeKey} helpKey="youtube" saved={savedKeys.YouTube === true} onSave={() => handleSaveApiKey("YouTube")} note="Used for search and metadata in the YouTube tab." {...credentialDialogProps("YouTube")} />
-              <ApiCredentialRow provider="Soniox" icon="soniox" value={sonioxKey} onValueChange={markCredentialChanged("Soniox", setSonioxKey)} show={showSonioxKey} onShowChange={setShowSonioxKey} helpKey="soniox" saved={savedKeys.Soniox === true} onSave={() => handleSaveApiKey("Soniox")} {...credentialDialogProps("Soniox")} />
+              <ApiCredentialRow provider="Soniox" icon="soniox" value={sonioxKey} onValueChange={markCredentialChanged("Soniox", setSonioxKey)} show={showSonioxKey} onShowChange={setShowSonioxKey} helpKey="soniox" saved={savedKeys.Soniox === true} onSave={() => handleSaveApiKey("Soniox")} note="Use one Soniox API key and choose where Soniox processes your audio." {...credentialDialogProps("Soniox")}>
+                <SonioxRegionPicker
+                  value={sonioxRegion}
+                  onValueChange={(nextRegion) => {
+                    setSonioxRegion(nextRegion);
+                    setSavedKeys((prev) => ({ ...prev, Soniox: false }));
+                    setCredentialReadyKeys((prev) => ({ ...prev, Soniox: false }));
+                  }}
+                />
+              </ApiCredentialRow>
               <ApiCredentialRow provider="Modulate.AI" icon="modulate" value={modulateKey} onValueChange={markCredentialChanged("Modulate.AI", setModulateKey)} show={showModulateKey} onShowChange={setShowModulateKey} helpKey="modulate" saved={savedKeys["Modulate.AI"] === true} onSave={() => handleSaveApiKey("Modulate.AI")} note="One key enables multilingual realtime and batch transcription. Scriber requests final transcript text only and leaves enrichment signals off." placeholder="Enter Modulate.AI API key" {...credentialDialogProps("Modulate.AI")} />
               <ApiCredentialRow provider="Mistral" icon="mistral" value={mistralKey} onValueChange={markCredentialChanged("Mistral", setMistralKey)} show={showMistralKey} onShowChange={setShowMistralKey} helpKey="mistral" saved={savedKeys.Mistral === true} onSave={() => handleSaveApiKey("Mistral")} {...credentialDialogProps("Mistral")} />
               <ApiCredentialRow provider="Smallest AI" icon="smallest" value={smallestKey} onValueChange={markCredentialChanged("Smallest AI", setSmallestKey)} show={showSmallestKey} onShowChange={setShowSmallestKey} helpKey="smallest" saved={savedKeys["Smallest AI"] === true} onSave={() => handleSaveApiKey("Smallest AI")} {...credentialDialogProps("Smallest AI")} />

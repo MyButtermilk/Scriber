@@ -1091,6 +1091,14 @@ Soniox is the default STT family: realtime live transcription uses
 `stt-async-v5`. `SCRIBER_SONIOX_RT_MODEL` and
 `SCRIBER_SONIOX_ASYNC_MODEL` remain escape hatches for provider compatibility,
 but older Soniox realtime and async models are not release defaults.
+`SCRIBER_SONIOX_REGION` defaults to `us` and is the single data-residency route
+for all Soniox transports. `eu` selects `api.eu.soniox.com` for REST upload,
+polling, transcript retrieval, and cleanup, plus `stt-rt.eu.soniox.com` for
+Pipecat live STT and both Meeting preview streams. The region is validated at
+the Settings boundary and frozen when a processor or stream is created; Scriber
+does not fall back across regions. Soniox regional access remains project/key
+specific, so the API-key dialog directs users to request organization access,
+create an EU project, and use that project's key.
 On live Soniox Realtime stop, Scriber sends Soniox's documented empty
 end-of-audio WebSocket frame, waits briefly for either a provider receive-task
 finish or a final transcript frame, then shuts the local pipeline down. Once a

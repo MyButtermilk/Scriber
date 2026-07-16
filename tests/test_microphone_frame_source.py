@@ -904,6 +904,98 @@ def test_rust_frame_source_restores_failure_when_external_handoff_is_rejected():
     assert snapshot["midSessionFailureReason"] == "pipeClosed"
 
 
+class _InvalidArgumentPipeReader:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self, _size):
+        raise OSError(22, "Invalid argument")
+
+
+class _RuntimeFailurePipeReader:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self, _size):
+        raise RuntimeError("callback bug")
+
+
+def test_rust_frame_source_treats_oserror_as_confirmed_external_handoff():
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=lambda *_args, **_kwargs: None,
+        reader_factory=lambda *_args, **_kwargs: _InvalidArgumentPipeReader(),
+    )
+    source._frame_pipe = "memory-pipe"
+    source._live_capture_ready = True
+    source.callback_count = 5
+
+    assert source.prepare_external_stop() is True
+    source._read_frame_pipe()
+    source.confirm_external_stop()
+    snapshot = source.diagnostic_snapshot()
+
+    assert snapshot["framePipeReaderEndReason"] == "externalHandoff"
+    assert snapshot["externalStopState"] == "confirmed"
+    assert snapshot["midSessionFailureReason"] == ""
+
+
+def test_rust_frame_source_restores_oserror_when_external_handoff_is_rejected():
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=lambda *_args, **_kwargs: None,
+        reader_factory=lambda *_args, **_kwargs: _InvalidArgumentPipeReader(),
+    )
+    source._frame_pipe = "memory-pipe"
+    source._live_capture_ready = True
+    source.callback_count = 5
+
+    assert source.prepare_external_stop() is True
+    source._read_frame_pipe()
+    source.cancel_external_stop()
+    snapshot = source.diagnostic_snapshot()
+
+    assert snapshot["framePipeReaderEndReason"] == "pipeClosed"
+    assert snapshot["externalStopState"] == "idle"
+    assert snapshot["midSessionFailureReason"] == "pipeClosed"
+    assert "Invalid argument" in snapshot["lastError"]
+
+
+def test_rust_frame_source_does_not_mask_programming_error_during_external_handoff():
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=lambda *_args, **_kwargs: None,
+        reader_factory=lambda *_args, **_kwargs: _RuntimeFailurePipeReader(),
+    )
+    source._frame_pipe = "memory-pipe"
+    source._live_capture_ready = True
+    source.callback_count = 5
+
+    assert source.prepare_external_stop() is True
+    source._read_frame_pipe()
+    snapshot = source.diagnostic_snapshot()
+
+    assert snapshot["framePipeReaderEndReason"] == "RuntimeError"
+    assert snapshot["externalStopState"] == "pending"
+    assert snapshot["midSessionFailureReason"] == "RuntimeError"
+    assert snapshot["lastError"] == "callback bug"
+
+
 def test_rust_prototype_frame_source_tracks_prebuffer_before_live_frames(monkeypatch):
     prebuffer_audio = np.full((16, 1), 100, dtype=np.int16)
     live_audio = np.full((16, 1), 200, dtype=np.int16)

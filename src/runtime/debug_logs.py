@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,7 +11,7 @@ from typing import Any
 from src.core.rest_contracts import REST_API_VERSION
 from src.runtime.log_clear_state import clear_offset_for_path, load_clear_offsets, record_clear_state
 from src.runtime.paths import data_dir, logs_dir, repo_root
-from src.runtime.support_bundle import redact_text
+from src.runtime.support_bundle import is_sensitive_key, redact_text
 
 
 _LOG_PATTERNS = ("*.log", "*.jsonl", "*crash*.json", "*crash*.jsonl")
@@ -21,6 +22,48 @@ _DEFAULT_LIMIT = 500
 _LEVEL_RE = re.compile(r"\b(CRITICAL|FATAL|ERROR|ERR|WARNING|WARN|SUCCESS|INFO|DEBUG|TRACE)\b", re.IGNORECASE)
 _PRETTY_LOG_RE = re.compile(r"^\.\.\.\s+(?P<time>\d{2}:\d{2}:\d{2}\.\d{3})\s+(?P<level>[A-Z]+)\s+(?P<message>.*)$")
 _SHELL_LOG_RE = re.compile(r"^(?P<timestamp_ms>\d{12,})\s+(?P<message>.*)$")
+_PUBLIC_META_KEYS = {
+    "active",
+    "attached",
+    "configured",
+    "category",
+    "channels",
+    "chars",
+    "count",
+    "enabled",
+    "engine",
+    "error",
+    "error_type",
+    "errorType",
+    "fallback_reason",
+    "fallbackReason",
+    "hasStream",
+    "language",
+    "lastHealthCheckActive",
+    "lastStartSuccess",
+    "mode",
+    "model",
+    "post_processed",
+    "provider",
+    "provider_error_code",
+    "reason",
+    "region",
+    "retryable",
+    "sample_rate_hz",
+    "sampleRateHz",
+    "status",
+    "total",
+}
+_PUBLIC_NUMERIC_META_KEY_RE = re.compile(
+    r"(?:_ms|Ms|_count|Count|_chars|Chars|_bytes|Bytes|_hz|Hz)$"
+)
+_MAX_PUBLIC_META_DEPTH = 4
+# Keep the interactive console light even when it opens an older structured log
+# whose ``meta`` still contains an O(n²) timing matrix. The complete record stays
+# in the local JSONL file and dedicated metrics store; the UI only needs a small,
+# diagnostic subset.
+_MAX_PUBLIC_META_ITEMS = 128
+_MAX_PUBLIC_META_STRING_CHARS = 640
 
 
 @dataclass(frozen=True)
@@ -32,9 +75,10 @@ class DebugLogEntry:
     timestamp: str | None = None
     timestamp_ms: int | None = None
     component: str | None = None
+    context: dict[str, Any] | None = None
 
     def to_public(self) -> dict[str, Any]:
-        return {
+        payload = {
             "source": self.source,
             "line": self.line,
             "level": self.level,
@@ -43,6 +87,9 @@ class DebugLogEntry:
             "timestampMs": self.timestamp_ms,
             "component": self.component,
         }
+        if self.context:
+            payload["context"] = self.context
+        return payload
 
 
 def collect_debug_logs(*, limit: int = _DEFAULT_LIMIT) -> dict[str, Any]:
@@ -233,6 +280,7 @@ def _parse_json_log_line(message: str, *, source: str, line_number: int) -> Debu
             level=_normalize_level(level_name or _infer_level(text)),
             timestamp=timestamp,
             component=component or None,
+            context=_public_log_context(extra),
             message=text or message,
         )
 
@@ -244,7 +292,118 @@ def _parse_json_log_line(message: str, *, source: str, line_number: int) -> Debu
         timestamp=str(payload.get("timestamp") or "") or None,
         timestamp_ms=_safe_int(payload.get("timestampMs")),
         component=str(payload.get("component") or "") or None,
+        context=_public_log_context(payload),
         message=text,
+    )
+
+
+def _public_log_context(extra: Any) -> dict[str, Any] | None:
+    """Return a bounded, redacted subset of structured diagnostics for the UI.
+
+    Runtime log files remain the full machine-readable source. The Debug Console
+    receives only explicitly useful workflow fields and safe primitive metadata;
+    identifiers, credentials, transcript text, and arbitrary record extras never
+    cross this boundary.
+    """
+
+    if not isinstance(extra, dict):
+        return None
+
+    context: dict[str, Any] = {}
+    public_fields = (
+        ("event", "event"),
+        ("workflow", "workflow"),
+        ("stage", "stage"),
+        ("provider", "provider"),
+        ("outcome", "outcome"),
+        ("error_category", "errorCategory"),
+    )
+    for source_key, public_key in public_fields:
+        value = extra.get(source_key)
+        if isinstance(value, str) and value.strip():
+            context[public_key] = redact_text(value.strip())[:_MAX_PUBLIC_META_STRING_CHARS]
+
+    duration_ms = extra.get("duration_ms")
+    if _is_finite_number(duration_ms):
+        context["durationMs"] = float(duration_ms)
+
+    milestone = extra.get("milestone")
+    if isinstance(milestone, bool):
+        context["milestone"] = milestone
+
+    budget = [_MAX_PUBLIC_META_ITEMS]
+    meta = _public_meta_value(extra.get("meta"), depth=0, budget=budget)
+    if isinstance(meta, dict) and meta:
+        context["meta"] = meta
+
+    return context or None
+
+
+def _public_meta_value(
+    value: Any,
+    *,
+    depth: int,
+    budget: list[int],
+    key: str | None = None,
+) -> Any:
+    if depth > _MAX_PUBLIC_META_DEPTH or budget[0] <= 0:
+        return None
+
+    if isinstance(value, dict):
+        public: dict[str, Any] = {}
+        for raw_key, raw_value in value.items():
+            if budget[0] <= 0:
+                break
+            budget[0] -= 1
+            key_text = str(raw_key)
+            if is_sensitive_key(key_text):
+                continue
+            child = _public_meta_value(
+                raw_value,
+                depth=depth + 1,
+                budget=budget,
+                key=key_text,
+            )
+            if child is not None:
+                public[key_text[:96]] = child
+        return public or None
+
+    if isinstance(value, (list, tuple)):
+        public_items: list[Any] = []
+        for item in value[:64]:
+            if budget[0] <= 0:
+                break
+            budget[0] -= 1
+            child = _public_meta_value(item, depth=depth + 1, budget=budget, key=key)
+            if child is not None:
+                public_items.append(child)
+        return public_items or None
+
+    if key is None or not _is_public_meta_key(key, value):
+        return None
+
+    if isinstance(value, bool):
+        return value
+    if _is_finite_number(value):
+        return float(value)
+    if isinstance(value, str):
+        return redact_text(value)[:_MAX_PUBLIC_META_STRING_CHARS]
+    if value is None and key in _PUBLIC_META_KEYS:
+        return None
+    return None
+
+
+def _is_public_meta_key(key: str, value: Any) -> bool:
+    if key in _PUBLIC_META_KEYS:
+        return True
+    return bool(_PUBLIC_NUMERIC_META_KEY_RE.search(key)) and _is_finite_number(value)
+
+
+def _is_finite_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
     )
 
 

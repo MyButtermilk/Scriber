@@ -56,6 +56,56 @@ def test_show_overlay_retries_when_native_state_was_not_applied(monkeypatch):
     assert len(calls) == 3
 
 
+def test_hide_overlay_reconciles_state_after_lost_response(monkeypatch):
+    responses = iter(
+        [
+            _response(success=False, mode="recording", visible=True),
+            _response(success=True, mode="hidden", visible=False),
+        ]
+    )
+    calls = []
+
+    def fake_call(command, payload=None, **kwargs):
+        calls.append((command, payload, kwargs))
+        return next(responses)
+
+    monkeypatch.setattr(native_overlay, "_call_overlay_response", fake_call)
+
+    response = native_overlay._hide_overlay()
+
+    assert response["success"] is True
+    assert calls == [
+        ("overlayHide", None, {"log_failure": False}),
+        ("overlayStatus", None, {"log_failure": False}),
+    ]
+
+
+def test_hide_overlay_retries_when_native_state_is_still_visible(monkeypatch):
+    responses = iter(
+        [
+            _response(success=False, mode="recording", visible=True),
+            _response(success=True, mode="recording", visible=True),
+            _response(success=True, mode="hidden", visible=False),
+        ]
+    )
+    calls = []
+
+    def fake_call(command, payload=None, **kwargs):
+        calls.append((command, payload, kwargs))
+        return next(responses)
+
+    monkeypatch.setattr(native_overlay, "_call_overlay_response", fake_call)
+
+    response = native_overlay._hide_overlay()
+
+    assert response["success"] is True
+    assert [call[0] for call in calls] == [
+        "overlayHide",
+        "overlayStatus",
+        "overlayHide",
+    ]
+
+
 def test_overlay_audio_level_uses_nonblocking_native_pump(monkeypatch):
     published = []
 

@@ -181,6 +181,9 @@ class TestConfig(unittest.TestCase):
     def test_soniox_realtime_default_model_is_v5(self):
         self.assertEqual(Config.DEFAULT_SONIOX_RT_MODEL, "stt-rt-v5")
 
+    def test_soniox_default_region_is_us(self):
+        self.assertEqual(Config.DEFAULT_SONIOX_REGION, "us")
+
     def test_historical_soniox_models_are_registered_for_default_migration(self):
         self.assertIn("stt-async-preview", Config._LEGACY_DEFAULT_SONIOX_ASYNC_MODELS)
         self.assertIn("stt-async-v4", Config._LEGACY_DEFAULT_SONIOX_ASYNC_MODELS)
@@ -277,6 +280,15 @@ def test_persist_to_env_file_includes_soniox_realtime_v5_default(monkeypatch, tm
     Config.persist_to_env_file(str(target))
 
     assert "SCRIBER_SONIOX_RT_MODEL=stt-rt-v5" in target.read_text(encoding="utf-8")
+
+
+def test_persist_to_env_file_includes_soniox_region(monkeypatch, tmp_path):
+    target = tmp_path / ".env"
+    monkeypatch.setattr(Config, "SONIOX_REGION", "eu", raising=False)
+
+    Config.persist_to_env_file(str(target))
+
+    assert "SCRIBER_SONIOX_REGION=eu" in target.read_text(encoding="utf-8")
 
 
 def test_meeting_transcription_mode_is_validated_and_persisted(monkeypatch, tmp_path):

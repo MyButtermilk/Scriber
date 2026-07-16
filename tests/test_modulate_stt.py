@@ -3,19 +3,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import aiohttp
 import pytest
 
-from pipecat.frames.frames import ErrorFrame, TranscriptionFrame
+from pipecat.frames.frames import AudioRawFrame, ErrorFrame, StartFrame, TranscriptionFrame
 from pipecat.processors.frame_processor import FrameDirection
 
 from src.config import Config
 from src.core.provider_capabilities import get_capabilities
 from src.core.provider_errors import provider_user_error
 from src.modulate_stt import (
+    MODULATE_BATCH_MODEL,
     MODULATE_BATCH_URL,
+    MODULATE_STREAMING_MODEL,
     MODULATE_STREAMING_URL,
     ModulateAsyncProcessor,
     ModulateRealtimeSTTService,
@@ -186,6 +188,8 @@ def test_modulate_stream_url_is_raw_pcm_final_only_with_all_signals_disabled():
     )
     split = urlsplit(service._ws_url())
     assert f"{split.scheme}://{split.netloc}{split.path}" == MODULATE_STREAMING_URL
+    assert split.netloc == "modulate-developer-apis.com"
+    assert split.path == f"/api/{MODULATE_STREAMING_MODEL}"
     params = parse_qs(split.query)
     assert params == {
         "api_key": ["private key + value"],
@@ -200,6 +204,106 @@ def test_modulate_stream_url_is_raw_pcm_final_only_with_all_signals_disabled():
         "partial_results": ["false"],
         "language": ["de"],
     }
+
+
+def test_modulate_uses_current_official_velma_api_hosts():
+    batch = urlsplit(MODULATE_BATCH_URL)
+    streaming = urlsplit(MODULATE_STREAMING_URL)
+
+    assert batch.scheme == "https"
+    assert streaming.scheme == "wss"
+    assert batch.netloc == streaming.netloc == "modulate-developer-apis.com"
+    assert batch.path == f"/api/{MODULATE_BATCH_MODEL}"
+    assert streaming.path == f"/api/{MODULATE_STREAMING_MODEL}"
+
+
+def test_modulate_runtime_diagnostics_name_the_exact_model_and_mode():
+    realtime = ScriberPipeline(service_name="modulate").stt_runtime_configuration()
+    batch = ScriberPipeline(service_name="modulate_async").stt_runtime_configuration()
+
+    assert realtime["provider"] == "modulate"
+    assert realtime["model"] == MODULATE_STREAMING_MODEL
+    assert realtime["mode"] == "realtime"
+    assert realtime["sampleRateHz"] == Config.SAMPLE_RATE
+    assert "api" not in realtime
+    assert batch["model"] == MODULATE_BATCH_MODEL
+    assert batch["mode"] == "batch"
+
+
+@pytest.mark.asyncio
+async def test_modulate_start_reaches_downstream_before_connection_error():
+    service = ModulateRealtimeSTTService(api_key="secret-key")
+    observed: list[str] = []
+
+    async def push(frame, _direction):
+        observed.append(type(frame).__name__)
+
+    async def fail_connect(direction):
+        observed.append("connect")
+        await service.push_frame(
+            ErrorFrame(error="modulate realtime error: Cannot connect to host"),
+            direction,
+        )
+        return False
+
+    service.push_frame = push  # type: ignore[method-assign]
+    service._ensure_connected = fail_connect  # type: ignore[method-assign]
+
+    with patch(
+        "src.modulate_stt.FrameProcessor.process_frame",
+        new=AsyncMock(),
+    ):
+        await service.process_frame(StartFrame(), FrameDirection.DOWNSTREAM)
+
+    assert observed == ["StartFrame", "connect", "ErrorFrame"]
+
+
+@pytest.mark.asyncio
+async def test_modulate_terminal_send_failure_is_emitted_once():
+    class _FailingWebSocket:
+        closed = False
+
+        async def send_bytes(self, _audio: bytes) -> None:
+            raise OSError("connection reset")
+
+    service = ModulateRealtimeSTTService(api_key="secret-key")
+    service._ws = _FailingWebSocket()  # type: ignore[assignment]
+    service.push_frame = AsyncMock()  # type: ignore[method-assign]
+    frame = AudioRawFrame(audio=b"\x00\x01", sample_rate=16_000, num_channels=1)
+
+    with patch(
+        "src.modulate_stt.FrameProcessor.process_frame",
+        new=AsyncMock(),
+    ):
+        await service.process_frame(frame, FrameDirection.DOWNSTREAM)
+        await service.process_frame(frame, FrameDirection.DOWNSTREAM)
+
+    emitted = [
+        call.args[0]
+        for call in service.push_frame.await_args_list
+        if isinstance(call.args[0], ErrorFrame)
+    ]
+    assert len(emitted) == 1
+    assert service._terminal_error_emitted is True
+    assert service._connect_failed is True
+    assert service._terminal_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_modulate_invalid_json_terminates_receive_processing_once():
+    service = ModulateRealtimeSTTService(api_key="secret-key")
+    service.push_frame = AsyncMock()  # type: ignore[method-assign]
+
+    should_stop = await service._handle_response(
+        "not-json",
+        FrameDirection.DOWNSTREAM,
+    )
+    await service._handle_response("still-not-json", FrameDirection.DOWNSTREAM)
+
+    assert should_stop is True
+    assert service.push_frame.await_count == 1
+    assert isinstance(service.push_frame.await_args.args[0], ErrorFrame)
+    assert service._terminal_event.is_set()
 
 
 @pytest.mark.asyncio

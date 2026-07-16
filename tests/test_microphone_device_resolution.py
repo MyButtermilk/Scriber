@@ -393,6 +393,35 @@ async def test_get_settings_exposes_effective_soniox_realtime_model(
 
 
 @pytest.mark.asyncio
+async def test_soniox_region_settings_are_validated_and_exposed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    try:
+        monkeypatch.setattr(Config, "SONIOX_REGION", "us", raising=False)
+        monkeypatch.setenv("SCRIBER_SONIOX_REGION", "us")
+        monkeypatch.setattr(
+            ctl,
+            "list_microphones",
+            lambda: [{"deviceId": "default", "label": "Default"}],
+        )
+        monkeypatch.setattr(ctl, "_schedule_settings_persist", lambda: None)
+
+        updated = await ctl.update_settings({"sonioxRegion": "eu"})
+
+        assert updated["sonioxRegion"] == "eu"
+        assert ctl.get_settings()["sonioxRegion"] == "eu"
+        assert Config.SONIOX_REGION == "eu"
+
+        with pytest.raises(ValueError, match="Invalid Soniox region"):
+            await ctl.update_settings({"sonioxRegion": "jp"})
+        assert Config.SONIOX_REGION == "eu"
+    finally:
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_get_settings_falls_back_to_first_available_when_favorite_missing(
     monkeypatch: pytest.MonkeyPatch,
 ):

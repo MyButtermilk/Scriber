@@ -14,8 +14,10 @@ from uuid import uuid4
 
 from websockets.asyncio.client import connect as websocket_connect
 
+from src.soniox_region import soniox_realtime_websocket_url
 
-SONIOX_REALTIME_URL = "wss://stt-rt.soniox.com/transcribe-websocket"
+
+SONIOX_REALTIME_URL = soniox_realtime_websocket_url("us")
 END_TOKENS = {"<end>", "<fin>"}
 
 
@@ -91,6 +93,7 @@ class SonioxMeetingStream:
         reconnect_max_delay_s: float = 5.0,
         smart_turn_analyzer: Any | None = None,
         stop_timeout_s: float = 10.0,
+        realtime_url: str = SONIOX_REALTIME_URL,
     ) -> None:
         self.meeting_id = meeting_id
         self.source = source
@@ -140,6 +143,7 @@ class SonioxMeetingStream:
         self.smart_turn_failures = 0
         self.smart_turn_last_probability: float | None = None
         self.smart_turn_last_latency_ms: float | None = None
+        self.realtime_url = realtime_url
 
     async def start(self) -> None:
         if self.supervisor_task is not None:
@@ -155,7 +159,7 @@ class SonioxMeetingStream:
         )
 
     async def _open_websocket(self) -> Any:
-        websocket = await self.connect_factory(SONIOX_REALTIME_URL)
+        websocket = await self.connect_factory(self.realtime_url)
         language_hints = [] if not self.language or self.language == "auto" else [self.language.split("-", 1)[0]]
         try:
             await websocket.send(json.dumps({
@@ -712,6 +716,7 @@ class MeetingLiveTranscriber:
         connect_factory: Callable[..., Any] = websocket_connect,
         timeline_offsets: dict[str, int] | None = None,
         smart_turn_analyzer: Any | None = None,
+        realtime_url: str = SONIOX_REALTIME_URL,
     ) -> None:
         self.loop = asyncio.get_running_loop()
         session_id = uuid4().hex
@@ -731,6 +736,7 @@ class MeetingLiveTranscriber:
                 session_id=session_id,
                 timeline_offset_ms=int(timeline_offsets.get(source, 0)),
                 smart_turn_analyzer=smart_turn_analyzer if source == "microphone" else None,
+                realtime_url=realtime_url,
             )
             for source in ("microphone", "system")
         }

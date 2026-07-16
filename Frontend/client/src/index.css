@@ -4277,16 +4277,19 @@ html:has(body[data-scroll-locked]) {
   letter-spacing: 0.035em;
 }
 
+.debug-log-message-cell {
+  min-width: 0;
+  margin: 0;
+  color: color-mix(in srgb, var(--foreground) 86%, transparent);
+}
+
 .debug-log-message {
   min-width: 0;
-  max-height: 7.25rem;
-  margin: 0;
-  overflow: auto;
-  padding-right: 0.35rem;
-  color: color-mix(in srgb, var(--foreground) 86%, transparent);
+}
+
+.debug-log-message-summary {
+  min-width: 0;
   overflow-wrap: anywhere;
-  scrollbar-color: var(--dc-stroke-strong) transparent;
-  scrollbar-width: thin;
   white-space: pre-wrap;
 }
 
@@ -4299,6 +4302,205 @@ html:has(body[data-scroll-locked]) {
   padding: 0.05rem 0.32rem;
   color: var(--dc-muted);
   font-size: 0.58rem;
+}
+
+.debug-log-key-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.2rem, 1fr));
+  gap: 0.42rem;
+  margin: 0.58rem 0 0;
+}
+
+.debug-log-key-metrics > div {
+  min-width: 0;
+  border: 1px solid var(--dc-stroke);
+  border-radius: 0.48rem;
+  background: color-mix(in srgb, var(--dc-surface-deep) 72%, transparent);
+  padding: 0.38rem 0.48rem;
+}
+
+.debug-log-key-metrics dt,
+.debug-log-detail-grid dt {
+  color: var(--dc-muted);
+  font-family: var(--font-body);
+  font-size: 0.58rem;
+  line-height: 1.25;
+}
+
+.debug-log-key-metrics dd,
+.debug-log-detail-grid dd {
+  min-width: 0;
+  margin: 0.12rem 0 0;
+  overflow: hidden;
+  color: var(--foreground);
+  font-weight: 650;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.debug-log-details,
+.debug-log-raw-details {
+  min-width: 0;
+  margin-top: 0.48rem;
+  border: 1px solid var(--dc-stroke);
+  border-radius: 0.55rem;
+  background: color-mix(in srgb, var(--dc-surface-deep) 58%, transparent);
+}
+
+.debug-log-details > summary,
+.debug-log-raw-details > summary {
+  display: flex;
+  min-height: 2rem;
+  cursor: pointer;
+  list-style: none;
+  align-items: center;
+  gap: 0.38rem;
+  padding: 0.34rem 0.48rem;
+  color: color-mix(in srgb, var(--foreground) 84%, transparent);
+  font-family: var(--font-body);
+  font-size: 0.64rem;
+  font-weight: 650;
+  user-select: none;
+}
+
+.debug-log-details > summary::-webkit-details-marker,
+.debug-log-raw-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.debug-log-details > summary:focus-visible,
+.debug-log-raw-details > summary:focus-visible,
+.debug-log-copy-detail:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.debug-log-details > summary:hover,
+.debug-log-raw-details > summary:hover {
+  background: color-mix(in srgb, var(--dc-surface-raised) 78%, transparent);
+}
+
+.debug-log-details > summary small {
+  margin-left: auto;
+  color: var(--dc-muted);
+  font-size: 0.57rem;
+  font-weight: 500;
+}
+
+.debug-log-details-chevron {
+  width: 0.78rem;
+  height: 0.78rem;
+  flex: 0 0 auto;
+  color: var(--dc-muted);
+  transition: transform var(--duration-quick) var(--ease-smooth-out);
+}
+
+.debug-log-details[open] > summary > .debug-log-details-chevron,
+.debug-log-raw-details[open] > summary > .debug-log-details-chevron {
+  transform: rotate(90deg);
+}
+
+.debug-log-details-body {
+  display: grid;
+  gap: 0.58rem;
+  padding: 0 0.48rem 0.48rem;
+  border-top: 1px solid var(--dc-stroke);
+}
+
+.debug-log-detail-section {
+  min-width: 0;
+  padding-top: 0.48rem;
+}
+
+.debug-log-detail-section h3 {
+  margin: 0 0 0.34rem;
+  color: var(--dc-muted);
+  font-family: var(--font-body);
+  font-size: 0.57rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.debug-log-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.38rem 0.75rem;
+  margin: 0;
+}
+
+.debug-log-detail-grid > div {
+  min-width: 0;
+}
+
+.debug-log-raw-details {
+  margin-top: 0;
+}
+
+.debug-log-raw-body {
+  min-width: 0;
+  padding: 0.44rem;
+  border-top: 1px solid var(--dc-stroke);
+}
+
+.debug-log-raw-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.4rem;
+  color: var(--dc-muted);
+  font-family: var(--font-body);
+  font-size: 0.58rem;
+}
+
+.debug-log-copy-detail {
+  display: inline-flex;
+  min-height: 1.75rem;
+  cursor: pointer;
+  align-items: center;
+  gap: 0.28rem;
+  border: 1px solid var(--dc-stroke-strong);
+  border-radius: 0.4rem;
+  background: var(--dc-surface-raised);
+  padding: 0.2rem 0.42rem;
+  color: var(--foreground);
+  font-size: 0.58rem;
+  font-weight: 650;
+  transition: background-color var(--duration-quick) var(--ease-smooth-out), transform var(--duration-quick) var(--ease-smooth-out);
+}
+
+.debug-log-copy-detail:hover {
+  background: color-mix(in srgb, var(--dc-surface-raised) 84%, var(--primary));
+}
+
+.debug-log-copy-detail:active {
+  transform: translateY(1px);
+}
+
+.debug-log-copy-detail svg {
+  width: 0.72rem;
+  height: 0.72rem;
+}
+
+.debug-log-raw-body pre {
+  max-height: 18rem;
+  margin: 0;
+  overflow: auto;
+  border-radius: 0.4rem;
+  background: var(--dc-surface-deep);
+  padding: 0.58rem;
+  color: color-mix(in srgb, var(--foreground) 82%, transparent);
+  overflow-wrap: anywhere;
+  scrollbar-color: var(--dc-stroke-strong) transparent;
+  scrollbar-width: thin;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.debug-log-full-message {
+  border-style: dashed;
 }
 
 .debug-empty-state {
@@ -4632,7 +4834,7 @@ html:has(body[data-scroll-locked]) {
     justify-self: end;
   }
 
-  .debug-log-message {
+  .debug-log-message-cell {
     grid-column: 1 / -1;
     padding-left: 0;
   }
