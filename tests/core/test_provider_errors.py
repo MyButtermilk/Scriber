@@ -85,7 +85,7 @@ def test_missing_api_key_uses_provider_specific_labels_for_async_and_optional_pr
     cases = {
         "assemblyai": "Assembly AI Universal-3.5-Pro",
         "assemblyai_realtime": "Assembly AI Universal-3.5-Pro Realtime",
-        "mistral": "Mistral (Realtime)",
+        "mistral": "Mistral (Segmented)",
         "mistral_async": "Mistral (Async)",
         "smallest": "Smallest AI (Realtime)",
         "smallest_async": "Smallest AI (Async)",

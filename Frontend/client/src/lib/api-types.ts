@@ -1011,6 +1011,7 @@ export interface SettingsResponse {
   sonioxRegion?: "us" | "eu" | string;
   sonioxRealtimeModel?: string;
   sonioxAsyncModel?: string;
+  transcriptionProviderModels?: Record<string, string>;
   language?: string;
   micDevice?: string;
   favoriteMic?: string;

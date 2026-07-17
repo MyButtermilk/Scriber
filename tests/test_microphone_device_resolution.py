@@ -387,6 +387,9 @@ async def test_get_settings_exposes_effective_soniox_realtime_model(
 
         assert settings["sonioxRealtimeModel"] == "stt-rt-v5-effective"
         assert updated["sonioxRealtimeModel"] == "stt-rt-v5-effective"
+        assert settings["transcriptionProviderModels"]["soniox-realtime"] == "stt-rt-v5-effective"
+        assert updated["transcriptionProviderModels"]["soniox-realtime"] == "stt-rt-v5-effective"
+        assert settings["transcriptionProviderModels"]["modulate-realtime"] == "velma-2-stt-streaming"
         assert Config.SONIOX_RT_MODEL == "stt-rt-v5-effective"
     finally:
         ctl.shutdown()

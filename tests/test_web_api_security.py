@@ -1400,7 +1400,7 @@ def test_build_file_upload_limits_uses_provider_metadata(monkeypatch):
     limits = web_api._build_file_upload_limits("mistral")
     assert limits["provider"] == "mistral"
     assert limits["audioMaxLabel"] == "512MB"
-    assert limits["providerLabel"] == "Mistral (Realtime)"
+    assert limits["providerLabel"] == "Mistral (Segmented)"
 
 
 def test_build_file_upload_limits_uses_smallest_compression_threshold(monkeypatch):

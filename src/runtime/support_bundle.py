@@ -16,16 +16,16 @@ from src.version import app_version
 
 
 _SENSITIVE_KEY_RE = re.compile(
-    r"(api[_-]?key|token|secret|password|credential|authorization|cookie|session)",
+    r"(api[_-]?key|speech[_-]?key|token|secret|password|credential|authorization|cookie|session)",
     re.IGNORECASE,
 )
 _ASSIGNMENT_SECRET_RE = re.compile(
-    r"(?i)\b([A-Z0-9_]{0,128}(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]{0,128})"
+    r"(?i)\b([A-Z0-9_]{0,128}(?:API[_-]?KEY|SPEECH[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]{0,128})"
     r"\s*[:=]\s*(\"[^\"]*\"|'[^']*'|[^\s,;]+)"
 )
 _JSON_SECRET_RE = re.compile(
     r'(?i)(?<![A-Za-z0-9_-])("?[A-Za-z0-9_-]{0,128}'
-    r'(?:apiKey|api_key|token|secret|password|credential|authorization|cookie|session)'
+    r'(?:apiKey|api_key|speechKey|speech_key|token|secret|password|credential|authorization|cookie|session)'
     r'[A-Za-z0-9_-]{0,128}"?\s*:\s*)"[^"]*"'
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")

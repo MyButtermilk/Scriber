@@ -1,3 +1,4 @@
+import inspect
 import json
 
 import pytest
@@ -8,6 +9,14 @@ from src.summary_html import normalize_summary_html
 
 def _words(count: int) -> str:
     return " ".join(f"w{i}" for i in range(count))
+
+
+def _structured_summary(body: str, title: str = "Overview") -> str:
+    return f"<section><h2>{title}</h2><p>{body}</p></section>"
+
+
+def test_summary_provider_module_never_logs_diagnostic_tracebacks_with_request_locals():
+    assert "logger.exception(" not in inspect.getsource(summarization)
 
 
 def test_summary_budget_scales_with_input_size():
@@ -242,21 +251,32 @@ async def test_summarize_text_passes_dynamic_budget_to_model(monkeypatch: pytest
         captured["prompt"] = prompt
         captured["model"] = model
         captured["max_output_tokens"] = max_output_tokens
-        return "ok"
+        return _structured_summary("ok")
 
     monkeypatch.setattr(summarization, "_summarize_openai", _fake_openai)
+    monkeypatch.setattr(
+        summarization.Config,
+        "SUMMARIZATION_PROMPT",
+        "Custom instruction: return the answer as Markdown.",
+    )
 
     out = await summarization.summarize_text(_words(4000), model="gpt-5-mini")
 
-    assert out == "<p>ok</p>"
+    assert out == _structured_summary("ok")
     assert captured["model"] == "gpt-5-mini"
     assert isinstance(captured["max_output_tokens"], int)
     assert captured["max_output_tokens"] >= 512
-    assert "Zusätzliche Längenregel" in str(captured["prompt"])
-    assert "Return only one semantic, static HTML fragment" in str(captured["prompt"])
-    assert "Do not return Markdown" in str(captured["prompt"])
-    assert "Infer the dominant natural language from the transcript itself" in str(captured["prompt"])
-    assert "UNTRUSTED_TRANSCRIPT_TEXT:" in str(captured["prompt"])
+    prompt = str(captured["prompt"])
+    assert "Zusätzliche Längenregel" in prompt
+    assert "Return only one well-formed, semantic, static HTML fragment" in prompt
+    assert "Do not return Markdown" in prompt
+    assert "3 to 5 key takeaways" in prompt
+    assert "Scriber owns typography, spacing, colors, and interaction" in prompt
+    assert "Infer the dominant natural language from the transcript itself" in prompt
+    assert "UNTRUSTED_TRANSCRIPT_TEXT:" in prompt
+    assert prompt.index("Custom instruction: return the answer as Markdown.") < prompt.index(
+        "Output contract (mandatory"
+    ) < prompt.index("UNTRUSTED_TRANSCRIPT_TEXT:")
 
 
 @pytest.mark.asyncio
@@ -267,7 +287,7 @@ async def test_summarize_text_uses_configured_language_only_as_ambiguous_fallbac
 
     async def _fake_openai(prompt: str, _model: str, _max_output_tokens: int) -> str:
         captured["prompt"] = prompt
-        return "Deutsche Zusammenfassung"
+        return _structured_summary("Deutsche Zusammenfassung", "Überblick")
 
     monkeypatch.setattr(summarization, "_summarize_openai", _fake_openai)
     monkeypatch.setattr(summarization.Config, "LANGUAGE", "de-DE", raising=False)
@@ -276,7 +296,7 @@ async def test_summarize_text_uses_configured_language_only_as_ambiguous_fallbac
         "Wir besprechen heute die nächsten Schritte.", model="gpt-5-mini"
     )
 
-    assert result == "<p>Deutsche Zusammenfassung</p>"
+    assert result == _structured_summary("Deutsche Zusammenfassung", "Überblick")
     assert "Only if the transcript is too short or language-neutral to decide, use de-DE" in captured["prompt"]
     assert "do not translate the transcript" in captured["prompt"]
 
@@ -306,7 +326,7 @@ async def test_summarize_text_uses_duration_based_boost(monkeypatch: pytest.Monk
 
     async def _fake_openai(_prompt: str, _model: str, max_output_tokens: int) -> str:
         captured_tokens.append(max_output_tokens)
-        return "ok"
+        return _structured_summary("ok")
 
     monkeypatch.setattr(summarization, "_summarize_openai", _fake_openai)
     monkeypatch.setenv("SCRIBER_SUMMARY_LONG_VIDEO_MIN_SECONDS", "1800")
@@ -323,13 +343,30 @@ async def test_summarize_text_uses_duration_based_boost(monkeypatch: pytest.Monk
 @pytest.mark.asyncio
 async def test_summarize_text_projects_markdown_model_drift_to_html(monkeypatch: pytest.MonkeyPatch):
     async def _fake_gemini(_prompt: str, _model: str, _max_output_tokens: int) -> str:
-        return "Zusammenfassung\n\n•\tPunkt A\n• Punkt B"
+        return "# Zusammenfassung\n\nKurzer Überblick.\n\n•\tPunkt A\n• Punkt B"
 
     monkeypatch.setattr(summarization, "_summarize_gemini", _fake_gemini)
 
     out = await summarization.summarize_text("x y z", model="gemini-flash-latest")
 
-    assert out == "<p>Zusammenfassung</p><ul><li>Punkt A</li><li>Punkt B</li></ul>"
+    assert out == (
+        "<section><h2>Zusammenfassung</h2><p>Kurzer Überblick.</p>"
+        "<ul><li>Punkt A</li><li>Punkt B</li></ul></section>"
+    )
+
+
+@pytest.mark.asyncio
+async def test_summarize_text_rejects_sanitized_empty_or_unstructured_output(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _fake_openai(_prompt: str, _model: str, _max_output_tokens: int) -> str:
+        return "<script>not displayable</script>"
+
+    monkeypatch.setattr(summarization, "_summarize_openai", _fake_openai)
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "", raising=False)
+
+    with pytest.raises(RuntimeError, match="no displayable structured HTML summary"):
+        await summarization.summarize_text("x y z", model="gpt-5-mini")
 
 
 @pytest.mark.asyncio
@@ -339,13 +376,13 @@ async def test_summarize_text_openrouter_model_uses_nitro(monkeypatch: pytest.Mo
 
     async def _fake_openrouter(_prompt: str, models, _max_output_tokens: int) -> str:
         captured["models"] = models
-        return "openrouter summary"
+        return _structured_summary("openrouter summary")
 
     monkeypatch.setattr(summarization, "_summarize_openrouter", _fake_openrouter)
 
     out = await summarization.summarize_text("x y z", model="minimax/minimax-m3")
 
-    assert out == "<p>openrouter summary</p>"
+    assert out == _structured_summary("openrouter summary")
     assert captured["models"] == "minimax/minimax-m3:nitro"
 
 
@@ -356,13 +393,13 @@ async def test_summarize_text_gpt_oss_120b_keeps_provider_routed_model(monkeypat
 
     async def _fake_openrouter(_prompt: str, models, _max_output_tokens: int) -> str:
         captured["models"] = models
-        return "openrouter summary"
+        return _structured_summary("openrouter summary")
 
     monkeypatch.setattr(summarization, "_summarize_openrouter", _fake_openrouter)
 
     out = await summarization.summarize_text("x y z", model="openai/gpt-oss-120b")
 
-    assert out == "<p>openrouter summary</p>"
+    assert out == _structured_summary("openrouter summary")
     assert captured["models"] == "openai/gpt-oss-120b"
 
 
@@ -647,14 +684,14 @@ async def test_summarize_text_falls_back_to_openrouter_when_primary_fails(monkey
 
     async def _fake_openrouter(_prompt: str, models, _max_output_tokens: int) -> str:
         captured["models"] = models
-        return "openrouter fallback"
+        return _structured_summary("openrouter fallback")
 
     monkeypatch.setattr(summarization, "_summarize_gemini", _fake_gemini)
     monkeypatch.setattr(summarization, "_summarize_openrouter", _fake_openrouter)
 
     out = await summarization.summarize_text("x y z", model="gemini-3.5-flash")
 
-    assert out == "<p>openrouter fallback</p>"
+    assert out == _structured_summary("openrouter fallback")
     assert captured["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"]
 
 

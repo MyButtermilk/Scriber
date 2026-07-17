@@ -211,7 +211,7 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "modulate-realtime", label: "Modulate.AI Multilingual Realtime" },
   { value: "modulate-async", label: "Modulate.AI Multilingual Batch" },
   { value: "gemini-stt", label: "Gemini STT" },
-  { value: "mistral-realtime", label: "Mistral Live (Voxtral)" },
+  { value: "mistral-realtime", label: "Mistral Segmented (Voxtral)" },
   { value: "mistral-async", label: "Mistral Async (Voxtral V2)" },
   { value: "smallest-realtime", label: "Smallest AI STT Streaming (Pulse)" },
   { value: "smallest-async", label: "Smallest AI Async (Pulse)" },
@@ -224,7 +224,7 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "azure_mai", label: "Microsoft MAI Transcribe" },
   { value: "gladia", label: "Gladia STT Streaming" },
   { value: "gladia-async", label: "Gladia Async" },
-  { value: "groq", label: "Groq Live" },
+  { value: "groq", label: "Groq Segmented" },
   { value: "speechmatics", label: "Speechmatics STT Streaming" },
   { value: "speechmatics-async", label: "Speechmatics Batch" },
   { value: "elevenlabs", label: "ElevenLabs Live" },
@@ -580,6 +580,7 @@ type ProviderIconKey = keyof typeof PROVIDER_ICON_PATHS;
 interface ProviderModelOption {
   value: string;
   label: string;
+  model: string;
   detail: string;
   group: "cloud_streaming" | "cloud_async" | "local";
   icon?: ProviderIconKey;
@@ -614,7 +615,11 @@ function sttBenchmarkDetail(
   return sttHourlyBenchmarkDetail(usdPerThousandMinutes * 0.06, wordErrorRatePercent, localeTag, t);
 }
 
-function createProviderModelOptions(localeTag: string, t: Translate): ProviderModelOption[] {
+function createProviderModelOptions(
+  localeTag: string,
+  t: Translate,
+  providerModels: Record<string, string>,
+): ProviderModelOption[] {
   const benchmarkOption = (
     value: string,
     label: string,
@@ -625,6 +630,7 @@ function createProviderModelOptions(localeTag: string, t: Translate): ProviderMo
   ): ProviderModelOption => ({
     value,
     label,
+    model: providerModels[value] || "",
     detail: sttBenchmarkDetail(usdPerThousandMinutes, wordErrorRatePercent, localeTag, t),
     group,
     icon,
@@ -641,6 +647,7 @@ function createProviderModelOptions(localeTag: string, t: Translate): ProviderMo
   ): ProviderModelOption => ({
     value,
     label,
+    model: providerModels[value] || "",
     detail: sttHourlyBenchmarkDetail(usdPerHour, wordErrorRatePercent, localeTag, t),
     group,
     icon,
@@ -655,7 +662,6 @@ function createProviderModelOptions(localeTag: string, t: Translate): ProviderMo
     benchmarkOption("soniox-realtime", "Soniox", 2.00, 4.5, "cloud_streaming", "soniox"),
     benchmarkOption("google", "Google Cloud", 16.00, 4.8, "cloud_streaming", "googlecloud"),
     benchmarkOption("openai", "OpenAI Realtime", 17.00, 4.9, "cloud_streaming", "openai"),
-    benchmarkOption("mistral-realtime", "Mistral Live", 6.00, 5.2, "cloud_streaming", "mistral"),
     benchmarkOption("smallest-realtime", "Smallest AI", 8.00, 6.5, "cloud_streaming", "smallest"),
     benchmarkOption("deepgram", "Deepgram", 4.80, 6.6, "cloud_streaming", "deepgram"),
     benchmarkOption("gladia", "Gladia", 12.50, 7.8, "cloud_streaming", "gladia"),
@@ -663,7 +669,7 @@ function createProviderModelOptions(localeTag: string, t: Translate): ProviderMo
     benchmarkOption("azure_mai", "Microsoft MAI", 6.00, 2.4, "cloud_async", "azure"),
     benchmarkOption("assemblyai", "AssemblyAI", 3.50, 3.1, "cloud_async", "assemblyai"),
     benchmarkOption("mistral-async", "Mistral Batch", 3.00, 3.6, "cloud_async", "mistral"),
-    benchmarkOption("groq", "Groq Live", 4.00, 3.7, "cloud_async", "groq"),
+    benchmarkOption("groq", "Groq Segmented", 4.00, 3.7, "cloud_async", "groq"),
     benchmarkOption("soniox-async", "Soniox", 1.66, 3.8, "cloud_async", "soniox"),
     benchmarkOption("speechmatics-async", "Speechmatics", 6.70, 4.0, "cloud_async", "speechmatics"),
     benchmarkOption("gladia-async", "Gladia", 4.07, 4.1, "cloud_async", "gladia"),
@@ -672,7 +678,8 @@ function createProviderModelOptions(localeTag: string, t: Translate): ProviderMo
     benchmarkOption("openai-async", "OpenAI Batch", 3.00, 4.5, "cloud_async", "openai"),
     benchmarkOption("gemini-stt", "Gemini", 6.66, 5.1, "cloud_async", "gemini"),
     benchmarkOption("deepgram-async", "Deepgram", 4.30, 5.2, "cloud_async", "deepgram"),
-    { value: "onnx_local", label: "Local ONNX", detail: t("{{price}}€/h with model-dependent Error", { price: (0).toLocaleString(localeTag, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }), group: "local", hourlyCostEur: 0 },
+    benchmarkOption("mistral-realtime", "Mistral Segmented", 6.00, 5.2, "cloud_async", "mistral"),
+    { value: "onnx_local", label: "Local ONNX", model: providerModels.onnx_local || "", detail: t("{{price}}€/h with model-dependent Error", { price: (0).toLocaleString(localeTag, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }), group: "local", hourlyCostEur: 0 },
   ];
 }
 
@@ -932,6 +939,11 @@ function ProviderChoice({
       )}
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[12px] font-semibold leading-4">{option.label}</span>
+        {option.model ? (
+          <span className="block truncate font-mono text-[10.5px] leading-[14px] text-slate-600 dark:text-slate-300">
+            {option.model}
+          </span>
+        ) : null}
         <span
           className="block truncate text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400"
         >
@@ -1281,9 +1293,10 @@ function ApiCredentialRow({
 
 export default function Settings() {
   const { t, locale, localeTag, setLocale, formatDate, formatNumber } = useI18n();
+  const [transcriptionProviderModels, setTranscriptionProviderModels] = useState<Record<string, string>>({});
   const providerModelOptions = useMemo(
-    () => createProviderModelOptions(localeTag, t),
-    [localeTag, t],
+    () => createProviderModelOptions(localeTag, t, transcriptionProviderModels),
+    [localeTag, t, transcriptionProviderModels],
   );
   const summarizationModelOptions = useMemo(
     () => createSummarizationModelOptions(localeTag, t),
@@ -1966,6 +1979,7 @@ export default function Settings() {
         setPostProcessingHotkey(settings.postProcessingHotkey || settings.postProcessingHotkeyRaw || "Ctrl + Shift + F");
         setMeetingHotkey(settings.meetingHotkey || settings.meetingHotkeyRaw || "Ctrl + Shift + M");
         setSonioxRealtimeModel(settings.sonioxRealtimeModel || "stt-rt-v5");
+        setTranscriptionProviderModels(settings.transcriptionProviderModels || {});
         setSonioxRegion(settings.sonioxRegion === "eu" ? "eu" : "us");
         setMeetingTranscriptionMode(settings.meetingTranscriptionMode === "final_only" ? "final_only" : "live_final");
         setMeetingFinalProvider(settings.meetingFinalProvider || "soniox_async");
@@ -2088,6 +2102,7 @@ export default function Settings() {
         throw new Error(await responseErrorMessage(res));
       }
       const updatedSettings = (await res.json()) as SettingsResponse;
+      setTranscriptionProviderModels(updatedSettings.transcriptionProviderModels || {});
       queryClient.setQueryData<SettingsResponse>(["/api/settings"], updatedSettings);
       invalidateSettingsBootstrap();
       return updatedSettings;
@@ -3284,6 +3299,8 @@ export default function Settings() {
   const hasSelectedMic = Boolean(selectedMicDevice || selectedDeviceId === "default");
   const selectedLanguage = LANGUAGE_OPTIONS.find((option) => option.value === language) || LANGUAGE_OPTIONS[0];
   const selectedTranscriptionModelOption = TRANSCRIPTION_MODEL_OPTIONS.find((option) => option.value === transcriptionModel);
+  const selectedProviderModelOption = providerModelOptions.find((option) => option.value === transcriptionModel);
+  const sileroDisabledForSelectedProvider = selectedProviderModelOption?.group === "cloud_streaming";
   const supportedQuantizations = selectedOnnxModel?.supportedQuantizations || ["int8", "fp32"];
   const quantizationSupported = supportedQuantizations.includes(onnxQuantization);
   const formatSize = (sizeMb?: number) => {
@@ -3350,8 +3367,8 @@ export default function Settings() {
     },
     {
       key: "cloud_async",
-      label: t("Cloud async / batch"),
-      description: t("Finalizes captured audio after upload or recording stop."),
+      label: t("Cloud async / segmented / batch"),
+      description: t("Uploads completed speech segments or finalizes captured audio after recording stops."),
       items: sortProviderOptionsByErrorRate(providerModelOptions.filter((option) => option.group === "cloud_async"), localeTag),
     },
     {
@@ -3670,26 +3687,14 @@ export default function Settings() {
             {compactTranscriptionModelLabel}
           </p>
         </div>
-        {transcriptionModel === "assemblyai" && (
-          <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-            {t("Async mode returns the transcript after recording stops.")}
+        {selectedProviderModelOption?.model ? (
+          <p className="mt-1 truncate text-[11px] text-slate-500 dark:text-slate-400">
+            {t("Model Name")}: {" "}
+            <strong className="font-mono font-semibold text-slate-700 dark:text-slate-200">
+              {selectedProviderModelOption.model}
+            </strong>
           </p>
-        )}
-        {transcriptionModel === "assemblyai-realtime" && (
-          <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-            {t("Realtime mode uses AssemblyAI Universal-3.5 Pro through Pipecat.")}
-          </p>
-        )}
-        {transcriptionModel === "modulate-realtime" && (
-          <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-            {t("Multilingual streaming shows finalized text only. Scriber does not request partial text or enrichment signals.")}
-          </p>
-        )}
-        {transcriptionModel === "modulate-async" && (
-          <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-            {t("Multilingual batch returns one final transcript after recording stops. Scriber does not request enrichment signals.")}
-          </p>
-        )}
+        ) : null}
       </div>
 
       <div className="space-y-2.5">
@@ -3942,11 +3947,13 @@ export default function Settings() {
 
                 <SettingLine
                   label={t("Silero voice detection")}
-                  description={t("Optional. Detect pauses for segmented live transcription and Soniox SmartTurn. When off, Silero is not loaded and the recording is transcribed as one continuous segment.")}
+                  description={sileroDisabledForSelectedProvider
+                    ? t("Native realtime streams do not need local Silero segmentation. The provider stream or recording stop controls finalization.")
+                    : t("Optional. Detect pauses for segmented and async transcription. When off, Silero is not loaded and the recording is transcribed as one continuous segment.")}
                 >
                   <Switch
-                    checked={segmentSpeechWithVad}
-                    disabled={segmentSpeechWithVadSaving}
+                    checked={sileroDisabledForSelectedProvider ? false : segmentSpeechWithVad}
+                    disabled={segmentSpeechWithVadSaving || sileroDisabledForSelectedProvider}
                     aria-busy={segmentSpeechWithVadSaving}
                     onCheckedChange={handleSegmentSpeechWithVadChange}
                   />

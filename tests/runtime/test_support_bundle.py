@@ -54,6 +54,34 @@ def test_redaction_helpers_hide_sensitive_values():
     assert mapping["nested"]["sessionToken"] == "[REDACTED]"
 
 
+def test_redaction_helpers_hide_azure_speech_key_variants():
+    assignment_secret = "azure-assignment-secret"
+    json_secret = "azure-json-secret"
+    bare_secret = "azure-bare-secret"
+
+    redacted = redact_text(
+        f'AZURE_MAI_SPEECH_KEY={assignment_secret} '
+        f'{{"azureSpeechKey":"{json_secret}"}} '
+        f'SPEECH_KEY: "{bare_secret}"'
+    )
+
+    assert assignment_secret not in redacted
+    assert json_secret not in redacted
+    assert bare_secret not in redacted
+    assert redacted.count("[REDACTED]") == 3
+
+    mapping = redact_mapping(
+        {
+            "AZURE_MAI_SPEECH_KEY": assignment_secret,
+            "azureSpeechKey": json_secret,
+            "language": "de",
+        }
+    )
+    assert mapping["AZURE_MAI_SPEECH_KEY"] == "[REDACTED]"
+    assert mapping["azureSpeechKey"] == "[REDACTED]"
+    assert mapping["language"] == "de"
+
+
 def test_redaction_handles_very_long_non_secret_token():
     raw = "x" * (support_bundle._MAX_SETTINGS_BYTES + 1)
 
@@ -92,6 +120,7 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(data_dir))
     monkeypatch.setenv("OPENAI_API_KEY", "sk-abcdefghijklmnop")
     monkeypatch.setenv("GROQ_API_KEY", groq_key)
+    monkeypatch.setenv("AZURE_MAI_SPEECH_KEY", "azure-process-secret")
     monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "session-secret-value")
     shell_pipe = r"\\.\pipe\scriber-shell-bundle"
     raw_endpoint_id = r"SWD\MMDEVAPI\{0.0.1.00000000}.{support-bundle-capture}"
@@ -103,12 +132,15 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
         encoding="utf-8",
     )
     (data_dir / ".env").write_text(
-        f"SONIOX_API_KEY=env-secret-value\nGROQ_API_KEY={groq_key}\nSCRIBER_MODE=toggle\nSCRIBER_SHELL_IPC_PIPE={shell_pipe}\n",
+        f"SONIOX_API_KEY=env-secret-value\nGROQ_API_KEY={groq_key}\n"
+        f"AZURE_MAI_SPEECH_KEY=azure-env-secret\nSCRIBER_MODE=toggle\n"
+        f"SCRIBER_SHELL_IPC_PIPE={shell_pipe}\n",
         encoding="utf-8",
     )
     (logs_dir / "latest.log").write_text(
         f"\x00\x00OPENAI_API_KEY=log-secret-value Authorization: Bearer bearer-secret "
-        f"raw_groq={groq_log_key} pipe={shell_pipe} endpoint={raw_endpoint_id}\n",
+        f"AZURE_MAI_SPEECH_KEY=azure-log-secret raw_groq={groq_log_key} "
+        f"pipe={shell_pipe} endpoint={raw_endpoint_id}\n",
         encoding="utf-8",
     )
 
@@ -146,6 +178,9 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     assert "settings-groq-secret" not in combined
     assert "env-secret-value" not in combined
     assert "log-secret-value" not in combined
+    assert "azure-process-secret" not in combined
+    assert "azure-env-secret" not in combined
+    assert "azure-log-secret" not in combined
     assert groq_key not in combined
     assert groq_log_key not in combined
     assert "session-secret-value" not in combined

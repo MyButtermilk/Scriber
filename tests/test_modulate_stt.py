@@ -104,6 +104,16 @@ class _ClosableWebSocket:
         self.closed = True
 
 
+class _FakeWebSocketSession:
+    def __init__(self, websocket: _ClosableWebSocket) -> None:
+        self.websocket = websocket
+        self.connections: list[tuple[str, dict[str, object]]] = []
+
+    async def ws_connect(self, url: str, **kwargs):
+        self.connections.append((url, kwargs))
+        return self.websocket
+
+
 def _form_fields(form: aiohttp.FormData) -> dict[str, object]:
     fields: dict[str, object] = {}
     for disposition, _headers, value in form._fields:
@@ -242,6 +252,80 @@ def test_modulate_uses_current_official_velma_api_hosts():
     assert batch.netloc == streaming.netloc == "modulate-developer-apis.com"
     assert batch.path == f"/api/{MODULATE_BATCH_MODEL}"
     assert streaming.path == f"/api/{MODULATE_STREAMING_MODEL}"
+
+
+@pytest.mark.asyncio
+async def test_modulate_stream_disables_aiohttp_client_heartbeat():
+    websocket = _ClosableWebSocket()
+    session = _FakeWebSocketSession(websocket)
+    service = ModulateRealtimeSTTService(
+        api_key="secret-key",
+        aiohttp_session=session,  # type: ignore[arg-type]
+    )
+    service._receive_responses = AsyncMock()  # type: ignore[method-assign]
+
+    connected = await service._ensure_connected(FrameDirection.DOWNSTREAM)
+    await asyncio.sleep(0)
+
+    assert connected is True
+    assert len(session.connections) == 1
+    _url, kwargs = session.connections[0]
+    # aiohttp uses half the heartbeat interval as its PONG deadline. A
+    # heartbeat of 20 seconds could therefore cause local 1006 closes while
+    # Modulate was still processing the end-of-stream request.
+    assert kwargs["heartbeat"] is None
+    assert kwargs["max_msg_size"] > 0
+
+    await service._close_stream(
+        FrameDirection.DOWNSTREAM,
+        wait_for_final=False,
+    )
+
+
+def test_modulate_lifecycle_diagnostics_are_content_free_and_bounded():
+    service = ModulateRealtimeSTTService(api_key="do-not-log-this-key")
+    service._audio_bytes_sent = 640
+    service._provider_message_count = 3
+    service._final_utterance_count = 2
+    service._connected_at_monotonic = 10.0
+    service._eos_sent_at_monotonic = 18.0
+    service._last_provider_message_at_monotonic = 19.5
+
+    with patch("src.modulate_stt.time.monotonic", return_value=20.0):
+        meta = service._lifecycle_meta(
+            status="closed_before_done",
+            close_code=1006,
+            error_type="ServerTimeoutError",
+        )
+
+    assert meta == {
+        "status": "closed_before_done",
+        "audioBytesSent": 640,
+        "providerMessageCount": 3,
+        "finalUtteranceCount": 2,
+        "connectionAgeMs": 10_000.0,
+        "finalizeWaitMs": 2_000.0,
+        "lastProviderMessageAgoMs": 500.0,
+        "provider_error_code": "1006",
+        "errorType": "ServerTimeoutError",
+    }
+    serialized = json.dumps(meta)
+    assert "do-not-log-this-key" not in serialized
+    assert MODULATE_STREAMING_URL not in serialized
+
+
+def test_modulate_lifecycle_diagnostics_reject_exception_messages():
+    service = ModulateRealtimeSTTService(api_key="secret-key")
+
+    meta = service._lifecycle_meta(
+        status="closed_before_done",
+        error_type=(
+            "ServerTimeoutError: wss://example.invalid/api?api_key=secret-key"
+        ),
+    )
+
+    assert meta["errorType"] == "WebSocketError"
+    assert "secret-key" not in json.dumps(meta)
 
 
 def test_modulate_runtime_diagnostics_name_the_exact_model_and_mode():

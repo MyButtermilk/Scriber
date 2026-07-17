@@ -2030,6 +2030,7 @@ jobs:
           name: scriber-release-cache-handoff
           path: build/release-cache-handoff
           if-no-files-found: error
+          include-hidden-files: true
           compression-level: 0
           retention-days: 1
 

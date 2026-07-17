@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
+import time
 from typing import Any, BinaryIO, Callable
 from urllib.parse import urlencode
 
@@ -354,6 +356,11 @@ class ModulateRealtimeSTTService(FrameProcessor):
         self._terminal_error_emitted = False
         self._terminal_event = asyncio.Event()
         self._audio_bytes_sent = 0
+        self._connected_at_monotonic: float | None = None
+        self._eos_sent_at_monotonic: float | None = None
+        self._last_provider_message_at_monotonic: float | None = None
+        self._provider_message_count = 0
+        self._final_utterance_count = 0
         self._close_requested = False
         self._local_close_requested = False
         self._stream_closed = False
@@ -366,6 +373,71 @@ class ModulateRealtimeSTTService(FrameProcessor):
             minimum=2.0,
             maximum=120.0,
         )
+
+    @staticmethod
+    def _elapsed_ms(started_at: float | None, *, now: float) -> float | None:
+        if started_at is None:
+            return None
+        return round(max(0.0, now - started_at) * 1000.0, 3)
+
+    def _lifecycle_meta(
+        self,
+        *,
+        status: str,
+        close_code: int | None = None,
+        error_type: str = "",
+    ) -> dict[str, Any]:
+        """Return bounded, content-free diagnostics for one WebSocket stream."""
+
+        now = time.monotonic()
+        meta: dict[str, Any] = {
+            "status": str(status),
+            "audioBytesSent": max(0, int(self._audio_bytes_sent)),
+            "providerMessageCount": max(0, int(self._provider_message_count)),
+            "finalUtteranceCount": max(0, int(self._final_utterance_count)),
+        }
+        connection_age_ms = self._elapsed_ms(
+            self._connected_at_monotonic,
+            now=now,
+        )
+        if connection_age_ms is not None:
+            meta["connectionAgeMs"] = connection_age_ms
+        finalize_wait_ms = self._elapsed_ms(
+            self._eos_sent_at_monotonic,
+            now=now,
+        )
+        if finalize_wait_ms is not None:
+            meta["finalizeWaitMs"] = finalize_wait_ms
+        last_message_ago_ms = self._elapsed_ms(
+            self._last_provider_message_at_monotonic,
+            now=now,
+        )
+        if last_message_ago_ms is not None:
+            meta["lastProviderMessageAgoMs"] = last_message_ago_ms
+        if isinstance(close_code, int) and 1000 <= close_code <= 4999:
+            meta["provider_error_code"] = str(close_code)
+        if error_type:
+            # Keep only the exception class. Exception messages can contain an
+            # authenticated URL and therefore must never enter diagnostics.
+            normalized_error_type = str(error_type).strip()
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,119}", normalized_error_type):
+                meta["errorType"] = normalized_error_type
+            else:
+                meta["errorType"] = "WebSocketError"
+        return meta
+
+    @staticmethod
+    def _websocket_exception_type(
+        ws: aiohttp.ClientWebSocketResponse,
+    ) -> str:
+        exception_getter = getattr(ws, "exception", None)
+        if not callable(exception_getter):
+            return ""
+        try:
+            exception = exception_getter()
+        except Exception as exc:
+            return type(exc).__name__
+        return type(exception).__name__ if exception is not None else ""
 
     def _ws_url(self) -> str:
         params = {
@@ -445,6 +517,11 @@ class ModulateRealtimeSTTService(FrameProcessor):
                 self._connect_failed = False
                 self._terminal_error_emitted = False
                 self._audio_bytes_sent = 0
+                self._connected_at_monotonic = None
+                self._eos_sent_at_monotonic = None
+                self._last_provider_message_at_monotonic = None
+                self._provider_message_count = 0
+                self._final_utterance_count = 0
                 self._close_requested = False
                 self._local_close_requested = False
                 self._stream_closed = False
@@ -493,7 +570,12 @@ class ModulateRealtimeSTTService(FrameProcessor):
                 # or otherwise expose this URL.
                 websocket = await session.ws_connect(
                     self._ws_url(),
-                    heartbeat=20,
+                    # Modulate's own examples do not enable a client heartbeat.
+                    # aiohttp gives heartbeat=20 only ten seconds for the PONG;
+                    # a provider that is still finalizing can miss that deadline
+                    # and aiohttp then turns the pending request into 1006.
+                    # The explicit final-response timeout below bounds shutdown.
+                    heartbeat=None,
                     timeout=30,
                     max_msg_size=_MAX_RESPONSE_BYTES,
                 )
@@ -501,11 +583,20 @@ class ModulateRealtimeSTTService(FrameProcessor):
                     await websocket.close()
                     return False
                 self._ws = websocket
+                self._connected_at_monotonic = time.monotonic()
                 self._receive_task = asyncio.create_task(
                     self._receive_responses(direction),
                     name="modulate_realtime_receive",
                 )
-                logger.info("Modulate multilingual realtime websocket connected")
+                logger.bind(
+                    component="pipeline",
+                    event="modulate.realtime.connected",
+                    workflow="live_mic",
+                    stage="provider_connect",
+                    provider="modulate",
+                    outcome="success",
+                    meta=self._lifecycle_meta(status="connected"),
+                ).info("Modulate multilingual realtime websocket connected")
                 return True
             except asyncio.CancelledError:
                 if websocket and not websocket.closed:
@@ -517,6 +608,8 @@ class ModulateRealtimeSTTService(FrameProcessor):
                 return False
 
     async def _handle_response(self, raw: str, direction: FrameDirection) -> bool:
+        self._provider_message_count += 1
+        self._last_provider_message_at_monotonic = time.monotonic()
         try:
             payload = json.loads(raw)
         except Exception:
@@ -528,6 +621,7 @@ class ModulateRealtimeSTTService(FrameProcessor):
 
         message_type = str(payload.get("type") or "").strip().lower()
         if message_type == "utterance":
+            self._final_utterance_count += 1
             utterance = payload.get("utterance")
             text = (
                 str(utterance.get("text") or "").strip()
@@ -555,6 +649,24 @@ class ModulateRealtimeSTTService(FrameProcessor):
             return False
         if message_type == "done":
             self._done_received = True
+            meta = self._lifecycle_meta(status="done_received")
+            duration_ms = payload.get("duration_ms")
+            if (
+                isinstance(duration_ms, (int, float))
+                and not isinstance(duration_ms, bool)
+                and math.isfinite(float(duration_ms))
+                and duration_ms >= 0
+            ):
+                meta["providerDurationMs"] = round(float(duration_ms), 3)
+            logger.bind(
+                component="pipeline",
+                event="modulate.realtime.done_received",
+                workflow="live_mic",
+                stage="provider_finalize",
+                provider="modulate",
+                outcome="success",
+                meta=meta,
+            ).debug("Modulate realtime final done message received")
             self._terminal_event.set()
             return True
         if message_type == "error":
@@ -597,6 +709,20 @@ class ModulateRealtimeSTTService(FrameProcessor):
                     candidate = getattr(ws, "close_code", None)
                     if isinstance(candidate, int) and 1000 <= candidate <= 4999:
                         close_code = int(candidate)
+                error_type = self._websocket_exception_type(ws)
+                logger.bind(
+                    component="pipeline",
+                    event="modulate.realtime.closed_before_done",
+                    workflow="live_mic",
+                    stage="provider_finalize",
+                    provider="modulate",
+                    outcome="failure",
+                    meta=self._lifecycle_meta(
+                        status="closed_before_done",
+                        close_code=close_code,
+                        error_type=error_type,
+                    ),
+                ).debug("Modulate realtime websocket closed before final done")
                 detail = "websocket closed before the final done message"
                 if close_code == 1011:
                     # RFC 6455 defines 1011 as a server-side unexpected
@@ -639,6 +765,16 @@ class ModulateRealtimeSTTService(FrameProcessor):
                     try:
                         await ws.send_str("")
                         self._eos_sent = True
+                        self._eos_sent_at_monotonic = time.monotonic()
+                        logger.bind(
+                            component="pipeline",
+                            event="modulate.realtime.eos_sent",
+                            workflow="live_mic",
+                            stage="provider_finalize",
+                            provider="modulate",
+                            outcome="started",
+                            meta=self._lifecycle_meta(status="eos_sent"),
+                        ).debug("Modulate realtime end-of-stream signal sent")
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
@@ -669,6 +805,17 @@ class ModulateRealtimeSTTService(FrameProcessor):
                             self._terminal_event.wait(), timeout=self._final_timeout_secs
                         )
                     except asyncio.TimeoutError:
+                        logger.bind(
+                            component="pipeline",
+                            event="modulate.realtime.final_timeout",
+                            workflow="live_mic",
+                            stage="provider_finalize",
+                            provider="modulate",
+                            outcome="failure",
+                            meta=self._lifecycle_meta(status="final_timeout"),
+                        ).warning(
+                            "Modulate realtime final response timed out"
+                        )
                         await self._emit_error(
                             "timed out waiting for the final transcript", direction
                         )
@@ -705,6 +852,27 @@ class ModulateRealtimeSTTService(FrameProcessor):
                     self._ws = None
                     self._stream_closed = True
                     self._terminal_event.set()
+                    if self._done_received:
+                        status = "closed_after_done"
+                        outcome = "success"
+                    elif self._terminal_error_emitted:
+                        status = "closed_after_error"
+                        outcome = "failure"
+                    elif wait_for_final and self._audio_bytes_sent == 0:
+                        status = "closed_empty"
+                        outcome = "success"
+                    else:
+                        status = "closed_without_final_wait"
+                        outcome = "cancelled"
+                    logger.bind(
+                        component="pipeline",
+                        event="modulate.realtime.closed",
+                        workflow="live_mic",
+                        stage="provider_cleanup",
+                        provider="modulate",
+                        outcome=outcome,
+                        meta=self._lifecycle_meta(status=status),
+                    ).debug("Modulate realtime websocket cleanup complete")
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)

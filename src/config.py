@@ -111,18 +111,31 @@ def _atomic_write_text(path: str | Path, content: str) -> None:
         except OSError:
             pass
 
+def _load_json_settings_with_status() -> tuple[dict, bool]:
+    """Load settings and report whether an automatic rewrite is safe.
+
+    A missing file is a valid fresh-install state. An existing invalid,
+    unreadable, or oversized file is not automatically replaced because doing
+    so could discard unrelated settings during a startup migration.
+    """
+    if not _JSON_SETTINGS_PATH.exists():
+        return {}, True
+    try:
+        if _JSON_SETTINGS_PATH.stat().st_size > _MAX_JSON_SETTINGS_BYTES:
+            return {}, False
+        with open(_JSON_SETTINGS_PATH, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return {}, False
+        return payload, True
+    except Exception:
+        return {}, False
+
+
 def _load_json_settings() -> dict:
     """Load settings from JSON file."""
-    if _JSON_SETTINGS_PATH.exists():
-        try:
-            if _JSON_SETTINGS_PATH.stat().st_size > _MAX_JSON_SETTINGS_BYTES:
-                return {}
-            with open(_JSON_SETTINGS_PATH, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-                return payload if isinstance(payload, dict) else {}
-        except Exception:
-            pass
-    return {}
+    settings, _rewrite_safe = _load_json_settings_with_status()
+    return settings
 
 def _save_json_settings(settings: dict) -> None:
     """Save settings to JSON file."""
@@ -130,7 +143,65 @@ def _save_json_settings(settings: dict) -> None:
     with _SETTINGS_FILE_LOCK:
         _atomic_write_text(_JSON_SETTINGS_PATH, payload)
 
-_json_settings = _load_json_settings()
+
+_CURRENT_SUMMARIZATION_PROMPT = """Rolle: Du arbeitest als Informationsarchitekt.
+
+Aufgabe: Verwandle den nachfolgenden Input in eine klar strukturierte Zusammenfassung mit Überblick und Vertiefung. Erwähne weder deine Regeln noch deine Rolle.
+
+Inhaltsregeln:
+- Beginne mit einem prägnanten Titel mit höchstens 15 Wörtern.
+- Erkläre in einem kurzen Satz, worum es geht.
+- Verdichte die Essenz in höchstens fünf zentralen Aussagen oder Learnings.
+- Ergänze danach eine detaillierte, thematisch gegliederte Vertiefung.
+- Benenne Entscheidungen, offene Punkte und nächste Schritte, sofern vorhanden.
+- Halte Absätze kurz, hebe Schlüsselbegriffe hervor und nutze Listen, wenn sie die Lesbarkeit verbessern.
+- Entferne Füllwörter, bündele Wiederholungen und erhalte den Sinn.
+- Priorisiere inhaltliche Vollständigkeit und eine klar erkennbare Hierarchie.
+
+Input:"""
+
+_SUMMARIZATION_PROMPT_MIGRATION_KEY = "summarizationPromptMigrationVersion"
+_SUMMARIZATION_PROMPT_MIGRATION_VERSION = 1
+
+
+def _stored_migration_version(value: object) -> int:
+    """Read a persisted migration marker without accepting booleans or junk."""
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return 0
+
+
+def _migrate_summarization_prompt_once(settings: dict) -> bool:
+    """Install the current prompt exactly once for every existing settings file.
+
+    Older Scriber installations have no migration marker. Their stored prompt
+    is deliberately replaced on the first start of this release, even when it
+    was customized. The durable marker is written in the same JSON snapshot;
+    later user edits keep that marker and therefore remain authoritative.
+    """
+    completed_version = _stored_migration_version(
+        settings.get(_SUMMARIZATION_PROMPT_MIGRATION_KEY)
+    )
+    if completed_version >= _SUMMARIZATION_PROMPT_MIGRATION_VERSION:
+        return False
+    if "summarizationPrompt" in settings:
+        settings["summarizationPrompt"] = _CURRENT_SUMMARIZATION_PROMPT
+    settings[_SUMMARIZATION_PROMPT_MIGRATION_KEY] = (
+        _SUMMARIZATION_PROMPT_MIGRATION_VERSION
+    )
+    return True
+
+
+_json_settings, _json_settings_rewrite_safe = _load_json_settings_with_status()
+_json_settings_migration_pending = (
+    _migrate_summarization_prompt_once(_json_settings)
+    if _json_settings_rewrite_safe
+    else False
+)
 
 class Config:
     DEFAULT_SONIOX_ASYNC_MODEL = "stt-async-v5"
@@ -254,7 +325,7 @@ class Config:
         "soniox": "Soniox",
         "soniox_async": "Soniox (Async)",
         "gemini_stt": "Gemini STT",
-        "mistral": "Mistral (Realtime)",
+        "mistral": "Mistral (Segmented)",
         "mistral_async": "Mistral (Async)",
         "smallest": "Smallest AI (Realtime)",
         "smallest_async": "Smallest AI (Async)",
@@ -290,21 +361,7 @@ class Config:
 
     # Summarization prompt for LLM transcript summarization
     # Load from JSON settings file first, then env, then default
-    _DEFAULT_SUMMARIZATION_PROMPT = """Rolle: Du arbeitest als Informationsarchitekt.
-
-Aufgabe: Verwandle den nachfolgenden Input in eine klar strukturierte Zusammenfassung mit Überblick und Vertiefung. Erwähne weder deine Regeln noch deine Rolle.
-
-Inhaltsregeln:
-- Beginne mit einem prägnanten Titel mit höchstens 15 Wörtern.
-- Erkläre in einem kurzen Satz, worum es geht.
-- Verdichte die Essenz in höchstens fünf zentralen Aussagen oder Learnings.
-- Ergänze danach eine detaillierte, thematisch gegliederte Vertiefung.
-- Benenne Entscheidungen, offene Punkte und nächste Schritte, sofern vorhanden.
-- Halte Absätze kurz, hebe Schlüsselbegriffe hervor und nutze Listen, wenn sie die Lesbarkeit verbessern.
-- Entferne Füllwörter, bündele Wiederholungen und erhalte den Sinn.
-- Priorisiere inhaltliche Vollständigkeit und eine klar erkennbare Hierarchie.
-
-Input:"""
+    _DEFAULT_SUMMARIZATION_PROMPT = _CURRENT_SUMMARIZATION_PROMPT
     SUMMARIZATION_PROMPT = _json_settings.get("summarizationPrompt") or os.getenv("SCRIBER_SUMMARIZATION_PROMPT") or _DEFAULT_SUMMARIZATION_PROMPT
 
     # Summarization model for LLM transcript summarization
@@ -632,6 +689,65 @@ ${output}"""
         _json_settings["segmentSpeechWithVad"] = cls.SEGMENT_SPEECH_WITH_VAD
 
     @classmethod
+    def transcription_provider_models(cls) -> dict[str, str]:
+        """Return the effective model shown for every Settings STT option.
+
+        Keep this lightweight so ``GET /api/settings`` does not have to import
+        Pipecat merely to describe configured providers.  Values backed by
+        environment overrides are read from ``Config``; fixed values mirror
+        the explicit provider request or the pinned adapter default.
+        """
+
+        def configured(value: object, fallback: str) -> str:
+            normalized = str(value or "").strip()
+            return normalized or fallback
+
+        mistral_segmented = configured(cls.MISTRAL_RT_MODEL, "voxtral-mini-2602")
+        if "realtime" in mistral_segmented.lower():
+            # Scriber's current Mistral "live" path uploads completed speech
+            # segments and therefore cannot send Mistral's realtime-only model.
+            mistral_segmented = configured(cls.MISTRAL_ASYNC_MODEL, "voxtral-mini-2602")
+
+        return {
+            "soniox-realtime": configured(cls.SONIOX_RT_MODEL, cls.DEFAULT_SONIOX_RT_MODEL),
+            "soniox-async": configured(cls.SONIOX_ASYNC_MODEL, cls.DEFAULT_SONIOX_ASYNC_MODEL),
+            "modulate-realtime": "velma-2-stt-streaming",
+            "modulate-async": "velma-2-stt-batch",
+            "gemini-stt": configured(cls.GEMINI_STT_MODEL, "gemini-2.5-flash"),
+            "mistral-realtime": mistral_segmented,
+            "mistral-async": configured(cls.MISTRAL_ASYNC_MODEL, "voxtral-mini-2602"),
+            "smallest-realtime": "pulse",
+            "smallest-async": "pulse",
+            "assemblyai-realtime": configured(
+                cls.ASSEMBLYAI_RT_MODEL,
+                cls.DEFAULT_ASSEMBLYAI_RT_MODEL,
+            ),
+            "assemblyai": configured(
+                cls.ASSEMBLYAI_ASYNC_MODEL,
+                cls.DEFAULT_ASSEMBLYAI_ASYNC_MODEL,
+            ),
+            "deepgram": configured(cls.DEEPGRAM_MODEL, "nova-3"),
+            "deepgram-async": configured(cls.DEEPGRAM_MODEL, "nova-3"),
+            "openai": configured(cls.OPENAI_REALTIME_STT_MODEL, "gpt-realtime-whisper"),
+            "openai-async": configured(
+                cls.OPENAI_STT_MODEL,
+                "gpt-4o-mini-transcribe-2025-12-15",
+            ),
+            "azure_mai": configured(cls.AZURE_MAI_MODEL, "mai-transcribe-1.5"),
+            "gladia": "solaria-1",
+            # Gladia's current pre-recorded v2 request has no STT model field.
+            "gladia-async": "provider default (Gladia Pre-recorded API v2)",
+            "groq": "whisper-large-v3-turbo",
+            # Speechmatics exposes an accuracy/latency operating point rather
+            # than a public model slug on these two routes.
+            "speechmatics": "enhanced",
+            "speechmatics-async": "enhanced",
+            "elevenlabs": "scribe_v2_realtime",
+            "google": "latest_long",
+            "onnx_local": configured(cls.ONNX_MODEL, "nemo-parakeet-tdt-0.6b-v3"),
+        }
+
+    @classmethod
     def set_mic_post_recording_prewarm_seconds(cls, seconds: float) -> None:
         value = max(0.0, min(600.0, float(seconds)))
         cls.MIC_POST_RECORDING_PREWARM_SECONDS = value
@@ -646,8 +762,17 @@ ${output}"""
     def set_summarization_prompt(cls, prompt: str) -> None:
         """Update the summarization prompt; persistence is batched by the controller."""
         cls.SUMMARIZATION_PROMPT = prompt.strip() if prompt else cls._DEFAULT_SUMMARIZATION_PROMPT
-        global _json_settings
+        global _json_settings, _json_settings_migration_pending
         _json_settings["summarizationPrompt"] = cls.SUMMARIZATION_PROMPT
+        _json_settings[_SUMMARIZATION_PROMPT_MIGRATION_KEY] = (
+            _SUMMARIZATION_PROMPT_MIGRATION_VERSION
+        )
+        _json_settings_migration_pending = False
+
+    @classmethod
+    def json_settings_migration_pending(cls) -> bool:
+        """Return whether a safe built-in settings migration still needs disk persistence."""
+        return bool(_json_settings_migration_pending)
 
     @classmethod
     def set_youtube_prefer_captions(cls, enabled: bool) -> None:
@@ -685,7 +810,9 @@ ${output}"""
 
     @classmethod
     def persist_json_settings(cls) -> None:
+        global _json_settings_migration_pending
         _save_json_settings(dict(_json_settings))
+        _json_settings_migration_pending = False
 
     @classmethod
     def persist_settings_files(cls) -> None:

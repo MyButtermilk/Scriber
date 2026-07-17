@@ -41,6 +41,34 @@ def _read_fresh_shortcut_config(tmp_path: Path) -> dict[str, str]:
     return json.loads(result.stdout.strip())
 
 
+def _read_fresh_summary_prompt_config(
+    tmp_path: Path,
+    *,
+    persist: bool,
+) -> dict[str, object]:
+    env = os.environ.copy()
+    env["SCRIBER_DATA_DIR"] = str(tmp_path)
+    env["SCRIBER_SKIP_LEGACY_DATA_MIGRATION"] = "1"
+    code = (
+        "import json; import src.config as module; "
+        "pending_before = module.Config.json_settings_migration_pending(); "
+        + ("module.Config.persist_json_settings(); " if persist else "")
+        + "print(json.dumps({"
+        "'prompt': module.Config.SUMMARIZATION_PROMPT, "
+        "'pendingBefore': pending_before, "
+        "'pendingAfter': module.Config.json_settings_migration_pending()}))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(result.stdout.strip())
+
+
 def test_fresh_install_shortcut_defaults(tmp_path):
     assert _read_fresh_shortcut_config(tmp_path) == {
         "live": "ctrl+shift+d",
@@ -74,6 +102,108 @@ def test_numeric_env_helpers_fall_back_and_clamp(monkeypatch):
     monkeypatch.setenv("TEST_SCRIBER_FLOAT", "-4")
     assert config_module._env_int("TEST_SCRIBER_INT", 12, minimum=1, maximum=20) == 20
     assert config_module._env_float("TEST_SCRIBER_FLOAT", 2.5, minimum=0.0, maximum=5.0) == 0.0
+
+
+def test_older_install_summary_prompt_is_replaced_exactly_once():
+    old_custom_prompt = "Mein alter eigener Prompt mit Markdown-Ausgabe."
+    settings = {"summarizationPrompt": old_custom_prompt, "unrelated": True}
+
+    assert config_module._migrate_summarization_prompt_once(settings) is True
+    assert settings["summarizationPrompt"] == config_module._CURRENT_SUMMARIZATION_PROMPT
+    assert settings[config_module._SUMMARIZATION_PROMPT_MIGRATION_KEY] == (
+        config_module._SUMMARIZATION_PROMPT_MIGRATION_VERSION
+    )
+    assert settings["unrelated"] is True
+
+    settings["summarizationPrompt"] = "Spätere bewusste Nutzeränderung"
+    assert config_module._migrate_summarization_prompt_once(settings) is False
+    assert settings["summarizationPrompt"] == "Spätere bewusste Nutzeränderung"
+
+
+def test_fresh_install_marks_prompt_migration_without_storing_a_prompt():
+    settings = {}
+
+    assert config_module._migrate_summarization_prompt_once(settings) is True
+    assert "summarizationPrompt" not in settings
+    assert settings[config_module._SUMMARIZATION_PROMPT_MIGRATION_KEY] == 1
+
+
+@pytest.mark.parametrize("stored_version", [1, "1", 2, 99])
+def test_completed_summary_prompt_migration_preserves_user_prompt(stored_version):
+    settings = {
+        "summarizationPrompt": "Spätere bewusste Nutzeränderung",
+        config_module._SUMMARIZATION_PROMPT_MIGRATION_KEY: stored_version,
+    }
+
+    assert config_module._migrate_summarization_prompt_once(settings) is False
+    assert settings["summarizationPrompt"] == "Spätere bewusste Nutzeränderung"
+
+
+@pytest.mark.parametrize("invalid_marker", [None, True, -1, "invalid"])
+def test_invalid_summary_prompt_migration_marker_is_treated_as_not_completed(
+    invalid_marker,
+):
+    settings = {
+        "summarizationPrompt": "Alter Prompt",
+        config_module._SUMMARIZATION_PROMPT_MIGRATION_KEY: invalid_marker,
+    }
+
+    assert config_module._migrate_summarization_prompt_once(settings) is True
+    assert settings["summarizationPrompt"] == config_module._CURRENT_SUMMARIZATION_PROMPT
+    assert settings[config_module._SUMMARIZATION_PROMPT_MIGRATION_KEY] == 1
+
+
+def test_user_prompt_edit_keeps_completed_migration_marker(monkeypatch):
+    marker_key = config_module._SUMMARIZATION_PROMPT_MIGRATION_KEY
+    monkeypatch.setattr(
+        config_module,
+        "_json_settings",
+        {marker_key: config_module._SUMMARIZATION_PROMPT_MIGRATION_VERSION},
+    )
+    monkeypatch.setattr(config_module, "_json_settings_migration_pending", False)
+    monkeypatch.setattr(
+        Config,
+        "SUMMARIZATION_PROMPT",
+        config_module._CURRENT_SUMMARIZATION_PROMPT,
+    )
+
+    Config.set_summarization_prompt("Mein später angepasster Prompt")
+
+    assert config_module._json_settings["summarizationPrompt"] == (
+        "Mein später angepasster Prompt"
+    )
+    assert config_module._json_settings[marker_key] == 1
+    assert Config.json_settings_migration_pending() is False
+
+
+def test_prompt_upgrade_migrates_once_across_real_process_starts(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"summarizationPrompt": "Alter installierter Prompt"}),
+        encoding="utf-8",
+    )
+
+    first_start = _read_fresh_summary_prompt_config(tmp_path, persist=True)
+
+    assert first_start == {
+        "prompt": config_module._CURRENT_SUMMARIZATION_PROMPT,
+        "pendingBefore": True,
+        "pendingAfter": False,
+    }
+    persisted = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert persisted["summarizationPrompt"] == config_module._CURRENT_SUMMARIZATION_PROMPT
+    assert persisted[config_module._SUMMARIZATION_PROMPT_MIGRATION_KEY] == 1
+
+    persisted["summarizationPrompt"] = "Später vom Nutzer angepasster Prompt"
+    settings_path.write_text(json.dumps(persisted), encoding="utf-8")
+
+    second_start = _read_fresh_summary_prompt_config(tmp_path, persist=False)
+
+    assert second_start == {
+        "prompt": "Später vom Nutzer angepasster Prompt",
+        "pendingBefore": False,
+        "pendingAfter": False,
+    }
 
 
 def test_versioned_model_env_upgrades_legacy_dotenv_default(monkeypatch):
@@ -125,9 +255,24 @@ def test_json_settings_loader_rejects_oversized_or_non_object_payload(monkeypatc
     monkeypatch.setattr(config_module, "_JSON_SETTINGS_PATH", target)
     target.write_bytes(b"x" * (config_module._MAX_JSON_SETTINGS_BYTES + 1))
     assert config_module._load_json_settings() == {}
+    assert config_module._load_json_settings_with_status() == ({}, False)
 
     target.write_text('["not", "an", "object"]', encoding="utf-8")
     assert config_module._load_json_settings() == {}
+    assert config_module._load_json_settings_with_status() == ({}, False)
+
+
+def test_missing_or_valid_json_settings_allow_automatic_migration(monkeypatch, tmp_path):
+    target = tmp_path / "settings.json"
+    monkeypatch.setattr(config_module, "_JSON_SETTINGS_PATH", target)
+    assert config_module._load_json_settings_with_status() == ({}, True)
+
+    target.write_text('{"summarizationPrompt": "old"}', encoding="utf-8")
+    assert config_module._load_json_settings_with_status() == (
+        {"summarizationPrompt": "old"},
+        True,
+    )
+
 
 class TestConfig(unittest.TestCase):
     def test_default_values(self):
@@ -150,6 +295,7 @@ class TestConfig(unittest.TestCase):
         self.assertIn("mistral_async", Config.SERVICE_API_KEY_MAP)
         self.assertIn("mistral", Config.SERVICE_LABELS)
         self.assertIn("mistral_async", Config.SERVICE_LABELS)
+        self.assertEqual(Config.SERVICE_LABELS["mistral"], "Mistral (Segmented)")
 
     def test_smallest_service_mapping_exists(self):
         self.assertIn("smallest", Config.SERVICE_API_KEY_MAP)
@@ -342,6 +488,31 @@ def test_persist_to_env_file_includes_vad_segmentation_setting(monkeypatch, tmp_
     assert "SCRIBER_SEGMENT_SPEECH_WITH_VAD=1" in target.read_text(encoding="utf-8")
 
 
+def test_transcription_provider_models_expose_effective_provider_names(monkeypatch):
+    monkeypatch.setattr(Config, "SONIOX_RT_MODEL", "stt-rt-custom")
+    monkeypatch.setattr(Config, "SONIOX_ASYNC_MODEL", "stt-async-custom")
+    monkeypatch.setattr(
+        Config,
+        "MISTRAL_RT_MODEL",
+        "voxtral-mini-transcribe-realtime-2602",
+    )
+    monkeypatch.setattr(Config, "MISTRAL_ASYNC_MODEL", "voxtral-mini-2602")
+    monkeypatch.setattr(Config, "OPENAI_REALTIME_STT_MODEL", "realtime-custom")
+
+    models = Config.transcription_provider_models()
+
+    assert models["soniox-realtime"] == "stt-rt-custom"
+    assert models["soniox-async"] == "stt-async-custom"
+    assert models["modulate-realtime"] == "velma-2-stt-streaming"
+    assert models["modulate-async"] == "velma-2-stt-batch"
+    assert models["mistral-realtime"] == "voxtral-mini-2602"
+    assert models["openai"] == "realtime-custom"
+    assert models["google"] == "latest_long"
+    assert models["groq"] == "whisper-large-v3-turbo"
+    assert models["speechmatics"] == "enhanced"
+    assert models["gladia-async"] == "provider default (Gladia Pre-recorded API v2)"
+
+
 def test_persist_to_env_file_includes_youtube_caption_preference(monkeypatch, tmp_path):
     target = tmp_path / ".env"
     monkeypatch.setattr(Config, "YOUTUBE_PREFER_CAPTIONS", False)
@@ -360,6 +531,7 @@ def test_json_setting_setters_are_batched_until_explicit_persist(monkeypatch, tm
         "_atomic_write_text",
         lambda path, content: writes.append((Path(path), content)),
     )
+    monkeypatch.setattr(config_module, "_json_settings_migration_pending", True)
 
     Config.set_post_processing_enabled(False)
     Config.set_post_processing_model("test/model")
@@ -367,8 +539,10 @@ def test_json_setting_setters_are_batched_until_explicit_persist(monkeypatch, tm
     Config.set_youtube_prefer_captions(False)
 
     assert writes == []
+    assert Config.json_settings_migration_pending() is True
     Config.persist_json_settings()
     assert len(writes) == 1
+    assert Config.json_settings_migration_pending() is False
     assert writes[0][0] == target
     assert '"postProcessingModel": "test/model"' in writes[0][1]
     assert '"youtubePreferCaptions": false' in writes[0][1]

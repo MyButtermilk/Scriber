@@ -38,6 +38,7 @@ from src.audio_devices import (
 from src.config import Config
 from src.device_monitor import DeviceMonitor, devices_contain_name, get_device_guard_lock
 from src.core.provider_capabilities import (
+    get_capabilities,
     meeting_max_duration_seconds,
     supports_direct_file_upload,
     supports_five_hour_meeting,
@@ -3724,6 +3725,8 @@ class ScriberWebController:
         self._settings_persist_handle: asyncio.TimerHandle | None = None
         self._settings_persist_task: asyncio.Task | None = None
         self._settings_persist_pending = False
+        self._settings_persist_json_only = False
+        self._settings_persist_active_json_only = False
         self._settings_persist_generation = 0
         self._settings_persist_lock = asyncio.Lock()
         self._settings_update_lock = asyncio.Lock()
@@ -3741,6 +3744,8 @@ class ScriberWebController:
             )
         except Exception:
             self._settings_persist_retry_seconds = 5.0
+        if Config.json_settings_migration_pending():
+            self._schedule_settings_persist(json_only=True)
 
         self._downloads_dir = downloads_dir()
 
@@ -4108,8 +4113,14 @@ class ScriberWebController:
                     self._settings_persist_generation,
                 )
 
-    def _schedule_settings_persist(self) -> None:
-        """Debounce .env writes while keeping in-memory settings immediate."""
+    def _schedule_settings_persist(self, *, json_only: bool = False) -> None:
+        """Debounce settings writes while keeping in-memory settings immediate."""
+        if not self._settings_persist_pending:
+            self._settings_persist_json_only = bool(json_only)
+        elif not json_only:
+            # A normal Settings mutation supersedes a pending JSON-only startup
+            # migration and must persist both the .env and JSON settings files.
+            self._settings_persist_json_only = False
         self._settings_persist_pending = True
         self._settings_persist_generation += 1
         generation = self._settings_persist_generation
@@ -4160,22 +4171,45 @@ class ScriberWebController:
                 # stale generation write a mid-burst snapshot.
                 if selected_generation != self._settings_persist_generation:
                     return
+                json_only = self._settings_persist_json_only
                 self._settings_persist_pending = False
+                self._settings_persist_json_only = False
+                self._settings_persist_active_json_only = json_only
                 try:
-                    await asyncio.to_thread(Config.persist_settings_files)
+                    persist = (
+                        Config.persist_json_settings
+                        if json_only
+                        else Config.persist_settings_files
+                    )
+                    await asyncio.to_thread(persist)
                 except Exception:
+                    self._settings_persist_json_only = (
+                        self._settings_persist_json_only and json_only
+                        if self._settings_persist_pending
+                        else json_only
+                    )
                     self._settings_persist_pending = True
                     raise
+                finally:
+                    self._settings_persist_active_json_only = False
 
     def _flush_settings_persist_sync(self) -> None:
         self._cancel_settings_persist_timer()
         persist_in_flight = self._settings_persist_task is not None and not self._settings_persist_task.done()
         if not self._settings_persist_pending and not persist_in_flight:
             return
+        json_only = (
+            self._settings_persist_json_only
+            if self._settings_persist_pending
+            else self._settings_persist_active_json_only
+        )
         self._settings_persist_pending = False
+        self._settings_persist_json_only = False
         try:
-            Config.persist_settings_files()
+            persist = Config.persist_json_settings if json_only else Config.persist_settings_files
+            persist()
         except Exception:
+            self._settings_persist_json_only = json_only
             self._settings_persist_pending = True
             raise
 
@@ -12445,6 +12479,7 @@ class ScriberWebController:
             "sonioxRegion": Config.SONIOX_REGION,
             "sonioxRealtimeModel": Config.SONIOX_RT_MODEL,
             "sonioxAsyncModel": Config.SONIOX_ASYNC_MODEL,
+            "transcriptionProviderModels": Config.transcription_provider_models(),
             "language": Config.LANGUAGE,
             "micDevice": resolved_mic,
             "favoriteMic": _resolved_favorite or (Config.FAVORITE_MIC or ""),
@@ -12605,6 +12640,22 @@ class ScriberWebController:
 
         if validated_soniox_mode is not None:
             Config.set_soniox_mode(validated_soniox_mode)
+
+        if validated_service is not None or validated_soniox_mode is not None:
+            selected_service = str(Config.DEFAULT_STT_SERVICE or "").strip().lower()
+            selected_is_native_realtime = bool(
+                get_capabilities(selected_service).supports_live_streaming
+                and not (
+                    selected_service == "soniox"
+                    and Config.SONIOX_MODE == "async"
+                )
+            )
+            if selected_is_native_realtime:
+                # A warm analyzer can remain from a previously selected
+                # segmented route. Drop that unused model as soon as Settings
+                # moves to a native provider; the runtime also refuses to
+                # attach or replenish Silero for the session itself.
+                discard_vad_cache_without_importing_pipeline()
 
         if validated_soniox_region is not None:
             Config.set_soniox_region(validated_soniox_region)

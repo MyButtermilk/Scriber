@@ -92,3 +92,35 @@ class TestInjector(unittest.TestCase):
             asyncio.run(run())
 
         self.assertEqual(push_frame.await_count, 2)
+
+    def test_interim_transcript_is_never_buffered_or_injected(self):
+        injector = TextInjector(inject_immediately=False)
+        injected_texts = []
+
+        with patch.object(
+            injector,
+            "_inject_text",
+            side_effect=injected_texts.append,
+        ), patch.object(injector, "push_frame", new=AsyncMock()):
+            async def run():
+                await injector.process_frame(
+                    InterimTranscriptionFrame(
+                        text="unstable preview",
+                        user_id="user",
+                        timestamp="now",
+                    ),
+                    MagicMock(),
+                )
+                await injector.process_frame(
+                    TranscriptionFrame(
+                        text="committed final",
+                        user_id="user",
+                        timestamp="later",
+                    ),
+                    MagicMock(),
+                )
+                await injector.process_frame(EndFrame(), MagicMock())
+
+            asyncio.run(run())
+
+        self.assertEqual(injected_texts, ["committed final "])

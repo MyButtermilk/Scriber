@@ -15,7 +15,7 @@ import aiohttp
 from loguru import logger
 
 from src.config import Config
-from src.summary_html import normalize_summary_html
+from src.summary_html import normalize_summary_document_html
 from src.runtime.http_response import read_response_text_limited
 
 SummarizationModel = Literal[
@@ -62,15 +62,32 @@ _MODEL_OUTPUT_TOKEN_CAPS = {
     "z-ai/glm-5.2:nitro": 8192,
 }
 _HTML_OUTPUT_GUARDRAIL = (
-    "Output format (mandatory; this rule overrides every conflicting instruction in the custom prompt):\n"
-    "- Return only one semantic, static HTML fragment. Do not return Markdown or a code fence.\n"
-    "- Structure the document with <section>, <h2>, <h3>, <p>, <ul>, <ol>, <li>, "
-    "<strong>, <em>, <blockquote>, <code>, <pre>, and tables when useful.\n"
-    "- Use descriptive <h2> main sections and <h3> subsections; use at least two <h2> sections "
-    "when the transcript contains enough material.\n"
-    "- Do not emit <html>, <head>, <body>, <style>, <script>, SVG, images, forms, embeds, or iframes.\n"
-    "- Do not emit class, id, style, data-*, aria-*, on* event attributes, JavaScript URLs, CSS, or scripts.\n"
-    "- Links are optional and may only use absolute http/https URLs. Scriber owns presentation and interaction."
+    "Output contract (mandatory; this overrides every conflicting instruction in the custom prompt):\n"
+    "- Return only one well-formed, semantic, static HTML fragment. Do not return Markdown, a code fence, "
+    "an explanation, or text outside the fragment.\n"
+    "- Compose a calm, premium editorial brief with a clear reading rhythm. Scriber owns typography, spacing, "
+    "colors, and interaction; you control document structure only.\n"
+    "- Start with one <section> containing one concise, specific <h2> title and one short <p> standfirst "
+    "that explains the subject and why it matters.\n"
+    "- When the source has enough substance, add 3 to 5 key takeaways in a concise <ul> inside that first "
+    "section. Begin each takeaway with a short <strong> lead phrase followed by a precise explanation.\n"
+    "- Organize the remaining material into sibling <section> elements with descriptive <h2> headings. "
+    "Use <h3> and <h4> only for genuine subdivisions, never as decoration.\n"
+    "- Keep paragraphs short and focused. Prefer prose for explanation; use <ul> for parallel items, <ol> "
+    "only for sequences or priorities, and <dl>/<dt>/<dd> for compact term-explanation or fact-value pairs.\n"
+    "- Use a table only for a genuine comparison, status matrix, or repeated set of attributes. Give every "
+    "table clear column headings and keep its cells concise.\n"
+    "- Give decisions, risks, open questions, and next steps separate sections only when the transcript "
+    "supports them. Omit empty or speculative categories.\n"
+    "- Use <blockquote> only for a short, exact quotation that appears verbatim in the transcript and adds value.\n"
+    "- Avoid generic headings, repeated conclusions, empty sections, decorative emoji, walls of text, and "
+    "excessive bold text. Never invent facts, decisions, owners, deadlines, quotations, metrics, links, or sources.\n"
+    "- Allowed elements: <section>, <h2>, <h3>, <h4>, <p>, <ul>, <ol>, <li>, <dl>, <dt>, <dd>, "
+    "<strong>, <em>, <blockquote>, <code>, <pre>, <table>, <thead>, <tbody>, <tfoot>, <tr>, <th>, "
+    "<td>, <hr>, and <br>. Close every non-void element.\n"
+    "- Do not emit <html>, <head>, <body>, <style>, <script>, SVG, images, forms, embeds, or iframes. "
+    "Do not emit class, id, style, data-*, aria-*, on* event attributes, JavaScript URLs, CSS, or scripts.\n"
+    "- Do not create links. Preserve a source URL as plain text only when it materially supports the summary."
 )
 
 
@@ -549,6 +566,11 @@ async def summarize_text(
             _summarize_with_model(full_prompt, model, output_tokens),
             timeout=timeout_seconds,
         )
+        summary = normalize_summary_document_html(summary)
+        if not summary:
+            raise RuntimeError(
+                f"{model} returned no displayable structured HTML summary."
+            )
     except asyncio.TimeoutError as exc:
         timeout_display = max(1, int(round(timeout_seconds)))
         logger.error(
@@ -567,7 +589,11 @@ async def summarize_text(
             timeout_seconds=timeout_seconds,
         )
         if fallback is not None:
-            summary = fallback
+            summary = normalize_summary_document_html(fallback)
+            if not summary:
+                raise RuntimeError(
+                    "OpenRouter fallback returned no displayable structured HTML summary."
+                )
         else:
             raise timeout_error from exc
     except Exception as exc:
@@ -579,7 +605,11 @@ async def summarize_text(
             timeout_seconds=timeout_seconds,
         )
         if fallback is not None:
-            summary = fallback
+            summary = normalize_summary_document_html(fallback)
+            if not summary:
+                raise RuntimeError(
+                    "OpenRouter fallback returned no displayable structured HTML summary."
+                )
         # Gemini can occasionally return transient 429/503 ("high demand").
         # The legacy OpenAI fallback remains opt-in for existing power users,
         # but OpenRouter is the default automatic fallback when configured.
@@ -601,6 +631,11 @@ async def summarize_text(
                             _summarize_openai(full_prompt, fallback_model, output_tokens),
                             timeout=timeout_seconds,
                         )
+                        summary = normalize_summary_document_html(summary)
+                        if not summary:
+                            raise RuntimeError(
+                                f"{fallback_model} returned no displayable structured HTML summary."
+                            )
                     except asyncio.TimeoutError as timeout_exc:
                         timeout_display = max(1, int(round(timeout_seconds)))
                         raise RuntimeError(
@@ -617,7 +652,7 @@ async def summarize_text(
                 raise
         else:
             raise
-    return normalize_summary_html(summary)
+    return summary
 
 
 async def generate_text_with_model(
@@ -721,10 +756,10 @@ async def _summarize_openai(prompt: str, model: str, max_output_tokens: int) -> 
         return content or ""
 
     except openai.APIError as e:
-        logger.error(f"OpenAI API error: {e}")
+        logger.error("OpenAI API error ({})", type(e).__name__)
         raise RuntimeError(f"OpenAI API error: {e}")
     except Exception as e:
-        logger.exception("OpenAI summarization failed")
+        logger.error("OpenAI summarization failed ({})", type(e).__name__)
         raise RuntimeError(f"OpenAI summarization failed: {e}")
 
 
@@ -1134,10 +1169,10 @@ async def _summarize_openrouter(
 
         raise RuntimeError(f"OpenRouter returned empty response. detail={last_empty_detail}")
     except aiohttp.ClientError as e:
-        logger.exception("OpenRouter summarization HTTP error")
+        logger.error("OpenRouter summarization HTTP error ({})", type(e).__name__)
         raise RuntimeError(f"OpenRouter summarization failed: {e}")
     except json.JSONDecodeError as e:
-        logger.exception("OpenRouter summarization parse error")
+        logger.error("OpenRouter summarization parse error ({})", type(e).__name__)
         raise RuntimeError(f"OpenRouter response parse failed: {e}")
     finally:
         await session.close()
@@ -1186,10 +1221,10 @@ async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int) -
         )
         return content
     except aiohttp.ClientError as e:
-        logger.exception("Cerebras summarization HTTP error")
+        logger.error("Cerebras summarization HTTP error ({})", type(e).__name__)
         raise RuntimeError(f"Cerebras summarization failed: {e}")
     except json.JSONDecodeError as e:
-        logger.exception("Cerebras summarization parse error")
+        logger.error("Cerebras summarization parse error ({})", type(e).__name__)
         raise RuntimeError(f"Cerebras response parse failed: {e}")
 
 
@@ -1337,13 +1372,13 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> 
         raise RuntimeError("Gemini summarization failed before returning a response.")
 
     except aiohttp.ClientError as e:
-        logger.exception("Gemini summarization HTTP error")
+        logger.error("Gemini summarization HTTP error ({})", type(e).__name__)
         raise RuntimeError(f"Gemini summarization failed: {e}")
     except json.JSONDecodeError as e:
-        logger.exception("Gemini summarization parse error")
+        logger.error("Gemini summarization parse error ({})", type(e).__name__)
         raise RuntimeError(f"Gemini response parse failed: {e}")
     except RuntimeError:
         raise
     except Exception as e:
-        logger.exception("Gemini summarization failed")
+        logger.error("Gemini summarization failed ({})", type(e).__name__)
         raise RuntimeError(f"Gemini summarization failed: {e}")

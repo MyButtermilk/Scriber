@@ -1183,25 +1183,38 @@ identifiers. OpenAI live dictation uses Pipecat's OpenAI Realtime STT service
 with `gpt-realtime-whisper`; full recording/file OpenAI transcription is
 exposed through the dedicated `openai_async` direct adapter.
 
+Live Mic treats interim text as replaceable display-only state. Pipecat
+`InterimTranscriptionFrame` values may be broadcast to the active WebView, but
+the controller and text injector append only final `TranscriptionFrame` values.
+Consequently ElevenLabs manual-commit previews are neither persisted nor
+inserted; only the committed transcript is durable output.
+
 Pipecat/Silero VAD is opt-in through `SCRIBER_SEGMENT_SPEECH_WITH_VAD` and the
-Settings toggle. When disabled, Live Mic neither loads nor attaches Silero;
-HTTP-style providers receive one synthetic recording-wide turn that closes on
-stop, and Soniox SmartTurn is disabled for that session. The Settings write
-does not import the pipeline merely to clear a warm analyzer: a loaded cache is
+Settings toggle for segmented and async Live Mic routes. Native provider
+realtime streams never load, attach, or replenish Silero, regardless of the
+persisted preference; Settings shows the effective switch as off and disabled
+for those selections and discards any unused analyzer warmed for the previous
+provider. When disabled on an eligible route, HTTP-style providers
+receive one synthetic recording-wide turn that closes on stop. The Settings
+write does not import the pipeline merely to clear a warm analyzer: a loaded cache is
 discarded immediately, while a cold or concurrently importing runtime records
 one deferred discard. Cleanup failure is logged without reverting the saved
-preference. When enabled, Silero
-may segment HTTP-style providers at pauses, skip confirmed silent sessions, and
-provide the explicit turn boundaries required by Soniox SmartTurn. If the user
-presses the hotkey while a live streaming provider is still inside an active
-VAD speech turn, Scriber pushes a final `VADUserStoppedSpeakingFrame` before
-pipeline shutdown so Deepgram and ElevenLabs can finalize/commit the last
-transcript. Mistral Live is
-currently a segment-finalized Voxtral transcription path because the bundled
-Pipecat runtime does not expose a Mistral realtime service; if an installed
+preference. When enabled, Silero may segment eligible HTTP-style providers at
+pauses and skip confirmed silent sessions. Live Soniox relies on its native
+semantic endpointing; Meeting Smart Turn is independent. When a native stream
+such as Deepgram or ElevenLabs still needs an explicit final commit at hotkey
+stop, Scriber's recording-wide protocol gate pushes the final
+`VADUserStoppedSpeakingFrame` without loading Silero. Scriber's current Mistral
+Live Mic option is displayed as Mistral Segmented and belongs to the cloud
+async/segmented/batch bucket because
+it is a segment-finalized Voxtral transcription path; the bundled
+Pipecat runtime does not expose a Mistral realtime service. If an installed
 configuration still points `SCRIBER_MISTRAL_RT_MODEL` at Mistral's
 realtime-only model, Scriber maps that segmented live path to the configured
-Voxtral transcribe model instead.
+Voxtral transcribe model instead. Groq is likewise a segmented upload route,
+not a native realtime stream. Both buckets remain ordered by displayed error
+rate. The current-provider card reads exact effective model names from the
+backend; APIs without a selectable model are identified as provider defaults.
 
 AssemblyAI is exposed as both a direct async/batch provider and a realtime
 Pipecat provider. Both default to Universal-3.5-Pro. The async adapter sends
@@ -1217,6 +1230,15 @@ and use the explicit `AIService` lifecycle so terminal audio is flushed before
 an `EndFrame` is forwarded. This contract also applies to Scriber's Mistral,
 Azure MAI, and ONNX service implementations; leaving those fields `NOT_GIVEN`
 creates Pipecat 1.5 runtime warnings and ambiguous updates.
+Modulate realtime sends raw binary audio and the provider-defined empty text
+frame at EOS, accepts only finalized `utterance` messages, and waits for
+`done`. Its aiohttp connection intentionally has no client heartbeat, matching
+the provider example and avoiding aiohttp's half-heartbeat PONG deadline during
+finalization. A dedicated 30-second final-response timeout bounds the provider
+wait; the outer pipeline stop allows 40 seconds so timeout ErrorFrames and
+WebSocket cleanup are not cancelled at the same instant. Content-free lifecycle
+diagnostics record byte/message/final counts and elapsed timings, never audio,
+transcript text, credentials, or authenticated URLs.
 Pipecat's `local-smart-turn` extra is intentionally not installed because its
 Torch/Torchaudio/Transformers dependency chain conflicts with the standard
 ONNX-only local-runtime footprint. The lightweight bundled ONNX
@@ -1224,10 +1246,9 @@ ONNX-only local-runtime footprint. The lightweight bundled ONNX
 `UserIdleProcessor`; Silero remains the bundled VAD path. Pipecat 1.5 analyzers
 are processors rather than transport parameters: live input runs through an
 explicit `VADProcessor`, the optional segmented-HTTP gate remains between VAD
-and STT, and Soniox SmartTurn runs in an explicit `UserTurnProcessor` after STT
-so it sees passthrough audio plus final transcript frames. Startup warming keeps
-at most one unclaimed analyzer of each type; claiming transfers it permanently
-to one recording, and cleaned mutable analyzers are never reused. When warming
+and STT, and native realtime providers do not attach local SmartTurn. Startup
+warming keeps at most one unclaimed analyzer of each type; claiming transfers
+it permanently to one recording, and cleaned mutable analyzers are never reused. When warming
 is enabled, session teardown schedules a background refill with brand-new
 instances so later hotkeys retain the warm-start benefit.
 
@@ -1284,6 +1305,27 @@ sent with `:nitro` variants; `openai/gpt-oss-120b` keeps explicit OpenRouter
 provider ordering through `baseten,cerebras` when selected. OpenRouter remains
 the automatic cross-provider summary fallback when an OpenRouter key is
 configured.
+
+New File and YouTube summaries use a model-independent semantic HTML contract
+appended after the editable content prompt. The contract favors a stable
+editorial brief: an overview with key takeaways, followed by real topic
+sections, with lists, definition lists, and tables used only when the source
+structure warrants them. The backend
+normalizes and allowlist-sanitizes the fragment before storing it with
+`summaryFormat=html`; an empty result or a fragment without the required first
+`section`, `h2` title, and `p` standfirst fails instead of being recorded as a
+completed summary. The WebView applies a second DOMPurify boundary. Model CSS,
+classes, ids, scripts, arbitrary attributes, links, and document wrappers are
+never trusted; URL labels remain plain text. Scriber supplies the warm paper,
+ink, and clay presentation through dedicated light/dark CSS tokens. Existing
+Markdown summaries continue through the legacy renderer. On the first start of
+an installation without `summarizationPromptMigrationVersion`, Scriber replaces
+the previously stored prompt with the current neutral content prompt and writes
+the versioned marker in the same `settings.json` snapshot. This intentionally
+also resets prompts customized in an older Scriber version once, because they
+may still demand Markdown. After the marker exists, later user changes remain
+authoritative and startup never resets them again. The migration persists
+`settings.json` only and cannot rewrite `.env`.
 OpenAI live STT uses Pipecat's OpenAI Realtime STT service plus the explicit
 `openai` SDK and `websockets` dependencies; OpenAI async/batch uses the direct
 Audio Transcriptions HTTP adapter. Groq STT uses Pipecat's `groq` SDK

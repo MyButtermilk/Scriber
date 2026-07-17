@@ -10,12 +10,10 @@ from __future__ import annotations
 from html import escape
 from html.parser import HTMLParser
 import re
-from urllib.parse import urlsplit
 
 
 SUMMARY_HTML_TAGS = frozenset(
     {
-        "a",
         "blockquote",
         "br",
         "code",
@@ -61,21 +59,10 @@ _DROP_WITH_CONTENT_TAGS = frozenset(
     }
 )
 _SUPPORTED_HTML_RE = re.compile(
-    r"</?(?:section|h[1-4]|p|ul|ol|li|blockquote|pre|code|table|thead|tbody|tfoot|tr|th|td|dl|dt|dd|strong|em|a|hr|br)\b",
+    r"</?(?:section|h[1-4]|p|ul|ol|li|blockquote|pre|code|table|thead|tbody|tfoot|tr|th|td|dl|dt|dd|strong|em|hr|br)\b",
     re.IGNORECASE,
 )
 _ANY_HTML_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
-
-
-def _safe_href(value: str) -> str:
-    candidate = (value or "").strip()[:2048]
-    try:
-        parsed = urlsplit(candidate)
-    except ValueError:
-        return ""
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
-        return ""
-    return candidate
 
 
 class _SummaryHtmlSanitizer(HTMLParser):
@@ -102,13 +89,7 @@ class _SummaryHtmlSanitizer(HTMLParser):
         for raw_name, raw_value in attrs:
             name = raw_name.lower()
             value = raw_value or ""
-            if tag == "a" and name == "href":
-                href = _safe_href(value)
-                if href:
-                    safe_attrs.append(f' href="{escape(href, quote=True)}"')
-            elif tag == "a" and name == "title":
-                safe_attrs.append(f' title="{escape(value[:300], quote=True)}"')
-            elif tag in {"th", "td"} and name in {"colspan", "rowspan"}:
+            if tag in {"th", "td"} and name in {"colspan", "rowspan"}:
                 if value.isdigit() and 1 <= int(value) <= 24:
                     safe_attrs.append(f' {name}="{value}"')
             elif tag == "th" and name == "scope" and value.lower() in {"row", "col"}:
@@ -331,3 +312,39 @@ def summary_visible_text(value: str, summary_format: str = "markdown") -> str:
     text = re.sub(r" *\n *", "\n", text)
     text = re.sub(r"\n{2,}", "\n", text)
     return text.strip()
+
+
+_SECTION_LEAD_RE = re.compile(
+    r"^\s*<section>\s*<h2>(?P<title>.*?)</h2>\s*<p>(?P<standfirst>.*?)</p>",
+    re.IGNORECASE | re.DOTALL,
+)
+_UNWRAPPED_LEAD_RE = re.compile(
+    r"^\s*<h2>(?P<title>.*?)</h2>\s*<p>(?P<standfirst>.*?)</p>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def normalize_summary_document_html(value: str) -> str:
+    """Return safe HTML only when it has the minimum premium document shape.
+
+    Markdown drift with a real heading and standfirst is repaired by wrapping
+    the fragment in one section. A plain paragraph, forbidden-only markup, or a
+    section without its required title/standfirst is rejected so callers do not
+    persist an empty or visibly broken summary as completed.
+    """
+    normalized = normalize_summary_html(value)
+    if not normalized:
+        return ""
+
+    match = _SECTION_LEAD_RE.match(normalized)
+    if match is None:
+        match = _UNWRAPPED_LEAD_RE.match(normalized)
+        if match is None:
+            return ""
+        normalized = f"<section>{normalized}</section>"
+
+    if not summary_visible_text(match.group("title"), "html"):
+        return ""
+    if not summary_visible_text(match.group("standfirst"), "html"):
+        return ""
+    return normalized

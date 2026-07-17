@@ -1170,6 +1170,36 @@ def test_attachment_content_disposition_supports_unicode_safely():
 
 
 @pytest.mark.asyncio
+async def test_startup_prompt_migration_persists_json_without_rewriting_env(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "0")
+    monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", False, raising=False)
+    monkeypatch.setattr(
+        web_api.Config,
+        "json_settings_migration_pending",
+        MagicMock(return_value=True),
+    )
+    json_persist = MagicMock()
+    full_persist = MagicMock()
+    monkeypatch.setattr(web_api.Config, "persist_json_settings", json_persist)
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", full_persist)
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    task = ctl._settings_persist_task
+    assert task is not None
+    await task
+
+    json_persist.assert_called_once_with()
+    full_persist.assert_not_called()
+    assert ctl._settings_persist_pending is False
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_update_settings_debounces_env_persistence(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
@@ -1847,6 +1877,46 @@ async def test_update_settings_enabling_vad_does_not_discard_cache(
 
     assert settings["segmentSpeechWithVad"] is True
     assert web_api.Config.SEGMENT_SPEECH_WITH_VAD is True
+    discard_mock.assert_not_called()
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_selecting_native_realtime_provider_discards_unused_vad_cache(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "DEFAULT_STT_SERVICE", "mistral", raising=False)
+    monkeypatch.setattr(web_api.Config, "SONIOX_MODE", "realtime", raising=False)
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", MagicMock())
+    discard_mock = MagicMock()
+    monkeypatch.setattr(web_api, "_discard_vad_cache_impl", discard_mock)
+    monkeypatch.setattr(web_api, "_pipeline_vad_cache_discard_pending", False)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    await ctl.update_settings({"defaultSttService": "modulate"})
+
+    discard_mock.assert_called_once_with()
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_selecting_segmented_provider_keeps_vad_cache_available(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "DEFAULT_STT_SERVICE", "modulate", raising=False)
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", MagicMock())
+    discard_mock = MagicMock()
+    monkeypatch.setattr(web_api, "_discard_vad_cache_impl", discard_mock)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    await ctl.update_settings({"defaultSttService": "mistral"})
+
     discard_mock.assert_not_called()
     ctl.shutdown()
 
@@ -2930,6 +3000,24 @@ async def test_transcript_broadcast_coalesces_interim_but_preserves_finals():
         ("final-2", True),
         ("next-partial", False),
     ]
+
+
+@pytest.mark.asyncio
+async def test_live_mic_persists_only_final_transcript_frames():
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    session_id = "final-only-session"
+    record = _make_record(session_id)
+    ctl._session_id = session_id
+    ctl._current = record
+
+    ctl._on_transcription("unstable preview", False, session_id=session_id)
+    assert record.content_text() == ""
+
+    ctl._on_transcription("committed final", True, session_id=session_id)
+    assert record.content_text() == "committed final"
+
+    await asyncio.sleep(0)
+    ctl.shutdown()
 
 
 @pytest.mark.asyncio

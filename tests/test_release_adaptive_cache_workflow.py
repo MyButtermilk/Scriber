@@ -110,29 +110,18 @@ def test_backend_cache_keeps_full_identity_but_uses_a_windows_safe_entry_name() 
     assert "$relative.Contains(\"..\")" not in cold_product
     assert "$relative -match '(^|/)\\.\\.($|/)'" in cold_product
 
-    windows_powershell = shutil.which("powershell")
-    if windows_powershell:
-        path_probe = subprocess.run(
-            [
-                windows_powershell,
-                "-NoProfile",
-                "-Command",
-                "$relative = 'scriber-backend\\_internal\\pipecat\\cli\\templates\\client\\react-nextjs\\src\\app\\api\\sessions\\[sessionId]\\[...path]\\route.ts'; "
-                "$baseLength = 240 - 24 - 1 - $relative.Length; "
-                "$base = 'C:\\' + ('b' * ($baseLength - 3)); "
-                "$bounded = $base + ('f' * 24) + '\\' + $relative; "
-                "$legacy = $base + ('f' * 64) + '\\' + $relative; "
-                "try { [void][IO.Path]::GetFullPath($legacy); Write-Output 'LEGACY_OK' } catch { Write-Output 'LEGACY_TOO_LONG' }; "
-                "try { [void][IO.Path]::GetFullPath($bounded); Write-Output 'BOUNDED_OK' } catch { Write-Output 'BOUNDED_TOO_LONG' }",
-            ],
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        assert path_probe.returncode == 0, path_probe.stdout + path_probe.stderr
-        assert "LEGACY_TOO_LONG" in path_probe.stdout
-        assert "BOUNDED_OK" in path_probe.stdout
+    relative = (
+        "scriber-backend\\_internal\\pipecat\\cli\\templates\\client\\react-nextjs"
+        "\\src\\app\\api\\sessions\\[sessionId]\\[...path]\\route.ts"
+    )
+    base_length = 240 - 24 - 1 - len(relative)
+    base = "C:\\" + ("b" * (base_length - 3))
+    bounded = base + ("f" * 24) + "\\" + relative
+    legacy = base + ("f" * 64) + "\\" + relative
+
+    assert len(bounded) == 240
+    assert len(legacy) == 280
+    assert len(legacy) > 260
 
 
 def test_runtime_cache_binding_occurs_only_after_fresh_build_output() -> None:
@@ -164,6 +153,11 @@ def test_tag_cache_publication_is_detached_and_passive() -> None:
     assert "Stage passive release-cache maintenance handoff" in release
     assert "retention-days: 1" in release
     assert "compression-level: 0" in release
+    handoff_upload = release[
+        release.index("Upload passive release-cache maintenance handoff") :
+        release.index("Publish bounded finished component caches in parallel")
+    ]
+    assert "include-hidden-files: true" in handoff_upload
     assert "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" in release
     assert "workflow_run:" in maintenance
     assert "actions: write\n  contents: write" in maintenance

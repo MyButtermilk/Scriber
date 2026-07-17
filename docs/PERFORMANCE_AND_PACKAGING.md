@@ -67,9 +67,10 @@ Startup and imports:
   Pipecat processor cleanup. After session teardown, an enabled warmup policy
   replenishes empty slots in the background with fresh analyzer instances.
 - Startup ML analyzer and STT provider prewarm follow Always-On-Mic by default:
-  with `SCRIBER_MIC_ALWAYS_ON=1`, Silero VAD/SmartTurn analyzer setup and the
+  with `SCRIBER_MIC_ALWAYS_ON=1`, eligible segmented/async Silero setup and the
   selected STT provider import are warmed during startup so the hotkey path does
-  not pay that cost. `SCRIBER_PREWARM_MODELS_ON_STARTUP` and
+  not pay that cost. Native realtime selections suppress Silero warmup entirely.
+  `SCRIBER_PREWARM_MODELS_ON_STARTUP` and
   `SCRIBER_PREWARM_STT_ON_STARTUP` remain manual opt-in switches when
   Always-On-Mic is disabled.
 - In Tauri-supervised runtime, Rust owns global hotkeys; the Python `keyboard`
@@ -94,9 +95,10 @@ Live mic:
   that opened that prewarm session. Warm capture reuses that route and skips the
   former duplicate endpoint-inventory and compatibility passes; Rust still
   verifies the endpoint actually opened before exposing prebuffer audio.
-- Live mic attaches Pipecat Silero VAD only when the Settings opt-in is enabled.
-  With VAD off, HTTP-style providers receive one synthetic recording-wide turn
-  and no Silero model is loaded or replenished.
+- Live mic attaches Pipecat Silero VAD only when the Settings opt-in is enabled
+  and the selected route is segmented/async. Native provider realtime streams
+  never attach or replenish it. With VAD off, HTTP-style providers receive one
+  synthetic recording-wide turn and no Silero model is loaded or replenished.
 - Device-name/favorite resolution uses a one-hour fallback TTL because native
   endpoint events and Settings mutations invalidate it immediately. This keeps
   normal pauses between dictations off the PortAudio enumeration path without

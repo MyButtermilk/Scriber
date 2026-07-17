@@ -1109,7 +1109,15 @@ def test_silero_switch_waits_for_the_authoritative_settings_response() -> None:
     assert "setSegmentSpeechWithVad(savedValue);" in handler
     assert "setSegmentSpeechWithVad(previousValue);" in handler
     assert "setSegmentSpeechWithVadSaving(false);" in handler
-    assert "disabled={segmentSpeechWithVadSaving}" in source
+    assert 'selectedProviderModelOption?.group === "cloud_streaming"' in source
+    assert "checked={sileroDisabledForSelectedProvider ? false : segmentSpeechWithVad}" in source
+    assert "disabled={segmentSpeechWithVadSaving || sileroDisabledForSelectedProvider}" in source
+    assert (
+        "Native realtime streams do not need local Silero segmentation. "
+        "The provider stream or recording stop controls finalization."
+    ) in source
+    assert "Optional. Detect pauses for segmented and async transcription." in source
+    assert "Soniox SmartTurn" not in handler
     assert "aria-busy={segmentSpeechWithVadSaving}" in source
 
 
@@ -1583,8 +1591,10 @@ def test_settings_exposes_modulate_final_text_only_realtime_and_batch() -> None:
     assert "const MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT = 4.43;" in settings_source
     assert 'hourlyOption("modulate-realtime", "Modulate.AI Multilingual Realtime", MODULATE_STREAMING_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT, "cloud_streaming", "modulate")' in settings_source
     assert 'hourlyOption("modulate-async", "Modulate.AI Multilingual Batch", MODULATE_BATCH_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT, "cloud_async", "modulate")' in settings_source
-    assert 't("Multilingual streaming shows finalized text only. Scriber does not request partial text or enrichment signals.")' in settings_source
-    assert 't("Multilingual batch returns one final transcript after recording stops. Scriber does not request enrichment signals.")' in settings_source
+    assert 't("Model Name")' in settings_source
+    assert "<strong className=\"font-mono font-semibold" in settings_source
+    assert "Multilingual streaming shows finalized text only." not in settings_source
+    assert "Multilingual batch returns one final transcript" not in settings_source
     assert 'defaultSttService: "modulate"' in settings_source
     assert 'defaultSttService: "modulate_async"' in settings_source
     assert 'apiKeys.modulate = modulateKey;' in settings_source
@@ -1641,6 +1651,8 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
     ]
     assert "cloud_segmented" not in provider_options_source
     assert "Cloud live / segmented" not in settings_source
+    assert 'benchmarkOption("mistral-realtime", "Mistral Segmented", 6.00, 5.2, "cloud_async", "mistral")' in provider_options_source
+    assert 'benchmarkOption("groq", "Groq Segmented", 4.00, 3.7, "cloud_async", "groq")' in provider_options_source
 
     streaming_order = [
         '"elevenlabs"',
@@ -1649,7 +1661,6 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
         '"soniox-realtime"',
         '"google"',
         '"openai"',
-        '"mistral-realtime"',
         '"smallest-realtime"',
         '"deepgram"',
         '"gladia"',
@@ -1668,11 +1679,44 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
         '"openai-async"',
         '"gemini-stt"',
         '"deepgram-async"',
+        '"mistral-realtime"',
     ]
 
     for ordered_values in (streaming_order, async_order):
         positions = [provider_options_source.index(f"({value},") for value in ordered_values]
         assert positions == sorted(positions)
+
+
+def test_settings_uses_effective_provider_models_from_the_backend() -> None:
+    settings_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+    api_types = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts"
+    ).read_text(encoding="utf-8")
+    translations = (
+        REPO_ROOT
+        / "Frontend"
+        / "client"
+        / "src"
+        / "i18n"
+        / "translations"
+        / "de"
+        / "settings.ts"
+    ).read_text(encoding="utf-8")
+
+    assert "transcriptionProviderModels?: Record<string, string>;" in api_types
+    assert "const [transcriptionProviderModels, setTranscriptionProviderModels] = useState<Record<string, string>>({});" in settings_source
+    assert "createProviderModelOptions(localeTag, t, transcriptionProviderModels)" in settings_source
+    assert 'model: providerModels[value] || "",' in settings_source
+    assert "setTranscriptionProviderModels(settings.transcriptionProviderModels || {});" in settings_source
+    assert "setTranscriptionProviderModels(updatedSettings.transcriptionProviderModels || {});" in settings_source
+    assert "{option.model}" in settings_source
+    assert "{selectedProviderModelOption.model}" in settings_source
+    assert 't("Cloud async / segmented / batch")' in settings_source
+    assert '"Model Name": "Modellname"' in translations
+    assert '"Mistral Segmented": "Mistral segmentiert"' in translations
+    assert '"Groq Segmented": "Groq segmentiert"' in translations
 
 
 def test_settings_embeds_local_model_management_in_local_provider_group() -> None:
@@ -1777,6 +1821,29 @@ def test_transcript_detail_uses_typed_rest_queries() -> None:
     assert "(await res.json()) as TranscriptHistoryItem" in source
     assert "query: any" not in source
     assert "const transcript: any" not in source
+
+
+def test_html_summary_uses_app_owned_editorial_theme_in_both_modes() -> None:
+    client_src = REPO_ROOT / "Frontend" / "client" / "src"
+    styles = (client_src / "index.css").read_text(encoding="utf-8")
+    detail = (client_src / "pages" / "TranscriptDetail.tsx").read_text(encoding="utf-8")
+    renderer = (client_src / "components" / "transcript-summary-document.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    for token in (
+        "--summary-surface: #f7f3ea;",
+        "--summary-ink: #292522;",
+        "--summary-accent: #b24c2d;",
+        "--summary-surface: #24211e;",
+        "--summary-ink: #ede4d8;",
+        "--summary-accent: #f19a78;",
+    ):
+        assert token in styles
+    assert '.summary-document[data-summary-format="html"] > section:first-of-type' in styles
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in styles
+    assert 'className="summary-accent-icon w-4 h-4"' in detail
+    assert 'data-summary-format="html"' in renderer
 
 
 def test_responsive_ui_polish_contracts_are_preserved() -> None:

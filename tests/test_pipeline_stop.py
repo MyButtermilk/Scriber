@@ -39,6 +39,7 @@ from src.pipeline import (
     _format_speaker_transcript_tokens,
     _live_analyzer_diagnostics,
     _live_analyzer_requirements,
+    _live_service_uses_native_streaming,
     _live_recording_gate_needed,
     _live_stt_stop_strategy,
     _ordered_live_pipeline_steps,
@@ -70,7 +71,42 @@ def test_live_analyzer_requirements_enable_only_requested_paths(monkeypatch):
     monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
 
     assert _live_analyzer_requirements("azure_mai") == (True, False)
-    assert _live_analyzer_requirements("soniox") == (True, True)
+    assert _live_analyzer_requirements("mistral") == (True, False)
+    assert _live_analyzer_requirements("groq") == (True, False)
+    assert _live_analyzer_requirements("soniox") == (False, False)
+    assert _live_analyzer_requirements("modulate") == (False, False)
+    assert _live_analyzer_requirements("elevenlabs") == (False, False)
+
+
+def test_live_analyzer_requirements_treat_soniox_async_as_non_streaming(monkeypatch):
+    monkeypatch.setattr(Config, "SEGMENT_SPEECH_WITH_VAD", True)
+    monkeypatch.setattr(Config, "SONIOX_MODE", "async")
+
+    assert _live_service_uses_native_streaming("soniox") is False
+    assert _live_analyzer_requirements("soniox") == (True, False)
+
+
+@pytest.mark.parametrize(
+    "service_name",
+    [
+        "soniox",
+        "smallest",
+        "assemblyai_realtime",
+        "google",
+        "deepgram",
+        "openai",
+        "gladia",
+        "speechmatics",
+        "modulate",
+        "elevenlabs",
+    ],
+)
+def test_native_realtime_services_never_attach_silero(monkeypatch, service_name):
+    monkeypatch.setattr(Config, "SEGMENT_SPEECH_WITH_VAD", True)
+    monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
+
+    assert _live_service_uses_native_streaming(service_name) is True
+    assert _live_analyzer_requirements(service_name) == (False, False)
 
 
 def test_live_analyzer_diagnostics_distinguish_disabled_silero_from_gate(monkeypatch):
@@ -83,6 +119,7 @@ def test_live_analyzer_diagnostics_distinguish_disabled_silero_from_gate(monkeyp
         vad_processor=None,
         segmented_gate=gate,
         segmented_provider=False,
+        native_realtime_provider=False,
         stop_strategy=LIVE_STT_STOP_END_FRAME_FINALIZES,
         smart_turn_processor=None,
     )
@@ -90,6 +127,9 @@ def test_live_analyzer_diagnostics_distinguish_disabled_silero_from_gate(monkeyp
     assert diagnostics["sileroVadSettingEnabled"] is False
     assert diagnostics["sileroVadAvailable"] is True
     assert diagnostics["sileroVadAttached"] is False
+    assert diagnostics["sileroVadEffectiveEnabled"] is False
+    assert diagnostics["sileroSuppressedForNativeRealtime"] is False
+    assert diagnostics["nativeRealtimeProvider"] is False
     assert diagnostics["recordingGateAttached"] is True
     assert diagnostics["syntheticRecordingBoundary"] is True
 
@@ -1442,6 +1482,35 @@ async def test_stop_waits_for_start_done_gracefully():
     await pipeline.stop(timeout_secs=0.5)
 
     assert pipeline.task.stop_when_done_called is True
+    assert pipeline.task.cancel_called is False
+
+
+@pytest.mark.parametrize(
+    ("service_name", "expected_timeout"),
+    (("modulate", 40.0), ("smallest", 30.0)),
+)
+@pytest.mark.asyncio
+async def test_default_realtime_stop_budget_gives_only_modulate_finalize_headroom(
+    monkeypatch,
+    service_name,
+    expected_timeout,
+):
+    pipeline = ScriberPipeline(service_name=service_name, on_status_change=None)
+    pipeline.is_active = True
+    pipeline._start_done.clear()
+    pipeline.task = _DummyTask(pipeline._start_done, set_done_on_stop=True)
+    observed_timeouts: list[float] = []
+    real_wait_for = asyncio.wait_for
+
+    async def capture_wait_timeout(awaitable, *, timeout):
+        observed_timeouts.append(float(timeout))
+        return await real_wait_for(awaitable, timeout=1.0)
+
+    monkeypatch.setattr(pipeline_module.asyncio, "wait_for", capture_wait_timeout)
+
+    await pipeline.stop()
+
+    assert observed_timeouts == [expected_timeout]
     assert pipeline.task.cancel_called is False
 
 

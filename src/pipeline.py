@@ -40,6 +40,7 @@ from pipecat.turns.user_turn_processor import UserTurnProcessor
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.utils.time import time_now_iso8601
 
+from src.core.provider_capabilities import get_capabilities
 from src.runtime.media_tools import find_media_tool
 from src.runtime.provider_dependencies import import_provider_runtime_module
 from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
@@ -308,8 +309,13 @@ def _live_service_needs_local_vad(service_name: str) -> bool:
     return normalized in {"openai", "deepgram", "gladia", "elevenlabs"} or _live_service_uses_async_finalization(normalized)
 
 
-def _live_service_uses_smart_turn(service_name: str) -> bool:
-    return str(service_name or "") == "soniox" and Config.SONIOX_MODE == "realtime"
+def _live_service_uses_native_streaming(service_name: str) -> bool:
+    """Whether the active Live Mic route is a provider-native stream."""
+
+    normalized = str(service_name or "").strip().lower()
+    if normalized == "soniox" and Config.SONIOX_MODE == "async":
+        return False
+    return bool(get_capabilities(normalized).supports_live_streaming)
 
 
 LIVE_STT_STOP_VAD_FLUSH_BEFORE_END = "vad_flush_before_end"
@@ -338,17 +344,21 @@ def _live_analyzer_requirements(
     provider_replay: bool = False,
 ) -> tuple[bool, bool]:
     """Return ``(needs_vad, uses_smart_turn)`` for one Live Mic session."""
+    # Provider-native realtime transports own their streaming/session
+    # boundaries.  A persisted segmentation preference must never attach
+    # Silero to them and turn short local pauses into premature provider
+    # commits. The flag remains available for segmented and async routes where
+    # it deliberately creates upload boundaries.
+    if _live_service_uses_native_streaming(service_name):
+        return False, False
+
     vad_enabled = bool(Config.SEGMENT_SPEECH_WITH_VAD)
-    uses_smart_turn = bool(
-        vad_enabled
-        and (provider_replay or _live_service_uses_smart_turn(service_name))
-    )
+    uses_smart_turn = False
     needs_vad = bool(
         vad_enabled
         and (
             segmented_service
             or _live_service_needs_local_vad(service_name)
-            or uses_smart_turn
         )
     )
     return needs_vad, uses_smart_turn
@@ -372,6 +382,7 @@ def _live_analyzer_diagnostics(
     vad_processor: Any,
     segmented_gate: Any,
     segmented_provider: bool,
+    native_realtime_provider: bool,
     stop_strategy: str,
     smart_turn_processor: Any,
 ) -> dict[str, Any]:
@@ -382,6 +393,12 @@ def _live_analyzer_diagnostics(
             HAS_SILERO_VAD and SileroVADAnalyzer is not None
         ),
         "sileroVadAttached": vad_processor is not None,
+        "sileroVadEffectiveEnabled": bool(
+            Config.SEGMENT_SPEECH_WITH_VAD and not native_realtime_provider
+        ),
+        "sileroSuppressedForNativeRealtime": bool(
+            Config.SEGMENT_SPEECH_WITH_VAD and native_realtime_provider
+        ),
         "recordingGateAttached": segmented_gate is not None,
         "syntheticRecordingBoundary": bool(
             segmented_gate is not None
@@ -390,6 +407,7 @@ def _live_analyzer_diagnostics(
             )
         ),
         "segmentedProvider": bool(segmented_provider),
+        "nativeRealtimeProvider": bool(native_realtime_provider),
         "stopStrategy": str(stop_strategy),
         "smartTurnAttached": smart_turn_processor is not None,
     }
@@ -1226,8 +1244,6 @@ from src.cloud_async_stt import (
     transcribe_with_speechmatics_batch,
 )
 from src.modulate_stt import (
-    MODULATE_BATCH_MODEL,
-    MODULATE_STREAMING_MODEL,
     ModulateAsyncProcessor,
     ModulateRealtimeSTTService,
     modulate_transcript_payload_to_text,
@@ -1596,13 +1612,13 @@ class PipecatVadSpeechObserver(FrameProcessor):
 
 
 class SegmentedSTTRecordingGate(FrameProcessor):
-    """Controls whether Pipecat VAD cuts STT audio into multiple live segments.
+    """Supplies recording boundaries without requiring a local VAD analyzer.
 
-    HTTP-style Pipecat STT services such as Groq/OpenAI/ElevenLabs/Mistral use
-    VADUserStarted/VADUserStopped frames to decide when to upload buffered audio. By
-    default Scriber keeps one recording-wide segment so the stop hotkey
-    transcribes the whole dictation. When VAD is disabled, this gate creates the
-    required start/stop frames itself without loading a local analyzer.
+    Segmented upload services use the frames to decide when to submit buffered
+    audio; several native streaming services use the stop frame as an explicit
+    final commit. By default Scriber keeps one recording-wide turn. On eligible
+    segmented routes an attached Silero processor may instead provide multiple
+    boundaries at pauses.
     """
 
     def __init__(
@@ -1866,39 +1882,37 @@ class ScriberPipeline:
             and self.soniox_replay_url is None
             and Config.SONIOX_MODE == "async"
         )
-        mistral_live_model = (Config.MISTRAL_RT_MODEL or "").strip()
-        if "realtime" in mistral_live_model.lower():
-            mistral_live_model = Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602"
+        configured_models = Config.transcription_provider_models()
 
         models: dict[str, str] = {
             "soniox": (
-                Config.SONIOX_ASYNC_MODEL
+                configured_models["soniox-async"]
                 if soniox_async
-                else self.soniox_replay_model or Config.SONIOX_RT_MODEL
+                else self.soniox_replay_model or configured_models["soniox-realtime"]
             ),
-            "soniox_async": Config.SONIOX_ASYNC_MODEL,
-            "mistral": mistral_live_model or Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602",
-            "mistral_async": Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602",
-            "smallest": "pulse",
-            "smallest_async": "pulse",
-            "assemblyai": Config.ASSEMBLYAI_ASYNC_MODEL,
-            "assemblyai_realtime": Config.ASSEMBLYAI_RT_MODEL,
-            "google": "provider-default",
-            "gemini_stt": Config.GEMINI_STT_MODEL,
-            "elevenlabs": "scribe_v2_realtime",
-            "deepgram": Config.DEEPGRAM_MODEL,
-            "deepgram_async": Config.DEEPGRAM_MODEL,
-            "openai": Config.OPENAI_REALTIME_STT_MODEL,
-            "openai_async": Config.OPENAI_STT_MODEL,
-            "azure_mai": Config.AZURE_MAI_MODEL,
-            "gladia": "solaria-1",
-            "gladia_async": "pre-recorded-v2",
-            "groq": "provider-default",
-            "speechmatics": "provider-default",
-            "speechmatics_async": "batch-v2",
-            "modulate": MODULATE_STREAMING_MODEL,
-            "modulate_async": MODULATE_BATCH_MODEL,
-            "onnx_local": Config.ONNX_MODEL,
+            "soniox_async": configured_models["soniox-async"],
+            "mistral": configured_models["mistral-realtime"],
+            "mistral_async": configured_models["mistral-async"],
+            "smallest": configured_models["smallest-realtime"],
+            "smallest_async": configured_models["smallest-async"],
+            "assemblyai": configured_models["assemblyai"],
+            "assemblyai_realtime": configured_models["assemblyai-realtime"],
+            "google": configured_models["google"],
+            "gemini_stt": configured_models["gemini-stt"],
+            "elevenlabs": configured_models["elevenlabs"],
+            "deepgram": configured_models["deepgram"],
+            "deepgram_async": configured_models["deepgram-async"],
+            "openai": configured_models["openai"],
+            "openai_async": configured_models["openai-async"],
+            "azure_mai": configured_models["azure_mai"],
+            "gladia": configured_models["gladia"],
+            "gladia_async": configured_models["gladia-async"],
+            "groq": configured_models["groq"],
+            "speechmatics": configured_models["speechmatics"],
+            "speechmatics_async": configured_models["speechmatics-async"],
+            "modulate": configured_models["modulate-realtime"],
+            "modulate_async": configured_models["modulate-async"],
+            "onnx_local": configured_models["onnx_local"],
         }
         modes: dict[str, str] = {
             "soniox": "batch" if soniox_async else "realtime",
@@ -3048,11 +3062,9 @@ class ScriberPipeline:
                 self._log_stt_runtime_configuration(workload="live_mic")
 
                 vad_analyzer = None
-                # The Settings switch is the master opt-in for local Silero VAD.
-                # When it is off, HTTP-style services still receive one synthetic
-                # recording-wide turn from SegmentedSTTRecordingGate, while async
-                # services finalize normally on stop. Soniox SmartTurn depends on
-                # the same explicit VAD boundaries and is therefore disabled too.
+                # The Settings switch is the master opt-in for local Silero VAD
+                # on segmented/async routes. Provider-native streams always keep
+                # it detached so local pauses cannot force provider commits.
                 needs_vad, uses_smart_turn = _live_analyzer_requirements(
                     self.service_name,
                     segmented_service=isinstance(stt_service, SegmentedSTTService),
@@ -3203,6 +3215,9 @@ class ScriberPipeline:
                     vad_processor=vad_processor,
                     segmented_gate=segmented_gate,
                     segmented_provider=segmented_provider,
+                    native_realtime_provider=_live_service_uses_native_streaming(
+                        self.service_name
+                    ),
                     stop_strategy=stop_strategy,
                     smart_turn_processor=smart_turn_processor,
                 )
@@ -3215,12 +3230,14 @@ class ScriberPipeline:
                     meta=analyzer_diagnostics,
                 ).info(
                     "Live mic analyzer configuration: Silero setting={}, "
-                    "attached={}, available={}; recording gate={}; "
-                    "synthetic boundary={}; segmented provider={}; stop strategy={}; "
+                    "attached={}, effective={}; available={}; native realtime={}; "
+                    "recording gate={}; synthetic boundary={}; segmented provider={}; stop strategy={}; "
                     "Smart Turn attached={}",
                     analyzer_diagnostics["sileroVadSettingEnabled"],
                     analyzer_diagnostics["sileroVadAttached"],
+                    analyzer_diagnostics["sileroVadEffectiveEnabled"],
                     analyzer_diagnostics["sileroVadAvailable"],
+                    analyzer_diagnostics["nativeRealtimeProvider"],
                     analyzer_diagnostics["recordingGateAttached"],
                     analyzer_diagnostics["syntheticRecordingBoundary"],
                     analyzer_diagnostics["segmentedProvider"],
@@ -4162,7 +4179,19 @@ class ScriberPipeline:
         
         wait_timeout = timeout_secs
         if wait_timeout is None:
-            wait_timeout = 600.0 if is_async_finalization else 30.0
+            # Modulate owns a bounded 30-second wait for its final ``done``
+            # message. Give that provider error enough time to traverse the
+            # downstream ErrorFrame lane before the outer pipeline watchdog
+            # cancels the task; using the same 30-second deadline made the two
+            # timeouts race and could misclassify a provider hang as an
+            # internal pipeline failure. Other realtime providers retain the
+            # existing 30-second budget.
+            if is_async_finalization:
+                wait_timeout = 600.0
+            elif self.service_name == "modulate":
+                wait_timeout = 40.0
+            else:
+                wait_timeout = 30.0
 
         try:
             # Wait for either start_done (pipeline completely finished) or timeout

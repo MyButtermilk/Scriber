@@ -15,7 +15,6 @@ export interface PreparedSummaryHtml {
 }
 
 const SUMMARY_TAGS = [
-  "a",
   "blockquote",
   "br",
   "code",
@@ -99,7 +98,7 @@ const SUMMARY_FORBIDDEN_ATTRIBUTES = [
   "style",
 ] as const;
 
-const SUMMARY_SAFE_ATTRIBUTES = ["colspan", "href", "rowspan", "scope", "title"] as const;
+const SUMMARY_SAFE_ATTRIBUTES = ["colspan", "rowspan", "scope"] as const;
 
 const EMPTY_PREPARED_SUMMARY: PreparedSummaryHtml = {
   html: "",
@@ -194,25 +193,6 @@ function sanitizeSummaryFragment(value: string, allowGeneratedIds: boolean): str
   });
 }
 
-function removeUnsafeSummaryLinks(document: Document): void {
-  document.body.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((anchor) => {
-    const rawHref = anchor.getAttribute("href");
-    if (!rawHref) {
-      anchor.removeAttribute("href");
-      return;
-    }
-
-    try {
-      const url = new URL(rawHref);
-      if (url.protocol !== "http:" && url.protocol !== "https:") {
-        anchor.removeAttribute("href");
-      }
-    } catch {
-      anchor.removeAttribute("href");
-    }
-  });
-}
-
 export function prepareSummaryHtml(value: string): PreparedSummaryHtml {
   if (!value.trim() || typeof DOMParser === "undefined") {
     return EMPTY_PREPARED_SUMMARY;
@@ -224,7 +204,6 @@ export function prepareSummaryHtml(value: string): PreparedSummaryHtml {
   }
 
   const document = new DOMParser().parseFromString(sanitized, "text/html");
-  removeUnsafeSummaryLinks(document);
   const counts = new Map<string, number>();
   const outline = Array.from(document.body.querySelectorAll<HTMLHeadingElement>("h2, h3, h4"))
     .map((heading): SummaryOutlineItem | null => {

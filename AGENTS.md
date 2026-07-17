@@ -706,10 +706,10 @@ Packaging and scripts:
   Pipecat 1.5 it pulls Torch, Torchaudio, and Transformers. SmartTurn remains
   optional; import `LocalSmartTurnAnalyzerV3` directly and do not couple it to
   the removed `pipecat.processors.user_idle_processor` module. Pipecat 1.5
-  `TransportParams` does not own VAD or turn analyzers: live pipelines must wire
-  an explicit `VADProcessor`, and Soniox SmartTurn must use an explicit
-  `UserTurnProcessor` after STT so it receives audio, VAD boundaries, and final
-  transcript frames. Analyzer instances are session-owned; a startup-warmed
+  `TransportParams` does not own VAD or turn analyzers: eligible segmented and
+  async live pipelines must wire an explicit `VADProcessor`. Native realtime
+  providers, including Soniox, do not attach local SmartTurn. Analyzer instances
+  are session-owned; a startup-warmed
   instance may be claimed once but must never return to a global cache after
   processor cleanup. When model prewarming is enabled, replenish empty warmup
   slots in the background only after the prior pipeline and capture have torn
@@ -767,18 +767,51 @@ Packaging and scripts:
   diarization. Keep `enable_speaker_diarization=False` for live pipelines so
   single-speaker dictation inserts plain text. File and YouTube jobs may enable
   diarization where the provider adapter has stable anonymous speaker output.
+- Live Mic may broadcast `InterimTranscriptionFrame` text as replaceable UI
+  preview, but it must never append, persist, or inject that text. Only provider
+  `TranscriptionFrame` finals enter the transcript and text injector; this also
+  applies to ElevenLabs manual-commit realtime transcription.
 - Keep Silero/Pipecat VAD opt-in through `SCRIBER_SEGMENT_SPEECH_WITH_VAD` and
-  the Settings toggle. When disabled, Live Mic must not construct, attach, or
-  replenish a Silero analyzer; HTTP-style providers use one synthetic
-  recording-wide segment flushed on stop, and Soniox SmartTurn is disabled for
-  that session. Saving the disabled setting must not import the heavy pipeline:
+  the Settings toggle only for segmented/async Live Mic routes. A
+  provider-native realtime route must never construct, attach, or replenish a
+  Silero analyzer, even when the persisted preference is enabled; Settings must
+  show that effective switch as off and disabled, and selecting that route must
+  discard an unused analyzer warmed for the previous provider. HTTP-style
+  providers use one synthetic recording-wide segment flushed on stop when
+  Silero is off. Saving the disabled setting must not import the heavy pipeline:
   discard an already-loaded analyzer immediately or record one deferred discard
   for the in-flight/next lazy import. Cleanup failure is diagnostic-only and
   must never roll back the persisted setting. When enabled, VAD may split
-  HTTP-style live STT at pauses and
-  provide explicit turn boundaries to Soniox SmartTurn. In Settings, keep those
-  HTTP-style live providers in the cloud async/batch group rather than a
-  separate segmented provider group.
+  eligible HTTP-style live STT at pauses. Live Soniox uses its native semantic
+  endpointing without local SmartTurn; Meeting Smart Turn remains a separate
+  preview feature. In Settings, classify only original-provider native streams
+  as cloud realtime. Keep segmented uploads such as Scriber's current Mistral
+  route and Groq in the cloud async/segmented/batch group, sorted there by the
+  displayed error rate.
+- Settings obtains exact effective provider model names from the backend and
+  shows `Model Name` under the current provider. Do not invent a model slug for
+  APIs without a model selector; label that case as the provider default.
+- New File and YouTube summaries are stored as safe semantic HTML. The editable
+  content prompt is always followed by Scriber's mandatory HTML output
+  contract, which owns the editorial hierarchy while the frontend owns all
+  typography, spacing, color, and interaction. Keep model output free of CSS,
+  classes, ids, scripts, arbitrary attributes, and document wrappers; normalize
+  and sanitize before persisting `summaryFormat=html`, then sanitize again in
+  the WebView. Model links are reduced to plain text so untrusted transcript
+  content cannot navigate the main WebView. A completed HTML summary requires a
+  non-empty first `section` with `h2` title and `p` standfirst; reject empty or
+  unstructured sanitized output. Legacy summaries remain Markdown. The first
+  release carrying the HTML-summary prompt contract must replace every prompt
+  stored by an older installation exactly once and persist a versioned marker
+  in `settings.json`. Once that marker exists, later user prompt edits remain
+  authoritative and must never be reset by startup. Persist this migration
+  through the JSON-only path so it cannot rewrite `.env`.
+- Modulate realtime follows the provider's binary-audio plus empty-text EOS
+  protocol and emits finalized `utterance` text only. Do not enable aiohttp's
+  client heartbeat: its half-interval PONG deadline can terminate a valid
+  finalization as close code 1006, while the explicit 30-second final-response
+  timeout already bounds shutdown. The outer Modulate pipeline stop must remain
+  longer than that provider timeout so its ErrorFrame and cleanup complete.
 - Live microphone post-processing is opt-in per session through the second
   hotkey. When active, suppress pipeline raw-text injection, wait for final STT
   text after stop, run the configured LLM prompt with the `${output}` raw text
@@ -812,7 +845,10 @@ Packaging and scripts:
   direct HTTP chat completions. Most OpenRouter fallback models use `:nitro`
   variants for throughput-sorted provider routing; `openai/gpt-oss-120b` must
   be routed with OpenRouter provider order `baseten,cerebras` instead of adding
-  `:nitro`. Google Cloud STT uses
+  `:nitro`. Provider error logging in these direct summary paths must never use
+  diagnostic tracebacks while API keys, authenticated headers, prompts, or
+  payloads remain in local scope; log only a bounded provider/stage and exception
+  type. Google Cloud STT uses
   `google-cloud-speech` plus Pipecat's required `google-genai` namespace
   dependency, OpenAI live STT uses Pipecat's OpenAI Realtime STT service with
   `gpt-realtime-whisper`, while `openai_async` uses the direct OpenAI Audio
