@@ -106,6 +106,7 @@ $obsoletePatterns = @(
     '^scriber-backend-runtime-Windows-',
     '^scriber-ffmpeg-profile-b-msys2-n7\.0-v[23]-Windows$',
     '^scriber-rust-release-v2-Windows-',
+    '^scriber-tauri-app-binary-v1-Windows-',
     '^setup-python-',
     '^node-cache-'
 )
@@ -117,7 +118,7 @@ $rollingFamilies = @(
     [pscustomobject]@{ Name = 'backend-v2'; Pattern = '^scriber-backend-sidecar-v2-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'backend-runtime-v1'; Pattern = '^scriber-backend-runtime-v1-Windows-python-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'audio'; Pattern = '^scriber-rust-audio-sidecar-Windows-'; Retain = $RetainPerRollingFamily },
-    [pscustomobject]@{ Name = 'tauri-app'; Pattern = '^scriber-tauri-app-binary-v1-Windows-'; Retain = $RetainPerRollingFamily },
+    [pscustomobject]@{ Name = 'tauri-app-v2'; Pattern = '^scriber-tauri-app-binary-v2-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'frontend'; Pattern = '^scriber-frontend-node-modules-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'python-venv'; Pattern = '^scriber-python-venv-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'python-wheelhouse'; Pattern = '^scriber-python-wheelhouse-v2-Windows-'; Retain = $RetainPerRollingFamily },

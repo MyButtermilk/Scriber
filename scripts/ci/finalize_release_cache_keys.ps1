@@ -26,6 +26,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$normalizedSourceCommit = $SourceCommit.Trim().ToLowerInvariant()
+if ($normalizedSourceCommit -notmatch '^[0-9a-f]{40}$') {
+    throw "Release source commit must be a 40-character lowercase hexadecimal Git object id."
+}
+
 function Get-StringSha256 {
     param([string]$Value)
 
@@ -96,7 +101,10 @@ Add-DynamicRow -Path $tauriAppBinaryPath -Name "updater-public-key-sha256" -Valu
 Add-DynamicRow -Path $tauriAppBinaryPath -Name "updater-endpoint" -Value $effectiveUpdaterEndpoint
 Add-DynamicRow -Path $tauriAppBinaryPath -Name "outlook-client-id-present" -Value $outlookClientIdPresent.ToString().ToLowerInvariant()
 Add-DynamicRow -Path $tauriAppBinaryPath -Name "outlook-client-id-sha256" -Value $outlookClientIdHash
-Add-DynamicRow -Path $tauriAppBinaryPath -Name "source-commit" -Value $SourceCommit.Trim()
+# Keep SourceCommit as a validated invocation/provenance boundary, but do not
+# add it to the exact app-product key. The static manifest plus the public
+# release-runtime inputs above already bind every binary-producing input, while
+# the exported cache manifest retains the commit that produced the executable.
 
 $names = @(
     "frontend-dependencies.txt",

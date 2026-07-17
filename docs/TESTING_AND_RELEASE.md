@@ -882,6 +882,12 @@ It:
   copied to `release-artifacts` only for signed `v*` tags or when
   `SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER=1` is set for a deliberate non-tag
   installer download,
+- permits an explicit non-main dispatch to save only the bounded, fully
+  attested v2 Tauri app product in that branch's ref-local Actions cache. Its
+  content key deliberately excludes the producing commit, so same-version
+  Python-only changes can reuse it, while frontend/Rust/config, version,
+  toolchain/target, updater, Outlook, or executable-attestation changes still
+  miss. No shared cache or internal cache release is published by this path,
 - passes the produced media tools to `scripts/build_windows.ps1`,
 - skips the full Python unit suite in the packaging step; run it before release
   or through PR/readiness gates. The release workflow therefore installs

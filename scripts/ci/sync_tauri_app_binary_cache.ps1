@@ -53,6 +53,11 @@ function Test-ExpectedVersion {
     return $Actual -eq $Expected -or $Actual -eq "$Expected.0" -or $Actual.StartsWith("$Expected+", [System.StringComparison]::Ordinal)
 }
 
+function Test-OptionalSourceCommit {
+    param([string]$Value)
+    return [string]::IsNullOrWhiteSpace($Value) -or $Value -match '^[0-9a-f]{40}$'
+}
+
 Write-GitHubOutput -Name "usable" -Value "false"
 
 if ($CacheKey -notmatch '^[0-9a-f]{64}$') {
@@ -85,12 +90,16 @@ if ($Mode -eq "Export") {
     New-Item -ItemType Directory -Force -Path $resolvedCacheRoot | Out-Null
     Copy-Item -LiteralPath $resolvedBinaryPath -Destination $cachedBinaryPath -Force
     $item = Get-Item -LiteralPath $cachedBinaryPath
+    $sourceCommit = ([string]$env:GITHUB_SHA).Trim().ToLowerInvariant()
+    if (-not (Test-OptionalSourceCommit -Value $sourceCommit)) {
+        throw "Tauri app binary source commit must be empty or a 40-character lowercase hexadecimal Git object id."
+    }
     $manifest = [ordered]@{
-        apiVersion = "1"
+        apiVersion = "2"
         cacheKey = $CacheKey
         appVersion = $Version
         binaryVersion = $actualVersion
-        sourceCommit = [string]$env:GITHUB_SHA
+        sourceCommit = $sourceCommit
         target = "x86_64-pc-windows-msvc"
         profile = "release"
         executable = [ordered]@{
@@ -117,20 +126,20 @@ try {
     $item = Get-Item -LiteralPath $cachedBinaryPath
     $sha256 = (Get-FileHash -LiteralPath $cachedBinaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $actualVersion = Get-NormalizedFileVersion -Path $cachedBinaryPath
-    $expectedCommit = [string]$env:GITHUB_SHA
-    $manifestCommit = [string]$manifest.sourceCommit
-    $commitMatches = if ([string]::IsNullOrWhiteSpace($expectedCommit)) {
-        $true
-    } else {
-        -not [string]::IsNullOrWhiteSpace($manifestCommit) -and $manifestCommit -eq $expectedCommit
-    }
+    $expectedCommit = ([string]$env:GITHUB_SHA).Trim().ToLowerInvariant()
+    $manifestCommit = ([string]$manifest.sourceCommit).Trim().ToLowerInvariant()
+    $commitProvenanceValid = (
+        (Test-OptionalSourceCommit -Value $expectedCommit) -and
+        (Test-OptionalSourceCommit -Value $manifestCommit) -and
+        ([string]::IsNullOrWhiteSpace($expectedCommit) -or -not [string]::IsNullOrWhiteSpace($manifestCommit))
+    )
     $valid = (
-        [string]$manifest.apiVersion -eq "1" -and
+        [string]$manifest.apiVersion -eq "2" -and
         [string]$manifest.cacheKey -eq $CacheKey -and
         [string]$manifest.appVersion -eq $Version -and
         [string]$manifest.target -eq "x86_64-pc-windows-msvc" -and
         [string]$manifest.profile -eq "release" -and
-        $commitMatches -and
+        $commitProvenanceValid -and
         [int64]$manifest.executable.length -eq [int64]$item.Length -and
         [string]$manifest.executable.sha256 -eq $sha256 -and
         (Test-ExpectedVersion -Actual $actualVersion -Expected $Version)

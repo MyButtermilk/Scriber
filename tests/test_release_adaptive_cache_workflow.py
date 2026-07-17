@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -354,6 +356,212 @@ def test_release_cache_keys_detect_utf8_text_by_content_and_preserve_nul_binary(
     assert "$textExtensions" not in writer
     assert "DecoderFallbackException" in writer
     assert "IndexOf($bytes, [byte]0)" in writer
+
+
+def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> None:
+    if shutil.which("pwsh") is None:
+        pytest.skip("PowerShell 7 is required for release-script validation")
+
+    fixture_root = REPO_ROOT / "build" / f"test-tauri-key-{uuid.uuid4().hex}"
+    touched_paths = [
+        REPO_ROOT / "Frontend/client/src/lib/api-types.ts",
+        REPO_ROOT / "Frontend/src-tauri/src/audio_frame_pipe.rs",
+        REPO_ROOT / "Frontend/src-tauri/tauri.conf.json",
+    ]
+    original_bytes = {path: path.read_bytes() for path in touched_paths}
+    outputs: list[Path] = []
+
+    def generate(
+        name: str,
+        *,
+        commit: str = "a" * 40,
+        updater_key: str = "test-updater-key-a",
+        endpoint: str = "https://updates.example.invalid/a/latest.json",
+        outlook_id: str = "11111111-1111-4111-8111-111111111111",
+    ) -> dict[str, bytes]:
+        output = fixture_root / name
+        outputs.append(output)
+        relative_output = str(output.relative_to(REPO_ROOT))
+        subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-File",
+                str(REPO_ROOT / "scripts/ci/write_release_cache_keys.ps1"),
+                "-OutputDir",
+                relative_output,
+            ],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-File",
+                str(REPO_ROOT / "scripts/ci/finalize_release_cache_keys.ps1"),
+                "-CacheKeyDir",
+                relative_output,
+                "-SourceCommit",
+                commit,
+                "-UpdaterPublicKey",
+                updater_key,
+                "-UpdaterEndpoint",
+                endpoint,
+                "-OutlookClientId",
+                outlook_id,
+            ],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return {path.name: path.read_bytes() for path in output.glob("*.txt")}
+
+    try:
+        baseline = generate("baseline")
+        commit_only = generate("commit-only", commit="b" * 40)
+        assert baseline == commit_only
+        tauri_manifest = baseline["tauri-app-binary.txt"]
+        assert b"release-runtime\tsource-commit\t" not in tauri_manifest
+        for relative_path in (
+            b"Frontend/client/src/lib/api-types.ts",
+            b"Frontend/src-tauri/src/audio_frame_pipe.rs",
+            b"Frontend/src-tauri/tauri.conf.json",
+        ):
+            assert relative_path in tauri_manifest
+
+        runtime_variants = [
+            generate("updater-key", updater_key="test-updater-key-b"),
+            generate("updater-endpoint", endpoint="https://updates.example.invalid/b/latest.json"),
+            generate("outlook", outlook_id="22222222-2222-4222-8222-222222222222"),
+        ]
+        assert all(item["tauri-app-binary.txt"] != tauri_manifest for item in runtime_variants)
+
+        for index, path in enumerate(touched_paths):
+            suffix = b"\n " if path.suffix == ".json" else b"\n// cache-key sensitivity fixture\n"
+            path.write_bytes(original_bytes[path] + suffix)
+            changed = generate(f"binary-input-{index}")
+            assert changed["tauri-app-binary.txt"] != tauri_manifest
+            path.write_bytes(original_bytes[path])
+    finally:
+        for path, content in original_bytes.items():
+            path.write_bytes(content)
+        shutil.rmtree(fixture_root, ignore_errors=True)
+
+    finalizer = _read("scripts/ci/finalize_release_cache_keys.ps1")
+    workflow = _read(".github/workflows/release-windows.yml")
+    assert 'Add-DynamicRow -Path $tauriAppBinaryPath -Name "source-commit"' not in finalizer
+    assert "scriber-tauri-app-binary-v2-" in workflow
+    assert "SCRIBER_SAVE_REF_LOCAL_TAURI_CACHE" in workflow
+    assert "github.ref != 'refs/heads/main'" in workflow
+
+
+def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() -> None:
+    pwsh = shutil.which("pwsh")
+    gh = shutil.which("gh")
+    if pwsh is None or gh is None:
+        pytest.skip("PowerShell 7 and GitHub CLI are required for exact Tauri cache validation")
+
+    version_output = subprocess.run(
+        [gh, "--version"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    version_match = re.search(r"\b(\d+\.\d+\.\d+)\b", version_output)
+    assert version_match is not None
+    version = version_match.group(1)
+
+    fixture_root = REPO_ROOT / "build" / f"test-tauri-product-{uuid.uuid4().hex}"
+    cache_root = fixture_root / "cache"
+    binary_path = fixture_root / "target/scriber-desktop.exe"
+    binary_path.parent.mkdir(parents=True)
+    shutil.copy2(gh, binary_path)
+    cache_key = "a" * 64
+    script = REPO_ROOT / "scripts/ci/sync_tauri_app_binary_cache.ps1"
+
+    def invoke(mode: str, *, commit: str, expected_version: str = version) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
+        output_path = fixture_root / f"output-{uuid.uuid4().hex}.txt"
+        env = os.environ.copy()
+        env["GITHUB_SHA"] = commit
+        env["GITHUB_OUTPUT"] = str(output_path)
+        result = subprocess.run(
+            [
+                pwsh,
+                "-NoProfile",
+                "-File",
+                str(script),
+                "-Mode",
+                mode,
+                "-CacheKey",
+                cache_key,
+                "-Version",
+                expected_version,
+                "-CacheRoot",
+                str(cache_root.relative_to(REPO_ROOT)),
+                "-BinaryPath",
+                str(binary_path.relative_to(REPO_ROOT)),
+            ],
+            cwd=REPO_ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        values: dict[str, str] = {}
+        if output_path.exists():
+            for line in output_path.read_text(encoding="utf-8-sig").splitlines():
+                name, value = line.split("=", 1)
+                values[name] = value
+        return result, values
+
+    try:
+        exported, export_outputs = invoke("Export", commit="1" * 40)
+        assert exported.returncode == 0, exported.stderr
+        assert export_outputs["usable"] == "true"
+        manifest_path = cache_root / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        assert manifest["apiVersion"] == "2"
+        assert manifest["sourceCommit"] == "1" * 40
+
+        binary_path.unlink()
+        imported, import_outputs = invoke("Import", commit="2" * 40)
+        assert imported.returncode == 0, imported.stderr
+        assert import_outputs["usable"] == "true"
+        assert binary_path.exists()
+        expected_sha256 = hashlib.sha256(Path(gh).read_bytes()).hexdigest()
+        assert hashlib.sha256(binary_path.read_bytes()).hexdigest() == expected_sha256
+
+        manifest["cacheKey"] = "f" * 64
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        binary_path.unlink()
+        wrong_key, wrong_key_outputs = invoke("Import", commit="2" * 40)
+        assert wrong_key.returncode == 0, wrong_key.stderr
+        assert wrong_key_outputs["usable"] == "false"
+        assert not binary_path.exists()
+
+        manifest["cacheKey"] = cache_key
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with (cache_root / "scriber-desktop.exe").open("ab") as handle:
+            handle.write(b"tamper")
+        tampered, tampered_outputs = invoke("Import", commit="2" * 40)
+        assert tampered.returncode == 0, tampered.stderr
+        assert tampered_outputs["usable"] == "false"
+        assert not binary_path.exists()
+
+        shutil.copy2(gh, cache_root / "scriber-desktop.exe")
+        wrong_version, wrong_version_outputs = invoke(
+            "Import", commit="2" * 40, expected_version="999.999.999"
+        )
+        assert wrong_version.returncode == 0, wrong_version.stderr
+        assert wrong_version_outputs["usable"] == "false"
+        assert not binary_path.exists()
+    finally:
+        shutil.rmtree(fixture_root, ignore_errors=True)
 
 
 def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:

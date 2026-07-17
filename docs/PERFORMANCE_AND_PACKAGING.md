@@ -616,6 +616,14 @@ Release workflow:
   version. Cache hits and restore-key hits still run the relevant validation
   gates before the installer consumes restored outputs. If a restored Profile B
   output fails validation, the workflow falls back to a fresh MSYS2 build.
+- The bounded exact Tauri app product uses a v2 content key over the concrete
+  version, frontend/Rust/config sources, toolchain/target, updater runtime, and
+  Outlook configuration. Its manifest preserves the producing commit and
+  validates the executable length, SHA-256, native version, target, and profile,
+  but an unrelated Python-only commit no longer invalidates the product. An
+  explicit non-main workflow dispatch may bootstrap only this product in the
+  ref-local Actions-cache namespace; it cannot warm main/tags or publish a
+  shared internal cache release.
 - Actions cache is treated as the fast first layer, not the durable layer. When
   sibling tag refs cannot see each other's caches, the workflow restores
   durable internal release artifacts from `release-cache-python-venv-v1`,

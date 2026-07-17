@@ -520,6 +520,10 @@ jobs:
       # durable snapshots are explicit maintenance so a normal release needs
       # one workflow run instead of a main warm-up followed by the tag build.
       SCRIBER_SAVE_ACTIONS_CACHES: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
+      # A manual branch diagnostic may save only the small, exact Tauri app
+      # product in that ref's isolated Actions-cache namespace. It cannot warm
+      # main/tags and never enables any shared cache or release publication.
+      SCRIBER_SAVE_REF_LOCAL_TAURI_CACHE: ${{ (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts != 'true') && 'true' || 'false' }}
       SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       # Tag self-healing is handed to the separate workflow_run maintenance
       # workflow after updater publication. Inline mutation remains reserved
@@ -780,7 +784,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: build/tauri-app-binary-cache
-          key: scriber-tauri-app-binary-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
+          key: scriber-tauri-app-binary-v2-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
 
       - name: Import exact Tauri app binary
         id: tauri-app-binary-import
@@ -1643,7 +1647,7 @@ jobs:
 
       - name: Export exact Tauri app binary
         id: tauri-app-binary-export
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.tauri-app-binary-cache.outputs.cache-hit != 'true'
+        if: (env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' || env.SCRIBER_SAVE_REF_LOCAL_TAURI_CACHE == 'true') && steps.tauri-app-binary-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $version = (python -c "from scripts.create_release_metadata import read_version; print(read_version())").Trim()
@@ -1653,11 +1657,11 @@ jobs:
             -Version $version
 
       - name: Save exact Tauri app binary
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.tauri-app-binary-cache.outputs.cache-hit != 'true' && steps.tauri-app-binary-export.outputs.usable == 'true'
+        if: (env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' || env.SCRIBER_SAVE_REF_LOCAL_TAURI_CACHE == 'true') && steps.tauri-app-binary-cache.outputs.cache-hit != 'true' && steps.tauri-app-binary-export.outputs.usable == 'true'
         uses: actions/cache/save@v6
         with:
           path: build/tauri-app-binary-cache
-          key: scriber-tauri-app-binary-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
+          key: scriber-tauri-app-binary-v2-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
 
       - name: Report Windows installer timing
         if: always()

@@ -1024,6 +1024,8 @@ def test_release_cache_gc_keeps_exactly_one_current_generation() -> None:
     assert "release-cache-backend-sidecar-v2" in gc
     assert "release-cache-rust-build-v2" in gc
     assert "ffmpeg-profile-b-n7.0-v4" in gc
+    assert "^scriber-tauri-app-binary-v1-Windows-" in gc
+    assert "^scriber-tauri-app-binary-v2-Windows-" in gc
     rolling_gc = gc.split("foreach ($family in $rollingFamilies)", 1)[1].split(
         "# Ref-scoped caches", 1
     )[0]

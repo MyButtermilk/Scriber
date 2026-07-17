@@ -1312,9 +1312,13 @@ Already implemented and should not be regressed:
   `refresh_release_cache_artifacts=true` maintenance path. Tag releases do,
   however, self-heal a missing bounded exact backend, FFmpeg, audio, or
   diarization finished-product artifact after a successful rebuild. Manual
-  cache publication is allowed only from `main` with
+  shared cache publication is allowed only from `main` with
   `refresh_release_cache_artifacts=true`; feature-branch diagnostics are
-  read-only with respect to shared caches. That maintenance path retains
+  read-only with respect to shared caches and internal cache releases. An
+  explicit non-main `workflow_dispatch` may save only the bounded exact Tauri
+  app product in that ref's isolated Actions-cache namespace. That cache cannot
+  warm `main`, tags, or sibling refs and does not enable any other cache save or
+  publication. The maintenance path retains
   exactly one Actions-cache generation per allowlisted family, removes
   superseded internal cache-release tags, and current cache publishers keep
   only their replacement asset. After best-effort GC, the maintenance workflow
@@ -1330,9 +1334,11 @@ Already implemented and should not be regressed:
   build.
 - The Rust Actions cache is keyed by normalized Cargo dependency metadata plus
   resolved toolchain/target/profile, not by ordinary app source. The exact
-  Tauri app binary is a separate small cache keyed by full Rust/frontend
-  sources, concrete version, commit, toolchain, target/profile, and updater
-  runtime fingerprint. A validated hit may run bundle-only packaging; NSIS,
+  Tauri app binary is a separate small v2 cache keyed by full Rust/frontend
+  sources, concrete version, toolchain, target/profile, updater runtime, and
+  Outlook configuration fingerprints. Its attestation retains the producing
+  commit as provenance without making unrelated Python-only commits miss. A
+  validated hit may run bundle-only packaging; NSIS,
   updater signatures, checksums, and publication evidence are always fresh.
 - Before backend sidecar cache save/publication,
   `scripts/ci/select_backend_sidecar_cache_entry.ps1` must validate and retain
