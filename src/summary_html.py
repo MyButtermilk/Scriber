@@ -45,6 +45,7 @@ SUMMARY_HTML_TAGS = frozenset(
 _VOID_TAGS = frozenset({"br", "hr"})
 _DROP_WITH_CONTENT_TAGS = frozenset(
     {
+        "analysis",
         "embed",
         "form",
         "head",
@@ -56,6 +57,7 @@ _DROP_WITH_CONTENT_TAGS = frozenset(
         "style",
         "svg",
         "template",
+        "think",
     }
 )
 _SUPPORTED_HTML_RE = re.compile(
@@ -63,6 +65,7 @@ _SUPPORTED_HTML_RE = re.compile(
     re.IGNORECASE,
 )
 _ANY_HTML_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
+_FENCED_BLOCK_RE = re.compile(r"```(?:html)?\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
 
 
 class _SummaryHtmlSanitizer(HTMLParser):
@@ -188,9 +191,18 @@ def _markdown_to_html_fragment(value: str) -> str:
 def normalize_summary_html(value: str) -> str:
     """Return a safe static HTML fragment, tolerating common model drift."""
     raw = (value or "").replace("\u00a0", " ").replace("\u200b", "").strip()
-    fenced = re.fullmatch(r"```(?:html)?\s*(.*?)\s*```", raw, flags=re.IGNORECASE | re.DOTALL)
+    fenced = _FENCED_BLOCK_RE.fullmatch(raw)
     if fenced:
         raw = fenced.group(1).strip()
+    else:
+        # Less capable models sometimes add a short prose preface around one
+        # otherwise valid fenced fragment. Accept exactly one HTML-bearing
+        # fence; ambiguous multi-block output still goes through validation
+        # and is rejected instead of guessing which block is authoritative.
+        fenced_blocks = _FENCED_BLOCK_RE.findall(raw)
+        html_fences = [block.strip() for block in fenced_blocks if _SUPPORTED_HTML_RE.search(block)]
+        if len(html_fences) == 1:
+            raw = html_fences[0]
     if not _SUPPORTED_HTML_RE.search(raw) and not _ANY_HTML_TAG_RE.search(raw):
         raw = _markdown_to_html_fragment(raw)
 
@@ -324,6 +336,55 @@ _UNWRAPPED_LEAD_RE = re.compile(
 )
 
 
+class _SummaryDocumentStructureValidator(HTMLParser):
+    """Validate exact tag balance and the sanitized top-level shape."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.stack: list[str] = []
+        self.top_level_tags: list[str] = []
+        self.has_top_level_text = False
+        self.valid = True
+
+    def handle_starttag(self, tag: str, _attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if not self.stack:
+            self.top_level_tags.append(tag)
+        if tag not in _VOID_TAGS:
+            self.stack.append(tag)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in _VOID_TAGS:
+            self.handle_starttag(tag, attrs)
+            return
+        if not self.stack:
+            self.top_level_tags.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in _VOID_TAGS or not self.stack or self.stack[-1] != tag:
+            self.valid = False
+            return
+        self.stack.pop()
+
+    def handle_data(self, data: str) -> None:
+        if not self.stack and data.strip():
+            self.has_top_level_text = True
+
+
+def _validated_top_level_tags(value: str) -> tuple[str, ...] | None:
+    parser = _SummaryDocumentStructureValidator()
+    try:
+        parser.feed(value)
+        parser.close()
+    except Exception:
+        return None
+    if not parser.valid or parser.stack or parser.has_top_level_text:
+        return None
+    return tuple(parser.top_level_tags)
+
+
 def normalize_summary_document_html(value: str) -> str:
     """Return safe HTML only when it has the minimum premium document shape.
 
@@ -332,16 +393,38 @@ def normalize_summary_document_html(value: str) -> str:
     section without its required title/standfirst is rejected so callers do not
     persist an empty or visibly broken summary as completed.
     """
-    normalized = normalize_summary_html(value)
+    raw = (value or "").replace("\u00a0", " ").replace("\u200b", "").strip()
+    if len(_FENCED_BLOCK_RE.findall(raw)) > 1:
+        return ""
+
+    normalized = normalize_summary_html(raw)
     if not normalized:
         return ""
+
+    # A provider may leak a short untagged preface before the requested HTML
+    # fragment (for example after hidden reasoning). It is not part of the
+    # document contract. Keep strict rejection when that prefix itself contains
+    # supported structure, but safely discard plain chatter before a complete
+    # section tree.
+    first_section = re.search(r"<section>", normalized, flags=re.IGNORECASE)
+    if first_section is not None and first_section.start() > 0:
+        prefix = normalized[: first_section.start()]
+        if not _SUPPORTED_HTML_RE.search(prefix):
+            normalized = normalized[first_section.start() :]
 
     match = _SECTION_LEAD_RE.match(normalized)
     if match is None:
         match = _UNWRAPPED_LEAD_RE.match(normalized)
         if match is None:
             return ""
+        top_level_tags = _validated_top_level_tags(normalized)
+        if not top_level_tags or "section" in top_level_tags:
+            return ""
         normalized = f"<section>{normalized}</section>"
+    else:
+        top_level_tags = _validated_top_level_tags(normalized)
+        if not top_level_tags or any(tag != "section" for tag in top_level_tags):
+            return ""
 
     if not summary_visible_text(match.group("title"), "html"):
         return ""

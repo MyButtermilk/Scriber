@@ -374,8 +374,15 @@ async def test_summarize_text_openrouter_model_uses_nitro(monkeypatch: pytest.Mo
     captured: dict[str, object] = {}
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
 
-    async def _fake_openrouter(_prompt: str, models, _max_output_tokens: int) -> str:
+    async def _fake_openrouter(
+        _prompt: str,
+        models,
+        _max_output_tokens: int,
+        *,
+        require_structured_html: bool = False,
+    ) -> str:
         captured["models"] = models
+        captured["require_structured_html"] = require_structured_html
         return _structured_summary("openrouter summary")
 
     monkeypatch.setattr(summarization, "_summarize_openrouter", _fake_openrouter)
@@ -384,6 +391,7 @@ async def test_summarize_text_openrouter_model_uses_nitro(monkeypatch: pytest.Mo
 
     assert out == _structured_summary("openrouter summary")
     assert captured["models"] == "minimax/minimax-m3:nitro"
+    assert captured["require_structured_html"] is True
 
 
 @pytest.mark.asyncio
@@ -391,8 +399,15 @@ async def test_summarize_text_gpt_oss_120b_keeps_provider_routed_model(monkeypat
     captured: dict[str, object] = {}
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
 
-    async def _fake_openrouter(_prompt: str, models, _max_output_tokens: int) -> str:
+    async def _fake_openrouter(
+        _prompt: str,
+        models,
+        _max_output_tokens: int,
+        *,
+        require_structured_html: bool = False,
+    ) -> str:
         captured["models"] = models
+        captured["require_structured_html"] = require_structured_html
         return _structured_summary("openrouter summary")
 
     monkeypatch.setattr(summarization, "_summarize_openrouter", _fake_openrouter)
@@ -401,6 +416,7 @@ async def test_summarize_text_gpt_oss_120b_keeps_provider_routed_model(monkeypat
 
     assert out == _structured_summary("openrouter summary")
     assert captured["models"] == "openai/gpt-oss-120b"
+    assert captured["require_structured_html"] is True
 
 
 @pytest.mark.asyncio
@@ -422,6 +438,134 @@ async def test_generate_text_with_model_routes_cerebras_directly(monkeypatch: py
 
     assert out == "cleaned text"
     assert captured == {"model": "cerebras/gemma-4-31b", "max_output_tokens": 2048}
+
+
+@pytest.mark.asyncio
+async def test_summarize_text_retries_next_openrouter_model_after_invalid_html_without_logging_content(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    log_records: list[tuple[str, tuple[object, ...]]] = []
+    invalid_content = "<script>PRIVATE_RAW_SUMMARY_SENTINEL</script>"
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    class _CapturingLogger:
+        def info(self, message: str, *args: object) -> None:
+            log_records.append((message, args))
+
+        def warning(self, message: str, *args: object) -> None:
+            log_records.append((message, args))
+
+        def error(self, message: str, *args: object) -> None:
+            log_records.append((message, args))
+
+    async def _fake_post(payload, _headers, _session):
+        calls.append(payload)
+        if len(calls) == 1:
+            return {
+                "model": "minimax/minimax-m3",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "native_finish_reason": "stop",
+                        "message": {"role": "assistant", "content": invalid_content},
+                    }
+                ],
+            }
+        return {
+            "model": "z-ai/glm-5.2-20260616",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": _structured_summary("Fallback summary"),
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(summarization, "logger", _CapturingLogger())
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+
+    out = await summarization.summarize_text("x y z", model="minimax/minimax-m3:nitro")
+
+    assert out == _structured_summary("Fallback summary")
+    assert calls[0]["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"]
+    assert calls[1]["model"] == "z-ai/glm-5.2:nitro"
+    assert invalid_content not in repr(log_records)
+    assert any("locally invalid structured HTML" in message for message, _args in log_records)
+
+
+@pytest.mark.asyncio
+async def test_summarize_text_stops_after_all_openrouter_models_return_invalid_html(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _fake_post(payload, _headers, _session):
+        calls.append(payload)
+        response_model = (
+            "minimax/minimax-m3"
+            if len(calls) == 1
+            else "z-ai/glm-5.2-20260616"
+        )
+        return {
+            "model": response_model,
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": "<section><h2>Truncated</h2><p>Missing close",
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+
+    with pytest.raises(RuntimeError, match="after trying the configured model candidates"):
+        await summarization.summarize_text("x y z", model="minimax/minimax-m3:nitro")
+
+    assert len(calls) == 2
+    assert calls[1]["model"] == "z-ai/glm-5.2:nitro"
+
+
+@pytest.mark.asyncio
+async def test_generate_text_with_openrouter_preserves_raw_text_contract(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    raw_text = "RAW_TEXT_WITHOUT_SUMMARY_HTML"
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _fake_post(payload, _headers, _session):
+        calls.append(payload)
+        return {
+            "model": "minimax/minimax-m3",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {"role": "assistant", "content": raw_text},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+
+    out = await summarization.generate_text_with_model(
+        "raw prompt",
+        "minimax/minimax-m3:nitro",
+        max_output_tokens=1024,
+    )
+
+    assert out == raw_text
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio
@@ -682,8 +826,15 @@ async def test_summarize_text_falls_back_to_openrouter_when_primary_fails(monkey
     async def _fake_gemini(_prompt: str, _model: str, _max_output_tokens: int) -> str:
         raise RuntimeError("Gemini API error 503: UNAVAILABLE")
 
-    async def _fake_openrouter(_prompt: str, models, _max_output_tokens: int) -> str:
+    async def _fake_openrouter(
+        _prompt: str,
+        models,
+        _max_output_tokens: int,
+        *,
+        require_structured_html: bool = False,
+    ) -> str:
         captured["models"] = models
+        captured["require_structured_html"] = require_structured_html
         return _structured_summary("openrouter fallback")
 
     monkeypatch.setattr(summarization, "_summarize_gemini", _fake_gemini)
@@ -693,6 +844,7 @@ async def test_summarize_text_falls_back_to_openrouter_when_primary_fails(monkey
 
     assert out == _structured_summary("openrouter fallback")
     assert captured["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"]
+    assert captured["require_structured_html"] is True
 
 
 @pytest.mark.asyncio

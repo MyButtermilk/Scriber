@@ -60,6 +60,57 @@ def test_summary_document_repairs_markdown_drift_with_real_lead_structure():
     )
 
 
+def test_summary_document_drops_reasoning_leak_and_plain_preface():
+    structured = "<section><h2>Overview</h2><p>Short standfirst.</p></section>"
+
+    assert normalize_summary_document_html(
+        f"<think>We need to plan the answer first.</think>{structured}"
+    ) == structured
+    assert normalize_summary_document_html(f"Here is the requested summary:\n{structured}") == structured
+
+
+def test_summary_document_extracts_one_html_fence_with_surrounding_chatter():
+    structured = "<section><h2>Overview</h2><p>Short standfirst.</p></section>"
+
+    assert normalize_summary_document_html(
+        f"Here is the result:\n```html\n{structured}\n```\nHope this helps."
+    ) == structured
+
+
+def test_summary_document_accepts_balanced_sibling_sections():
+    structured = (
+        "<section><h2>Overview</h2><p>Short standfirst.</p></section>"
+        "<section><h2>Details</h2><p>More context.</p></section>"
+    )
+
+    assert normalize_summary_document_html(structured) == structured
+
+
+def test_summary_document_rejects_unbalanced_or_misnested_markup():
+    assert normalize_summary_document_html(
+        "<section><h2>Overview</h2><p>Short standfirst.</p><ul><li>Truncated"
+    ) == ""
+    assert normalize_summary_document_html(
+        "<section><h2>Overview</h2><p>Short standfirst.</section></p>"
+    ) == ""
+
+
+def test_summary_document_rejects_trailing_chatter_or_top_level_markup():
+    structured = "<section><h2>Overview</h2><p>Short standfirst.</p></section>"
+
+    assert normalize_summary_document_html(f"{structured} Hope this helps.") == ""
+    assert normalize_summary_document_html(f"{structured}<p>Hope this helps.</p>") == ""
+
+
+def test_summary_document_rejects_multiple_fenced_blocks():
+    first = "<section><h2>Overview</h2><p>Short standfirst.</p></section>"
+    second = "<section><h2>Alternative</h2><p>Another version.</p></section>"
+
+    assert normalize_summary_document_html(
+        f"```html\n{first}\n```\n```html\n{second}\n```"
+    ) == ""
+
+
 def test_summary_visible_text_and_export_projection_hide_markup():
     html = "<section><h2>Overview</h2><p><strong>Visible</strong> detail</p></section>"
     assert summary_visible_text(html, "html") == "Overview\nVisible detail"

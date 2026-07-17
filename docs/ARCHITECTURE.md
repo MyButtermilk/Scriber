@@ -1312,9 +1312,13 @@ editorial brief: an overview with key takeaways, followed by real topic
 sections, with lists, definition lists, and tables used only when the source
 structure warrants them. The backend
 normalizes and allowlist-sanitizes the fragment before storing it with
-`summaryFormat=html`; an empty result or a fragment without the required first
-`section`, `h2` title, and `p` standfirst fails instead of being recorded as a
-completed summary. The WebView applies a second DOMPurify boundary. Model CSS,
+`summaryFormat=html`; an empty, truncated, unbalanced, or ambiguous result, or a
+fragment without complete sibling `section` roots and the required first `h2`
+title plus `p` standfirst, fails instead of being recorded as a completed
+summary. Safe single-fence, plain-preface, Markdown, and leaked reasoning drift
+is normalized locally. When an OpenRouter model still violates the document
+contract, the next configured OpenRouter candidate is tried within the same
+summary operation. The WebView applies a second DOMPurify boundary. Model CSS,
 classes, ids, scripts, arbitrary attributes, links, and document wrappers are
 never trusted; URL labels remain plain text. Scriber supplies the warm paper,
 ink, and clay presentation through dedicated light/dark CSS tokens. Existing

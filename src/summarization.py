@@ -470,6 +470,34 @@ async def _summarize_with_model(prompt: str, model: str, max_output_tokens: int)
     return normalized
 
 
+async def _summarize_structured_html_with_model(
+    prompt: str,
+    model: str,
+    max_output_tokens: int,
+) -> str:
+    """Generate a summary while enforcing the HTML document contract.
+
+    OpenRouter can route one request across multiple configured candidates. Its
+    transport-level success therefore is not enough for summaries: a cheaper
+    model can return non-empty prose that still fails the local structured-HTML
+    contract. Keep this summary-only validation out of ``_summarize_with_model``
+    so raw callers such as ``generate_text_with_model`` retain their existing
+    contract.
+    """
+    if _is_openrouter_model(model):
+        result = await _summarize_openrouter(
+            prompt,
+            model,
+            max_output_tokens,
+            require_structured_html=True,
+        )
+        normalized = str(result or "").strip()
+        if not normalized:
+            raise RuntimeError(f"{model} returned an empty text response.")
+        return normalized
+    return await _summarize_with_model(prompt, model, max_output_tokens)
+
+
 async def _try_openrouter_summary_fallback(
     prompt: str,
     *,
@@ -477,6 +505,7 @@ async def _try_openrouter_summary_fallback(
     primary_error: Exception,
     max_output_tokens: int,
     timeout_seconds: float,
+    require_structured_html: bool = False,
 ) -> str | None:
     if _is_openrouter_model(primary_model):
         return None
@@ -493,8 +522,18 @@ async def _try_openrouter_summary_fallback(
         fallback_models,
     )
     try:
+        fallback_request = (
+            _summarize_openrouter(
+                prompt,
+                fallback_models,
+                max_output_tokens,
+                require_structured_html=True,
+            )
+            if require_structured_html
+            else _summarize_openrouter(prompt, fallback_models, max_output_tokens)
+        )
         return await asyncio.wait_for(
-            _summarize_openrouter(prompt, fallback_models, max_output_tokens),
+            fallback_request,
             timeout=timeout_seconds,
         )
     except asyncio.TimeoutError as exc:
@@ -563,7 +602,7 @@ async def summarize_text(
 
     try:
         summary = await asyncio.wait_for(
-            _summarize_with_model(full_prompt, model, output_tokens),
+            _summarize_structured_html_with_model(full_prompt, model, output_tokens),
             timeout=timeout_seconds,
         )
         summary = normalize_summary_document_html(summary)
@@ -587,6 +626,7 @@ async def summarize_text(
             primary_error=timeout_error,
             max_output_tokens=output_tokens,
             timeout_seconds=timeout_seconds,
+            require_structured_html=True,
         )
         if fallback is not None:
             summary = normalize_summary_document_html(fallback)
@@ -603,6 +643,7 @@ async def summarize_text(
             primary_error=exc,
             max_output_tokens=output_tokens,
             timeout_seconds=timeout_seconds,
+            require_structured_html=True,
         )
         if fallback is not None:
             summary = normalize_summary_document_html(fallback)
@@ -1029,6 +1070,8 @@ async def _summarize_openrouter(
     prompt: str,
     models: str | Sequence[str],
     max_output_tokens: int,
+    *,
+    require_structured_html: bool = False,
 ) -> str:
     """Summarize through OpenRouter Chat Completions."""
     api_key = getattr(Config, "OPENROUTER_API_KEY", "") or ""
@@ -1063,6 +1106,7 @@ async def _summarize_openrouter(
     attempts: list[list[str]] = [initial_models]
     attempt_budgets: list[int] = [max_output_tokens]
     seen_attempts: set[tuple[tuple[str, ...], int]] = {(tuple(initial_models), max_output_tokens)}
+    invalid_html_model_families: set[str] = set()
     last_empty_detail = ""
     retry_cap = _openrouter_retry_output_cap(initial_models, max_output_tokens)
 
@@ -1138,7 +1182,48 @@ async def _summarize_openrouter(
                     continue
 
             if content and not length_limited:
-                return content
+                if not require_structured_html:
+                    return content
+
+                try:
+                    normalized_html = normalize_summary_document_html(content)
+                except Exception:
+                    # Treat a local parser/sanitizer failure exactly like other
+                    # contract-invalid output. Never include provider content
+                    # or parser details in logs or user-facing errors.
+                    normalized_html = ""
+                if normalized_html:
+                    return normalized_html
+
+                invalid_html_model_families.add(_openrouter_model_family(used_model))
+                retry_models = _openrouter_retry_candidates(
+                    attempt_models,
+                    used_model=used_model,
+                    allow_default_fallbacks=isinstance(models, str),
+                )
+                retry_models = [
+                    candidate
+                    for candidate in retry_models
+                    if _openrouter_model_family(candidate) not in invalid_html_model_families
+                ]
+                retry_key = (tuple(retry_models), attempt_max_tokens)
+                if retry_models and retry_key not in seen_attempts:
+                    logger.warning(
+                        "OpenRouter returned locally invalid structured HTML from {} "
+                        "(content_chars={}). Retrying with {}.",
+                        used_model,
+                        len(content),
+                        retry_models,
+                    )
+                    attempts.append(retry_models)
+                    attempt_budgets.append(attempt_max_tokens)
+                    seen_attempts.add(retry_key)
+                    attempt_index += 1
+                    continue
+                raise RuntimeError(
+                    "OpenRouter returned no displayable structured HTML summary "
+                    "after trying the configured model candidates."
+                )
 
             last_empty_detail = _openrouter_empty_response_detail(data)
             retry_models = _openrouter_retry_candidates(
