@@ -271,6 +271,91 @@ def test_backend_cache_keys_ignore_spec_checkout_line_endings() -> None:
         shutil.rmtree(output_crlf, ignore_errors=True)
 
 
+def test_release_cache_keys_detect_utf8_text_by_content_and_preserve_nul_binary() -> None:
+    if shutil.which("pwsh") is None:
+        pytest.skip("PowerShell 7 is required for release-script validation")
+
+    gitkeep = REPO_ROOT / "src/assets/.gitkeep"
+    node_version = REPO_ROOT / ".node-version"
+    extensionless = REPO_ROOT / "Frontend/client/cache-key-text-fixture"
+    nul_binary = REPO_ROOT / "Frontend/src-tauri/icons/cache-key-binary-fixture"
+    original_gitkeep = gitkeep.read_bytes()
+    original_node_version = node_version.read_bytes()
+    output_lf = REPO_ROOT / "build" / f"test-cache-content-lf-{uuid.uuid4().hex}"
+    output_crlf = REPO_ROOT / "build" / f"test-cache-content-crlf-{uuid.uuid4().hex}"
+    output_binary_changed = REPO_ROOT / "build" / f"test-cache-content-binary-{uuid.uuid4().hex}"
+
+    def write_keys(output: Path) -> None:
+        subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-File",
+                str(REPO_ROOT / "scripts/ci/write_release_cache_keys.ps1"),
+                "-OutputDir",
+                str(output.relative_to(REPO_ROOT)),
+            ],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def manifests(output: Path) -> dict[str, bytes]:
+        return {path.name: path.read_bytes() for path in output.glob("*.txt")}
+
+    def manifest_hash(output: Path, manifest: str, relative_path: str) -> str:
+        for line in (output / manifest).read_text(encoding="utf-8").splitlines():
+            kind, path, digest = line.split("\t")
+            if kind == "file" and path == relative_path:
+                return digest
+        raise AssertionError(f"missing {relative_path} in {manifest}")
+
+    try:
+        gitkeep.write_bytes(b"cache key fixture\n")
+        node_version.write_bytes(b"26.3.1\n")
+        extensionless.write_bytes("Grüße aus Scriber\n".encode("utf-8"))
+        nul_binary.write_bytes(b"binary\x00payload\r\nend")
+        write_keys(output_lf)
+
+        gitkeep.write_bytes(b"cache key fixture\r\n")
+        node_version.write_bytes(b"26.3.1\r\n")
+        extensionless.write_bytes("Grüße aus Scriber\r\n".encode("utf-8"))
+        write_keys(output_crlf)
+
+        assert manifests(output_lf) == manifests(output_crlf)
+        assert b"src/assets/.gitkeep" in manifests(output_lf)["backend-sidecar.txt"]
+        assert b"Frontend/client/cache-key-text-fixture" in manifests(output_lf)["tauri-app-binary.txt"]
+
+        binary_relative = "Frontend/src-tauri/icons/cache-key-binary-fixture"
+        crlf_binary = nul_binary.read_bytes()
+        assert manifest_hash(output_crlf, "tauri-app-binary.txt", binary_relative) == hashlib.sha256(
+            crlf_binary
+        ).hexdigest()
+
+        nul_binary.write_bytes(crlf_binary.replace(b"\r\n", b"\n"))
+        write_keys(output_binary_changed)
+        assert manifest_hash(
+            output_binary_changed, "tauri-app-binary.txt", binary_relative
+        ) == hashlib.sha256(nul_binary.read_bytes()).hexdigest()
+        assert manifest_hash(
+            output_binary_changed, "tauri-app-binary.txt", binary_relative
+        ) != manifest_hash(output_crlf, "tauri-app-binary.txt", binary_relative)
+    finally:
+        gitkeep.write_bytes(original_gitkeep)
+        node_version.write_bytes(original_node_version)
+        extensionless.unlink(missing_ok=True)
+        nul_binary.unlink(missing_ok=True)
+        shutil.rmtree(output_lf, ignore_errors=True)
+        shutil.rmtree(output_crlf, ignore_errors=True)
+        shutil.rmtree(output_binary_changed, ignore_errors=True)
+
+    writer = _read("scripts/ci/write_release_cache_keys.ps1")
+    assert "$textExtensions" not in writer
+    assert "DecoderFallbackException" in writer
+    assert "IndexOf($bytes, [byte]0)" in writer
+
+
 def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
     if shutil.which("pwsh") is None:
         pytest.skip("PowerShell 7 is required for release-script validation")

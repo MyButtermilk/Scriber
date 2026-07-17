@@ -36,26 +36,27 @@ function Get-StringSha256 {
 function Get-FileSha256 {
     param([string]$Path)
 
-    $textExtensions = [System.Collections.Generic.HashSet[string]]::new(
-        [System.StringComparer]::OrdinalIgnoreCase
-    )
-    foreach ($extension in @(
-        ".c", ".cc", ".cmake", ".conf", ".cpp", ".css", ".csv", ".h", ".hpp",
-        ".html", ".ini", ".js", ".json", ".jsx", ".md", ".mjs", ".ps1",
-        ".psd1", ".psm1", ".py", ".rs", ".scss", ".spec", ".svg", ".toml", ".ts",
-        ".tsx", ".txt", ".xml", ".yaml", ".yml"
-    )) {
-        [void]$textExtensions.Add($extension)
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $isUtf8Text = [System.Array]::IndexOf($bytes, [byte]0) -lt 0
+    $text = $null
+    if ($isUtf8Text) {
+        try {
+            $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
+            $text = $strictUtf8.GetString($bytes)
+        } catch [System.Text.DecoderFallbackException] {
+            $isUtf8Text = $false
+        }
     }
-    $fileName = [System.IO.Path]::GetFileName($Path)
-    $isText = (
-        $textExtensions.Contains([System.IO.Path]::GetExtension($Path)) -or
-        $fileName -in @("Cargo.lock", "Dockerfile", "LICENSE", "Makefile", ".node-version")
-    )
-    if ($isText) {
-        return Get-StringSha256 -Value ([System.IO.File]::ReadAllText($Path))
+    if ($isUtf8Text) {
+        return Get-StringSha256 -Value $text
     }
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
 }
 
 function Normalize-CargoToml {
