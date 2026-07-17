@@ -3,16 +3,18 @@ import test from "node:test";
 
 import { QueryClient, QueryObserver, type InfiniteData } from "@tanstack/react-query";
 
-import { REST_API_VERSION, type MeetingActionItem, type MeetingCapabilities, type MeetingDetail, type MeetingNote, type MeetingSpeakerAssignmentsResponse, type MeetingState, type MeetingSummary, type MeetingsResponse } from "./api-types";
+import { REST_API_VERSION, type MeetingActionItem, type MeetingCapabilities, type MeetingDetail, type MeetingNote, type MeetingProcessingProgress, type MeetingSpeakerAssignmentsResponse, type MeetingState, type MeetingSummary, type MeetingsResponse } from "./api-types";
 import {
   ACTIVE_MEETING_QUERY_PATH,
   applyMeetingActionItem,
   applyMeetingNoteEvent,
+  applyMeetingProgressEvent,
   applyMeetingSpeakerName,
   applyMeetingSummaryEvent,
   isMeetingWebSocketReconnect,
   isNewMeetingSetupEnabled,
   meetingDetailRefetchInterval,
+  mergeMeetingProcessingProgress,
   MEETING_HISTORY_QUERY_KEY,
   MEETING_LIST_QUERY_KEY,
   refreshAllMeetingSpeakerIdentityCaches,
@@ -48,6 +50,7 @@ function meeting(id: string, state: MeetingState = "ready"): MeetingSummary {
     smartTurnEnabled: true,
     autoAnalyze: true,
     transcriptEditVersion: 0,
+    processingProgress: null,
   };
 }
 
@@ -189,6 +192,60 @@ test("older meeting summaries cannot regress any cache surface", () => {
   assert.equal(
     client.getQueryData<MeetingDetail>(["/api/meetings", "a"])?.state,
     "paused",
+  );
+});
+
+test("Meeting processing progress survives route cache reuse without regressing", () => {
+  const client = new QueryClient();
+  const detail = {
+    ...meeting("a", "finalizing"),
+    apiVersion: REST_API_VERSION,
+    segments: [],
+    speakers: [],
+    notes: [],
+    actionItems: [],
+    outputs: [],
+    outputVersions: [],
+    audioGaps: [],
+    audioAssets: [],
+    transcriptCheckpoints: [],
+  } satisfies MeetingDetail;
+  client.setQueryData(["/api/meetings", "a"], detail);
+  const observed: MeetingProcessingProgress = {
+    phase: "finalize",
+    progress: 0.42,
+    status: "Creating canonical transcript",
+    updatedAt: "2026-07-17T10:00:00.000Z",
+  };
+
+  applyMeetingProgressEvent(client, "a", observed);
+  applyMeetingProgressEvent(client, "a", {
+    ...observed,
+    progress: 0.2,
+    status: "Delayed older callback",
+    updatedAt: "2026-07-17T10:00:01.000Z",
+  });
+  assert.deepEqual(
+    client.getQueryData<MeetingDetail>(["/api/meetings", "a"])?.processingProgress,
+    observed,
+  );
+
+  const analysis = mergeMeetingProcessingProgress(observed, {
+    phase: "analysis",
+    progress: 0.8,
+    status: "Generating cited analysis",
+    updatedAt: "2026-07-17T10:00:02.000Z",
+  });
+  assert.equal(analysis.phase, "analysis");
+  assert.equal(
+    mergeMeetingProcessingProgress(analysis, observed),
+    analysis,
+  );
+
+  applyMeetingSummaryEvent(client, meeting("a", "finalization_failed"));
+  assert.equal(
+    client.getQueryData<MeetingDetail>(["/api/meetings", "a"])?.processingProgress,
+    null,
   );
 });
 

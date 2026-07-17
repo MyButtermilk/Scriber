@@ -601,6 +601,42 @@ async def test_summarize_openrouter_discards_partial_length_response_at_retry_ca
 
 
 @pytest.mark.asyncio
+async def test_summarize_openrouter_stops_after_larger_partial_retry_without_model_loop(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+    monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_RETRY_MAX_TOKENS", "8192")
+
+    async def _fake_post(payload, _headers, _timeout):
+        calls.append(payload)
+        return {
+            "model": "minimax/minimax-m3",
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "native_finish_reason": "length",
+                    "message": {"role": "assistant", "content": "large but truncated response"},
+                }
+            ],
+            "usage": {
+                "completion_tokens": payload["max_tokens"],
+                "prompt_tokens": 16_000,
+                "total_tokens": 16_000 + payload["max_tokens"],
+            },
+        }
+
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+
+    with pytest.raises(RuntimeError, match="larger-budget retry"):
+        await summarization._summarize_openrouter(
+            "large meeting reduce prompt", "minimax/minimax-m3:nitro", 4096
+        )
+
+    assert [call["max_tokens"] for call in calls] == [4096, 8192]
+
+
+@pytest.mark.asyncio
 async def test_summarize_text_falls_back_to_openrouter_when_primary_fails(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, object] = {}
     monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "1")

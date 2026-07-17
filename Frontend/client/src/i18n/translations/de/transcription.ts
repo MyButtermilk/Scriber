@@ -147,6 +147,7 @@ export const transcriptionTranslations = {
   "Failed to start transcription": "Transkription konnte nicht gestartet werden",
   "Failed to start transcription.": "Die Transkription konnte nicht gestartet werden.",
   "Find a YouTube video": "YouTube-Video finden",
+  "Open on YouTube": "Auf YouTube öffnen",
   "Find video": "Video finden",
   "Looking for “{{query}}”": "Suche nach „{{query}}“",
   "Media capture · 03": "Medienaufnahme · 03",

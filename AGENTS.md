@@ -289,10 +289,12 @@ Packaging and scripts:
   existing Python paste path until installed target-app evidence justifies a
   default change. Clipboard-based injection paths, including the default Python
   paste path and Tauri `injectText`, must preserve a bounded snapshot of safe
-  HGLOBAL-backed clipboard formats before setting transcript text, then restore
-  that snapshot only if the clipboard sequence is unchanged; do not regress this
-  to text-only clipboard preservation, and do not call `GlobalSize`/`GlobalLock`
-  on handle formats such as `CF_BITMAP` or `CF_ENHMETAFILE`.
+  HGLOBAL-backed clipboard formats before setting transcript text. This includes
+  application-registered formats in the Windows `0xC000..=0xFFFF` range (for
+  example HTML/RTF and Chromium metadata), while handle formats such as
+  `CF_BITMAP` or `CF_ENHMETAFILE` must never reach `GlobalSize`/`GlobalLock`.
+  Restore the snapshot only if the clipboard sequence is unchanged; do not
+  regress this to text-only clipboard preservation.
 - Shell IPC diagnostics may expose the latest `injectText` attempt only in
   sanitized form: error codes, fallback reason, allowed markers, restore status,
   `preDelayMode`, requested/applied pre-delay numbers, timing numbers, and
@@ -387,6 +389,16 @@ Packaging and scripts:
 - Meeting segments treat `startMs`, `endMs`, and `durationMs` as one contract.
   `durationMs` must equal `endMs - startMs` in REST and `meeting_segment`
   events; transcript and citation controls must preserve timestamp seeking.
+- Meeting finalization/analysis progress is a nullable durable snapshot. Persist
+  it before the matching WebSocket event, hydrate the exact Meeting cache/detail
+  after navigation, and clear it at retry/terminal boundaries. `null` means an
+  indeterminate active operation, never an invented zero percent.
+- User-facing Meeting playback is mix-only. Transcript timestamps, citations,
+  and Meeting speaker-identification samples must use the retained
+  `playback_mix`; never expose per-track mute/source switches in these flows.
+  Speaker samples are five to eight seconds, adding surrounding mix context for
+  short utterances and disabling themselves when the retained recording is
+  shorter than five seconds.
 - Canonical File/YouTube/Meeting artifact begin, provider-stage, and commit/FTS
   phases must stay off the aiohttp event loop. Once a SQLite worker mutation has
   started, cancellation must observe it through its durable boundary; mutate
@@ -482,6 +494,10 @@ Packaging and scripts:
   explicit, permanent Voice Library merge used by Settings when two detected
   speaker profiles are one person; require a confirmation dialog and preserve
   manually assigned meeting-local labels while merging profile evidence.
+- Canonical system segments without provider speaker evidence use one stable,
+  meeting-local `Meeting audio` speaker so the transcript label opens the same
+  explicit naming flow. Startup backfill may add that identity to legacy blank
+  system rows, but must never overwrite a manually assigned Meeting name.
 - Email/export recipients come exclusively from the Meeting's frozen calendar
   event, never from Voice matches, LLM output, or confirmed speaker mappings.
   Validate and deduplicate addresses and exclude the connected user (including

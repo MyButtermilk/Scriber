@@ -3789,7 +3789,7 @@ export default function Settings() {
         )}
       />
 
-      <div className="grid gap-4 min-[1440px]:grid-cols-2 min-[1440px]:items-start">
+      <div className="grid gap-4 min-[1280px]:grid-cols-2 min-[1280px]:items-start">
         <SectionPanel
           id="settings-transcription"
           title={t("Transcription")}
@@ -4023,9 +4023,9 @@ export default function Settings() {
           title={t("Meetings")}
           description={t("Choose how new meetings are transcribed, summarized, protected, and connected to Outlook. Changes apply to new meetings.")}
           icon={Users}
-          className="min-[1440px]:col-span-2"
+          className="min-[1280px]:col-span-2"
         >
-          <div className="grid gap-3 lg:grid-cols-2">
+          <div className="grid gap-3 min-[1280px]:grid-cols-2">
             <SettingsSubsection
               title={t("Transcription")}
               description={t("Choose whether to see live text or wait for the accurate transcript after the meeting.")}
@@ -4093,7 +4093,11 @@ export default function Settings() {
                     <p className="font-mono text-[10.5px] text-slate-500">{meetingTranscriptionMode === "live_final" ? sonioxRealtimeModel : t("No live provider cost")}</p>
                   </div>
                 </SettingLine>
-                <SettingLine label={t("Final transcript")} description={t("Choose the service that creates the accurate transcript and speaker names after the meeting.")}>
+                <SettingLine
+                  label={t("Final transcript")}
+                  description={t("Choose the service that creates the accurate transcript and speaker names after the meeting.")}
+                  className="sm:grid-cols-[minmax(0,1fr)_minmax(150px,248px)] sm:gap-x-4"
+                >
                   <Select value={meetingFinalProvider} onValueChange={(value) => void updateMeetingPreferences({ meetingFinalProvider: value })}>
                     <SelectTrigger className="h-9 w-[248px] max-w-full text-xs" aria-label={t("Final meeting transcription model")}>
                       <SelectValue />

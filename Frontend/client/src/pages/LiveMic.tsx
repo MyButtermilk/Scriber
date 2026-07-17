@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, memo, useMemo, useRef, type CSSProperties } from "react";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
-import { Mic, Globe, Loader2 } from "lucide-react";
+import { Clock, Globe, Loader2, Mic } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DeleteActionButton } from "@/components/ui/delete-action-button";
@@ -116,6 +116,13 @@ const TranscriptCard = memo(function TranscriptCard({
   const timeLabel = item.createdAt
     ? formatDate(item.createdAt, { dateStyle: "medium", timeStyle: "short" })
     : formatLegacyDate(item.date);
+  const dateLabel = item.createdAt
+    ? formatDate(item.createdAt, { dateStyle: "medium" })
+    : timeLabel;
+  const clockLabel = item.createdAt
+    ? formatDate(item.createdAt, { timeStyle: "short" })
+    : "";
+  const languageLabel = localizedTranscriptLanguage(item.language, t);
   const snippet = (item.preview || "").trim();
   const visibleSnippet = snippet && snippet !== item.title
     ? snippet
@@ -126,22 +133,22 @@ const TranscriptCard = memo(function TranscriptCard({
   return (
     <div className="h-full w-full">
       <Card
-        className={`live-recording-card perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} group h-full cursor-pointer rounded-[20px] p-4 transform-gpu ${deletingClasses}`}
+        className={`live-recording-card perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid p-[18px]" : "p-3.5 sm:p-4"} group h-full cursor-pointer rounded-[18px] transform-gpu ${deletingClasses}`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
       >
           {viewMode === "list" ? (
             // List View
             <div className="flex min-h-[72px] flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-              <div className="flex min-w-0 flex-1 items-center gap-4">
-                <div className="live-recording-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] text-primary">
+              <div className="flex min-w-0 flex-1 items-center gap-3.5">
+                <div className="live-recording-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-[11px] text-primary">
                   <Mic className="h-[18px] w-[18px] stroke-[1.65px]" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <h3>
                     <button
                       type="button"
-                      className="line-clamp-2 min-h-11 w-full rounded-sm text-left font-heading text-[14px] font-medium leading-[1.4] text-foreground outline-none transition-colors duration-200 group-hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60 sm:min-h-0"
+                      className="line-clamp-2 min-h-11 w-full rounded-sm text-left font-heading text-[14.5px] font-medium leading-[1.45] tracking-[-0.006em] text-foreground outline-none transition-colors duration-[var(--duration-quick)] group-hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transition-none sm:min-h-0"
                       onClick={(event) => {
                         event.stopPropagation();
                         onNavigate(item.id);
@@ -150,8 +157,12 @@ const TranscriptCard = memo(function TranscriptCard({
                       {visibleSnippet}
                     </button>
                   </h3>
-                  <p className="mt-1.5 truncate text-[11.5px] text-muted-foreground">
-                    {timeLabel} • {formatDurationLikeYoutube(item.duration)} • {localizedTranscriptLanguage(item.language, t)}
+                  <p className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                    <time dateTime={item.createdAt} className="font-medium" title={timeLabel}>{timeLabel}</time>
+                    <span aria-hidden="true" className="text-foreground/20">•</span>
+                    <span className="inline-flex items-center gap-1.5 tabular-nums"><Clock className="h-3 w-3 stroke-[1.65px]" aria-hidden="true" />{formatDurationLikeYoutube(item.duration)}</span>
+                    <span aria-hidden="true" className="text-foreground/20">•</span>
+                    <span className="inline-flex min-w-0 items-center gap-1.5"><Globe className="h-3 w-3 shrink-0 stroke-[1.65px]" aria-hidden="true" /><span className="truncate">{languageLabel}</span></span>
                   </p>
                 </div>
               </div>
@@ -176,37 +187,27 @@ const TranscriptCard = memo(function TranscriptCard({
             </div>
           ) : (
             // Grid View
-            <div className="flex h-full flex-col">
-              <div className="mb-4 flex items-start justify-between">
-                <div className="live-recording-icon flex h-11 w-11 items-center justify-center rounded-[13px] text-primary">
-                  <Mic className="h-5 w-5 stroke-[1.65px]" />
+            <div className="flex min-h-[178px] h-full flex-col">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="live-recording-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-[11px] text-primary">
+                  <Mic className="h-[18px] w-[18px] stroke-[1.65px]" />
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-[11px] font-semibold tabular-nums text-muted-foreground">{timeLabel}</span>
-                  <div className="flex items-center gap-1">
-                  <CopyActionButton
-                    onClick={(e) => onCopy(e, item.id)}
-                    disabled={isCopying}
-                    copied={isCopying}
-                    title={t("Copy transcript")}
-                    ariaLabel={t("Copy transcript {{title}}", { title: item.title })}
-                    className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
-                  />
-                  <DeleteActionButton
-                    onClick={(e) => onDelete(e, item.id)}
-                    disabled={isDeleting}
-                    loading={isDeleting}
-                    title={t("Delete transcript")}
-                    ariaLabel={t("Delete transcript {{title}}", { title: item.title })}
-                    className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
-                  />
-                  </div>
-                </div>
+                <time
+                  dateTime={item.createdAt}
+                  aria-label={timeLabel}
+                  title={timeLabel}
+                  className="live-recording-date min-w-0 transition-opacity duration-[var(--duration-quick)] motion-reduce:transition-none"
+                >
+                  <span className="block truncate text-[11.5px] font-semibold leading-4 tracking-[-0.005em] text-foreground/75">{dateLabel}</span>
+                  {clockLabel ? (
+                    <span className="mt-0.5 block font-mono text-[10.5px] font-medium leading-4 tabular-nums text-muted-foreground">{clockLabel}</span>
+                  ) : null}
+                </time>
               </div>
-              <h3 className="mb-5 min-h-[58px]">
+              <h3 className="mt-[18px] flex-1">
                 <button
                   type="button"
-                  className="line-clamp-3 min-h-11 w-full rounded-sm text-left font-heading text-[14px] font-medium leading-[1.45] text-foreground outline-none transition-colors duration-200 group-hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60 sm:min-h-0"
+                  className="line-clamp-3 w-full rounded-sm text-left font-heading text-[15px] font-medium leading-[1.52] tracking-[-0.009em] text-foreground outline-none transition-colors duration-[var(--duration-quick)] group-hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transition-none"
                   onClick={(event) => {
                     event.stopPropagation();
                     onNavigate(item.id);
@@ -215,9 +216,31 @@ const TranscriptCard = memo(function TranscriptCard({
                   {visibleSnippet}
                 </button>
               </h3>
-              <div className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-foreground/[0.06] pt-3 text-[11px] text-muted-foreground">
-                <span>{formatDurationLikeYoutube(item.duration)}</span>
-                <span className="inline-flex items-center gap-1.5 font-medium"><Globe className="h-3 w-3 stroke-[1.65px]" /> {localizedTranscriptLanguage(item.language, t)}</span>
+              <div className="mt-[18px] flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 border-t border-foreground/[0.07] pt-3 text-[10.5px] text-muted-foreground">
+                <span className="inline-flex items-center gap-1.5 font-medium tabular-nums">
+                  <Clock className="h-3 w-3 stroke-[1.65px]" aria-hidden="true" />
+                  {formatDurationLikeYoutube(item.duration)}
+                </span>
+                <span className="inline-flex min-w-0 items-center gap-1.5 font-medium" title={languageLabel}>
+                  <Globe className="h-3 w-3 shrink-0 stroke-[1.65px]" aria-hidden="true" />
+                  <span className="truncate">{languageLabel}</span>
+                </span>
+                <div className="live-recording-actions live-recording-actions--grid ml-auto flex items-center gap-1">
+                  <CopyActionButton
+                    onClick={(e) => onCopy(e, item.id)}
+                    disabled={isCopying}
+                    copied={isCopying}
+                    title={t("Copy transcript")}
+                    ariaLabel={t("Copy transcript {{title}}", { title: item.title })}
+                  />
+                  <DeleteActionButton
+                    onClick={(e) => onDelete(e, item.id)}
+                    disabled={isDeleting}
+                    loading={isDeleting}
+                    title={t("Delete transcript")}
+                    ariaLabel={t("Delete transcript {{title}}", { title: item.title })}
+                  />
+                </div>
               </div>
             </div>
           )}
@@ -1219,7 +1242,7 @@ export default function LiveMic() {
                 getItemKey={(item) => item.id}
                 getItemGroup={getTranscriptHistoryGroup}
                 estimateListRowHeight={108}
-                estimateGridRowHeight={210}
+                estimateGridRowHeight={230}
                 hasMore={transcriptsQuery.hasNextPage}
                 isLoadingMore={transcriptsQuery.isFetchingNextPage}
                 onLoadMore={() => transcriptsQuery.fetchNextPage()}

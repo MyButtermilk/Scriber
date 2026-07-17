@@ -206,10 +206,12 @@ def run_injection_smoke(args: argparse.Namespace) -> dict[str, Any]:
             time.sleep(args.post_click_settle_sec)
 
         from src.config import Config
-        from src.injector import HAS_GUI, TextInjector
+        from src.injector import HAS_GUI, InjectionTargetGuard, TextInjector
 
         Config.INJECT_METHOD = args.method
+        Config.INJECT_TARGET_TITLE = args.target_title
         os.environ["SCRIBER_INJECT_METHOD"] = args.method
+        os.environ["SCRIBER_INJECT_TARGET_TITLE"] = args.target_title
         if args.paste_restore_delay_ms >= 0:
             Config.PASTE_RESTORE_DELAY_MS = int(args.paste_restore_delay_ms)
             os.environ["SCRIBER_PASTE_RESTORE_DELAY_MS"] = str(Config.PASTE_RESTORE_DELAY_MS)
@@ -222,7 +224,10 @@ def run_injection_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 injected_texts.append(text)
                 callback_elapsed_ms = round((time.monotonic() - started_at) * 1000, 3)
 
-            injector = TextInjector(on_injected=on_injected)
+            injector = TextInjector(
+                on_injected=on_injected,
+                target_guard=InjectionTargetGuard(title=args.target_title),
+            )
             started_at = time.monotonic()
             injector._inject_text(args.text)
     except Exception as exc:

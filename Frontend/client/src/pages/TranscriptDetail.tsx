@@ -1,5 +1,5 @@
 import { useParams, Link, useLocation } from "wouter";
-import { ArrowLeft, Share2, Download, Copy, Play, Search, Clock, Calendar, Pencil, Check, Loader2, Sparkles, FileText, Square } from "lucide-react";
+import { ArrowLeft, Share2, Download, Copy, Play, Search, Clock, Calendar, Pencil, Check, Loader2, Sparkles, FileText, Square, Youtube, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +14,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useState, useEffect, useRef, useLayoutEffect, useCallback, useMemo } from "react";
-import { apiUrl } from "@/lib/backend";
+import { apiUrl, isTauriRuntime } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import ReactMarkdown from "react-markdown";
 import { QueryErrorState } from "@/components/ui/query-error-state";
@@ -33,6 +33,40 @@ function normalizeSummaryMarkdown(text: string): string {
     .replace(/\u200b/g, "")
     .replace(/^([ \t]*)[•●◦▪▫‣⁃]\s+/gm, "$1- ")
     .trim();
+}
+
+function normalizeYoutubeSourceUrl(value: string | null | undefined): string {
+  const rawValue = String(value || "").trim();
+  if (!rawValue) return "";
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawValue);
+  } catch {
+    try {
+      parsed = new URL(`https://${rawValue}`);
+    } catch {
+      return "";
+    }
+  }
+
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "";
+  const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+  const trustedHost = hostname === "youtu.be"
+    || hostname === "youtube.com"
+    || hostname.endsWith(".youtube.com")
+    || hostname === "youtube-nocookie.com"
+    || hostname.endsWith(".youtube-nocookie.com");
+  return trustedHost ? parsed.toString() : "";
+}
+
+async function openYoutubeSourceUrl(url: string): Promise<void> {
+  try {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+  } catch {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
 }
 
 function localizedProcessingStep(
@@ -463,6 +497,9 @@ export default function TranscriptDetail() {
   const dateDisplay = transcript.createdAt
     ? formatDate(transcript.createdAt, { dateStyle: "medium", timeStyle: "short" })
     : formatLegacyDate(transcript.date);
+  const youtubeSourceUrl = transcript.type === "youtube"
+    ? normalizeYoutubeSourceUrl(transcript.sourceUrl)
+    : "";
   const summarySource = useMemo(
     () => String(transcript?.summary || "").trim(),
     [transcript?.summary],
@@ -779,11 +816,29 @@ export default function TranscriptDetail() {
 
       {/* Main Content */}
       <main ref={mainScrollRef} className="transcript-detail-scroll min-h-0 flex-1 overflow-y-auto p-4 md:p-8 md:px-12 lg:px-8 xl:px-12">
-        <div className={`transcript-detail-shell space-y-6${showSummaryToc ? " has-summary-toc" : ""}`}>
+        <div className={showSummaryToc ? "transcript-detail-shell has-summary-toc space-y-6" : "transcript-detail-shell space-y-6"}>
 
           {/* Meta Card */}
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2 pb-2">
             <Badge variant="secondary" className="px-3 py-1 font-normal neu-button"><Calendar className="w-3 h-3 mr-1.5" /> {dateDisplay}</Badge>
+            {youtubeSourceUrl && (
+              <a
+                href={youtubeSourceUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="neu-button inline-flex min-h-7 items-center gap-1.5 rounded-full border border-border/60 px-3 py-1 text-xs font-medium text-muted-foreground no-underline outline-none transition-colors duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)] hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 motion-reduce:transition-none"
+                onClick={(event) => {
+                  if (!isTauriRuntime()) return;
+                  event.preventDefault();
+                  void openYoutubeSourceUrl(youtubeSourceUrl);
+                }}
+                data-testid="youtube-source-link"
+              >
+                <Youtube className="h-3.5 w-3.5 text-red-600 dark:text-red-400" aria-hidden="true" />
+                {t("Open on YouTube")}
+                <ExternalLink className="h-3 w-3" aria-hidden="true" />
+              </a>
+            )}
           </div>
 
           {transcriptQuery.isError && (

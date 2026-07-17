@@ -56,12 +56,13 @@ import {
   captureMeetingPlaybackRequest,
   formatMeetingOffset,
   meetingCheckpointFreshness,
+  meetingPlaybackOriginMs,
+  meetingSpeakerSampleWindow,
   meetingTimeToAssetTimeSeconds,
-  playbackSourceForSegment,
-  playbackSourceForMuteState,
+  MEETING_SPEAKER_SAMPLE_MIN_MS,
   type MeetingPlaybackRequest,
-  type MeetingPlaybackSource,
 } from "@/lib/meeting-playback";
+import { localizeMeetingErrorMessage } from "@/lib/meeting-error-message";
 import { useSharedWebSocket, useWebSocketContext, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
 import { useI18n, type TranslationValues } from "@/i18n";
@@ -69,6 +70,7 @@ import {
   applyMeetingActionItem,
   applyMeetingCheckpointEvent,
   applyMeetingNoteEvent,
+  applyMeetingProgressEvent,
   applyMeetingSegmentEvent,
   applyMeetingSpeakerName,
   applyMeetingSpeakerProfileSplit,
@@ -77,6 +79,7 @@ import {
   isMeetingWebSocketReconnect,
   isNewMeetingSetupEnabled,
   meetingDetailRefetchInterval,
+  mergeMeetingProcessingProgress,
   MEETING_HISTORY_QUERY_KEY,
   refreshMeetingCapabilities,
   refreshMeetingCollections,
@@ -95,7 +98,10 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { PageIntro } from "@/components/page-intro";
 import { OutlookMeetingPicker } from "@/components/meeting/OutlookMeetingPicker";
-import { SpeakerAttendeeAssignments } from "@/components/meeting/SpeakerAttendeeAssignments";
+import {
+  SpeakerAttendeeAssignments,
+  type MeetingSpeakerAssignmentFocusRequest,
+} from "@/components/meeting/SpeakerAttendeeAssignments";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
@@ -125,6 +131,7 @@ import type {
   MeetingImportsResponse,
   MeetingNote,
   MeetingProviderProfile,
+  MeetingProcessingProgress,
   MeetingProcessingComponent,
   MeetingProfilesResponse,
   MeetingSegment,
@@ -383,6 +390,8 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
   hasPlayableAudio,
   isLive,
   onPlay,
+  canAssignSpeakers,
+  onAssignSpeaker,
   canEdit,
   savingSegmentId,
   onSave,
@@ -392,7 +401,9 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
   search: string;
   hasPlayableAudio: boolean;
   isLive: boolean;
-  onPlay: (source: "microphone" | "system" | "mixed", startMs: number) => void;
+  onPlay: (startMs: number) => void;
+  canAssignSpeakers: boolean;
+  onAssignSpeaker: (speakerId: string) => void;
   canEdit: boolean;
   savingSegmentId: string;
   onSave: (segment: DisplayMeetingSegment, text: string) => void;
@@ -476,7 +487,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
               >
                 <button
                   type="button"
-                  onClick={() => onPlay(segment.source, segment.startMs)}
+                  onClick={() => onPlay(segment.startMs)}
                   disabled={!hasPlayableAudio}
                   className="self-start rounded-lg text-left text-[10px] tabular-nums outline-none enabled:active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-default"
                   title={hasPlayableAudio ? t("Play {{start}} to {{end}}", { start: formatOffset(segment.startMs), end: formatOffset(segment.endMs) }) : t("Saved audio is unavailable")}
@@ -498,7 +509,22 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
                 </button>
                 <div className="min-w-0">
                   <div className="flex min-w-0 items-center gap-2">
-                    <span className="truncate text-xs font-semibold text-muted-foreground">{highlightTranscriptMatch(segment.label, search)}</span>
+                    {canAssignSpeakers && segment.speakerId ? (
+                      <button
+                        type="button"
+                        onClick={() => onAssignSpeaker(segment.speakerId!)}
+                        data-testid={`meeting-transcript-speaker-${segment.id}`}
+                        data-speaker-id={segment.speakerId}
+                        className="group/speaker inline-flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-xs font-semibold text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary"
+                        title={t("Assign a speaker name to {{speaker}}", { speaker: segment.label })}
+                        aria-label={t("Assign a speaker name to {{speaker}}", { speaker: segment.label })}
+                      >
+                        <span className="truncate">{highlightTranscriptMatch(segment.label, search)}</span>
+                        <Pencil className="h-3 w-3 shrink-0 opacity-50 transition-opacity group-hover/speaker:opacity-80 group-focus-visible/speaker:opacity-80 motion-reduce:transition-none" aria-hidden="true" />
+                      </button>
+                    ) : (
+                      <span className="truncate text-xs font-semibold text-muted-foreground">{highlightTranscriptMatch(segment.label, search)}</span>
+                    )}
                     {segment.editVersion > 0 && <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[9px]">{t("Edited")}</Badge>}
                   </div>
                   {editingId === segment.id ? (
@@ -861,13 +887,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const meetingImportIdRef = useRef("");
   const meetingImportExplicitCancelRef = useRef(false);
   const pendingPlaybackRef = useRef<MeetingPlaybackRequest | null>(null);
-  const silencedPlaybackRef = useRef<MeetingPlaybackRequest | null>(null);
   const speakerSnippetEndMsRef = useRef<number | null>(null);
+  const speakerAssignmentRequestIdRef = useRef(0);
   const savedVoicePreviewRef = useRef<HTMLAudioElement | null>(null);
   const savedVoicePreviewProfileIdRef = useRef("");
-  const [audioSource, setAudioSource] = useState<MeetingPlaybackSource>("mix");
   const [playbackError, setPlaybackError] = useState("");
-  const [mutedSources, setMutedSources] = useState({ microphone: false, system: false });
+  const [speakerAssignmentRequest, setSpeakerAssignmentRequest] = useState<MeetingSpeakerAssignmentFocusRequest | null>(null);
   const [meetingPendingDelete, setMeetingPendingDelete] = useState<MeetingSummary | null>(null);
   const [transcriptSearch, setTranscriptSearch] = useState("");
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
@@ -899,7 +924,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     byteSize: number;
     payload: { event?: string; meeting?: { title?: string }; segments?: unknown[]; notes?: unknown[] };
   } | null>(null);
-  const [meetingProgress, setMeetingProgress] = useState<{ phase: "finalize" | "analysis"; progress: number; status: string } | null>(null);
+  const [meetingProgress, setMeetingProgress] = useState<MeetingProcessingProgress | null>(null);
   const [liveStatuses, setLiveStatuses] = useState<Record<"microphone" | "system", { status: "reconnecting" | "recovered" | "degraded"; reconnectCount: number } | null>>({ microphone: null, system: null });
   const meetingWsHasConnectedRef = useRef(false);
   const meetingWsWasConnectedRef = useRef(false);
@@ -1100,6 +1125,18 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     staleTime: 5_000,
   });
   const detail = detailQuery.data;
+  useEffect(() => {
+    if (!detail || !["stopping", "finalizing", "analyzing"].includes(detail.state)) {
+      setMeetingProgress(null);
+      return;
+    }
+    const persistedProgress = detail.processingProgress;
+    if (!persistedProgress) return;
+    setMeetingProgress((current) => mergeMeetingProcessingProgress(
+      current,
+      persistedProgress,
+    ));
+  }, [detail?.id, detail?.processingProgress, detail?.state]);
   const speakerProfilesQuery = useQuery<SpeakerProfilesResponse>({
     queryKey: ["/api/meetings/speaker-profiles"],
     queryFn: ({ signal }) => fetchJson("/api/meetings/speaker-profiles", signal),
@@ -1133,13 +1170,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     setMeetingProgress(null);
     setLiveStatuses({ microphone: null, system: null });
     pendingPlaybackRef.current = null;
-    silencedPlaybackRef.current = null;
     speakerSnippetEndMsRef.current = null;
+    setSpeakerAssignmentRequest(null);
     savedVoicePreviewRef.current?.pause();
     savedVoicePreviewProfileIdRef.current = "";
     audioRef.current?.pause();
-    setAudioSource("mix");
-    setMutedSources({ microphone: false, system: false });
     setChatQuestion("");
     setChatAnswer(null);
     setTranscriptSearch("");
@@ -1201,11 +1236,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       }
     }
     if ((message.type === "meeting_finalize_progress" || message.type === "meeting_analysis_progress") && message.meetingId === selectedId) {
-      setMeetingProgress({
+      const incoming: MeetingProcessingProgress = {
         phase: message.type === "meeting_analysis_progress" ? "analysis" : "finalize",
         progress: Math.max(0, Math.min(1, message.progress)),
         status: message.status,
-      });
+        updatedAt: new Date().toISOString(),
+      };
+      applyMeetingProgressEvent(queryClient, message.meetingId, incoming);
+      setMeetingProgress((current) => mergeMeetingProcessingProgress(current, incoming));
       if (message.type === "meeting_analysis_progress" && message.progress >= 1) {
         if (message.status === "Speaker matches refreshed") {
           toast({ title: t("Speaker matches refreshed"), description: t("The latest saved voices are now reflected in this meeting.") });
@@ -1950,10 +1988,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 : t("Ready for a shorter meeting · review the details before a long recording.");
   const meetingImportBusy = meetingImportMutation.isPending || Boolean(meetingImportId);
   const liveSegments = detail?.segments ?? [];
-  const groupedSegments = useMemo(() => liveSegments.map((segment) => ({
-    ...segment,
-    label: segment.speakerLabel || (segment.source === "microphone" ? t("You") : t("Meeting audio")),
-  })), [liveSegments, t]);
+  const groupedSegments = useMemo(() => liveSegments.map((segment) => {
+    const rawLabel = segment.speakerLabel
+      || (segment.source === "microphone" ? "You" : "Meeting audio");
+    return {
+      ...segment,
+      label: rawLabel === "You" || rawLabel === "Meeting audio" ? t(rawLabel) : rawLabel,
+    };
+  }), [liveSegments, t]);
   const visibleTranscriptSegments = useMemo(() => {
     const query = transcriptSearch.trim().toLocaleLowerCase(localeTag);
     if (!query) return groupedSegments;
@@ -1991,20 +2033,23 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     }
     analysisMutation.mutate(detail.id);
   };
-  const availablePlaybackSources = useMemo(() => new Set<MeetingPlaybackSource>(
-    (detail?.audioAssets ?? []).flatMap((asset) => (
-      asset.kind === "playback_mix" ? ["mix" as const]
-      : asset.kind === "playback_microphone" ? ["microphone" as const]
-      : asset.kind === "playback_system" ? ["system" as const]
-      : []
-    )),
-  ), [detail?.audioAssets]);
-  const hasPlayableAudio = availablePlaybackSources.size > 0;
+  const playbackMix = detail?.audioAssets.find((asset) => asset.kind === "playback_mix") ?? null;
+  const hasPlayableAudio = Boolean(playbackMix);
+  const playbackMixOriginMs = meetingPlaybackOriginMs(detail?.audioAssets, "mix");
+  const fallbackPlaybackMixEndMs = liveSegments.reduce(
+    (endMs, segment) => Math.max(endMs, segment.endMs),
+    playbackMixOriginMs,
+  );
+  const playbackMixEndMs = playbackMix?.durationMs == null
+    ? fallbackPlaybackMixEndMs
+    : playbackMixOriginMs + playbackMix.durationMs;
+  const canPlaySpeakerSamples = hasPlayableAudio
+    && playbackMixEndMs - playbackMixOriginMs >= MEETING_SPEAKER_SAMPLE_MIN_MS;
   const playableSpeakerIds = useMemo(() => new Set(
-    hasPlayableAudio
+    canPlaySpeakerSamples
       ? liveSegments.filter((segment) => segment.speakerId && segment.endMs > segment.startMs).map((segment) => segment.speakerId!)
       : [],
-  ), [hasPlayableAudio, liveSegments]);
+  ), [canPlaySpeakerSamples, liveSegments]);
   const aecMetrics = detail?.captureMetadata.aecMetrics;
   const latestCheckpoint = detail?.transcriptCheckpoints?.at(-1);
   const expectedCheckpointTrackCount = useMemo(() => {
@@ -2024,7 +2069,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       audio.currentTime = meetingTimeToAssetTimeSeconds(
         request.meetingTimeMs,
         detail?.audioAssets,
-        audioSource,
+        "mix",
       );
       if (request.shouldPlay) {
         await audio.play();
@@ -2035,7 +2080,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     } catch (error) {
       setPlaybackError(error instanceof Error ? error.message : "Audio playback could not start.");
     }
-  }, [audioSource, detail?.audioAssets]);
+  }, [detail?.audioAssets]);
   const captureCurrentPlayback = useCallback((): MeetingPlaybackRequest => {
     const audio = audioRef.current;
     if (!audio) return { meetingTimeMs: 0, shouldPlay: false };
@@ -2044,19 +2089,15 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       audio.paused,
       audio.ended,
       detail?.audioAssets,
-      audioSource,
+      "mix",
     );
-  }, [audioSource, detail?.audioAssets]);
-  const playSegment = useCallback((source: "microphone" | "system" | "mixed", startMs: number) => {
+  }, [detail?.audioAssets]);
+  const playSegment = useCallback((startMs: number) => {
     if (!detail) return;
     speakerSnippetEndMsRef.current = null;
     savedVoicePreviewRef.current?.pause();
     savedVoicePreviewProfileIdRef.current = "";
-    const requestedSource = playbackSourceForSegment(source);
-    const nextSource = availablePlaybackSources.has(requestedSource)
-      ? requestedSource
-      : availablePlaybackSources.has("mix") ? "mix" : null;
-    if (!nextSource) {
+    if (!hasPlayableAudio) {
       setPlaybackError("Saved audio is not available for this meeting.");
       return;
     }
@@ -2064,26 +2105,15 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       meetingTimeMs: Math.max(0, startMs),
       shouldPlay: true,
     };
-    silencedPlaybackRef.current = null;
     setPlaybackError("");
-    setMutedSources(nextSource === "mix" || source === "mixed"
-      ? { microphone: false, system: false }
-      : source === "microphone"
-      ? { microphone: false, system: true }
-      : { microphone: true, system: false });
-    if (audioSource === nextSource) {
-      if ((audioRef.current?.readyState ?? 0) >= 1) {
-        pendingPlaybackRef.current = null;
-        void playLoadedAudio(request);
-      } else {
-        pendingPlaybackRef.current = request;
-        audioRef.current?.load();
-      }
+    if ((audioRef.current?.readyState ?? 0) >= 1) {
+      pendingPlaybackRef.current = null;
+      void playLoadedAudio(request);
     } else {
       pendingPlaybackRef.current = request;
-      setAudioSource(nextSource);
+      audioRef.current?.load();
     }
-  }, [audioSource, availablePlaybackSources, detail, playLoadedAudio]);
+  }, [detail, hasPlayableAudio, playLoadedAudio]);
   const playSpeakerSnippet = useCallback((speakerId: string) => {
     const segment = [...liveSegments]
       .filter((item) => item.speakerId === speakerId && item.endMs > item.startMs)
@@ -2095,9 +2125,26 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       setPlaybackError("No saved voice sample is available for this speaker.");
       return;
     }
-    playSegment(segment.source, segment.startMs);
-    speakerSnippetEndMsRef.current = Math.min(segment.endMs, segment.startMs + 8_000);
-  }, [liveSegments, playSegment]);
+    const sampleWindow = meetingSpeakerSampleWindow(
+      segment.startMs,
+      segment.endMs,
+      playbackMixOriginMs,
+      playbackMixEndMs - playbackMixOriginMs,
+    );
+    if (!sampleWindow) {
+      setPlaybackError("No saved voice sample of at least 5 seconds is available for this speaker.");
+      return;
+    }
+    playSegment(sampleWindow.startMs);
+    speakerSnippetEndMsRef.current = sampleWindow.endMs;
+  }, [liveSegments, playbackMixEndMs, playbackMixOriginMs, playSegment]);
+  const focusSpeakerAssignment = useCallback((speakerId: string) => {
+    speakerAssignmentRequestIdRef.current += 1;
+    setSpeakerAssignmentRequest({
+      speakerId,
+      requestId: speakerAssignmentRequestIdRef.current,
+    });
+  }, []);
   const playSavedVoicePreview = useCallback(async (profileId: string, previewUrl: string) => {
     if (!previewUrl) return;
     speakerSnippetEndMsRef.current = null;
@@ -2134,46 +2181,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       setPlaybackError(error instanceof Error ? error.message : "The saved voice sample could not be played.");
     }
   }, [queryClient]);
-  const togglePlaybackSource = useCallback((source: "microphone" | "system") => {
-    setMutedSources((current) => ({ ...current, [source]: !current[source] }));
-  }, []);
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (mutedSources.microphone && mutedSources.system) {
-      silencedPlaybackRef.current = pendingPlaybackRef.current ?? captureCurrentPlayback();
-      pendingPlaybackRef.current = null;
-      audio?.pause();
-      return;
-    }
-
-    const nextSource = playbackSourceForMuteState(availablePlaybackSources, mutedSources);
-    if (!nextSource) {
-      audio?.pause();
-      return;
-    }
-    const silencedRequest = silencedPlaybackRef.current;
-    if (silencedRequest) {
-      silencedPlaybackRef.current = null;
-      if (nextSource === audioSource && (audio?.readyState ?? 0) >= 1) {
-        void playLoadedAudio(silencedRequest);
-      } else {
-        pendingPlaybackRef.current = silencedRequest;
-        if (nextSource === audioSource) audio?.load();
-        else setAudioSource(nextSource);
-      }
-      return;
-    }
-
-    if (nextSource !== audioSource) {
-      pendingPlaybackRef.current = pendingPlaybackRef.current ?? captureCurrentPlayback();
-      setAudioSource(nextSource);
-    }
-  }, [audioSource, availablePlaybackSources, captureCurrentPlayback, mutedSources, playLoadedAudio]);
   useEffect(() => {
     const audio = audioRef.current;
     if (!pendingPlaybackRef.current || !audio) return;
     audio.load();
-  }, [audioSource, detail?.id]);
+  }, [detail?.id]);
   const handlePlaybackMetadata = useCallback(() => {
     const request = pendingPlaybackRef.current;
     if (!request) return;
@@ -2189,7 +2201,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   }, [captureCurrentPlayback]);
   const seekCitation = useCallback((segmentId: string) => {
     const segment = liveSegments.find((item) => item.id === segmentId);
-    if (segment) playSegment(segment.source, segment.startMs);
+    if (segment) playSegment(segment.startMs);
   }, [liveSegments, playSegment]);
   const openMeetingSettings = useCallback(() => {
     try {
@@ -2604,7 +2616,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       ))}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
-                        disabled={exportMutation.isPending || !availablePlaybackSources.has("mix")}
+                        disabled={exportMutation.isPending || !hasPlayableAudio}
                         onSelect={() => exportMutation.mutate({
                           path: `/api/meetings/${detail.id}/export/audio`,
                           fallbackName: `${detail.title} - audio.opus`,
@@ -2614,7 +2626,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                         <Headphones className="mr-2 mt-0.5 h-3.5 w-3.5 shrink-0" />
                         <span>
                           <span className="block">{t("Save compressed audio")}</span>
-                          <span className="mt-0.5 block text-[10px] leading-4 text-muted-foreground">{availablePlaybackSources.has("mix") ? t("Small Opus file for sharing or archiving") : t("Compressed audio is not retained for this meeting")}</span>
+                          <span className="mt-0.5 block text-[10px] leading-4 text-muted-foreground">{hasPlayableAudio ? t("Small Opus file for sharing or archiving") : t("Compressed audio is not retained for this meeting")}</span>
                         </span>
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
@@ -2625,9 +2637,9 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>}
-                  {detail.state === "recording" && <Button variant="outline" disabled={controlMutation.isPending} onClick={() => controlMutation.mutate({ id: detail.id, action: "pause" })}><CirclePause className="mr-2 h-4 w-4" />{t("Pause")}</Button>}
-                  {detail.state === "paused" && <Button variant="outline" disabled={controlMutation.isPending} onClick={() => controlMutation.mutate({ id: detail.id, action: "resume" })}><CirclePlay className="mr-2 h-4 w-4" />{t("Resume")}</Button>}
-                  {(detail.state === "recording" || detail.state === "paused") && <Button variant="destructive" disabled={controlMutation.isPending} onClick={() => controlMutation.mutate({ id: detail.id, action: "stop" })}><Square className="mr-2 h-4 w-4" />{t("Stop")}</Button>}
+                  {detail.state === "recording" && <Button variant="outline" className="w-32" disabled={controlMutation.isPending} onClick={() => controlMutation.mutate({ id: detail.id, action: "pause" })}><CirclePause className="h-4 w-4" />{t("Pause")}</Button>}
+                  {detail.state === "paused" && <Button variant="outline" className="w-32" disabled={controlMutation.isPending} onClick={() => controlMutation.mutate({ id: detail.id, action: "resume" })}><CirclePlay className="h-4 w-4" />{t("Resume")}</Button>}
+                  {(detail.state === "recording" || detail.state === "paused") && <Button variant="destructive" className="w-32" disabled={controlMutation.isPending} onClick={() => controlMutation.mutate({ id: detail.id, action: "stop" })}><Square className="h-4 w-4" />{t("Stop")}</Button>}
                   {OPEN_STATES.has(detail.state) && controlMutation.isPending && <Loader2 className="h-5 w-5 animate-spin self-center text-muted-foreground" />}
                 </div>
               </header>
@@ -2693,13 +2705,17 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               )}
 
               {(["stopping", "finalizing", "analyzing"] as MeetingState[]).includes(detail.state) && <div className="mt-4 rounded-xl border border-border/60 bg-muted/35 px-4 py-3" role="status">
-                <div className="flex items-center justify-between gap-3 text-xs"><span className="font-medium">{detail.state === "analyzing" ? t("Creating summary, decisions, and action items") : detail.state === "stopping" ? t("Finishing the recording safely") : t("Creating the final transcript from saved audio")}</span><span className="tabular-nums text-muted-foreground">{formatNumber(Math.round((meetingProgress?.progress ?? 0) * 100))}%</span></div>
-                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((meetingProgress?.progress ?? 0) * 100)}><div className="h-full origin-left rounded-full bg-primary transition-transform duration-200 motion-reduce:transition-none" style={{ transform: `scaleX(${meetingProgress?.progress ?? 0})` }} /></div>
+                <div className="flex items-center justify-between gap-3 text-xs"><span className="font-medium">{detail.state === "analyzing" ? t("Creating summary, decisions, and action items") : detail.state === "stopping" ? t("Finishing the recording safely") : t("Creating the final transcript from saved audio")}</span><span className="tabular-nums text-muted-foreground">{meetingProgress ? `${formatNumber(Math.round(meetingProgress.progress * 100))}%` : t("Processing…")}</span></div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={meetingProgress ? Math.round(meetingProgress.progress * 100) : undefined} aria-valuetext={meetingProgress ? undefined : t("Processing…")}>
+                  {meetingProgress
+                    ? <div className="h-full origin-left rounded-full bg-primary transition-transform duration-200 motion-reduce:transition-none" style={{ transform: `scaleX(${meetingProgress.progress})` }} />
+                    : <div className="h-full w-1/3 animate-pulse rounded-full bg-primary/65 motion-reduce:animate-none" />}
+                </div>
               </div>}
 
               {detail.errorMessage && (
                 <div className="mt-4 rounded-xl border border-amber-300/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
-                  <p>{t(detail.errorMessage)}</p>
+                  <p>{localizeMeetingErrorMessage(detail.errorMessage, t)}</p>
                   {detail.state === "finalization_failed" && (
                     <label className="mt-3 block max-w-sm text-xs font-semibold">
                       {t("Try another transcription option")}
@@ -2766,6 +2782,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   calendarEvent={detail.captureMetadata.calendarEvent ?? null}
                   playableSpeakerIds={playableSpeakerIds}
                   onPlaySpeaker={playSpeakerSnippet}
+                  focusRequest={speakerAssignmentRequest}
                   onAssignmentsChanged={() => {
                     void queryClient.invalidateQueries({
                       queryKey: ["/api/meetings", detail.id],
@@ -2778,18 +2795,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               <MeetingWorkspaceTabs value={workspaceView} onChange={setWorkspaceView} />
               {detail.segments.length > 0 && hasPlayableAudio && (
                 <div className="mx-5 mt-3 flex flex-col gap-2 rounded-xl bg-muted/45 px-3 py-2 sm:mx-6 sm:flex-row sm:flex-wrap sm:items-center">
-                  <div className="flex items-center gap-1" aria-label={t("Playback track controls")}>
-                    {(["microphone", "system"] as const).map((source) => {
-                      const muted = mutedSources[source];
-                      const available = availablePlaybackSources.has(source);
-                      return <button type="button" key={source} disabled={!available} aria-pressed={available && !muted} onClick={() => togglePlaybackSource(source)} className={`rounded-md px-2 py-1 text-[11px] font-medium disabled:cursor-not-allowed disabled:opacity-40 ${!muted && available ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}>{source === "microphone" ? t("Mic") : t("System")} {!available ? t("unavailable") : muted ? t("muted") : t("on")}</button>;
-                    })}
-                  </div>
                   <audio
                     ref={audioRef}
                     controls
                     preload="metadata"
-                    src={apiUrl(audioSource === "mix" ? `/api/meetings/${detail.id}/audio` : `/api/meetings/${detail.id}/audio/${audioSource}`)}
+                    src={apiUrl(`/api/meetings/${detail.id}/audio`)}
                     onLoadedMetadata={handlePlaybackMetadata}
                     onTimeUpdate={handlePlaybackTimeUpdate}
                     onPlay={() => setPlaybackError("")}
@@ -2867,8 +2877,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       const profile = speakerProfileId ? speakerProfilesById.get(speakerProfileId) : null;
                       const savedVoiceName = profile?.displayName || "";
                       const savedVoicePreviewUrl = profile?.preview?.url || "";
+                      const rawMeetingSpeakerName = speaker.displayName || speaker.label;
+                      const meetingSpeakerName = rawMeetingSpeakerName === "Meeting audio"
+                        ? t("Meeting audio")
+                        : rawMeetingSpeakerName;
                       const voiceEvidenceCount = speaker.voiceMatch?.evidenceCount ?? 0;
-                      const hasSpeakerSnippet = hasPlayableAudio && liveSegments.some((segment) => (
+                      const hasSpeakerSnippet = canPlaySpeakerSamples && liveSegments.some((segment) => (
                         segment.speakerId === speaker.id && segment.endMs > segment.startMs
                       ));
                       const renamingProfile = speakerProfileNameMutation.isPending
@@ -2878,13 +2892,13 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                           <span className="shrink-0 text-muted-foreground">{speaker.sourceHint === "microphone" ? t("Mic") : t("Remote")}</span>
                           <input
                             key={`${speaker.id}-${speaker.updatedAt}`}
-                            defaultValue={speaker.displayName || speaker.label}
-                            aria-label={t("Name in this meeting for {{speaker}}", { speaker: speaker.displayName || speaker.label })}
+                            defaultValue={meetingSpeakerName}
+                            aria-label={t("Name in this meeting for {{speaker}}", { speaker: meetingSpeakerName })}
                             data-testid={`meeting-speaker-name-${speaker.id}`}
                             className="min-w-24 flex-1 bg-transparent font-medium outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-ring"
                             onBlur={(event) => {
                               const displayName = event.target.value.trim();
-                              if (displayName && displayName !== speaker.displayName) {
+                              if (displayName && displayName !== meetingSpeakerName) {
                                 speakerMutation.mutate({ id: detail.id, speakerId: speaker.id, displayName });
                               }
                             }}
@@ -2894,7 +2908,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                             disabled={!hasSpeakerSnippet}
                             onClick={() => playSpeakerSnippet(speaker.id)}
                             className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-muted-foreground hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-                            title={hasSpeakerSnippet ? t("Play up to 8 seconds of this speaker") : t("No saved audio sample is available")}
+                            title={hasSpeakerSnippet ? t("Play a 5 to 8 second sample from this speaker") : t("No saved audio sample is available")}
                           >
                             <CirclePlay className="h-3.5 w-3.5" />{t("Meeting sample")}
                           </button>
@@ -2907,7 +2921,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                             defaultValue={savedVoiceName}
                             placeholder={speakerProfilesQuery.isLoading ? t("Loading name…") : t("Saved voice unavailable")}
                             disabled={!profile || renamingProfile}
-                            aria-label={t("Saved voice profile name for {{speaker}}", { speaker: savedVoiceName || speaker.displayName || speaker.label })}
+                            aria-label={t("Saved voice profile name for {{speaker}}", { speaker: savedVoiceName || meetingSpeakerName })}
                             className="min-w-24 flex-1 rounded-md border border-transparent bg-background/65 px-2 py-1 font-medium outline-none hover:border-border focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:opacity-60"
                             onBlur={(event) => {
                               const displayName = event.target.value.trim();
@@ -2958,6 +2972,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       hasPlayableAudio={hasPlayableAudio}
                       isLive={detail.state === "recording" || detail.state === "paused"}
                       onPlay={playSegment}
+                      canAssignSpeakers={!OPEN_STATES.has(detail.state)}
+                      onAssignSpeaker={focusSpeakerAssignment}
                       canEdit={detail.state === "ready" && visibleTranscriptSegments.every((segment) => segment.revision === "canonical")}
                       savingSegmentId={segmentEditMutation.isPending ? segmentEditMutation.variables?.segment.id ?? "" : ""}
                       onSave={(segment, text) => segmentEditMutation.mutate({ segment, action: "edit", text })}

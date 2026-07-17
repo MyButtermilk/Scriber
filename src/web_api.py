@@ -11980,7 +11980,40 @@ class ScriberWebController:
 
         async def progress(status: str, amount: float) -> None:
             phase = "analysis" if amount >= 0.8 else "finalize"
-            await self.broadcast(meeting_progress_event(meeting_id, phase, amount, status))
+            published_amount = max(0.0, min(1.0, float(amount)))
+            published_status = str(status)
+            try:
+                snapshot = await asyncio.to_thread(
+                    self._meeting_store.set_processing_progress,
+                    meeting_id,
+                    phase=phase,
+                    progress=published_amount,
+                    status=published_status,
+                )
+            except Exception as exc:
+                # Progress durability improves route/remount recovery, but it
+                # must never become a new failure mode for the transcript.
+                logger.warning(
+                    "Meeting progress checkpoint could not be persisted for {}: {}",
+                    meeting_id,
+                    type(exc).__name__,
+                )
+            else:
+                if snapshot is None:
+                    # The workflow already left this phase.  Do not let a late
+                    # callback revive progress in the client after its terminal
+                    # state event.
+                    return
+                published_amount = float(snapshot["progress"])
+                published_status = str(snapshot["status"])
+            await self.broadcast(
+                meeting_progress_event(
+                    meeting_id,
+                    phase,
+                    published_amount,
+                    published_status,
+                )
+            )
 
         finalizer = MeetingFinalizer(
             self._meeting_store,

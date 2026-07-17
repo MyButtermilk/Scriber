@@ -220,10 +220,11 @@ Audio format is intentionally tiered rather than conflated with model input:
 - Recoverable 30-second work chunks remain 16-kHz mono PCM until their two-phase
   publication and the canonical transcript commit are proven durable.
 - The long-lived reprocessing archive is the verified Matroska/FLAC multitrack.
-  Playback has timeline-aligned Opus derivatives for the mix, clean microphone,
-  and system track; otherwise the existing Mic/System mute controls would retain
-  a hidden dependency on the large final WAVs. FLAC remains lossless for future
-  STT/diarization and Opus is not treated as canonical model evidence.
+  Playback has a timeline-aligned Opus mix plus internal clean-microphone and
+  system derivatives. User-facing transcript, citation, and speaker-sample
+  playback always uses the complete mix; isolated derivatives are not exposed
+  as mute/source controls. FLAC remains lossless for future STT/diarization and
+  Opus is not treated as canonical model evidence.
 - Finalization prepares sources sequentially. It concatenates one source to a
   task-scoped PCM WAV, hashes its canonical decoded samples, encodes a
   `*.work.flac`, decodes that FLAC again to prove sample-count and PCM-hash
@@ -347,14 +348,19 @@ bytes.
    those validated evidence objects hierarchically with fan-in three. Map and
    reduce results are persisted by algorithm/schema/model/chunk digest, so retry
    regenerates only a changed or malformed branch. Schema repair is scoped to
-   that branch, and the final deterministic merge preserves exact cited segment
-   ids and derives chapter times from their canonical timestamps.
+   that branch. If provider reduction times out or remains length-truncated after
+   its larger-budget retry, the run stops further paid reducer calls and merges
+   only already schema/citation-validated maps locally. Both provider and local
+   paths enforce the same bounded output contract before the final deterministic
+   merge preserves cited segment ids and derives chapter times from canonical
+   timestamps.
    Every REST and live WebSocket segment carries `startMs`, `endMs`, and the
-   derived `durationMs`. Transcript rows and AI citations seek the corresponding
-   microphone, system, or playback-mix asset directly. Offsets at or above one
+   derived `durationMs`. Transcript rows and AI citations always seek the
+   complete playback-mix asset. Offsets at or above one
    hour render as unambiguous `H:MM:SS`; each row exposes start, end, and duration
-   while retaining click-to-seek. The Meeting view offers immediate speaker/text
-   filtering; the token-protected `/search` endpoint uses FTS5 with
+   while retaining click-to-seek. Speaker-identification previews expand short
+   utterances with surrounding mix context to a five-to-eight-second window.
+   The Meeting view offers immediate speaker/text filtering; the token-protected `/search` endpoint uses FTS5 with
    chronological neighboring segments and falls back to the live revision until
    a canonical transcript exists.
    JSON and Markdown exports preserve the normalized workspace directly. PDF
@@ -757,6 +763,13 @@ use rowid instead of scanning unindexed text identifiers. Meeting detail reads
 hold one explicit WAL read transaction until every constituent row set has
 been captured, then decode JSON and assemble the response after releasing the
 snapshot.
+
+The current finalization/analysis checkpoint is stored on the Meeting row and
+returned as nullable `processingProgress` by list, active, and detail responses.
+The backend persists a checkpoint before broadcasting it; route remounts hydrate
+from REST/cache, stale callbacks cannot cross state boundaries, and retry or
+terminal transitions clear the prior run. An active state without a checkpoint
+is rendered as indeterminate work rather than `0%`.
 
 Task creation uses reservation gates even within one process: reserve the
 meeting task slot synchronously, commit the corresponding durable state, then

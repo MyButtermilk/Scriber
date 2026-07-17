@@ -89,6 +89,13 @@ export interface MeetingCaptureMetadata extends Record<string, unknown> {
   calendarEvent?: OutlookCalendarEvent;
 }
 
+export interface MeetingProcessingProgress {
+  phase: "finalize" | "analysis";
+  progress: number;
+  status: string;
+  updatedAt: string;
+}
+
 export interface MeetingSummary {
   id: string;
   title: string;
@@ -113,6 +120,7 @@ export interface MeetingSummary {
   smartTurnEnabled: boolean;
   autoAnalyze: boolean;
   transcriptEditVersion: number;
+  processingProgress: MeetingProcessingProgress | null;
 }
 
 export interface MeetingSegment {

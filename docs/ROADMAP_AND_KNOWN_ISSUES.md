@@ -118,8 +118,8 @@ Meetings:
   either finalize saved chunks or resume fresh capture.
 - The start check can run an explicit 1.5-second mic/loopback/AEC route test;
   it returns only level/activity statistics and never persists or uploads audio.
-- Post-meeting progress, Overview and Notes views, independent track mute
-  controls, document/data exports, compressed Opus audio sharing, and
+- Durable post-meeting progress, Overview and Notes views, full-mix timestamp
+  and five-to-eight-second speaker playback, document/data exports, compressed Opus audio sharing, and
   preview-confirmed webhook delivery are exposed in the workspace. Outlook EML
   drafts preserve the selected PDF/DOCX/Markdown MIME attachment and use the
   transcript/analysis language for their subject, body, and document labels.
@@ -450,19 +450,24 @@ paths; installed-app and physical-device evidence remains part of release QA.
 - **Required regression gate:** fake-timer clear, route-change-before-debounce,
   and delayed-response A-to-B tests must prove durable, correctly scoped notes.
 
-### `BUG-MTG-016` - Resolved P2 - Playback controls are rendered from transcript presence, not audio availability
+### `BUG-MTG-016` - Resolved P2 - Meeting playback can expose missing or partial audio
 
 - **Reproduction:** open a Meeting after audio retention has purged its assets,
-  or a single-track import. The player and both Mic/System toggles are still
-  shown. Selecting a missing source calls an endpoint that correctly returns
-  `404`.
-- **Root cause:** Meetings gates playback on `detail.segments.length > 0` and
-  always constructs all three source URLs. It does not derive available routes
-  from `detail.audioAssets` or `audioPurgedAt`.
-- **Fix boundary:** expose only verified assets, disable impossible mixes/source
-  switches, and show a durable `Audio no longer retained` state after purge.
-- **Required regression gate:** no-assets, purged, microphone-only, system-only,
-  and full-mix component cases.
+  a legacy record with only an isolated track, or click a system/microphone
+  transcript segment. The old controls could expose a missing route or isolate
+  one side, so the user no longer heard the complete conversation.
+- **Root cause:** Meetings gated playback on any audio derivative and routed
+  segment/sample clicks through their source track. Mic/System mute controls
+  made that partial state persistent.
+- **Fix boundary:** user-facing Meeting playback now requires `playback_mix` and
+  always uses its authenticated mix endpoint. Track toggles are removed;
+  timestamps, citations, and speaker examples retain the full conversation.
+  Speaker examples use a clamped five-to-eight-second window and are disabled
+  when the retained mix itself is shorter than five seconds. Purged meetings
+  keep their explicit audio-unavailable state.
+- **Regression gate:** source tests reject isolated fallback routes and old mute
+  state, unit tests cover sample windows at both audio edges, and the browser
+  Meeting flow checks the mix URL for both timestamp and speaker-sample clicks.
 
 ### `BUG-MTG-017` - Resolved P2 safety - Irreversible Voice Library deletion has no confirmation
 

@@ -1258,6 +1258,41 @@ html:has(body[data-scroll-locked]) {
   box-shadow: inset 0 0 0 1px var(--live-hairline);
 }
 
+/* Grid cards keep their timestamp readable at rest, then replace that same
+   visual zone with actions on hover/focus instead of squeezing both together. */
+@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
+  .live-recording-actions--grid {
+    position: absolute;
+    z-index: 1;
+    top: 12px;
+    right: 12px;
+    padding: 4px;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--live-card-hover) 94%, transparent);
+    box-shadow:
+      0 12px 24px -18px var(--live-card-shadow),
+      inset 0 0 0 1px var(--live-hairline);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-2px);
+    transition:
+      opacity var(--duration-quick) var(--ease-smooth-out),
+      transform var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .live-recording-card:hover .live-recording-actions--grid,
+  .live-recording-card:focus-within .live-recording-actions--grid {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+
+  .live-recording-card:hover .live-recording-date,
+  .live-recording-card:focus-within .live-recording-date {
+    opacity: 0;
+  }
+}
+
 .youtube-search-shell,
 .file-upload-shell {
   padding: 1px;
@@ -1523,6 +1558,8 @@ html:has(body[data-scroll-locked]) {
   }
 
   .live-recording-card,
+  .live-recording-actions--grid,
+  .live-recording-date,
   .youtube-history-card,
   .youtube-result-card,
   .file-history-card,

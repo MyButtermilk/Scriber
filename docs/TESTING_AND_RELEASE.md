@@ -1274,6 +1274,12 @@ restore fail the matrix. Foreground diagnostics must remain hashed/redacted in
 every scenario. The same redaction gate rejects raw Shell IPC pipe names and
 unredacted token-like values in every scenario report.
 
+The `clipboard-non-text` evidence must include an application-registered-only
+clipboard case such as Chromium `HTML Format`/source metadata or RTF and verify
+that the same registered format ids and bytes are restored. Keep predefined GDI
+handle cases separate; they must fail closed rather than being read through
+`GlobalSize`/`GlobalLock`.
+
 The aggregate runner can also build the matrix artifact from already collected
 scenario reports:
 
@@ -1455,7 +1461,9 @@ and recovery through a corrupt newest base using the redundant fallback.
 Analysis tests use a 600-segment five-hour fixture to prove the 48,000-character
 and 60-minute fast-path boundaries, 30,000-character and 30-minute map budgets,
 concurrency two, reduce fan-in three, persistent partial-cache reuse, scoped
-repair, valid citations, and monotonic progress. Finalizer/pipeline tests cover
+repair, valid citations, bounded analysis output, local merge of already
+validated maps after a reducer timeout/length failure, and monotonic progress.
+Finalizer/pipeline tests cover
 the 30-minute lease with five-minute heartbeat, duration-scaled upload/batch/poll
 timeouts, and equivalence of the timeline-sweep echo deduper to the prior exact
 overlap/similarity behavior. These are accelerated invariants, not a physical
@@ -1472,6 +1480,12 @@ Shell IPC, Rust audio sidecar, three named frame pipes, Python level probe, and
 cleanup path. It emits deterministic non-user microphone/system signals only
 under explicit test flags and verifies that no audio is persisted or sent to a
 provider:
+
+The frontend browser Meeting flow additionally requires the final `playback_mix`
+route, rejects the removed Mic/System track controls, seeks transcript timestamps
+through that mix, opens the matching explicit speaker-assignment row from a
+transcript speaker label, and verifies that the five-to-eight-second Meeting
+speaker sample stays on the same full-mix URL.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.ps1 `

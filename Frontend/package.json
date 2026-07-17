@@ -1,6 +1,6 @@
 {
   "name": "rest-express",
-  "version": "0.5.34",
+  "version": "0.5.35",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -14,7 +14,7 @@
     "build:webview": "vite build",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
-    "test:i18n": "tsx --test client/src/i18n/i18n.test.ts client/src/lib/onnx-download-message.test.ts",
+    "test:i18n": "tsx --test client/src/i18n/i18n.test.ts client/src/lib/meeting-error-message.test.ts client/src/lib/onnx-download-message.test.ts",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",

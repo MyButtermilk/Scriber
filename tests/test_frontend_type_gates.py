@@ -1779,6 +1779,45 @@ def test_transcript_detail_uses_typed_rest_queries() -> None:
     assert "const transcript: any" not in source
 
 
+def test_responsive_ui_polish_contracts_are_preserved() -> None:
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+        encoding="utf-8"
+    )
+    language_toggle = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "language-toggle.tsx"
+    ).read_text(encoding="utf-8")
+    transcript_detail = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx"
+    ).read_text(encoding="utf-8")
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "min-[1280px]:grid-cols-2" in settings
+    assert "min-[1280px]:col-span-2" in settings
+    assert "min-[1440px]" not in settings
+    assert '<div className="grid gap-3 min-[1280px]:grid-cols-2">' in settings
+    assert "sm:grid-cols-[minmax(0,1fr)_minmax(150px,248px)]" in settings
+
+    assert 'role="group"' in language_toggle
+    assert "aria-pressed={selected}" in language_toggle
+    assert "onClick={() => setLocale(option)}" in language_toggle
+    assert "const ariaLabel = selected ? optionLabel : switchOptionLabel;" in language_toggle
+
+    assert '"transcript-detail-shell has-summary-toc space-y-6"' in transcript_detail
+    assert '"transcript-detail-shell space-y-6"' in transcript_detail
+    assert 'transcript.type === "youtube"' in transcript_detail
+    assert 'data-testid="youtube-source-link"' in transcript_detail
+    assert 't("Open on YouTube")' in transcript_detail
+    assert 'target="_blank"' in transcript_detail
+    assert 'rel="noopener noreferrer"' in transcript_detail
+    assert 'hostname.endsWith(".youtube.com")' in transcript_detail
+    assert 'if (!isTauriRuntime()) return;' in transcript_detail
+    assert 'import("@tauri-apps/plugin-opener")' in transcript_detail
+
+    assert meetings.count('className="w-32"') == 3
+
+
 def test_recording_popup_uses_canvas_waveform_without_react_frame_state() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "RecordingPopup.tsx").read_text(
         encoding="utf-8"
@@ -1874,6 +1913,28 @@ def test_meeting_workspace_uses_focus_canvas_and_gpu_only_live_progress() -> Non
     assert 't("Speaker sound played")' in source
 
 
+def test_meeting_progress_restores_from_detail_and_never_invents_zero() -> None:
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+        encoding="utf-8"
+    )
+    api_types = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts"
+    ).read_text(encoding="utf-8")
+    cache = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "meeting-cache.ts"
+    ).read_text(encoding="utf-8")
+
+    assert "detail.processingProgress" in source
+    assert "mergeMeetingProcessingProgress" in source
+    assert "applyMeetingProgressEvent" in source
+    assert 't("Processing…")' in source
+    assert "aria-valuenow={meetingProgress ?" in source
+    assert ": undefined}" in source
+    assert "meetingProgress?.progress ?? 0" not in source
+    assert "processingProgress: MeetingProcessingProgress | null;" in api_types
+    assert "export function mergeMeetingProcessingProgress" in cache
+
+
 def test_meeting_workspace_reconciles_after_backend_websocket_restart() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
         encoding="utf-8"
@@ -1932,7 +1993,15 @@ def test_meeting_workspace_scopes_drafts_playback_and_imports_to_durable_state()
     assert "noteDraftRef.current" in meetings
     assert "draft.body !== draft.savedBody" in meetings
     assert 'body: draft.body' in meetings
-    assert "availablePlaybackSources" in meetings
+    assert 'asset.kind === "playback_mix"' in meetings
+    assert 'src={apiUrl(`/api/meetings/${detail.id}/audio`)}' in meetings
+    assert "meetingSpeakerSampleWindow(" in meetings
+    assert "canPlaySpeakerSamples" in meetings
+    assert "availablePlaybackSources" not in meetings
+    assert "mutedSources" not in meetings
+    assert "playbackSourceForSegment" not in meetings
+    assert "playbackSourceForMuteState" not in meetings
+    assert "Playback track controls" not in meetings
     assert "Audio is no longer retained" in meetings
     assert "meetingImportsQuery.data?.items.find" in meetings
     assert 'job.meetingId' in meetings

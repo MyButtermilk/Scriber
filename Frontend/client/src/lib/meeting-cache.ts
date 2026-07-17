@@ -4,6 +4,7 @@ import type {
   MeetingCapabilities,
   MeetingDetail,
   MeetingNote,
+  MeetingProcessingProgress,
   MeetingSegment,
   MeetingSpeakerAssignmentsResponse,
   MeetingState,
@@ -88,6 +89,38 @@ export function mergeMeetingSegment(
     : [...current, incoming];
   next.sort((left, right) => left.startMs - right.startMs || left.sequence - right.sequence || left.id.localeCompare(right.id));
   return next;
+}
+
+/** Keep one processing run monotonic across websocket events and detail polls. */
+export function mergeMeetingProcessingProgress(
+  current: MeetingProcessingProgress | null | undefined,
+  incoming: MeetingProcessingProgress,
+): MeetingProcessingProgress {
+  if (!current) return incoming;
+  const phaseRank = { finalize: 0, analysis: 1 } as const;
+  if (phaseRank[incoming.phase] < phaseRank[current.phase]) return current;
+  if (incoming.phase === current.phase && incoming.progress < current.progress) return current;
+  if (
+    incoming.phase === current.phase
+    && incoming.progress === current.progress
+    && incoming.updatedAt < current.updatedAt
+  ) return current;
+  return incoming;
+}
+
+/** Preserve progress in the route-persistent detail cache while it is mounted. */
+export function applyMeetingProgressEvent(
+  queryClient: QueryClient,
+  meetingId: string,
+  incoming: MeetingProcessingProgress,
+): void {
+  queryClient.setQueryData<MeetingDetail>(["/api/meetings", meetingId], (current) => current ? {
+    ...current,
+    processingProgress: mergeMeetingProcessingProgress(
+      current.processingProgress,
+      incoming,
+    ),
+  } : current);
 }
 
 export function applyMeetingSummaryEvent(

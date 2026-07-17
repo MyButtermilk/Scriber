@@ -1800,9 +1800,14 @@ Tauri injection default blockers:
   and fails closed; it must not silently fall back to Python paste.
 - Fallback to Python applies only to a future explicit `auto` routing decision,
   not to strict `tauri`.
-- No clipboard mutation is acceptable unless the previous text state was
+- No clipboard mutation is acceptable unless the previous clipboard state was
   captured, restore is explicitly disabled by request, or the command fails
   before setting the clipboard.
+- Clipboard snapshots preserve both the explicitly allowlisted HGLOBAL-backed
+  standard formats and Windows application-registered formats in
+  `0xC000..=0xFFFF`. This keeps browser HTML/source metadata and RTF clipboard
+  contents restorable without treating GDI handles such as `CF_BITMAP` or
+  `CF_ENHMETAFILE` as global memory.
 - Every failure after a successful clipboard set must restore immediately or
   report `restore.skippedReason` / `restore.errorCode`.
 - Rust must not paste after the Python client deadline. The request includes

@@ -52,9 +52,11 @@ ROUTE_EXPECTATIONS: dict[str, list[str]] = {
     ],
     "/settings": ["Settings", "Speech-to-text provider", "API keys"],
     "/transcript/mic-00001": ["Synthetic Recording 00002", "Summary", "Transcript"],
+    "/transcript/file-00001": ["Synthetic File 00002", "Summary", "Transcript"],
     "/transcript/youtube-processing-smoke": [
         "Synthetic YouTube Processing",
         "Synthetic completed summary after YouTube processing.",
+        "Open on YouTube",
         "Transcript",
     ],
     "/transcript/mic-no-summary-smoke": [
@@ -212,6 +214,10 @@ class FrontendSmokeBackend:
         app.router.add_post("/api/meetings/detection/dismiss", self.dismiss_meeting_detection)
         app.router.add_get("/api/meetings/{meeting_id}/audio", self.meeting_audio)
         app.router.add_get("/api/meetings/{meeting_id}/audio/{source}", self.meeting_audio)
+        app.router.add_get(
+            "/api/meetings/{meeting_id}/speaker-assignments",
+            self.meeting_speaker_assignments,
+        )
         app.router.add_get("/api/meetings/{meeting_id}", self.meeting_detail)
         app.router.add_delete("/api/meetings/{meeting_id}", self.delete_meeting)
         app.router.add_post("/api/meetings/{meeting_id}/chat", self.meeting_chat)
@@ -838,6 +844,35 @@ class FrontendSmokeBackend:
         speaker["displayName"] = str(payload.get("displayName") or speaker["displayName"])
         self.meeting_requests.append("speaker")
         return web.json_response({"apiVersion": "1", "success": True})
+
+    async def meeting_speaker_assignments(self, request: web.Request) -> web.Response:
+        if not self.meeting or request.match_info["meeting_id"] != self.meeting["id"]:
+            return web.json_response({"message": "Meeting not found"}, status=404)
+        items = [
+            {
+                "speakerId": speaker["id"],
+                "speakerLabel": speaker["label"],
+                "currentDisplayName": speaker["displayName"],
+                "sourceHint": speaker["sourceHint"],
+                "profileId": None,
+                "profileDisplayName": None,
+                "profileIsNamed": False,
+                "profileMatch": None,
+                "suggestions": [],
+                "confirmedAttendee": None,
+                "confirmedCustomName": None,
+                "participantLinkSource": "",
+            }
+            for speaker in self.meeting["speakers"]
+        ]
+        return web.json_response({
+            "apiVersion": "1",
+            "calendarEvent": self.meeting["captureMetadata"].get("calendarEvent"),
+            "items": items,
+            "requiresConfirmation": True,
+            "llmSuggestionAvailable": False,
+            "llmModel": "synthetic",
+        })
 
     async def meeting_segment_edit(self, request: web.Request) -> web.Response:
         payload = await request.json()
@@ -2429,10 +2464,27 @@ async def exercise_meeting_end_to_end(
     await wait_button("Pause")
     await click_button("Stop")
     await wait_text("meeting-finalized", "We decided to launch the meeting workspace on Friday.")
-    await click_button("System on")
-    await wait_text("meeting-system-muted", "System muted")
-    await click_button("System muted")
-    await wait_text("meeting-system-unmuted", "System on")
+    playback_route = await wait_for_interaction_state(
+        cdp,
+        label="meeting-full-mix-playback-route",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const audio = document.querySelector('audio');
+  const pathname = audio ? new URL(audio.src, window.location.href).pathname : '';
+  const trackControls = document.querySelector('[aria-label="Playback track controls"]');
+  return {
+    ok: !!audio
+      && /^\/api\/meetings\/[^/]+\/audio$/.test(pathname)
+      && !pathname.endsWith('/audio/microphone')
+      && !pathname.endsWith('/audio/system')
+      && !trackControls,
+    pathname,
+    hasTrackControls: !!trackControls,
+  };
+})()
+""",
+    )
     audio_playback = await cdp.evaluate(
         r"""
 (async () => {
@@ -2569,6 +2621,58 @@ async def exercise_meeting_end_to_end(
 })()
 """,
     )
+    speaker_focus_clicked = await click_visible_target(
+        cdp,
+        label="meeting-transcript-speaker-assignment",
+        selector='button[data-speaker-id="speaker-smoke-2"]',
+        timeout_sec=timeout_sec,
+    )
+    speaker_assignment_focus = await wait_for_interaction_state(
+        cdp,
+        label="meeting-transcript-speaker-assignment-focus",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const row = document.querySelector('[data-speaker-assignment-id="speaker-smoke-2"]');
+  const trigger = row?.querySelector('[data-speaker-assignment-trigger]');
+  const panel = row?.closest('details');
+  return {
+    ok: !!row && !!trigger && panel?.open === true && document.activeElement === trigger,
+    panelOpen: panel?.open === true,
+    triggerFocused: document.activeElement === trigger,
+  };
+})()
+""",
+    )
+    speaker_sample_clicked = await click_visible_target(
+        cdp,
+        label="meeting-speaker-full-mix-sample",
+        selector='[data-speaker-assignment-id="speaker-smoke-2"] button',
+        timeout_sec=timeout_sec,
+        text="Play sample",
+        exact_text=True,
+    )
+    speaker_sample_playback = await wait_for_interaction_state(
+        cdp,
+        label="meeting-speaker-full-mix-sample-playback",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const audio = document.querySelector('audio');
+  const pathname = audio ? new URL(audio.src, window.location.href).pathname : '';
+  return {
+    ok: !!audio
+      && /^\/api\/meetings\/[^/]+\/audio$/.test(pathname)
+      && audio.currentTime >= 3.8
+      && audio.currentTime < 5.5
+      && !audio.error,
+    pathname,
+    currentTime: audio?.currentTime || 0,
+  };
+})()
+""",
+    )
+    await cdp.evaluate("document.querySelector('audio')?.pause()", timeout=5)
     edit_opened = await click_visible_button(
         cdp,
         label="Edit",
@@ -2871,13 +2975,23 @@ async def exercise_meeting_end_to_end(
     if not email_export_state or not email_export_state.get("ok"):
         raise RuntimeError(f"Meeting email draft failed: {email_export_state}")
     if email_export_state.get("dialogOpen"):
-        await click_visible_button(
-            cdp,
-            label="Close",
-            selector='[role="dialog"] button',
-            timeout_sec=timeout_sec,
-            prefer_last=False,
-        )
+        try:
+            await click_visible_button(
+                cdp,
+                label="Close",
+                selector='[role="dialog"] button',
+                timeout_sec=timeout_sec,
+                prefer_last=False,
+            )
+        except RuntimeError:
+            # Browser downloads may close the dialog between the captured
+            # download state and the actionability-stability probe.
+            already_closed = await cdp.evaluate(
+                "(() => ({ ok: !document.querySelector('[role=dialog]') }))()",
+                timeout=5,
+            )
+            if not already_closed or not already_closed.get("ok"):
+                raise
     await wait_for_interaction_state(
         cdp,
         label="meeting-email-dialog-closed",
@@ -2977,9 +3091,14 @@ async def exercise_meeting_end_to_end(
         and backend.meeting_email_exports == ["md"]
         and start_payload_ok
         and reconnected_after_crash
+        and bool(playback_route and playback_route.get("ok"))
         and bool(audio_playback and audio_playback.get("ok"))
         and bool(transcript_search and transcript_search.get("ok"))
         and bool(transcript_seek and transcript_seek.get("ok"))
+        and bool(speaker_focus_clicked and speaker_focus_clicked.get("ok"))
+        and bool(speaker_assignment_focus and speaker_assignment_focus.get("ok"))
+        and bool(speaker_sample_clicked and speaker_sample_clicked.get("ok"))
+        and bool(speaker_sample_playback and speaker_sample_playback.get("ok"))
         and bool(transcript_correction and transcript_correction.get("ok"))
         and bool(transcript_undo and transcript_undo.get("ok"))
         and bool(import_dialog and import_dialog.get("ok"))
@@ -2998,9 +3117,12 @@ async def exercise_meeting_end_to_end(
             "disconnectedSocketCount": len(disconnected_sockets),
             "reconnected": reconnected_after_crash,
         },
+        "fullMixPlaybackRoute": playback_route,
         "audioPlayback": audio_playback,
         "transcriptSearch": transcript_search,
         "transcriptSeek": transcript_seek,
+        "speakerAssignmentFocus": speaker_assignment_focus,
+        "speakerSamplePlayback": speaker_sample_playback,
         "transcriptCorrection": transcript_correction,
         "transcriptUndo": transcript_undo,
         "meetingImportDialog": import_dialog,

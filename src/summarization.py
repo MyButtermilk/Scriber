@@ -1049,7 +1049,26 @@ async def _summarize_openrouter(
                 used_model,
             )
 
-            if _openrouter_should_retry_with_more_tokens(data) and attempt_max_tokens < retry_cap:
+            length_limited = _openrouter_should_retry_with_more_tokens(data)
+            already_retried_with_larger_budget = any(
+                previous_budget < attempt_max_tokens
+                for previous_budget in attempt_budgets[:attempt_index]
+            )
+            if length_limited and content and already_retried_with_larger_budget:
+                last_empty_detail = _openrouter_empty_response_detail(data)
+                # A visible response has already been regenerated with a larger
+                # token budget. Trying the same oversized answer again through
+                # every fallback model can consume the caller's entire global
+                # timeout without making the response complete. Keep empty
+                # length responses eligible for another model because those
+                # commonly spent the whole budget on hidden reasoning.
+                raise RuntimeError(
+                    "OpenRouter hit max_tokens after the larger-budget retry "
+                    f"(max_tokens={attempt_max_tokens}, detail={last_empty_detail}). "
+                    "The partial summary was discarded to avoid saving truncated content."
+                )
+
+            if length_limited and attempt_max_tokens < retry_cap:
                 last_empty_detail = _openrouter_empty_response_detail(data)
                 next_max_tokens = _openrouter_next_output_budget(attempt_max_tokens, retry_cap, data)
                 # A length stop without any visible content usually means the
@@ -1083,7 +1102,7 @@ async def _summarize_openrouter(
                     attempt_index += 1
                     continue
 
-            if content and not _openrouter_should_retry_with_more_tokens(data):
+            if content and not length_limited:
                 return content
 
             last_empty_detail = _openrouter_empty_response_detail(data)

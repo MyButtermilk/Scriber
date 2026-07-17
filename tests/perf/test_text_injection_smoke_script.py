@@ -104,6 +104,10 @@ def test_text_injection_smoke_uses_real_injector_and_safe_target_window() -> Non
     )
 
     assert "TextInjector" in script
+    assert "InjectionTargetGuard" in script
+    assert "Config.INJECT_TARGET_TITLE = args.target_title" in script
+    assert 'os.environ["SCRIBER_INJECT_TARGET_TITLE"] = args.target_title' in script
+    assert "target_guard=InjectionTargetGuard(title=args.target_title)" in script
     assert "injector._inject_text(args.text)" in script
     assert "powershell_text_target_command" in script
     assert "SCRIBER_TEXT_TARGET_OUTPUT" in script

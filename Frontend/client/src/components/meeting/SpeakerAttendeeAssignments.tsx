@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
@@ -60,6 +60,11 @@ const SUGGESTION_PRIORITY: Record<MeetingSpeakerSuggestion["source"], number> = 
 
 const CUSTOM_NAME_VALUE = "__meeting_custom_name__";
 type Translate = (source: string, values?: TranslationValues) => string;
+
+export interface MeetingSpeakerAssignmentFocusRequest {
+  speakerId: string;
+  requestId: number;
+}
 
 type ConfirmAssignmentVariables =
   | {
@@ -155,26 +160,34 @@ export function SpeakerAttendeeAssignments({
   playableSpeakerIds,
   onPlaySpeaker,
   onAssignmentsChanged,
+  focusRequest = null,
 }: {
   meetingId: string;
   calendarEvent: OutlookCalendarEvent | null;
   playableSpeakerIds: ReadonlySet<string>;
   onPlaySpeaker: (speakerId: string) => void;
   onAssignmentsChanged: () => void;
+  focusRequest?: MeetingSpeakerAssignmentFocusRequest | null;
 }) {
   const { t, formatNumber } = useI18n();
   const queryClient = useQueryClient();
+  const panelRef = useRef<HTMLDetailsElement>(null);
   const [selectedParticipantIds, setSelectedParticipantIds] = useState<Record<string, string>>({});
   const [customNames, setCustomNames] = useState<Record<string, string>>({});
   const [mergeTargetProfileId, setMergeTargetProfileId] = useState("");
   const [mergeSourceProfileId, setMergeSourceProfileId] = useState("");
   const [mergeConfirmationOpen, setMergeConfirmationOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [highlightedSpeakerId, setHighlightedSpeakerId] = useState("");
   const assignmentsQuery = useQuery<MeetingSpeakerAssignmentsResponse>({
     queryKey: ["/api/meetings", meetingId, "speaker-assignments"],
     queryFn: ({ signal }) => fetchAssignments(meetingId, signal),
     enabled: Boolean(meetingId),
     staleTime: 10_000,
+    // An interrupted pre-finalization view may have cached an empty assignment
+    // list. Finalization can create speaker identities without changing this
+    // child query key, so every post-Meeting mount must confirm the latest rows.
+    refetchOnMount: "always",
   });
   const event = assignmentsQuery.data?.calendarEvent ?? calendarEvent;
   const attendees = useMemo(() => event ? attendeeOptions(event) : [], [event]);
@@ -240,6 +253,46 @@ export function SpeakerAttendeeAssignments({
       setMergeSourceProfileId("");
     }
   }, [mergeOptions, mergeSourceProfileId, mergeTargetProfileId]);
+
+  useEffect(() => {
+    if (!focusRequest || !(assignmentsQuery.data?.items ?? []).some(
+      (item) => item.speakerId === focusRequest.speakerId,
+    )) return;
+
+    setPanelOpen(true);
+    let nestedFrame = 0;
+    let clearHighlightTimer = 0;
+    const focusFrame = window.requestAnimationFrame(() => {
+      nestedFrame = window.requestAnimationFrame(() => {
+        const rows = panelRef.current?.querySelectorAll<HTMLElement>("[data-speaker-assignment-id]");
+        const row = rows
+          ? Array.from(rows).find((candidate) => (
+              candidate.dataset.speakerAssignmentId === focusRequest.speakerId
+            ))
+          : null;
+        if (!row) return;
+
+        setHighlightedSpeakerId(focusRequest.speakerId);
+        row.scrollIntoView({
+          behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+          block: "center",
+        });
+        row.querySelector<HTMLButtonElement>("[data-speaker-assignment-trigger]")
+          ?.focus({ preventScroll: true });
+        clearHighlightTimer = window.setTimeout(() => {
+          setHighlightedSpeakerId((current) => (
+            current === focusRequest.speakerId ? "" : current
+          ));
+        }, 2_400);
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      if (nestedFrame) window.cancelAnimationFrame(nestedFrame);
+      if (clearHighlightTimer) window.clearTimeout(clearHighlightTimer);
+    };
+  }, [assignmentsQuery.data?.items, focusRequest]);
 
   const suggestMutation = useMutation({
     mutationFn: async () => {
@@ -307,6 +360,7 @@ export function SpeakerAttendeeAssignments({
 
   return (
     <details
+      ref={panelRef}
       className="group mx-5 mt-3 overflow-hidden rounded-xl border border-border/65 bg-muted/20 sm:mx-6"
       open={panelOpen}
       onToggle={(event) => setPanelOpen(event.currentTarget.open)}
@@ -378,11 +432,19 @@ export function SpeakerAttendeeAssignments({
                 const itemResolved = Boolean(item.confirmedAttendee || item.confirmedCustomName);
                 const pendingThisSpeaker = confirmMutation.isPending && confirmMutation.variables?.speakerId === item.speakerId;
                 const customNameInputId = `meeting-speaker-name-${item.speakerId}`;
+                const rawSpeakerName = item.currentDisplayName || item.speakerLabel;
+                const speakerName = rawSpeakerName === "Meeting audio"
+                  ? t("Meeting audio")
+                  : rawSpeakerName;
                 return (
-                  <div key={item.speakerId} className="grid gap-3 p-3.5 lg:grid-cols-[minmax(150px,0.72fr)_minmax(220px,1fr)_auto] lg:items-start">
+                  <div
+                    key={item.speakerId}
+                    data-speaker-assignment-id={item.speakerId}
+                    className={`grid gap-3 p-3.5 outline-none transition-[background-color,box-shadow] duration-[var(--duration-quick)] motion-reduce:transition-none lg:grid-cols-[minmax(150px,0.72fr)_minmax(220px,1fr)_auto] lg:items-start ${highlightedSpeakerId === item.speakerId ? "bg-primary/5 shadow-[inset_3px_0_0_hsl(var(--primary))]" : ""}`}
+                  >
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <p className="truncate text-sm font-semibold">{item.currentDisplayName || item.speakerLabel}</p>
+                        <p className="truncate text-sm font-semibold">{speakerName}</p>
                         {itemResolved && <Badge variant="outline" className="border-emerald-500/40 text-[10px] text-emerald-700 dark:text-emerald-300"><Check className="mr-1 h-3 w-3" />{item.confirmedCustomName ? t("Meeting name") : t("Confirmed")}</Badge>}
                       </div>
                       <p className="mt-1 text-[11px] text-muted-foreground">{item.sourceHint === "microphone" ? t("Your microphone") : t("Meeting audio")}</p>
@@ -393,7 +455,7 @@ export function SpeakerAttendeeAssignments({
                         className="mt-1 h-7 px-2 text-[11px]"
                         disabled={!playableSpeakerIds.has(item.speakerId)}
                         onClick={() => onPlaySpeaker(item.speakerId)}
-                        title={playableSpeakerIds.has(item.speakerId) ? t("Play up to 8 seconds from this speaker") : t("No saved audio sample is available")}
+                        title={playableSpeakerIds.has(item.speakerId) ? t("Play a 5 to 8 second sample from this speaker") : t("No saved audio sample is available")}
                       >
                         <CirclePlay className="mr-1.5 h-3.5 w-3.5" />{t("Play sample")}
                       </Button>
@@ -412,7 +474,7 @@ export function SpeakerAttendeeAssignments({
 
                     <div className="min-w-0">
                       <Select value={selectedParticipantId} onValueChange={(participantId) => setSelectedParticipantIds((current) => ({ ...current, [item.speakerId]: participantId }))}>
-                        <SelectTrigger className="h-10 min-w-0 bg-background" aria-label={t("Name source for {{speaker}}", { speaker: item.currentDisplayName || item.speakerLabel })}>
+                        <SelectTrigger data-speaker-assignment-trigger className="h-10 min-w-0 bg-background" aria-label={t("Name source for {{speaker}}", { speaker: speakerName })}>
                           <SelectValue placeholder={attendees.length > 0 ? t("Choose participant or enter a name…") : t("Enter a meeting name…")} />
                         </SelectTrigger>
                         <SelectContent>

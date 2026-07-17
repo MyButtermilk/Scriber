@@ -2003,8 +2003,16 @@ const MAX_CLIPBOARD_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 #[cfg(windows)]
 const MAX_CLIPBOARD_SNAPSHOT_FORMATS: usize = 64;
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
+const REGISTERED_CLIPBOARD_FORMAT_FIRST: u32 = 0xC000;
+#[cfg(any(windows, test))]
+const REGISTERED_CLIPBOARD_FORMAT_LAST: u32 = 0xFFFF;
+
+#[cfg(any(windows, test))]
 fn is_restorable_clipboard_format(format: u32) -> bool {
+    // RegisterClipboardFormatW values are required to carry HGLOBAL-backed
+    // data, so browser HTML/source metadata and RTF can be copied as raw bytes.
+    // Predefined GDI-handle and private formats remain excluded.
     matches!(
         format,
         1  // CF_TEXT
@@ -2014,7 +2022,7 @@ fn is_restorable_clipboard_format(format: u32) -> bool {
             | 15 // CF_HDROP
             | 16 // CF_LOCALE
             | 17 // CF_DIBV5
-    )
+    ) || (REGISTERED_CLIPBOARD_FORMAT_FIRST..=REGISTERED_CLIPBOARD_FORMAT_LAST).contains(&format)
 }
 
 const CLIPBOARD_OWNER_CLASS: &str = "ScriberClipboardOwner";
@@ -3794,6 +3802,17 @@ mod tests {
     #[test]
     fn clipboard_owner_class_is_named_for_diagnostics() {
         assert_eq!(super::CLIPBOARD_OWNER_CLASS, "ScriberClipboardOwner");
+    }
+
+    #[test]
+    fn clipboard_format_filter_keeps_registered_hglobal_and_rejects_handle_formats() {
+        assert!(super::is_restorable_clipboard_format(8)); // CF_DIB
+        assert!(super::is_restorable_clipboard_format(13)); // CF_UNICODETEXT
+        assert!(super::is_restorable_clipboard_format(0xC000));
+        assert!(super::is_restorable_clipboard_format(0xFFFF));
+        assert!(!super::is_restorable_clipboard_format(0xBFFF));
+        assert!(!super::is_restorable_clipboard_format(2)); // CF_BITMAP
+        assert!(!super::is_restorable_clipboard_format(14)); // CF_ENHMETAFILE
     }
 
     #[test]

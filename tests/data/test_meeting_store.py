@@ -60,6 +60,162 @@ def test_transcription_mode_is_first_class_and_validated(store: MeetingStore):
         store.create(MeetingCreate(title="Invalid mode", transcription_mode="minute_chunks"))
 
 
+def test_processing_progress_is_durable_monotonic_and_scoped_to_one_run(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    assert meeting["processingProgress"] is None
+    finalizing = store.transition(meeting["id"], "finalizing")
+    meeting_updated_at = finalizing["updatedAt"]
+
+    checkpoint = store.set_processing_progress(
+        meeting["id"],
+        phase="finalize",
+        progress=0.42,
+        status="Creating canonical transcript",
+    )
+
+    assert checkpoint is not None
+    assert checkpoint["phase"] == "finalize"
+    assert checkpoint["progress"] == pytest.approx(0.42)
+    assert checkpoint["status"] == "Creating canonical transcript"
+    assert checkpoint["updatedAt"]
+    assert store.get(meeting["id"])["processingProgress"] == checkpoint
+    assert store.list()["items"][0]["processingProgress"] == checkpoint
+    assert store.active()["processingProgress"] == checkpoint
+    assert store.detail(meeting["id"])["processingProgress"] == checkpoint
+    assert store.get(meeting["id"])["updatedAt"] == meeting_updated_at
+
+    # A delayed callback within the same phase cannot move the durable UI
+    # backwards.  The returned value is the checkpoint that remains canonical.
+    regressed = store.set_processing_progress(
+        meeting["id"],
+        phase="finalize",
+        progress=0.2,
+        status="Older callback",
+    )
+    assert regressed == checkpoint
+
+    # Finalization and its automatic analysis are one continuous progress run.
+    store.transition(meeting["id"], "analyzing")
+    assert store.get(meeting["id"])["processingProgress"] == checkpoint
+    analysis = store.set_processing_progress(
+        meeting["id"],
+        phase="analysis",
+        progress=0.83,
+        status="Generating cited decisions",
+    )
+    assert analysis is not None
+    assert analysis["progress"] == pytest.approx(0.83)
+
+    # Terminal states and a later retry start with no claimed percentage until
+    # that new run reports a real callback.
+    store.transition(meeting["id"], "analysis_failed")
+    assert store.get(meeting["id"])["processingProgress"] is None
+    store.transition(meeting["id"], "analyzing")
+    assert store.get(meeting["id"])["processingProgress"] is None
+    with pytest.raises(ValueError, match="finite number"):
+        store.set_processing_progress(
+            meeting["id"], phase="analysis", progress=float("nan"), status="Invalid"
+        )
+    store.transition(meeting["id"], "ready")
+    assert store.set_processing_progress(
+        meeting["id"], phase="analysis", progress=1.0, status="Late callback"
+    ) is None
+    assert store.get(meeting["id"])["processingProgress"] is None
+
+
+def test_unlabeled_canonical_system_audio_has_stable_renameable_speaker(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    created = store.replace_segments(
+        meeting["id"],
+        "canonical",
+        [
+            {
+                "id": "unlabeled-system-audio",
+                "source": "system",
+                "startMs": 0,
+                "endMs": 6_000,
+                "text": "This is the remote side of the meeting.",
+            },
+            {
+                "id": "unlabeled-system-audio-follow-up",
+                "source": "system",
+                "startMs": 6_000,
+                "endMs": 12_000,
+                "text": "The same generic source continues.",
+            },
+        ],
+    )
+    expected_speaker_id = hashlib.sha256(
+        f"{meeting['id']}\0canonical\0system\0meeting audio".encode("utf-8")
+    ).hexdigest()[:32]
+
+    assert {item["speakerId"] for item in created} == {expected_speaker_id}
+    assert {item["speakerLabel"] for item in created} == {"Meeting audio"}
+    detail = store.detail(meeting["id"])
+    assert detail["speakers"][0]["id"] == expected_speaker_id
+    assert detail["speakers"][0]["displayName"] == "Meeting audio"
+    assert {item["speakerId"] for item in detail["segments"]} == {
+        expected_speaker_id
+    }
+
+    assignment = store.assign_speaker_display_name(
+        meeting["id"], expected_speaker_id, "Ada Example"
+    )
+    assert assignment["customDisplayName"] == "Ada Example"
+    renamed = store.detail(meeting["id"])
+    assert renamed["speakers"][0]["displayName"] == "Ada Example"
+    assert {item["speakerLabel"] for item in renamed["segments"]} == {
+        "Ada Example"
+    }
+
+
+def test_initialize_backfills_legacy_unlabeled_canonical_system_audio(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    with database._get_connection() as conn:
+        conn.execute(
+            """INSERT INTO meeting_segments
+               (id,meeting_id,revision,source,provider_segment_id,speaker_id,
+                speaker_label,start_ms,end_ms,text,confidence,alignment_quality,
+                is_final,sequence,created_at)
+               VALUES (?,?,'canonical','system','',NULL,'',0,6000,?,NULL,
+                       'estimated',1,0,?)""",
+            (
+                "legacy-unlabeled-system-audio",
+                meeting["id"],
+                "Legacy remote speech.",
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+        conn.commit()
+
+    store.initialize()
+    expected_speaker_id = hashlib.sha256(
+        f"{meeting['id']}\0canonical\0system\0meeting audio".encode("utf-8")
+    ).hexdigest()[:32]
+    detail = store.detail(meeting["id"])
+    assert detail["segments"][0]["speakerId"] == expected_speaker_id
+    assert detail["segments"][0]["speakerLabel"] == "Meeting audio"
+    assert [(item["id"], item["displayName"]) for item in detail["speakers"]] == [
+        (expected_speaker_id, "Meeting audio")
+    ]
+
+    # Re-running initialization is idempotent and never undoes a local rename.
+    store.assign_speaker_display_name(
+        meeting["id"], expected_speaker_id, "Project room"
+    )
+    store.initialize()
+    migrated_again = store.detail(meeting["id"])
+    assert len(migrated_again["speakers"]) == 1
+    assert migrated_again["speakers"][0]["displayName"] == "Project room"
+    assert migrated_again["segments"][0]["speakerLabel"] == "Project room"
+
+
 def test_full_reprocess_reservation_is_atomic_and_preserves_canonical_rows(
     store: MeetingStore,
 ):
@@ -302,6 +458,12 @@ def test_existing_meetings_migrate_to_live_and_final_mode(monkeypatch, tmp_path)
     with database._get_connection() as conn:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(meetings)")}
     assert "transcription_mode" in columns
+    assert {
+        "processing_phase",
+        "processing_progress",
+        "processing_status",
+        "processing_progress_updated_at",
+    }.issubset(columns)
     database._close_all_connections()
 
 
@@ -916,11 +1078,18 @@ def test_analysis_recovery_preserves_canonical_phase_for_analysis_only_retry(
         "isFinal": True,
     }])
     store.transition(meeting["id"], "analyzing")
+    store.set_processing_progress(
+        meeting["id"],
+        phase="analysis",
+        progress=0.83,
+        status="Generating cited analysis",
+    )
 
     assert store.recover_interrupted() == 1
     recovered = store.get(meeting["id"])
     assert recovered["state"] == "analysis_failed"
     assert recovered["errorCode"] == "process_interrupted_during_analysis"
+    assert recovered["processingProgress"] is None
     assert store.detail(meeting["id"])["segments"][0]["id"] == (
         "canonical-before-analysis-crash"
     )
@@ -933,12 +1102,19 @@ def test_finalization_recovery_never_reopens_capture(store: MeetingStore, phase:
     store.transition(meeting["id"], "stopping")
     if phase == "finalizing":
         store.transition(meeting["id"], "finalizing")
+        store.set_processing_progress(
+            meeting["id"],
+            phase="finalize",
+            progress=0.42,
+            status="Creating canonical transcript",
+        )
 
     assert store.recover_interrupted() == 1
     recovered = store.get(meeting["id"])
     assert recovered["state"] == "finalization_failed"
     assert recovered["errorCode"] == "process_interrupted_during_finalization"
     assert "saved audio is intact" in recovered["errorMessage"]
+    assert recovered["processingProgress"] is None
 
 
 def test_delivery_persistence_keeps_only_sanitized_request_metadata(store: MeetingStore):

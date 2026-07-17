@@ -3645,6 +3645,84 @@ async def test_finalizer_failure_updates_durable_import_and_retry_reopens_it(
 
 
 @pytest.mark.asyncio
+async def test_finalization_progress_is_persisted_before_websocket_broadcast(
+    monkeypatch, tmp_path
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "meeting-progress.db")
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    meeting = store.create(MeetingCreate(title="Persistent progress"))
+    store.transition(meeting["id"], "finalizing")
+    callback_seen = asyncio.Event()
+    release = asyncio.Event()
+    late_callback_seen = asyncio.Event()
+    hold_finalizer = asyncio.Event()
+    events = []
+
+    class BlockingFinalizer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        @staticmethod
+        async def run(meeting_id, progress):
+            await progress("Creating canonical transcript", 0.42)
+            callback_seen.set()
+            await release.wait()
+            store.transition(meeting_id, "ready")
+            await progress("Meeting ready", 1.0)
+            late_callback_seen.set()
+            await hold_finalizer.wait()
+            return store.get(meeting_id)
+
+    async def broadcast(payload):
+        events.append(payload)
+
+    controller = web_api.ScriberWebController.__new__(web_api.ScriberWebController)
+    controller._meeting_store = store
+    controller._speaker_model = None
+    controller._speaker_diarizer = None
+    controller._transcript_artifacts = None
+    controller.broadcast = broadcast
+    monkeypatch.setattr(web_api, "MeetingFinalizer", BlockingFinalizer)
+
+    task = asyncio.create_task(controller._run_meeting_finalization(meeting["id"]))
+    try:
+        await asyncio.wait_for(callback_seen.wait(), timeout=3)
+        expected = {
+            "phase": "finalize",
+            "progress": 0.42,
+            "status": "Creating canonical transcript",
+        }
+        for payload in (
+            store.get(meeting["id"]),
+            store.active(),
+            store.list()["items"][0],
+            store.detail(meeting["id"]),
+        ):
+            assert payload["processingProgress"] is not None
+            assert {
+                key: payload["processingProgress"][key]
+                for key in expected
+            } == expected
+            assert payload["processingProgress"]["updatedAt"]
+        assert events[-1]["type"] == "meeting_finalize_progress"
+        assert events[-1]["progress"] == pytest.approx(0.42)
+        assert events[-1]["status"] == "Creating canonical transcript"
+        event_count = len(events)
+        release.set()
+        await asyncio.wait_for(late_callback_seen.wait(), timeout=3)
+        assert len(events) == event_count
+        assert store.get(meeting["id"])["processingProgress"] is None
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        database._close_all_connections()
+
+
+@pytest.mark.asyncio
 async def test_import_recovery_projects_analysis_failure_to_retryable_failed_job(
     monkeypatch, tmp_path
 ):

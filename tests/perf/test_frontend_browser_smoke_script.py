@@ -29,7 +29,7 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     assert result.returncode == 0, result.stderr
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["ok"] is True
-    assert payload["summary"]["routeCount"] == 10
+    assert payload["summary"]["routeCount"] == 11
     assert "/meetings" in payload["summary"]["routes"]
     assert payload["summary"]["criticalConsoleErrorCount"] == 0
     assert payload["summary"]["interactionCheckCount"] == 20
@@ -58,6 +58,7 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     assert "/settings" in payload["summary"]["routes"]
     assert "/debug" in payload["summary"]["routes"]
     assert "/transcript/youtube-processing-smoke" in payload["summary"]["routes"]
+    assert "/transcript/file-00001" in payload["summary"]["routes"]
     assert "/transcript/mic-no-summary-smoke" in payload["summary"]["routes"]
     assert "/transcript/mic-summary-failed-smoke" in payload["summary"]["routes"]
     assert set(payload["summary"]["virtualizedHistoryRoutes"]) == {"/", "/youtube", "/file"}
@@ -105,7 +106,7 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     assert all(item["maxWidthReached"] for item in desktop_layout["results"])
     assert payload["mobileNavigationCheck"]["name"] == "mobile-navigation"
     assert payload["mobileRouteLayoutsCheck"]["name"] == "mobile-route-layouts"
-    assert payload["mobileRouteLayoutsCheck"]["routeCount"] == 10
+    assert payload["mobileRouteLayoutsCheck"]["routeCount"] == 11
     assert payload["tokenRequiredCheck"]["name"] == "token-required-browser-state"
 
 
@@ -240,6 +241,13 @@ def test_frontend_browser_smoke_exercises_meeting_end_to_end() -> None:
     assert "meeting-start-readiness" in script
     assert "meeting-live-recovered" in script
     assert "meeting-overview-analysis" in script
+    assert "meeting-full-mix-playback-route" in script
+    assert "meeting-transcript-speaker-assignment-focus" in script
+    assert "meeting-speaker-full-mix-sample-playback" in script
+    assert 'button[data-speaker-id="speaker-smoke-2"]' in script
+    assert "^\\/api\\/meetings\\/[^/]+\\/audio$" in script
+    assert 'await click_button("System on")' not in meeting_flow
+    assert 'await click_button("System muted")' not in meeting_flow
     assert "document.elementFromPoint" in pointer_helper
     assert "scrollIntoView" in pointer_helper
     assert "await click_page_coordinates" in pointer_helper

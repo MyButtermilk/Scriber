@@ -1,16 +1,18 @@
 import type { MeetingAudioAsset, MeetingAudioTrackManifestEntry } from "./api-types";
 
 export type MeetingPlaybackSource = "mix" | "microphone" | "system";
-export type MeetingSegmentPlaybackSource = "microphone" | "system" | "mixed";
 
 export interface MeetingPlaybackRequest {
   meetingTimeMs: number;
   shouldPlay: boolean;
 }
 
-export interface MeetingPlaybackMuteState {
-  microphone: boolean;
-  system: boolean;
+export const MEETING_SPEAKER_SAMPLE_MIN_MS = 5_000;
+export const MEETING_SPEAKER_SAMPLE_MAX_MS = 8_000;
+
+export interface MeetingSpeakerSampleWindow {
+  startMs: number;
+  endMs: number;
 }
 
 export interface MeetingAudioGap {
@@ -26,6 +28,49 @@ export interface MeetingCheckpointFreshness {
 
 function safeNonNegative(value: number): number {
   return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+/**
+ * Build a useful speaker-identification preview around a transcript segment.
+ * Short utterances gain surrounding full-mix context, while the window stays
+ * inside the retained audio. Meetings shorter than five seconds cannot offer a
+ * sample that satisfies the identification contract.
+ */
+export function meetingSpeakerSampleWindow(
+  segmentStartMs: number,
+  segmentEndMs: number,
+  audioOriginMs: number,
+  audioDurationMs: number,
+): MeetingSpeakerSampleWindow | null {
+  const audioStartMs = safeNonNegative(audioOriginMs);
+  const availableDurationMs = safeNonNegative(audioDurationMs);
+  if (availableDurationMs < MEETING_SPEAKER_SAMPLE_MIN_MS) return null;
+
+  const audioEndMs = audioStartMs + availableDurationMs;
+  const boundedSegmentStartMs = Math.min(
+    audioEndMs,
+    Math.max(audioStartMs, safeNonNegative(segmentStartMs)),
+  );
+  const boundedSegmentEndMs = Math.min(
+    audioEndMs,
+    Math.max(boundedSegmentStartMs, safeNonNegative(segmentEndMs)),
+  );
+  const sampleDurationMs = Math.min(
+    MEETING_SPEAKER_SAMPLE_MAX_MS,
+    Math.max(
+      MEETING_SPEAKER_SAMPLE_MIN_MS,
+      boundedSegmentEndMs - boundedSegmentStartMs,
+    ),
+    availableDurationMs,
+  );
+  const centeredStartMs = (
+    (boundedSegmentStartMs + boundedSegmentEndMs) / 2
+  ) - (sampleDurationMs / 2);
+  const startMs = Math.min(
+    Math.max(audioStartMs, centeredStartMs),
+    audioEndMs - sampleDurationMs,
+  );
+  return { startMs, endMs: startMs + sampleDurationMs };
 }
 
 /**
@@ -161,25 +206,4 @@ export function captureMeetingPlaybackRequest(
     meetingTimeMs: meetingPlaybackOriginMs(audioAssets, source) + localMs,
     shouldPlay: !paused && !ended,
   };
-}
-
-export function playbackSourceForSegment(
-  source: MeetingSegmentPlaybackSource,
-): MeetingPlaybackSource {
-  if (source === "mixed") return "mix";
-  return source;
-}
-
-/** Resolve a playable route without selecting an isolated file that was never produced. */
-export function playbackSourceForMuteState(
-  available: ReadonlySet<MeetingPlaybackSource>,
-  muted: MeetingPlaybackMuteState,
-): MeetingPlaybackSource | null {
-  if (muted.microphone && muted.system) return null;
-  if (muted.microphone && available.has("system")) return "system";
-  if (muted.system && available.has("microphone")) return "microphone";
-  if (available.has("mix")) return "mix";
-  if (!muted.microphone && available.has("microphone")) return "microphone";
-  if (!muted.system && available.has("system")) return "system";
-  return null;
 }

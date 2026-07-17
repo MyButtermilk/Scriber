@@ -170,9 +170,24 @@ _RESTORABLE_STANDARD_CLIPBOARD_FORMATS = {
     17,  # CF_DIBV5
 }
 
+# RegisterClipboardFormatW returns values in this range. Windows requires data
+# published under registered formats (for example Chromium's HTML/source
+# metadata and Rich Text Format) to be backed by movable global memory, so it
+# is safe to copy them with GlobalSize/GlobalLock and restore the raw bytes
+# under the same format id. Private and predefined handle formats remain
+# excluded unless they are explicitly allowlisted above.
+_REGISTERED_CLIPBOARD_FORMAT_FIRST = 0xC000
+_REGISTERED_CLIPBOARD_FORMAT_LAST = 0xFFFF
+
 
 def _windows_clipboard_format_is_restorable(format_id: int) -> bool:
-    return int(format_id) in _RESTORABLE_STANDARD_CLIPBOARD_FORMATS
+    normalized = int(format_id)
+    return (
+        normalized in _RESTORABLE_STANDARD_CLIPBOARD_FORMATS
+        or _REGISTERED_CLIPBOARD_FORMAT_FIRST
+        <= normalized
+        <= _REGISTERED_CLIPBOARD_FORMAT_LAST
+    )
 
 
 def _set_ctypes_signature(

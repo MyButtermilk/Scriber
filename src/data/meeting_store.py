@@ -44,6 +44,12 @@ TRANSCRIPT_CHECKPOINT_BASE_INTERVAL = 20
 FINAL_PROVIDER_RETRY_STATES = frozenset(
     {"finalization_failed", "capture_failed", "interrupted"}
 )
+MEETING_PROCESSING_PHASES = frozenset({"finalize", "analysis"})
+MEETING_PROCESSING_STATE_BY_PHASE = {
+    "finalize": "finalizing",
+    "analysis": "analyzing",
+}
+MEETING_AUDIO_SPEAKER_LABEL = "Meeting audio"
 
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "starting": frozenset({"recording", "finalizing", "capture_failed", "interrupted", "discarded"}),
@@ -107,6 +113,20 @@ def _is_generated_speaker_profile_name(profile_id: str, display_name: str) -> bo
         " ".join(str(display_name).split()).casefold()
         == _generated_speaker_profile_name(profile_id).casefold()
     )
+
+
+def _stable_meeting_speaker_id(
+    meeting_id: str,
+    revision: str,
+    source: str,
+    speaker_label: str,
+) -> str:
+    """Return the existing content-stable, meeting-local speaker identity."""
+    return hashlib.sha256(
+        f"{meeting_id}\0{revision}\0{source}\0{speaker_label.casefold()}".encode(
+            "utf-8"
+        )
+    ).hexdigest()[:32]
 
 
 _STABLE_ACTION_ID_RE = re.compile(r"action-[0-9a-f]{20}\Z")
@@ -223,6 +243,7 @@ class MeetingStore:
                    SELECT rowid,meeting_id,id,revision,text,speaker_label
                    FROM meeting_segments"""
             )
+
             conn.execute(
                 """CREATE TRIGGER meeting_segments_fts_insert
                    AFTER INSERT ON meeting_segments BEGIN
@@ -273,6 +294,64 @@ class MeetingStore:
                    FROM meeting_segments"""
             )
 
+    @staticmethod
+    def _backfill_canonical_system_speaker(conn: sqlite3.Connection) -> None:
+        """Give legacy unlabeled system rows one renameable local speaker."""
+        meeting_ids = [
+            str(row["meeting_id"])
+            for row in conn.execute(
+                """SELECT DISTINCT meeting_id FROM meeting_segments
+                   WHERE revision='canonical' AND source='system'
+                     AND trim(speaker_label)=''
+                     AND (speaker_id IS NULL OR trim(speaker_id)='')"""
+            ).fetchall()
+        ]
+        now = _utc_now()
+        for meeting_id in meeting_ids:
+            speaker_id = _stable_meeting_speaker_id(
+                meeting_id,
+                "canonical",
+                "system",
+                MEETING_AUDIO_SPEAKER_LABEL,
+            )
+            conn.execute(
+                """INSERT INTO meeting_speakers
+                   (id,meeting_id,label,display_name,source_hint,profile_id,confidence,
+                    created_at,updated_at)
+                   VALUES (?,?,?,?,?,NULL,NULL,?,?)
+                   ON CONFLICT(id) DO NOTHING""",
+                (
+                    speaker_id,
+                    meeting_id,
+                    MEETING_AUDIO_SPEAKER_LABEL,
+                    MEETING_AUDIO_SPEAKER_LABEL,
+                    "system",
+                    now,
+                    now,
+                ),
+            )
+            speaker = conn.execute(
+                """SELECT label,display_name FROM meeting_speakers
+                   WHERE meeting_id=? AND id=?""",
+                (meeting_id, speaker_id),
+            ).fetchone()
+            if speaker is None:
+                # A primary-key collision across Meetings is practically
+                # impossible, but must not link a segment to another Meeting.
+                continue
+            display_name = str(
+                speaker["display_name"]
+                or speaker["label"]
+                or MEETING_AUDIO_SPEAKER_LABEL
+            )
+            conn.execute(
+                """UPDATE meeting_segments SET speaker_id=?,speaker_label=?
+                   WHERE meeting_id=? AND revision='canonical' AND source='system'
+                     AND trim(speaker_label)=''
+                     AND (speaker_id IS NULL OR trim(speaker_id)='')""",
+                (speaker_id, display_name, meeting_id),
+            )
+
     def initialize(self, *, speaker_library_enabled: bool = True) -> None:
         with db._get_connection() as conn:  # shared WAL connection lifecycle
             conn.executescript(
@@ -303,6 +382,10 @@ class MeetingStore:
                     ,smart_turn_enabled INTEGER NOT NULL DEFAULT 1
                     ,auto_analyze INTEGER NOT NULL DEFAULT 1
                     ,transcript_edit_version INTEGER NOT NULL DEFAULT 0
+                    ,processing_phase TEXT NOT NULL DEFAULT ''
+                    ,processing_progress REAL
+                    ,processing_status TEXT NOT NULL DEFAULT ''
+                    ,processing_progress_updated_at TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_meetings_created_at
                     ON meetings(created_at DESC);
@@ -641,6 +724,20 @@ class MeetingStore:
                 conn.execute(
                     "ALTER TABLE meetings ADD COLUMN transcript_edit_version INTEGER NOT NULL DEFAULT 0"
                 )
+            if "processing_phase" not in meeting_columns:
+                conn.execute(
+                    "ALTER TABLE meetings ADD COLUMN processing_phase TEXT NOT NULL DEFAULT ''"
+                )
+            if "processing_progress" not in meeting_columns:
+                conn.execute("ALTER TABLE meetings ADD COLUMN processing_progress REAL")
+            if "processing_status" not in meeting_columns:
+                conn.execute(
+                    "ALTER TABLE meetings ADD COLUMN processing_status TEXT NOT NULL DEFAULT ''"
+                )
+            if "processing_progress_updated_at" not in meeting_columns:
+                conn.execute(
+                    "ALTER TABLE meetings ADD COLUMN processing_progress_updated_at TEXT"
+                )
             asset_columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(meeting_audio_assets)")
             }
@@ -794,6 +891,7 @@ class MeetingStore:
                 conn.execute("ALTER TABLE meeting_deliveries ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''")
             if "next_attempt_at" not in delivery_columns:
                 conn.execute("ALTER TABLE meeting_deliveries ADD COLUMN next_attempt_at TEXT NOT NULL DEFAULT ''")
+            self._backfill_canonical_system_speaker(conn)
             conn.execute("SAVEPOINT migrate_meeting_segments_fts")
             try:
                 self._ensure_meeting_segments_fts(conn)
@@ -834,7 +932,9 @@ class MeetingStore:
                 UPDATE meetings
                 SET state = 'analysis_failed', updated_at = ?,
                     error_code = 'process_interrupted_during_analysis',
-                    error_message = 'The canonical transcript is intact; Scriber stopped during meeting analysis.'
+                    error_message = 'The canonical transcript is intact; Scriber stopped during meeting analysis.',
+                    processing_phase = '', processing_progress = NULL,
+                    processing_status = '', processing_progress_updated_at = NULL
                 WHERE state = 'analyzing'
                 """,
                 (now,),
@@ -845,7 +945,9 @@ class MeetingStore:
                 SET state = 'finalization_failed', ended_at = COALESCE(ended_at, ?),
                     updated_at = ?,
                     error_code = 'process_interrupted_during_finalization',
-                    error_message = 'The saved audio is intact; Scriber stopped while creating the final transcript.'
+                    error_message = 'The saved audio is intact; Scriber stopped while creating the final transcript.',
+                    processing_phase = '', processing_progress = NULL,
+                    processing_status = '', processing_progress_updated_at = NULL
                 WHERE state IN ('stopping','finalizing')
                 """,
                 (now, now),
@@ -854,7 +956,9 @@ class MeetingStore:
                 """
                 UPDATE meetings
                 SET state = 'interrupted', ended_at = COALESCE(ended_at, ?), updated_at = ?, error_code = 'process_interrupted',
-                    error_message = 'Scriber stopped before the meeting workflow completed.'
+                    error_message = 'Scriber stopped before the meeting workflow completed.',
+                    processing_phase = '', processing_progress = NULL,
+                    processing_status = '', processing_progress_updated_at = NULL
                 WHERE state IN ('starting','recording','paused')
                 """,
                 (now, now),
@@ -1203,10 +1307,26 @@ class MeetingStore:
         started_at = now if new_state == "recording" and not current.get("startedAt") else current.get("startedAt")
         ended_at = now if new_state in TERMINAL_STATES or new_state in {"stopping", "finalizing"} else current.get("endedAt")
         metadata = capture_metadata if capture_metadata is not None else current.get("captureMetadata", {})
+        # A progress value belongs to exactly one processing run.  Preserve the
+        # finalization -> analysis hand-off because it is one continuous
+        # workflow, but never let a terminal state or retry inherit an older
+        # run's percentage.
+        clear_processing_progress = bool(
+            new_state != current["state"]
+            and not (
+                current["state"] == "finalizing"
+                and new_state == "analyzing"
+            )
+        )
         with db._get_connection() as conn:
             cursor = conn.execute(
                 """UPDATE meetings SET state = ?, started_at = ?, ended_at = ?, updated_at = ?,
-                   error_code = ?, error_message = ?, capture_metadata_json = ?
+                   error_code = ?, error_message = ?, capture_metadata_json = ?,
+                   processing_phase = CASE WHEN ? THEN '' ELSE processing_phase END,
+                   processing_progress = CASE WHEN ? THEN NULL ELSE processing_progress END,
+                   processing_status = CASE WHEN ? THEN '' ELSE processing_status END,
+                   processing_progress_updated_at = CASE
+                       WHEN ? THEN NULL ELSE processing_progress_updated_at END
                    WHERE id = ? AND state = ?""",
                 (
                     new_state,
@@ -1216,6 +1336,10 @@ class MeetingStore:
                     error_code,
                     error_message,
                     _json(metadata),
+                    int(clear_processing_progress),
+                    int(clear_processing_progress),
+                    int(clear_processing_progress),
+                    int(clear_processing_progress),
                     meeting_id,
                     current["state"],
                 ),
@@ -1225,6 +1349,96 @@ class MeetingStore:
                 raise MeetingConflict("Meeting state changed concurrently.")
             conn.commit()
         return self.get(meeting_id)
+
+    def set_processing_progress(
+        self,
+        meeting_id: str,
+        *,
+        phase: str,
+        progress: float,
+        status: str,
+    ) -> dict[str, Any] | None:
+        """Persist one real Meeting processing checkpoint without touching sort time.
+
+        Progress is deliberately nullable.  A processing state without a
+        checkpoint means "working, exact percentage not observed yet" rather
+        than zero.  Late callbacks after a state transition are ignored, and a
+        callback within one phase cannot move the durable value backwards.
+        """
+
+        normalized_phase = str(phase or "").strip().lower()
+        if normalized_phase not in MEETING_PROCESSING_PHASES:
+            raise ValueError("Unsupported Meeting processing phase.")
+        if isinstance(progress, bool):
+            raise ValueError("Meeting processing progress must be a finite number.")
+        try:
+            normalized_progress = float(progress)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Meeting processing progress must be a finite number."
+            ) from exc
+        if not math.isfinite(normalized_progress):
+            raise ValueError("Meeting processing progress must be a finite number.")
+        normalized_progress = max(0.0, min(1.0, normalized_progress))
+        normalized_status = " ".join(str(status or "").split())[:240]
+        expected_state = MEETING_PROCESSING_STATE_BY_PHASE[normalized_phase]
+        now = _utc_now()
+        conn = db._get_connection()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """SELECT state,processing_phase,processing_progress,
+                          processing_status,processing_progress_updated_at
+                   FROM meetings WHERE id=?""",
+                (meeting_id,),
+            ).fetchone()
+            if row is None:
+                raise MeetingNotFound(meeting_id)
+            if str(row["state"]) != expected_state:
+                conn.commit()
+                return None
+            current_progress = row["processing_progress"]
+            if (
+                str(row["processing_phase"] or "") == normalized_phase
+                and isinstance(current_progress, (int, float))
+                and math.isfinite(float(current_progress))
+                and float(current_progress) > normalized_progress
+            ):
+                conn.commit()
+                return {
+                    "phase": normalized_phase,
+                    "progress": float(current_progress),
+                    "status": str(row["processing_status"] or ""),
+                    "updatedAt": str(row["processing_progress_updated_at"] or ""),
+                }
+            cursor = conn.execute(
+                """UPDATE meetings
+                   SET processing_phase=?,processing_progress=?,processing_status=?,
+                       processing_progress_updated_at=?
+                   WHERE id=? AND state=?""",
+                (
+                    normalized_phase,
+                    normalized_progress,
+                    normalized_status,
+                    now,
+                    meeting_id,
+                    expected_state,
+                ),
+            )
+            if int(cursor.rowcount or 0) != 1:
+                conn.rollback()
+                return None
+            conn.commit()
+            return {
+                "phase": normalized_phase,
+                "progress": normalized_progress,
+                "status": normalized_status,
+                "updatedAt": now,
+            }
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
 
     def change_final_provider_for_retry(
         self,
@@ -1376,7 +1590,9 @@ class MeetingStore:
                 cursor = conn.execute(
                     """UPDATE meetings SET state='finalizing',final_provider=?,
                        analysis_model=?,voice_library_enabled=?,updated_at=?,
-                       error_code='',error_message='',capture_metadata_json=?
+                       error_code='',error_message='',capture_metadata_json=?,
+                       processing_phase='',processing_progress=NULL,
+                       processing_status='',processing_progress_updated_at=NULL
                        WHERE id=? AND state=?""",
                     (
                         provider,
@@ -4332,10 +4548,19 @@ class MeetingStore:
                     raise ValueError("Invalid meeting segment alignment quality.")
                 speaker_label = str(item.get("speakerLabel", "")).strip()
                 speaker_id = item.get("speakerId")
+                if (
+                    revision == "canonical"
+                    and source == "system"
+                    and not speaker_label
+                ):
+                    speaker_label = MEETING_AUDIO_SPEAKER_LABEL
                 if not speaker_id and speaker_label:
-                    speaker_id = hashlib.sha256(
-                        f"{meeting_id}\0{revision}\0{source}\0{speaker_label.casefold()}".encode("utf-8")
-                    ).hexdigest()[:32]
+                    speaker_id = _stable_meeting_speaker_id(
+                        meeting_id,
+                        revision,
+                        source,
+                        speaker_label,
+                    )
                 if speaker_id:
                     conn.execute(
                         """INSERT INTO meeting_speakers
@@ -4911,6 +5136,21 @@ class MeetingStore:
 
     @staticmethod
     def _meeting(row: sqlite3.Row) -> dict[str, Any]:
+        phase = str(row["processing_phase"] or "")
+        raw_progress = row["processing_progress"]
+        processing_progress = None
+        if (
+            phase in MEETING_PROCESSING_PHASES
+            and isinstance(raw_progress, (int, float))
+            and not isinstance(raw_progress, bool)
+            and math.isfinite(float(raw_progress))
+        ):
+            processing_progress = {
+                "phase": phase,
+                "progress": max(0.0, min(1.0, float(raw_progress))),
+                "status": str(row["processing_status"] or ""),
+                "updatedAt": str(row["processing_progress_updated_at"] or ""),
+            }
         return {
             "id": row["id"], "title": row["title"], "state": row["state"], "language": row["language"],
             "transcriptionMode": row["transcription_mode"],
@@ -4926,6 +5166,7 @@ class MeetingStore:
             "smartTurnEnabled": bool(row["smart_turn_enabled"]),
             "autoAnalyze": bool(row["auto_analyze"]),
             "transcriptEditVersion": int(row["transcript_edit_version"] or 0),
+            "processingProgress": processing_progress,
         }
 
     @staticmethod

@@ -8,9 +8,8 @@ import {
   formatMeetingOffset,
   meetingCheckpointFreshness,
   meetingPlaybackOriginMs,
+  meetingSpeakerSampleWindow,
   meetingTimeToAssetTimeSeconds,
-  playbackSourceForSegment,
-  playbackSourceForMuteState,
 } from "./meeting-playback";
 
 test("checkpoint freshness does not report paused capture as stale", () => {
@@ -134,29 +133,26 @@ test("source toggle preserves Meeting time and play/pause intent across differen
   assert.deepEqual(paused, { meetingTimeMs: 1_300, shouldPlay: false });
 });
 
-test("segment click selects its route and seeks in asset-local time with a negative clamp", () => {
-  assert.equal(playbackSourceForSegment("mixed"), "mix");
-  assert.equal(playbackSourceForSegment("microphone"), "microphone");
-  assert.equal(playbackSourceForSegment("system"), "system");
-  assert.equal(meetingTimeToAssetTimeSeconds(2_200, assets, "microphone"), 2.2);
-  assert.equal(meetingTimeToAssetTimeSeconds(100, assets, "microphone"), 0.1);
+test("full-mix segment clicks seek in asset-local time with a negative clamp", () => {
+  assert.equal(meetingTimeToAssetTimeSeconds(2_200, assets, "mix"), 1.7);
+  assert.equal(meetingTimeToAssetTimeSeconds(100, assets, "mix"), 0);
 });
 
-test("mute routing never selects an unavailable isolated track", () => {
-  const mixOnly = new Set(["mix"] as const);
-  assert.equal(
-    playbackSourceForMuteState(mixOnly, { microphone: false, system: false }),
-    "mix",
+test("speaker samples expand short utterances to at least five seconds", () => {
+  assert.deepEqual(
+    meetingSpeakerSampleWindow(10_000, 11_000, 0, 60_000),
+    { startMs: 8_000, endMs: 13_000 },
   );
-  assert.equal(
-    playbackSourceForMuteState(mixOnly, { microphone: false, system: true }),
-    "mix",
+  assert.deepEqual(
+    meetingSpeakerSampleWindow(1_000, 10_000, 0, 60_000),
+    { startMs: 1_500, endMs: 9_500 },
   );
-  assert.equal(
-    playbackSourceForMuteState(
-      new Set(["mix", "microphone", "system"] as const),
-      { microphone: false, system: true },
-    ),
-    "microphone",
+});
+
+test("speaker samples stay inside the mix and reject recordings below five seconds", () => {
+  assert.deepEqual(
+    meetingSpeakerSampleWindow(59_000, 60_000, 500, 60_000),
+    { startMs: 55_500, endMs: 60_500 },
   );
+  assert.equal(meetingSpeakerSampleWindow(0, 1_000, 0, 4_999), null);
 });

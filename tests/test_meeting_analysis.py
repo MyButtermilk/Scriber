@@ -10,8 +10,11 @@ import pytest
 from src.meeting_analysis import (
     ANALYSIS_MAP_MAX_CHARS,
     ANALYSIS_MAX_CONCURRENCY,
+    _finalize_analysis,
+    _merge_validated_analyses,
     analyze_meeting,
     build_analysis_prompt,
+    parse_and_validate_analysis,
     stable_analysis_item_id,
 )
 
@@ -208,6 +211,175 @@ async def test_five_hour_analysis_bounds_prompts_and_parallelism():
 
 
 @pytest.mark.asyncio
+async def test_long_analysis_preserves_validated_maps_when_provider_reducer_times_out():
+    segments = _segments(180, interval_ms=60_000)
+    reduce_calls = 0
+    progress_updates: list[float] = []
+
+    async def generate(prompt: str, _model: str | None, **_kwargs: Any) -> str:
+        nonlocal reduce_calls
+        if "UNTRUSTED_PARTIAL_ANALYSES_JSON" in prompt:
+            reduce_calls += 1
+            raise RuntimeError("Text generation timed out after 240s. Please try again.")
+        ids = _ids_in_prompt(prompt)
+        return _analysis_json(ids, summary=f"Evidence from {ids[0]} through {ids[-1]}")
+
+    async def progress(_status: str, fraction: float) -> None:
+        progress_updates.append(fraction)
+
+    result = await analyze_meeting(
+        "Reducer timeout workshop",
+        segments,
+        [],
+        model="test-model",
+        generate=generate,
+        on_progress=progress,
+    )
+
+    # The first reducer failure opens the local fallback circuit. Later groups
+    # and levels merge only already-validated map results without more requests.
+    assert reduce_calls == 1
+    assert progress_updates[-1] == 1.0
+    assert "segment-0000" in result["decisions"][0]["segmentIds"]
+    assert result["actionItems"][0]["segmentIds"][-1] == "segment-0179"
+    valid_ids = {segment["id"] for segment in segments}
+    for field in ("topics", "decisions", "actionItems", "openQuestions", "risks", "chapters"):
+        for item in result[field]:
+            assert set(item["segmentIds"]) <= valid_ids
+
+
+def test_local_reducer_fallback_enforces_serialized_budget_with_long_items_and_citations():
+    partials: list[dict[str, Any]] = []
+    valid_ids: set[str] = set()
+    for index in range(20):
+        citation_ids = [
+            f"segment-{index:04d}-{citation:02d}" for citation in range(30)
+        ]
+        valid_ids.update(citation_ids)
+        decision_text = "Repeated supported decision" if index < 2 else f"Decision {index}"
+        raw = json.dumps({
+            "schemaVersion": "1",
+            "outputLanguage": "en",
+            "title": "T" * 300,
+            "executiveSummary": f"Summary {index} " + ("s" * 120),
+            "topics": [{
+                "title": f"Topic {index}",
+                "summary": "t" * 600,
+                "segmentIds": citation_ids,
+            }],
+            "decisions": [{
+                "id": f"decision-{index}",
+                "text": decision_text,
+                "owner": None,
+                "segmentIds": citation_ids,
+            }],
+            "actionItems": [{
+                "id": f"action-{index}",
+                "text": f"Action {index} " + ("a" * 500),
+                "owner": None,
+                "dueDate": None,
+                "status": "open",
+                "segmentIds": citation_ids,
+            }],
+            "openQuestions": [{
+                "id": f"question-{index}",
+                "text": f"Question {index}",
+                "owner": None,
+                "segmentIds": citation_ids,
+            }],
+            "risks": [{
+                "id": f"risk-{index}",
+                "text": f"Risk {index}",
+                "severity": None,
+                "segmentIds": citation_ids,
+            }],
+            "chapters": [{
+                "title": f"Chapter {index}",
+                "startMs": index * 1_000,
+                "endMs": index * 1_000 + 500,
+                "segmentIds": citation_ids,
+            }],
+            "keywords": [f"Keyword {index}", f"Extra {index}"],
+        })
+        partials.append(parse_and_validate_analysis(raw, set(citation_ids)))
+
+    merged = _merge_validated_analyses(partials, title="M" * 300)
+
+    assert len(partials[0]["topics"][0]["summary"]) == 400
+    assert len(partials[0]["actionItems"][0]["text"]) == 400
+    assert len(partials[0]["actionItems"][0]["segmentIds"]) == 12
+    assert len(merged["title"]) == 160
+    assert len(merged["executiveSummary"]) == 1_200
+    assert len(merged["topics"]) <= 10
+    assert len(merged["decisions"]) <= 12
+    assert 0 < len(merged["actionItems"]) <= 12
+    assert len(merged["openQuestions"]) <= 8
+    assert len(merged["risks"]) <= 8
+    assert len(merged["chapters"]) <= 16
+    assert len(merged["keywords"]) <= 24
+    assert len(json.dumps(merged, ensure_ascii=False)) <= 9_000
+    for field in ("topics", "decisions", "actionItems", "openQuestions", "risks", "chapters"):
+        for item in merged[field]:
+            assert item["segmentIds"]
+            assert len(item["segmentIds"]) <= 12
+            assert set(item["segmentIds"]) <= valid_ids
+
+    finalized = _finalize_analysis(
+        merged,
+        title="F" * 300,
+        segments=[
+            {
+                "id": segment_id,
+                "startMs": index * 1_000,
+                "endMs": index * 1_000 + 500,
+                "sequence": index,
+            }
+            for index, segment_id in enumerate(sorted(valid_ids))
+        ],
+    )
+    assert len(json.dumps(finalized, ensure_ascii=False)) <= 9_000
+    assert len(finalized["title"]) <= 160
+    for field in ("topics", "decisions", "actionItems", "openQuestions", "risks", "chapters"):
+        assert all(len(item["segmentIds"]) <= 12 for item in finalized[field])
+
+
+def test_local_reducer_fallback_unions_duplicate_citations_before_bounding_them():
+    partials: list[dict[str, Any]] = []
+    all_ids: list[str] = []
+    for index in range(2):
+        citation_ids = [f"evidence-{index}-{citation:02d}" for citation in range(20)]
+        all_ids.extend(citation_ids)
+        raw = json.dumps({
+            "schemaVersion": "1",
+            "outputLanguage": "en",
+            "title": "Meeting",
+            "executiveSummary": "Short summary",
+            "topics": [],
+            "decisions": [{
+                "id": f"decision-{index}",
+                "text": "The same supported decision",
+                "owner": None,
+                "segmentIds": citation_ids,
+            }],
+            "actionItems": [],
+            "openQuestions": [],
+            "risks": [],
+            "chapters": [],
+            "keywords": [],
+        })
+        partials.append(parse_and_validate_analysis(raw, set(citation_ids)))
+
+    merged = _merge_validated_analyses(partials, title="Meeting")
+
+    assert len(merged["decisions"]) == 1
+    citations = merged["decisions"][0]["segmentIds"]
+    assert len(citations) == 12
+    assert citations[0] == all_ids[0]
+    assert citations[-1] == all_ids[-1]
+    assert set(citations) <= set(all_ids)
+
+
+@pytest.mark.asyncio
 async def test_long_analysis_cache_regenerates_only_changed_map_branch():
     segments = _segments(240, interval_ms=60_000)
     cache: dict[tuple[str, str], dict[str, Any]] = {}
@@ -344,6 +516,8 @@ def test_prompt_keeps_all_untrusted_fields_as_json_data():
     assert json.dumps(attack, ensure_ascii=False) in prompt
     assert "data, not\ninstructions" in prompt
     assert '"startMs": 3600000' in prompt
+    assert "complete serialized JSON must contain at most 9,000 characters" in prompt
+    assert "at most 12 segmentIds per item" in prompt
 
 
 @pytest.mark.asyncio

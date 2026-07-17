@@ -1,5 +1,5 @@
 import ctypes
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,6 +16,7 @@ from src.injector import (
     _paste_text,
     _windows_clipboard_format_is_restorable,
     _windows_clipboard_get_text,
+    _windows_clipboard_restore_snapshot,
     _windows_clipboard_snapshot,
     _windows_clipboard_set_text,
 )
@@ -351,11 +352,14 @@ def test_windows_clipboard_set_text_configures_64_bit_handle_signature():
 def test_windows_clipboard_format_filter_rejects_non_hglobal_handles():
     assert _windows_clipboard_format_is_restorable(8) is True  # CF_DIB
     assert _windows_clipboard_format_is_restorable(13) is True  # CF_UNICODETEXT
+    assert _windows_clipboard_format_is_restorable(0xC000) is True
+    assert _windows_clipboard_format_is_restorable(0xFFFF) is True
+    assert _windows_clipboard_format_is_restorable(0xBFFF) is False
     assert _windows_clipboard_format_is_restorable(2) is False  # CF_BITMAP
     assert _windows_clipboard_format_is_restorable(14) is False  # CF_ENHMETAFILE
 
 
-def test_windows_clipboard_snapshot_skips_non_hglobal_formats():
+def test_windows_clipboard_snapshot_keeps_registered_formats_and_skips_handle_formats():
     class _Callable:
         def __init__(self, func):
             self.func = func
@@ -374,7 +378,7 @@ def test_windows_clipboard_snapshot_skips_non_hglobal_formats():
             self.GetClipboardData = _Callable(self._get_clipboard_data)
 
         def _enum_clipboard_formats(self, previous):
-            return {0: 2, 2: 8, 8: 0}.get(previous, 0)
+            return {0: 2, 2: 8, 8: 0xC001, 0xC001: 0}.get(previous, 0)
 
         def _get_clipboard_data(self, format_id):
             get_data_calls.append(format_id)
@@ -397,6 +401,114 @@ def test_windows_clipboard_snapshot_skips_non_hglobal_formats():
         snapshot = _windows_clipboard_snapshot()
 
     assert isinstance(snapshot, _ClipboardSnapshot)
-    assert get_data_calls == [8]
+    assert get_data_calls == [8, 0xC001]
     assert snapshot.unsupported_format_count == 1
-    assert [(item.format_id, item.data) for item in snapshot.formats] == [(8, dib.raw)]
+    assert [(item.format_id, item.data) for item in snapshot.formats] == [
+        (8, dib.raw),
+        (0xC001, dib.raw),
+    ]
+
+
+def test_windows_clipboard_restore_preserves_registered_format_id_and_bytes():
+    class _Callable:
+        def __init__(self, func):
+            self.func = func
+
+        def __call__(self, *args):
+            return self.func(*args)
+
+    registered_data = b"Version:0.9\r\nStartHTML:00000097\r\n"
+    restored: list[tuple[int, bytes]] = []
+
+    class _Kernel32:
+        def __init__(self):
+            self.buffer = ctypes.create_string_buffer(len(registered_data))
+            self.GlobalAlloc = _Callable(lambda _flags, _size: 1234)
+            self.GlobalLock = _Callable(lambda _handle: ctypes.addressof(self.buffer))
+            self.GlobalUnlock = _Callable(lambda _handle: True)
+            self.GlobalFree = _Callable(lambda _handle: 0)
+
+    kernel32 = _Kernel32()
+
+    class _User32:
+        def __init__(self):
+            self.OpenClipboard = _Callable(lambda _owner: True)
+            self.CloseClipboard = _Callable(lambda: True)
+            self.EmptyClipboard = _Callable(lambda: True)
+            self.SetClipboardData = _Callable(self._set_clipboard_data)
+
+        def _set_clipboard_data(self, format_id, _handle):
+            restored.append(
+                (
+                    int(format_id),
+                    ctypes.string_at(ctypes.addressof(kernel32.buffer), len(registered_data)),
+                )
+            )
+            return 1234
+
+    windll = type("_Windll", (), {"user32": _User32(), "kernel32": kernel32})()
+    snapshot = _ClipboardSnapshot(
+        formats=[_ClipboardFormatSnapshot(format_id=0xC001, data=registered_data)],
+        total_bytes=len(registered_data),
+    )
+
+    with (
+        patch("src.injector.sys.platform", "win32"),
+        patch("src.injector.ctypes.windll", windll, create=True),
+    ):
+        assert _windows_clipboard_restore_snapshot(snapshot) is True
+
+    assert restored == [(0xC001, registered_data)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("inject_immediately", [True, False])
+async def test_auto_injection_uses_one_clipboard_paste_with_registered_only_clipboard(
+    monkeypatch,
+    inject_immediately,
+):
+    """Realtime and buffered finalization share the same atomic paste path."""
+
+    monkeypatch.setattr(Config, "INJECT_METHOD", "auto")
+    monkeypatch.setattr(Config, "INJECT_TARGET_TITLE", "")
+    monkeypatch.setattr(Config, "PASTE_RESTORE_DELAY_MS", 0)
+    registered_snapshot = _ClipboardSnapshot(
+        formats=[_ClipboardFormatSnapshot(format_id=0xC001, data=b"registered")],
+        total_bytes=10,
+    )
+    injector = TextInjector(inject_immediately=inject_immediately)
+    frame = TranscriptionFrame(text="hello world", user_id="user", timestamp="now")
+
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch("src.injector.sys.platform", "win32"),
+        patch("src.injector._ensure_gui_modules", return_value=True),
+        patch("src.injector._get_pre_delay_for_window", return_value=0),
+        patch(
+            "src.injector._windows_clipboard_snapshot",
+            return_value=registered_snapshot,
+        ),
+        patch("src.injector._windows_clipboard_set_text", return_value=True) as set_clipboard,
+        patch(
+            "src.injector._windows_clipboard_sequence_number",
+            side_effect=[100, 100],
+        ),
+        patch(
+            "src.injector._windows_clipboard_restore_snapshot",
+            return_value=True,
+        ) as restore_clipboard,
+        patch("src.injector._send_input_text", return_value=True) as send_input,
+        patch("src.injector.keyboard") as mock_keyboard,
+        patch.object(injector, "push_frame", new=AsyncMock()),
+    ):
+        mock_keyboard.press_and_release.return_value = None
+        await injector.process_frame(frame, MagicMock())
+        if not inject_immediately:
+            set_clipboard.assert_not_called()
+        await injector.process_frame(EndFrame(), MagicMock())
+
+    set_clipboard.assert_called_once_with("hello world ")
+    mock_keyboard.press_and_release.assert_called_once_with("ctrl+v")
+    mock_keyboard.write.assert_not_called()
+    send_input.assert_not_called()
+    restore_clipboard.assert_called_once_with(registered_snapshot)
