@@ -5,6 +5,7 @@ import useEmblaCarousel, {
 import { ArrowLeft, ArrowRight } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { useI18n } from "@/i18n"
 import { Button } from "@/components/ui/button"
 
 type CarouselApi = UseEmblaCarouselType[1]
@@ -55,7 +56,8 @@ const Carousel = React.forwardRef<
       ...props
     },
     ref
-  ) => {
+) => {
+    const { t } = useI18n()
     const [carouselRef, api] = useEmblaCarousel(
       {
         ...opts,
@@ -137,7 +139,7 @@ const Carousel = React.forwardRef<
           onKeyDownCapture={handleKeyDown}
           className={cn("relative", className)}
           role="region"
-          aria-roledescription="carousel"
+          aria-roledescription={t("Carousel")}
           {...props}
         >
           {children}
@@ -175,12 +177,13 @@ const CarouselItem = React.forwardRef<
   React.HTMLAttributes<HTMLDivElement>
 >(({ className, ...props }, ref) => {
   const { orientation } = useCarousel()
+  const { t } = useI18n()
 
   return (
     <div
       ref={ref}
       role="group"
-      aria-roledescription="slide"
+      aria-roledescription={t("Slide")}
       className={cn(
         "min-w-0 shrink-0 grow-0 basis-full",
         orientation === "horizontal" ? "pl-4" : "pt-4",
@@ -197,6 +200,7 @@ const CarouselPrevious = React.forwardRef<
   React.ComponentProps<typeof Button>
 >(({ className, variant = "outline", size = "icon", ...props }, ref) => {
   const { orientation, scrollPrev, canScrollPrev } = useCarousel()
+  const { t } = useI18n()
 
   return (
     <Button
@@ -215,7 +219,7 @@ const CarouselPrevious = React.forwardRef<
       {...props}
     >
       <ArrowLeft className="h-4 w-4" />
-      <span className="sr-only">Previous slide</span>
+      <span className="sr-only">{t("Previous slide")}</span>
     </Button>
   )
 })
@@ -226,6 +230,7 @@ const CarouselNext = React.forwardRef<
   React.ComponentProps<typeof Button>
 >(({ className, variant = "outline", size = "icon", ...props }, ref) => {
   const { orientation, scrollNext, canScrollNext } = useCarousel()
+  const { t } = useI18n()
 
   return (
     <Button
@@ -244,7 +249,7 @@ const CarouselNext = React.forwardRef<
       {...props}
     >
       <ArrowRight className="h-4 w-4" />
-      <span className="sr-only">Next slide</span>
+      <span className="sr-only">{t("Next slide")}</span>
     </Button>
   )
 })

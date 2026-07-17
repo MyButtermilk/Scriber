@@ -3,6 +3,7 @@ import { LayoutGrid, LayoutList } from "lucide-react";
 import { TranscriptHistorySearch } from "@/components/transcript-history-search";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 
 type HistoryViewMode = "list" | "grid";
 
@@ -35,6 +36,8 @@ export function TranscriptionHistoryToolbar({
   onViewModeChange,
   className,
 }: TranscriptionHistoryToolbarProps) {
+  const { formatNumber, t } = useI18n();
+  const formattedTotal = formatNumber(total);
   return (
     <header
       className={cn(
@@ -49,9 +52,9 @@ export function TranscriptionHistoryToolbar({
           </h2>
           <span
             className="transcription-history-count inline-flex h-6 min-w-6 items-center justify-center rounded-[8px] px-2 font-mono text-[10.5px] font-semibold tabular-nums text-muted-foreground"
-            aria-label={`${total} ${itemLabel}`}
+            aria-label={`${formattedTotal} ${itemLabel}`}
           >
-            {total.toLocaleString()}
+            {formattedTotal}
           </span>
         </div>
         <p className="mt-1 max-w-[58ch] text-pretty text-[12px] leading-4 text-muted-foreground">
@@ -75,18 +78,18 @@ export function TranscriptionHistoryToolbar({
             if (value === "list" || value === "grid") onViewModeChange(value);
           }}
           className="transcription-view-toggle shrink-0 rounded-[12px] p-1"
-          aria-label="Transcript history layout"
+          aria-label={t("Transcript history layout")}
         >
           <ToggleGroupItem
             value="list"
-            aria-label="List view"
+            aria-label={t("List view")}
             className="h-10 w-10 rounded-[9px] p-0 transition-[background-color,color,transform] duration-200 active:scale-[0.96]"
           >
             <LayoutList className="h-4 w-4" aria-hidden="true" />
           </ToggleGroupItem>
           <ToggleGroupItem
             value="grid"
-            aria-label="Grid view"
+            aria-label={t("Grid view")}
             className="h-10 w-10 rounded-[9px] p-0 transition-[background-color,color,transform] duration-200 active:scale-[0.96]"
           >
             <LayoutGrid className="h-4 w-4" aria-hidden="true" />

@@ -1,4 +1,5 @@
 import asyncio
+import builtins
 import json
 import sys
 import threading
@@ -140,13 +141,18 @@ def test_pending_device_cache_invalidation_runs_once_after_lazy_import(monkeypat
 
     fake_pipeline_module = types.ModuleType("src.pipeline")
     fake_pipeline_module.ScriberPipeline = _LazyPipeline
+    fake_pipeline_module._AnalyzerCache = types.SimpleNamespace(
+        discard_vad_cache=lambda: None
+    )
     fake_pipeline_module.invalidate_mic_device_resolution_cache = (
         lambda: invalidations.append("invalidated")
     )
     monkeypatch.setitem(sys.modules, "src.pipeline", fake_pipeline_module)
     monkeypatch.setattr(web_api, "ScriberPipeline", None)
     monkeypatch.setattr(web_api, "_invalidate_mic_device_resolution_cache_impl", None)
+    monkeypatch.setattr(web_api, "_discard_vad_cache_impl", None)
     monkeypatch.setattr(web_api, "_pipeline_cache_invalidation_pending", True)
+    monkeypatch.setattr(web_api, "_pipeline_vad_cache_discard_pending", False)
 
     loaded = web_api._load_scriber_pipeline_runtime()
 
@@ -156,6 +162,82 @@ def test_pending_device_cache_invalidation_runs_once_after_lazy_import(monkeypat
 
     web_api.invalidate_mic_device_resolution_cache()
     assert invalidations == ["invalidated", "invalidated"]
+
+
+def test_cold_vad_cache_discard_does_not_import_pipeline(monkeypatch):
+    monkeypatch.setattr(web_api, "ScriberPipeline", None)
+    monkeypatch.setattr(web_api, "_discard_vad_cache_impl", None)
+    monkeypatch.setattr(web_api, "_pipeline_vad_cache_discard_pending", False)
+    monkeypatch.delitem(sys.modules, "src.pipeline", raising=False)
+
+    web_api.discard_vad_cache_without_importing_pipeline()
+
+    assert "src.pipeline" not in sys.modules
+    assert web_api._pipeline_vad_cache_discard_pending is True
+
+
+def test_warm_vad_cache_discard_runs_immediately(monkeypatch):
+    discard = MagicMock()
+    monkeypatch.setattr(web_api, "_discard_vad_cache_impl", discard)
+    monkeypatch.setattr(web_api, "_pipeline_vad_cache_discard_pending", False)
+
+    web_api.discard_vad_cache_without_importing_pipeline()
+
+    discard.assert_called_once_with()
+    assert web_api._pipeline_vad_cache_discard_pending is False
+
+
+def test_vad_cache_discard_during_pipeline_import_runs_once(monkeypatch):
+    imports_started = threading.Event()
+    allow_import = threading.Event()
+    discarded: list[str] = []
+    failures: list[BaseException] = []
+
+    class _LazyPipeline:
+        pass
+
+    fake_pipeline_module = types.ModuleType("src.pipeline")
+    fake_pipeline_module.ScriberPipeline = _LazyPipeline
+    fake_pipeline_module.invalidate_mic_device_resolution_cache = lambda: None
+    fake_pipeline_module._AnalyzerCache = types.SimpleNamespace(
+        discard_vad_cache=lambda: discarded.append("discarded")
+    )
+    real_import = builtins.__import__
+
+    def delayed_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "src.pipeline":
+            imports_started.set()
+            if not allow_import.wait(timeout=2):
+                raise TimeoutError("test did not release pipeline import")
+            return fake_pipeline_module
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", delayed_import)
+    monkeypatch.setattr(web_api, "ScriberPipeline", None)
+    monkeypatch.setattr(web_api, "_invalidate_mic_device_resolution_cache_impl", None)
+    monkeypatch.setattr(web_api, "_discard_vad_cache_impl", None)
+    monkeypatch.setattr(web_api, "_pipeline_cache_invalidation_pending", False)
+    monkeypatch.setattr(web_api, "_pipeline_vad_cache_discard_pending", False)
+
+    def load_pipeline() -> None:
+        try:
+            web_api._load_scriber_pipeline_runtime()
+        except BaseException as exc:  # pragma: no cover - assertion below reports it
+            failures.append(exc)
+
+    loader = threading.Thread(target=load_pipeline)
+    loader.start()
+    assert imports_started.wait(timeout=2)
+
+    web_api.discard_vad_cache_without_importing_pipeline()
+    assert web_api._pipeline_vad_cache_discard_pending is True
+    allow_import.set()
+    loader.join(timeout=2)
+
+    assert not loader.is_alive()
+    assert failures == []
+    assert discarded == ["discarded"]
+    assert web_api._pipeline_vad_cache_discard_pending is False
 
 
 def test_backend_loop_handler_suppresses_only_windows_proactor_disconnects(monkeypatch):
@@ -1315,6 +1397,48 @@ async def test_update_settings_flushes_pending_persist_on_shutdown(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_shutdown_continues_after_retained_meeting_recorder_stop_timeout(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    cleanup_calls = []
+
+    class TimeoutRecorder:
+        def stop(self, *, timeout):
+            cleanup_calls.append(("timeout_recorder", timeout))
+            raise RuntimeError("Meeting audio reader did not stop before the timeout.")
+
+    class HealthyRecorder:
+        def stop(self, *, timeout):
+            cleanup_calls.append(("healthy_recorder", timeout))
+
+    ctl._meeting_recorders = {
+        "retained-timeout": TimeoutRecorder(),
+        "other-recorder": HealthyRecorder(),
+    }
+    ctl._keyboard = MagicMock()
+    ctl._mic_prewarm = MagicMock()
+    ctl._device_monitor = MagicMock()
+    flush_settings = MagicMock()
+    monkeypatch.setattr(ctl, "_flush_settings_persist_sync", flush_settings)
+
+    ctl.shutdown()
+
+    assert cleanup_calls == [
+        ("timeout_recorder", 1.0),
+        ("healthy_recorder", 1.0),
+    ]
+    assert ctl._meeting_recorders == {}
+    ctl._keyboard.clear_all_hotkeys.assert_called_once_with()
+    ctl._mic_prewarm.stop.assert_called_once_with()
+    ctl._device_monitor.stop.assert_called_once_with()
+    flush_settings.assert_called_once_with()
+
+
+@pytest.mark.asyncio
 async def test_settings_round_trips_azure_mai_model(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
@@ -1667,14 +1791,13 @@ async def test_update_settings_disabling_vad_discards_unused_silero_warmup(
     monkeypatch,
     tmp_path,
 ):
-    from src.pipeline import _AnalyzerCache
-
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setattr(web_api.Config, "SEGMENT_SPEECH_WITH_VAD", True, raising=False)
     monkeypatch.setattr(web_api.Config, "persist_settings_files", MagicMock())
     discard_mock = MagicMock()
-    monkeypatch.setattr(_AnalyzerCache, "discard_vad_cache", discard_mock)
+    monkeypatch.setattr(web_api, "_discard_vad_cache_impl", discard_mock)
+    monkeypatch.setattr(web_api, "_pipeline_vad_cache_discard_pending", False)
     ctl = ScriberWebController(asyncio.get_running_loop())
 
     settings = await ctl.update_settings({"segmentSpeechWithVad": False})
@@ -1682,6 +1805,49 @@ async def test_update_settings_disabling_vad_discards_unused_silero_warmup(
     assert settings["segmentSpeechWithVad"] is False
     assert web_api.Config.SEGMENT_SPEECH_WITH_VAD is False
     discard_mock.assert_called_once_with()
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_update_settings_vad_cleanup_failure_does_not_roll_back_setting(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "SEGMENT_SPEECH_WITH_VAD", True, raising=False)
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", MagicMock())
+    discard_mock = MagicMock(side_effect=RuntimeError("cleanup failed"))
+    monkeypatch.setattr(web_api, "_discard_vad_cache_impl", discard_mock)
+    monkeypatch.setattr(web_api, "_pipeline_vad_cache_discard_pending", False)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    settings = await ctl.update_settings({"segmentSpeechWithVad": False})
+
+    assert settings["segmentSpeechWithVad"] is False
+    assert web_api.Config.SEGMENT_SPEECH_WITH_VAD is False
+    discard_mock.assert_called_once_with()
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_update_settings_enabling_vad_does_not_discard_cache(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setattr(web_api.Config, "SEGMENT_SPEECH_WITH_VAD", False, raising=False)
+    monkeypatch.setattr(web_api.Config, "persist_settings_files", MagicMock())
+    discard_mock = MagicMock()
+    monkeypatch.setattr(web_api, "_discard_vad_cache_impl", discard_mock)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    settings = await ctl.update_settings({"segmentSpeechWithVad": True})
+
+    assert settings["segmentSpeechWithVad"] is True
+    assert web_api.Config.SEGMENT_SPEECH_WITH_VAD is True
+    discard_mock.assert_not_called()
     ctl.shutdown()
 
 

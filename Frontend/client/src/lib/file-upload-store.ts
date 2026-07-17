@@ -1,8 +1,14 @@
 import { apiUrl } from "@/lib/backend";
 import type { ApiMessageResponse, FileTranscribeResponse } from "@/lib/api-types";
+import { translateNow, type TranslationValues } from "@/i18n";
 
 export type FileUploadStatus = "idle" | "uploading" | "server_processing" | "completed" | "failed";
 export type FileUploadItemStatus = FileUploadStatus | "queued";
+
+export interface FileUploadLocalizedText {
+  key: string;
+  values?: TranslationValues;
+}
 
 export interface FileUploadQueueItem {
   id: string;
@@ -10,6 +16,7 @@ export interface FileUploadQueueItem {
   status: FileUploadItemStatus;
   progress: number;
   statusText: string;
+  statusValues?: TranslationValues;
   response: FileTranscribeResponse | null;
   error: string;
 }
@@ -29,6 +36,7 @@ export interface FileUploadSnapshot {
   progress: number;
   fileName: string;
   statusText: string;
+  statusValues?: TranslationValues;
   response: FileTranscribeResponse | null;
   responses: FileTranscribeResponse[];
   error: string;
@@ -42,10 +50,11 @@ export interface FileUploadSnapshot {
 
 interface StartFileUploadOptions {
   serverProcessingLabel: string;
+  serverProcessingValues?: TranslationValues;
 }
 
 interface StartFileUploadBatchOptions {
-  getServerProcessingLabel: (file: File) => string;
+  getServerProcessingText: (file: File) => FileUploadLocalizedText;
 }
 
 const idleSnapshot: FileUploadSnapshot = {
@@ -53,6 +62,7 @@ const idleSnapshot: FileUploadSnapshot = {
   progress: 0,
   fileName: "",
   statusText: "",
+  statusValues: undefined,
   response: null,
   responses: [],
   error: "",
@@ -81,10 +91,6 @@ function publish(next: Partial<FileUploadSnapshot>) {
 function createUploadId(index: number): string {
   const randomPart = Math.random().toString(36).slice(2, 8);
   return `${Date.now().toString(36)}-${index}-${randomPart}`;
-}
-
-function batchPrefix(currentIndex: number, totalFiles: number): string {
-  return totalFiles > 1 ? `File ${currentIndex + 1} of ${totalFiles}: ` : "";
 }
 
 function updateQueueItem(
@@ -135,31 +141,33 @@ function uploadSingleFile(
   {
     itemId,
     currentIndex,
-    totalFiles,
-    serverProcessingLabel,
+    serverProcessingText,
   }: {
     itemId: string;
     currentIndex: number;
-    totalFiles: number;
-    serverProcessingLabel: string;
+    serverProcessingText: FileUploadLocalizedText;
   },
 ): Promise<FileTranscribeResponse> {
-  const prefix = batchPrefix(currentIndex, totalFiles);
-  const uploadingLabel = `${prefix}Uploading ${file.name}...`;
+  const uploadingText: FileUploadLocalizedText = {
+    key: "Uploading {{file}}...",
+    values: { file: file.name },
+  };
 
   updateQueueItem(
     itemId,
     {
       status: "uploading",
       progress: 0,
-      statusText: uploadingLabel,
+      statusText: uploadingText.key,
+      statusValues: uploadingText.values,
       error: "",
       response: null,
     },
     {
       status: "uploading",
       fileName: file.name,
-      statusText: uploadingLabel,
+      statusText: uploadingText.key,
+      statusValues: uploadingText.values,
       response: null,
       error: "",
       currentIndex,
@@ -176,18 +184,19 @@ function uploadSingleFile(
     const switchToServerPhase = () => {
       if (switchedToServerPhase) return;
       switchedToServerPhase = true;
-      const statusText = `${prefix}${serverProcessingLabel}`;
       updateQueueItem(
         itemId,
         {
           status: "server_processing",
           progress: 96,
-          statusText,
+          statusText: serverProcessingText.key,
+          statusValues: serverProcessingText.values,
         },
         {
           status: "server_processing",
           fileName: file.name,
-          statusText,
+          statusText: serverProcessingText.key,
+          statusValues: serverProcessingText.values,
           currentIndex,
         },
       );
@@ -205,12 +214,14 @@ function uploadSingleFile(
         {
           status: "uploading",
           progress: percent,
-          statusText: uploadingLabel,
+          statusText: uploadingText.key,
+          statusValues: uploadingText.values,
         },
         {
           status: "uploading",
           fileName: file.name,
-          statusText: uploadingLabel,
+          statusText: uploadingText.key,
+          statusValues: uploadingText.values,
           currentIndex,
         },
       );
@@ -224,15 +235,15 @@ function uploadSingleFile(
     };
 
     xhr.onerror = () => {
-      reject(new Error("Network error during file upload"));
+      reject(new Error(translateNow("Network error during file upload")));
     };
 
     xhr.ontimeout = () => {
-      reject(new Error("File upload timed out"));
+      reject(new Error(translateNow("File upload timed out")));
     };
 
     xhr.onabort = () => {
-      reject(new Error("File upload was canceled"));
+      reject(new Error(translateNow("File upload was canceled")));
     };
 
     xhr.onload = () => {
@@ -249,7 +260,11 @@ function uploadSingleFile(
         return;
       }
 
-      reject(new Error(parsed.message || xhr.statusText || "Upload failed"));
+      reject(new Error(
+        parsed.message
+          ? translateNow(parsed.message)
+          : xhr.statusText || translateNow("Upload failed"),
+      ));
     };
 
     xhr.send(formData);
@@ -258,10 +273,13 @@ function uploadSingleFile(
 
 export function startFileUpload(
   file: File,
-  { serverProcessingLabel }: StartFileUploadOptions,
+  { serverProcessingLabel, serverProcessingValues }: StartFileUploadOptions,
 ): Promise<FileTranscribeResponse> {
   const batchPromise = startFileUploadBatch([file], {
-    getServerProcessingLabel: () => serverProcessingLabel,
+    getServerProcessingText: () => ({
+      key: serverProcessingLabel,
+      values: serverProcessingValues,
+    }),
   });
 
   return batchPromise.then((result) => {
@@ -269,20 +287,20 @@ export function startFileUpload(
     if (response) {
       return response;
     }
-    throw new Error(result.failures[0]?.error || "Upload failed");
+    throw new Error(result.failures[0]?.error || translateNow("Upload failed"));
   });
 }
 
 export function startFileUploadBatch(
   files: readonly File[],
-  { getServerProcessingLabel }: StartFileUploadBatchOptions,
+  { getServerProcessingText }: StartFileUploadBatchOptions,
 ): Promise<FileUploadBatchResult> {
   const selectedFiles = files.filter(Boolean);
   if (activeUpload || isFileUploadActive()) {
-    return Promise.reject(new Error("A file upload batch is already in progress."));
+    return Promise.reject(new Error(translateNow("A file upload batch is already in progress.")));
   }
   if (selectedFiles.length === 0) {
-    return Promise.reject(new Error("No files selected."));
+    return Promise.reject(new Error(translateNow("No files selected.")));
   }
 
   const items: FileUploadQueueItem[] = selectedFiles.map((file, index) => ({
@@ -290,7 +308,8 @@ export function startFileUploadBatch(
     fileName: file.name,
     status: index === 0 ? "uploading" : "queued",
     progress: 0,
-    statusText: index === 0 ? `Uploading ${file.name}...` : "Queued",
+    statusText: index === 0 ? "Uploading {{file}}..." : "Queued",
+    statusValues: index === 0 ? { file: file.name } : undefined,
     response: null,
     error: "",
   }));
@@ -299,10 +318,8 @@ export function startFileUploadBatch(
     status: "uploading",
     progress: 0,
     fileName: selectedFiles[0]?.name || "",
-    statusText:
-      selectedFiles.length > 1
-        ? `File 1 of ${selectedFiles.length}: Uploading ${selectedFiles[0]?.name || "file"}...`
-        : `Uploading ${selectedFiles[0]?.name || "file"}...`,
+    statusText: "Uploading {{file}}...",
+    statusValues: { file: selectedFiles[0]?.name || "file" },
     response: null,
     responses: [],
     error: "",
@@ -324,8 +341,7 @@ export function startFileUploadBatch(
         const response = await uploadSingleFile(file, {
           itemId: item.id,
           currentIndex: index,
-          totalFiles: selectedFiles.length,
-          serverProcessingLabel: getServerProcessingLabel(file),
+          serverProcessingText: getServerProcessingText(file),
         });
         responses.push(response);
         updateQueueItem(
@@ -334,6 +350,7 @@ export function startFileUploadBatch(
             status: "completed",
             progress: 100,
             statusText: "Transcription started...",
+            statusValues: undefined,
             response,
             error: "",
           },
@@ -353,6 +370,7 @@ export function startFileUploadBatch(
             status: "failed",
             progress: 100,
             statusText: "Upload failed",
+            statusValues: undefined,
             response: null,
             error: message,
           },
@@ -365,16 +383,24 @@ export function startFileUploadBatch(
     }
 
     const finalStatus: FileUploadStatus = failures.length > 0 ? "failed" : "completed";
-    const statusText =
+    const statusText: FileUploadLocalizedText =
       failures.length > 0
-        ? `${responses.length} of ${selectedFiles.length} transcription${responses.length === 1 ? "" : "s"} started.`
-        : `${responses.length} transcription${responses.length === 1 ? "" : "s"} started.`;
+        ? responses.length === 1
+          ? { key: "1 of {{total}} transcription started.", values: { total: selectedFiles.length } }
+          : {
+              key: "{{count}} of {{total}} transcriptions started.",
+              values: { count: responses.length, total: selectedFiles.length },
+            }
+        : responses.length === 1
+          ? { key: "1 transcription started." }
+          : { key: "{{count}} transcriptions started.", values: { count: responses.length } };
 
     publish({
       status: finalStatus,
       progress: 100,
       fileName: "",
-      statusText,
+      statusText: statusText.key,
+      statusValues: statusText.values,
       response: responses.at(-1) || null,
       responses,
       error: failures[0]?.error || "",

@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-07-15
+Last verified: 2026-07-16
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -85,6 +85,11 @@ Frontend and shell:
 - `Frontend/client/src/contexts/WebSocketContext.tsx`: shared WebSocket.
 - `Frontend/client/src/lib/backend.ts`: backend URL and Tauri token bridge.
 - `Frontend/client/src/lib/api-types.ts`: shared REST-facing TS types.
+- `Frontend/client/src/i18n/`: persistent `de`/`en` interface locale,
+  translation catalogs, locale-aware formatting, and catalog completeness
+  tests. Keep interface locale separate from STT/output language. Every
+  user-facing literal passed to `t(...)` needs a German catalog entry, and the
+  Tauri `set_ui_locale` bridge must keep native tray tooltips synchronized.
 - `Frontend/client/src/components/transcription-history-toolbar.tsx`: shared
   count/search/list-grid toolbar for Live Mic, YouTube, and File history.
 - `Frontend/client/src/index.css`: Tailwind v4 CSS-first design system. The six
@@ -100,6 +105,11 @@ Frontend and shell:
   `SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1` frame-pipe transport harness, and
   default WASAPI capture/prewarm support. It is bundled once as Tauri's
   install-root sidecar executable and is the standard live-mic capture engine.
+  Synthetic-capture tests may additionally set the absolute
+  `SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH` to replay one
+  bounded 48 kHz mono signed-16 PCM microphone fixture. That fixture plays once
+  and then yields silence; it must not alter the default synthetic sine signal
+  or any production WASAPI path.
   Meeting capture uses one sidecar process for 48 kHz microphone plus loopback,
   pinned AEC3 processing, and shared-timeline raw mic/system/clean mic pipes.
   The token-protected Meeting device test must reuse this path, remain explicit
@@ -305,16 +315,20 @@ Packaging and scripts:
 - Private shell IPC is a bounded multi-instance transport. Python uses
   OVERLAPPED named-pipe I/O with `CancelIoEx` followed by completion draining;
   never free an OVERLAPPED request or its buffers while cancellation is still
-  pending. Narrow Python domain locks preserve ordering for audio, overlay,
+  pending. Rust workers must contain command panics and close every pipe through
+  their ownership guard even on unwind. Narrow Python domain locks preserve
+  ordering for audio, overlay,
   injection, and Outlook mutations without serializing unrelated commands.
   Rust owner-level mutation lanes remain authoritative for audio lifecycle and
   overlay state, including calls that bypass IPC such as the global hotkey. Do
   not restore a single process-wide transport lock or a single-instance server.
 - Shell IPC response delivery must remain bounded. Do not add an unbounded
-  `FlushFileBuffers`; if delivery of a successful capture, prewarm, or Meeting
-  audio start cannot be confirmed, Rust must roll that start back before the
-  pipe instance is reclaimed. Delivery is confirmed only by a request-ID- and
-  API-version-bound `responseAck`; a client disconnect is not an acknowledgement.
+  `FlushFileBuffers`. Every complete response uses a request-ID- and
+  API-version-bound `responseAck` before the pipe instance is reclaimed; a
+  client disconnect is not an acknowledgement. If delivery of a successful
+  capture, prewarm, or Meeting audio start cannot be confirmed, Rust must roll
+  that start back. Missing acknowledgement for non-start commands remains a
+  delivery diagnostic and must never acquire audio rollback semantics.
 - Private shell IPC routes `audioCaptureStart`, `audioCaptureStop`,
   `audioPrewarmStart`, and `audioPrewarmStop` through an allowlisted
   `scriber-audio-sidecar --stdio` handshake. Normal WASAPI capture/prewarm is
@@ -664,8 +678,11 @@ Packaging and scripts:
   boundaries must use `VADUserStartedSpeakingFrame` and
   `VADUserStoppedSpeakingFrame`, which are the frames consumed by Pipecat 1.5
   streaming and segmented STT services. The frozen runtime import gate must
-  reject a sidecar containing any other Pipecat version. Custom STT services
-  must initialize complete `STTSettings` with at least `model` and `language`,
+  reject a sidecar containing any other Pipecat version. Every direct
+  `pipecat.*` import under `src` must also appear as that exact module in the
+  frozen runtime contract; the AST parity gate prevents a nearby bundled module
+  from masking a missing import such as `pipecat.transports.base_input`. Custom
+  STT services must initialize complete `STTSettings` with at least `model` and `language`,
   and must consume `STTUpdateSettingsFrame.delta`; do not restore legacy
   `frame.settings` dictionaries or constructors that leave Pipecat settings as
   `NOT_GIVEN`.
@@ -738,7 +755,11 @@ Packaging and scripts:
   the Settings toggle. When disabled, Live Mic must not construct, attach, or
   replenish a Silero analyzer; HTTP-style providers use one synthetic
   recording-wide segment flushed on stop, and Soniox SmartTurn is disabled for
-  that session. When enabled, VAD may split HTTP-style live STT at pauses and
+  that session. Saving the disabled setting must not import the heavy pipeline:
+  discard an already-loaded analyzer immediately or record one deferred discard
+  for the in-flight/next lazy import. Cleanup failure is diagnostic-only and
+  must never roll back the persisted setting. When enabled, VAD may split
+  HTTP-style live STT at pauses and
   provide explicit turn boundaries to Soniox SmartTurn. In Settings, keep those
   HTTP-style live providers in the cloud async/batch group rather than a
   separate segmented provider group.

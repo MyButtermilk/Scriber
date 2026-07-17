@@ -4,9 +4,12 @@ import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import {
   meetingAudioExportMeetingId,
   meetingExportApiPath,
+  meetingExportDownloadErrorMessage,
   meetingExportExtension,
   meetingExportFilename,
   meetingExportFitsNativeLimit,
+  meetingExportNativeCommandError,
+  meetingExportNativeLimitErrorMessage,
 } from "@/lib/meeting-export-utils";
 
 export { meetingExportFolderName } from "@/lib/meeting-export-utils";
@@ -67,19 +70,34 @@ export async function saveMeetingExport(
   const safePath = meetingExportApiPath(path);
   const audioMeetingId = meetingAudioExportMeetingId(safePath);
   if (desktop && audioMeetingId) {
-    const saved = await invoke<NativeSavedMeetingExport | null>("save_meeting_audio_export", {
-      meetingId: audioMeetingId,
-      filename: fallbackName,
-    });
+    let saved: NativeSavedMeetingExport | null;
+    try {
+      saved = await invoke<NativeSavedMeetingExport | null>("save_meeting_audio_export", {
+        meetingId: audioMeetingId,
+        filename: fallbackName,
+      });
+    } catch (error) {
+      throw meetingExportNativeCommandError(
+        error,
+        "Scriber could not export the compressed meeting audio. Please try again.",
+      );
+    }
     if (!saved) return { status: "cancelled" };
     return { status: "saved", desktop: true, ...saved };
   }
-  const response = await fetchWithTimeout(
-    apiUrl(safePath),
-    { credentials: "include" },
-    EXPORT_TIMEOUT_MS,
-  );
-  if (!response.ok) throw new Error(`Export failed (${response.status})`);
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(
+      apiUrl(safePath),
+      { credentials: "include" },
+      EXPORT_TIMEOUT_MS,
+    );
+  } catch {
+    throw new Error(meetingExportDownloadErrorMessage());
+  }
+  if (!response.ok) {
+    throw new Error(meetingExportDownloadErrorMessage(response.status));
+  }
 
   const advertisedSize = Number(response.headers.get("Content-Length"));
   if (
@@ -88,35 +106,66 @@ export async function saveMeetingExport(
     && advertisedSize >= 0
     && !meetingExportFitsNativeLimit(advertisedSize)
   ) {
-    throw new Error("The meeting export exceeds the 64 MiB desktop save limit.");
+    throw new Error(meetingExportNativeLimitErrorMessage());
   }
 
   const filename = meetingExportFilename(
     response.headers.get("Content-Disposition"),
     fallbackName,
   );
-  const blob = await response.blob();
+  let blob: Blob;
+  try {
+    blob = await response.blob();
+  } catch {
+    throw new Error(meetingExportDownloadErrorMessage());
+  }
   if (!desktop) {
-    downloadInBrowser(blob, filename);
+    try {
+      downloadInBrowser(blob, filename);
+    } catch {
+      throw new Error(meetingExportDownloadErrorMessage());
+    }
     return { status: "saved", desktop: false, filename };
   }
   if (!meetingExportFitsNativeLimit(blob.size)) {
-    throw new Error("The meeting export exceeds the 64 MiB desktop save limit.");
+    throw new Error(meetingExportNativeLimitErrorMessage());
   }
 
-  const saved = await invoke<NativeSavedMeetingExport | null>("save_meeting_export", {
-    filename,
-    extension: meetingExportExtension(filename),
-    bytes: new Uint8Array(await blob.arrayBuffer()),
-  });
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await blob.arrayBuffer());
+  } catch {
+    throw new Error(meetingExportDownloadErrorMessage());
+  }
+  let saved: NativeSavedMeetingExport | null;
+  try {
+    saved = await invoke<NativeSavedMeetingExport | null>("save_meeting_export", {
+      filename,
+      extension: meetingExportExtension(filename),
+      bytes,
+    });
+  } catch (error) {
+    throw meetingExportNativeCommandError(
+      error,
+      "Scriber could not save the meeting export. Please try again.",
+    );
+  }
   if (!saved) return { status: "cancelled" };
   return { status: "saved", desktop: true, ...saved };
 }
 
 export async function openMeetingExport(token: string): Promise<void> {
-  await invoke("open_meeting_export", { token });
+  try {
+    await invoke("open_meeting_export", { token });
+  } catch (error) {
+    throw meetingExportNativeCommandError(error, "Scriber could not open the saved file.");
+  }
 }
 
 export async function revealMeetingExport(token: string): Promise<void> {
-  await invoke("reveal_meeting_export", { token });
+  try {
+    await invoke("reveal_meeting_export", { token });
+  } catch (error) {
+    throw meetingExportNativeCommandError(error, "Scriber could not open the folder.");
+  }
 }

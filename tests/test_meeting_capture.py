@@ -27,6 +27,21 @@ class ReaderFactory:
         return io.BytesIO(self.streams[path])
 
 
+class RecorderReaderFactory(ReaderFactory):
+    """Provide EOF-only peers when a test exercises one Meeting track."""
+
+    def __call__(self, path: str, *_args, **_kwargs):
+        return io.BytesIO(self.streams.get(path, b""))
+
+
+def meeting_capture_sources(microphone_pipe: str) -> list[dict[str, str]]:
+    return [
+        {"source": "microphone", "framePipe": microphone_pipe},
+        {"source": "system", "framePipe": f"{microphone_pipe}-system"},
+        {"source": "mic_clean", "framePipe": f"{microphone_pipe}-mic-clean"},
+    ]
+
+
 def write_pcm_wav(path, *, frames=16_000, sample_rate=16_000):
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as writer:
@@ -35,6 +50,72 @@ def write_pcm_wav(path, *, frames=16_000, sample_rate=16_000):
         writer.setframerate(sample_rate)
         writer.writeframes(b"\0\0" * frames)
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("sources", "missing"),
+    [
+        ([], "mic_clean, microphone, system"),
+        ([{"source": "microphone", "framePipe": "mic"}], "mic_clean, system"),
+        (
+            [
+                {"source": "microphone", "framePipe": "mic"},
+                {"source": "system", "framePipe": "system"},
+            ],
+            "mic_clean",
+        ),
+    ],
+)
+def test_meeting_recorder_rejects_incomplete_required_source_set(
+    tmp_path, sources, missing
+):
+    recorder = MeetingAudioRecorder("meeting", tmp_path, object())
+
+    with pytest.raises(ValueError, match=rf"required audio sources: {missing}"):
+        recorder.start(sources)
+
+    assert recorder._threads == []
+    assert recorder.snapshot() == {}
+    assert not recorder.root.exists()
+
+
+def test_meeting_recorder_rejects_duplicate_source_before_starting_readers(tmp_path):
+    sources = meeting_capture_sources("mic")
+    sources.append({"source": "microphone", "framePipe": "duplicate-mic"})
+    recorder = MeetingAudioRecorder("meeting", tmp_path, object())
+
+    with pytest.raises(ValueError, match="duplicated an audio source"):
+        recorder.start(sources)
+
+    assert recorder._threads == []
+    assert recorder.snapshot() == {}
+    assert not recorder.root.exists()
+
+
+def test_meeting_recorder_rejects_reused_pipe_before_starting_readers(tmp_path):
+    sources = meeting_capture_sources("mic")
+    sources[1]["framePipe"] = sources[0]["framePipe"]
+    recorder = MeetingAudioRecorder("meeting", tmp_path, object())
+
+    with pytest.raises(ValueError, match="reused an audio frame pipe"):
+        recorder.start(sources)
+
+    assert recorder._threads == []
+    assert recorder.snapshot() == {}
+    assert not recorder.root.exists()
+
+
+def test_meeting_recorder_rejects_required_source_without_pipe(tmp_path):
+    sources = meeting_capture_sources("mic")
+    sources[1]["framePipe"] = ""
+    recorder = MeetingAudioRecorder("meeting", tmp_path, object())
+
+    with pytest.raises(ValueError, match="omitted a required frame pipe"):
+        recorder.start(sources)
+
+    assert recorder._threads == []
+    assert recorder.snapshot() == {}
+    assert not recorder.root.exists()
 
 
 def test_meeting_recorder_rotates_durable_wav_chunks(monkeypatch, tmp_path):
@@ -64,9 +145,9 @@ def test_meeting_recorder_rotates_durable_wav_chunks(monkeypatch, tmp_path):
         store,
         sample_rate=10,
         chunk_seconds=1,
-        reader_factory=ReaderFactory({"mic-pipe": frames}),
+        reader_factory=RecorderReaderFactory({"mic-pipe": frames}),
     )
-    recorder.start([{"source": "microphone", "framePipe": "mic-pipe"}])
+    recorder.start(meeting_capture_sources("mic-pipe"))
     deadline = time.monotonic() + 2
     while recorder.snapshot()["microphone"]["chunks"] < 2 and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -192,9 +273,9 @@ def test_meeting_recorder_surfaces_disk_full_without_persisting_incomplete_chunk
         meeting_id,
         tmp_path / "meeting-audio",
         store,
-        reader_factory=ReaderFactory({"mic-pipe": frame}),
+        reader_factory=RecorderReaderFactory({"mic-pipe": frame}),
     )
-    recorder.start([{"source": "microphone", "framePipe": "mic-pipe"}])
+    recorder.start(meeting_capture_sources("mic-pipe"))
     deadline = time.monotonic() + 1
     while not recorder.snapshot()["microphone"]["errorCode"] and time.monotonic() < deadline:
         time.sleep(0.005)
@@ -228,6 +309,8 @@ def test_meeting_recorder_retries_transient_named_pipe_open(monkeypatch, tmp_pat
         calls = 0
 
         def __call__(self, _path, *_args, **_kwargs):
+            if _path != "mic-pipe":
+                return io.BytesIO(b"")
             self.calls += 1
             if self.calls < 3:
                 raise OSError(errno.ENOENT, "synthetic named-pipe startup race")
@@ -241,7 +324,7 @@ def test_meeting_recorder_retries_transient_named_pipe_open(monkeypatch, tmp_pat
         reader_factory=factory,
         reader_open_timeout_seconds=0.25,
     )
-    recorder.start([{"source": "microphone", "framePipe": "mic-pipe"}])
+    recorder.start(meeting_capture_sources("mic-pipe"))
     snapshot = recorder.stop()
 
     assert factory.calls == 3
@@ -269,7 +352,7 @@ def test_meeting_recorder_rejects_sources_that_never_open(monkeypatch, tmp_path)
         reader_open_timeout_seconds=0.05,
     )
     with pytest.raises(RuntimeError, match="microphone:pipe_unavailable"):
-        recorder.start([{"source": "microphone", "framePipe": "missing-pipe"}])
+        recorder.start(meeting_capture_sources("missing-pipe"))
 
     assert recorder.snapshot()["microphone"]["errorCode"] == "FileNotFoundError"
     assert not list((tmp_path / "meeting-audio" / meeting_id / "audio").glob("*.partial.wav"))
@@ -333,9 +416,11 @@ def test_expected_windows_pipe_disconnect_commits_partial_before_resume(
         meeting_id,
         tmp_path / "meetings",
         store,
-        reader_factory=lambda path, *_args, **_kwargs: readers[path](),
+        reader_factory=lambda path, *_args, **_kwargs: readers.get(
+            path, lambda: io.BytesIO(b"")
+        )(),
     )
-    recorder.start([{"source": "microphone", "framePipe": "first-pipe"}])
+    recorder.start(meeting_capture_sources("first-pipe"))
     deadline = time.monotonic() + 1
     while recorder.snapshot()["microphone"]["frames"] < 1 and time.monotonic() < deadline:
         time.sleep(0.005)
@@ -353,7 +438,7 @@ def test_expected_windows_pipe_disconnect_commits_partial_before_resume(
 
     # A resumed native session must publish the next deterministic sequence,
     # rather than collide with the partial left by the pause boundary.
-    recorder.start([{"source": "microphone", "framePipe": "second-pipe"}])
+    recorder.start(meeting_capture_sources("second-pipe"))
     deadline = time.monotonic() + 1
     while recorder.snapshot()["microphone"]["chunks"] < 2 and time.monotonic() < deadline:
         time.sleep(0.005)
@@ -514,10 +599,10 @@ def test_recorder_never_overwrites_unknown_final(monkeypatch, tmp_path):
         meeting_id,
         tmp_path / "meetings",
         store,
-        reader_factory=ReaderFactory({"mic-pipe": frame}),
+        reader_factory=RecorderReaderFactory({"mic-pipe": frame}),
     )
 
-    recorder.start([{"source": "microphone", "framePipe": "mic-pipe"}])
+    recorder.start(meeting_capture_sources("mic-pipe"))
     deadline = time.monotonic() + 1
     while not recorder.snapshot()["microphone"]["errorCode"] and time.monotonic() < deadline:
         time.sleep(0.005)
@@ -556,15 +641,17 @@ def test_stop_retains_blocked_reader_and_prevents_restart(monkeypatch, tmp_path)
         meeting_id,
         tmp_path / "meetings",
         store,
-        reader_factory=lambda *_args, **_kwargs: BlockingReader(),
+        reader_factory=lambda path, *_args, **_kwargs: (
+            BlockingReader() if path == "blocked" else io.BytesIO(b"")
+        ),
     )
-    recorder.start([{"source": "microphone", "framePipe": "blocked"}])
+    recorder.start(meeting_capture_sources("blocked"))
 
     with pytest.raises(RuntimeError, match="did not stop"):
         recorder.stop(timeout=0.01)
     assert len(recorder._threads) == 1 and recorder._threads[0].is_alive()
     with pytest.raises(RuntimeError, match="still active"):
-        recorder.start([{"source": "microphone", "framePipe": "second"}])
+        recorder.start(meeting_capture_sources("second"))
 
     release.set()
     recorder.stop(timeout=1)

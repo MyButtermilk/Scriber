@@ -7,9 +7,11 @@ import {
   ChevronRightIcon,
 } from "lucide-react"
 import { DayButton, DayPicker, getDefaultClassNames } from "react-day-picker"
+import { de, enUS } from "date-fns/locale"
 
 import { cn } from "@/lib/utils"
 import { Button, buttonVariants } from "@/components/ui/button"
+import { useI18n } from "@/i18n"
 
 function Calendar({
   className,
@@ -18,11 +20,14 @@ function Calendar({
   captionLayout = "label",
   buttonVariant = "ghost",
   formatters,
+  labels,
+  locale: localeOverride,
   components,
   ...props
 }: React.ComponentProps<typeof DayPicker> & {
   buttonVariant?: React.ComponentProps<typeof Button>["variant"]
 }) {
+  const { formatDate, locale, localeTag, t } = useI18n()
   const defaultClassNames = getDefaultClassNames()
 
   return (
@@ -35,10 +40,33 @@ function Calendar({
         className
       )}
       captionLayout={captionLayout}
+      locale={localeOverride ?? (locale === "de" ? de : enUS)}
       formatters={{
         formatMonthDropdown: (date) =>
-          date.toLocaleString("default", { month: "short" }),
+          new Intl.DateTimeFormat(localeTag, { month: "short" }).format(date),
         ...formatters,
+      }}
+      labels={{
+        labelDayButton: (date, modifiers) => {
+          let label = formatDate(date, { dateStyle: "full" })
+          if (modifiers.today) label = t("Today, {{date}}", { date: label })
+          if (modifiers.selected) label = t("{{date}}, selected", { date: label })
+          return label
+        },
+        labelGridcell: (date, modifiers) => {
+          const label = formatDate(date, { dateStyle: "full" })
+          return modifiers?.today ? t("Today, {{date}}", { date: label }) : label
+        },
+        labelGrid: (date) => formatDate(date, { month: "long", year: "numeric" }),
+        labelMonthDropdown: () => t("Choose the month"),
+        labelNav: () => t("Calendar navigation"),
+        labelNext: () => t("Go to the next month"),
+        labelPrevious: () => t("Go to the previous month"),
+        labelWeekday: (date) => formatDate(date, { weekday: "long" }),
+        labelWeekNumber: (weekNumber) => t("Week {{week}}", { week: weekNumber }),
+        labelWeekNumberHeader: () => t("Week number"),
+        labelYearDropdown: () => t("Choose the year"),
+        ...labels,
       }}
       classNames={{
         root: cn("w-fit", defaultClassNames.root),

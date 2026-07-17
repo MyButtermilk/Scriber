@@ -41,6 +41,7 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "pipecat.pipeline.runner" in required_modules
     assert "pipecat.services.stt_service" in required_modules
     assert "pipecat.transcriptions.language" in required_modules
+    assert "pipecat.transports.base_input" in required_modules
     assert "pipecat.processors.audio.vad_processor" in required_modules
     assert "pipecat.turns.user_turn_processor" in required_modules
     assert "pipecat.turns.user_turn_strategies" in required_modules
@@ -53,6 +54,9 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "pipecat.services.google.stt" in required_modules
     assert "pipecat.services.speechmatics.stt" in required_modules
     assert "src.azure_mai_stt" in required_modules
+    assert "src.microphone" in required_modules
+    assert "src.audio_file_input" in required_modules
+    assert "src.pipeline" in required_modules
     assert ("pipecat-ai", "1.5.0") in REQUIRED_PACKAGE_VERSIONS
     assert ("yt-dlp", "2026.7.4") in REQUIRED_PACKAGE_VERSIONS
     assert ("yt-dlp-ejs", "0.8.0") in REQUIRED_PACKAGE_VERSIONS
@@ -61,7 +65,7 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
 def test_frozen_runtime_contract_covers_direct_pipecat_pipeline_imports():
     frozen_modules = {module for module, _reason in RUNTIME_REQUIRED_IMPORTS}
 
-    assert RUNTIME_CONTRACT_REVISION == 2
+    assert RUNTIME_CONTRACT_REVISION == 3
     assert {
         "pipecat.pipeline.pipeline",
         "pipecat.pipeline.task",
@@ -71,6 +75,7 @@ def test_frozen_runtime_contract_covers_direct_pipecat_pipeline_imports():
         "pipecat.services.settings",
         "pipecat.services.stt_service",
         "pipecat.transcriptions.language",
+        "pipecat.transports.base_input",
         "pipecat.transports.base_transport",
         "pipecat.utils.time",
         "pipecat.audio.vad.vad_analyzer",
@@ -153,6 +158,7 @@ def test_pipeline_uses_pipecat_1_5_smart_turn_import_without_removed_processor()
 
     assert "local_smart_turn_v3 import LocalSmartTurnAnalyzerV3" in pipeline_source
     assert "UserIdleProcessor" not in pipeline_source
+    assert "pipecat.audio.streams.input" not in pipeline_source
 
 
 def test_backend_worker_import_does_not_eagerly_import_web_api():

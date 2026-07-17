@@ -8,6 +8,7 @@ import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { friendlyError, responseErrorMessage } from "@/lib/request-errors";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 
 interface TranscriptSummaryRetryButtonProps {
   transcriptId: string;
@@ -22,6 +23,7 @@ export function TranscriptSummaryRetryButton({
   onComplete,
   className,
 }: TranscriptSummaryRetryButtonProps) {
+  const { t } = useI18n();
   const [isRetrying, setIsRetrying] = useState(false);
   const { toast } = useToast();
 
@@ -44,14 +46,14 @@ export function TranscriptSummaryRetryButton({
       }
 
       toast({
-        title: "Summary ready",
-        description: `A new summary for “${transcriptTitle}” is ready.`,
+        title: t("Summary ready"),
+        description: t("A new summary for “{{title}}” is ready.", { title: transcriptTitle }),
         duration: 3000,
       });
     } catch (error) {
       toast({
-        title: "Summary retry failed",
-        description: friendlyError(error, "Scriber could not create the summary. Please try again."),
+        title: t("Summary retry failed"),
+        description: friendlyError(error, t("Scriber could not create the summary. Please try again.")),
         variant: "destructive",
         duration: 5000,
       });
@@ -74,15 +76,17 @@ export function TranscriptSummaryRetryButton({
       disabled={isRetrying}
       aria-busy={isRetrying}
       aria-live="polite"
-      aria-label={`${isRetrying ? "Retrying" : "Retry"} summary for ${transcriptTitle}`}
-      title={isRetrying ? "Creating a new summary" : "Summary failed. Try again"}
+      aria-label={isRetrying
+        ? t("Retrying summary for {{title}}", { title: transcriptTitle })
+        : t("Retry summary for {{title}}", { title: transcriptTitle })}
+      title={isRetrying ? t("Creating a new summary") : t("Summary failed. Try again")}
     >
       {isRetrying ? (
         <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
       ) : (
         <RotateCcw className="h-3 w-3" aria-hidden="true" />
       )}
-      <span>{isRetrying ? "Retrying…" : "Retry summary"}</span>
+      <span>{isRetrying ? t("Retrying…") : t("Retry summary")}</span>
     </Button>
   );
 }

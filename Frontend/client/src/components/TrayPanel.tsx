@@ -42,6 +42,7 @@ import {
 } from "@/lib/desktop-updates";
 import { cn } from "@/lib/utils";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
+import { useI18n, type TranslationValues } from "@/i18n";
 
 const DEFAULT_TRAY_STATUS: TrayStatus = {
   recordingActive: false,
@@ -58,6 +59,15 @@ interface TranscriptListResponse {
   items?: TranscriptHistoryItem[];
 }
 
+interface TrayLocalizedMessage {
+  source: string;
+  values?: TranslationValues;
+}
+
+type Translate = (source: string, values?: TranslationValues) => string;
+type FormatDate = (value: Date | number | string, options?: Intl.DateTimeFormatOptions) => string;
+type FormatLegacyDate = (value: string) => string;
+
 type TrayActionId =
   | "toggle_live"
   | "open_meetings"
@@ -70,36 +80,48 @@ type TrayActionId =
   | "restart_backend"
   | "quit";
 
-function transcriptTypeLabel(type: TranscriptType | string | undefined): string {
+function transcriptTypeLabel(type: TranscriptType | string | undefined, t: Translate): string {
   switch (type) {
     case "youtube":
       return "YouTube";
     case "file":
-      return "File";
+      return t("File");
     case "mic":
-      return "Mic";
+      return t("Mic");
     default:
-      return "Transcript";
+      return t("Transcript");
   }
 }
 
-function compactTranscriptTitle(item: TranscriptHistoryItem): string {
+function compactTranscriptTitle(item: TranscriptHistoryItem, t: Translate): string {
   const title = String(item.title || "").trim();
-  return title || "Untitled transcript";
+  const generatedLiveMicTitle = title.match(/^Live Mic\s+(.+)$/);
+  if (generatedLiveMicTitle) {
+    return t("Live Mic {{suffix}}", { suffix: generatedLiveMicTitle[1] });
+  }
+  return title || t("Untitled transcript");
 }
 
-function compactTranscriptDetail(item: TranscriptHistoryItem): string {
-  return [transcriptTypeLabel(item.type), item.date, item.duration]
+function compactTranscriptDetail(
+  item: TranscriptHistoryItem,
+  t: Translate,
+  formatDate: FormatDate,
+  formatLegacyDate: FormatLegacyDate,
+): string {
+  const localizedDate = item.createdAt
+    ? formatDate(item.createdAt, { dateStyle: "medium", timeStyle: "short" })
+    : formatLegacyDate(String(item.date || ""));
+  return [transcriptTypeLabel(item.type, t), localizedDate, item.duration]
     .map((value) => String(value || "").trim())
     .filter(Boolean)
     .join(" • ");
 }
 
-function statusLabel(status: TrayStatus): string {
-  if (status.recordingActive) return "Recording";
-  if (status.updateInstalling) return "Installing update";
-  if (status.updateAvailable) return "Update ready";
-  return "Ready";
+function statusLabel(status: TrayStatus, t: Translate): string {
+  if (status.recordingActive) return t("Recording");
+  if (status.updateInstalling) return t("Installing update");
+  if (status.updateAvailable) return t("Update ready");
+  return t("Ready");
 }
 
 function StatusIndicator({ status }: { status: TrayStatus }) {
@@ -220,6 +242,7 @@ function RecentTranscriptRow({
   copied: boolean;
   onCopy: () => void;
 }) {
+  const { formatDate, formatLegacyDate, t } = useI18n();
   return (
     <motion.button
       type="button"
@@ -242,17 +265,17 @@ function RecentTranscriptRow({
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[13px] font-semibold leading-[17px] tracking-normal">
-          {compactTranscriptTitle(item)}
+          {compactTranscriptTitle(item, t)}
         </span>
         <span className={cn("mt-px block truncate text-[11px] leading-[13px]", copied ? "text-emerald-600" : "text-slate-500")}>
-          {copied ? "Copied to clipboard" : compactTranscriptDetail(item)}
+          {copied ? t("Copied to clipboard") : compactTranscriptDetail(item, t, formatDate, formatLegacyDate)}
         </span>
       </span>
     </motion.button>
   );
 }
 
-function formatShortcut(raw: string | undefined): string {
+function formatShortcut(raw: string | undefined, t: Translate): string {
   const value = String(raw || "").trim();
   if (!value) return "";
   return value
@@ -260,7 +283,7 @@ function formatShortcut(raw: string | undefined): string {
     .map((part) => {
       const token = part.trim().toLowerCase();
       if (!token) return "";
-      if (token === "ctrl" || token === "control") return "Ctrl";
+      if (token === "ctrl" || token === "control") return t("Ctrl");
       if (token === "alt" || token === "option") return "Alt";
       if (token === "shift") return "Shift";
       if (token === "cmd" || token === "command" || token === "meta" || token === "super") return "Win";
@@ -272,6 +295,7 @@ function formatShortcut(raw: string | undefined): string {
 }
 
 export default function TrayPanel() {
+  const { formatNumber, t } = useI18n();
   const [backendReady, setBackendReady] = useState(!isTauriRuntime());
   const [view, setView] = useState<TrayView>("main");
   const [status, setStatus] = useState<TrayStatus>(DEFAULT_TRAY_STATUS);
@@ -280,7 +304,7 @@ export default function TrayPanel() {
   const [meetingShortcut, setMeetingShortcut] = useState("");
   const [installing, setInstalling] = useState(false);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
-  const [updateCheckMessage, setUpdateCheckMessage] = useState("");
+  const [updateCheckMessage, setUpdateCheckMessage] = useState<TrayLocalizedMessage | null>(null);
   const [progress, setProgress] = useState<DesktopUpdateProgress | null>(null);
   const [error, setError] = useState("");
   const [recentItems, setRecentItems] = useState<TranscriptHistoryItem[]>([]);
@@ -291,9 +315,9 @@ export default function TrayPanel() {
   const shortcutLoadRequestRef = useRef(0);
 
   const applyShortcuts = useCallback((hotkey?: string, meetingHotkey?: string) => {
-    setRecordingShortcut(formatShortcut(hotkey));
-    setMeetingShortcut(formatShortcut(meetingHotkey));
-  }, []);
+    setRecordingShortcut(formatShortcut(hotkey, t));
+    setMeetingShortcut(formatShortcut(meetingHotkey, t));
+  }, [t]);
 
   const loadRegisteredShortcuts = useCallback(async (refreshRegistration: boolean) => {
     if (!isTauriRuntime() || !backendReady) return;
@@ -406,9 +430,9 @@ export default function TrayPanel() {
         window.setTimeout(() => void hideTrayPanel(), 120);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err || "Tray action failed."));
+      setError(err instanceof Error ? err.message : String(err || t("Tray action failed.")));
     }
-  }, []);
+  }, [t]);
 
   const loadRecentTranscripts = useCallback(async () => {
     if (!backendReady) return;
@@ -420,7 +444,7 @@ export default function TrayPanel() {
         cache: "no-store",
       }, 10_000);
       if (!response.ok) {
-        throw new Error(`Could not load recent transcripts (${response.status}).`);
+        throw new Error(t("Could not load recent transcripts ({{status}}).", { status: response.status }));
       }
       const payload = (await response.json()) as TranscriptListResponse;
       const items = Array.isArray(payload.items) ? payload.items : [];
@@ -431,11 +455,11 @@ export default function TrayPanel() {
       );
       setRecentLoaded(true);
     } catch (err) {
-      setRecentError(err instanceof Error ? err.message : String(err || "Could not load recent transcripts."));
+      setRecentError(err instanceof Error ? err.message : String(err || t("Could not load recent transcripts.")));
     } finally {
       setRecentLoading(false);
     }
-  }, [backendReady]);
+  }, [backendReady, t]);
 
   const openRecentView = useCallback(() => {
     setError("");
@@ -457,9 +481,9 @@ export default function TrayPanel() {
       setCopiedTranscriptId(transcriptId);
       window.setTimeout(() => void hideTrayPanel(), 650);
     } catch (err) {
-      setRecentError(err instanceof Error ? err.message : String(err || "Could not copy transcript."));
+      setRecentError(err instanceof Error ? err.message : String(err || t("Could not copy transcript.")));
     }
-  }, []);
+  }, [t]);
 
   const installUpdate = useCallback(async () => {
     if (installing || status.updateInstalling || !status.updateAvailable) {
@@ -472,56 +496,59 @@ export default function TrayPanel() {
       await installDesktopUpdate(setProgress);
     } catch (err) {
       setInstalling(false);
-      setError(err instanceof Error ? err.message : String(err || "Update installation failed."));
+      setError(err instanceof Error ? err.message : String(err || t("Update installation failed.")));
     }
-  }, [installing, status.updateAvailable, status.updateInstalling]);
+  }, [installing, status.updateAvailable, status.updateInstalling, t]);
 
   const checkForUpdates = useCallback(async () => {
     if (checkingUpdates || installing) {
       return;
     }
     setCheckingUpdates(true);
-    setUpdateCheckMessage("");
+    setUpdateCheckMessage(null);
     setError("");
     try {
       const nextStatus = await checkDesktopUpdate();
-      setUpdateCheckMessage(nextStatus.message || "Update check finished.");
+      setUpdateCheckMessage({
+        source: nextStatus.message || "Update check finished.",
+        values: nextStatus.messageValues,
+      });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err || "Update check failed."));
+      setError(err instanceof Error ? err.message : String(err || t("Update check failed.")));
     } finally {
       setCheckingUpdates(false);
     }
-  }, [checkingUpdates, installing]);
+  }, [checkingUpdates, installing, t]);
 
   const updateDetail = useMemo(() => {
     if (installing || status.updateInstalling) {
       if (progress?.percent != null) {
-        return `${progress.percent}% downloaded`;
+        return t("{{percent}}% downloaded", { percent: formatNumber(progress.percent) });
       }
-      return progress?.message || "Preparing installer";
+      return t(progress?.message || "Preparing installer");
     }
     if (status.updateVersion) {
       return `Scriber ${status.updateVersion}`;
     }
-    return "Install and restart";
-  }, [installing, progress, status.updateInstalling, status.updateVersion]);
+    return t("Install and restart");
+  }, [formatNumber, installing, progress, status.updateInstalling, status.updateVersion, t]);
 
   const updateCheckDetail = useMemo(() => {
-    if (checkingUpdates) return "Checking GitHub";
-    if (updateCheckMessage) return updateCheckMessage;
-    if (status.updateAvailable) return "Check GitHub again";
-    return "Manual update check";
-  }, [checkingUpdates, status.updateAvailable, status.updateVersion, updateCheckMessage]);
+    if (checkingUpdates) return t("Checking GitHub");
+    if (updateCheckMessage) return t(updateCheckMessage.source, updateCheckMessage.values);
+    if (status.updateAvailable) return t("Check GitHub again");
+    return t("Manual update check");
+  }, [checkingUpdates, status.updateAvailable, updateCheckMessage, t]);
 
   const showUpdateInstallBanner = status.updateAvailable || status.updateInstalling || installing;
   const updateInstallTitle = (() => {
-    if (installing || status.updateInstalling) return "Installing update";
-    if (status.updateVersion) return `Install Scriber ${status.updateVersion}`;
-    return "Install update";
+    if (installing || status.updateInstalling) return t("Installing update");
+    if (status.updateVersion) return t("Install Scriber {{version}}", { version: status.updateVersion });
+    return t("Install update");
   })();
   const updateInstallDetail = (() => {
     if (installing || status.updateInstalling) return updateDetail;
-    return "Download, install, and restart Scriber.";
+    return t("Download, install, and restart Scriber.");
   })();
 
   return (
@@ -547,7 +574,7 @@ export default function TrayPanel() {
             </div>
             <div className="mt-0.5 flex items-center gap-2 text-[11px] font-medium text-slate-500">
               <StatusIndicator status={status} />
-              <span className="truncate">{statusLabel(status)}</span>
+              <span className="truncate">{statusLabel(status, t)}</span>
             </div>
           </div>
         </header>
@@ -592,8 +619,8 @@ export default function TrayPanel() {
             <div className="flex flex-col gap-1.5">
               <TrayRow
                 icon={status.recordingActive ? Square : Mic}
-                label={status.recordingActive ? "Stop Recording" : "Start Live Transcription"}
-                detail={status.recordingActive ? "Live microphone is active" : "Use the configured microphone"}
+                label={status.recordingActive ? t("Stop Recording") : t("Start Live Transcription")}
+                detail={status.recordingActive ? t("Live microphone is active") : t("Use the configured microphone")}
                 shortcut={recordingShortcut}
                 variant={status.recordingActive ? "danger" : "primary"}
                 disabled={!backendReady}
@@ -601,19 +628,19 @@ export default function TrayPanel() {
               />
               <TrayRow
                 icon={CalendarClock}
-                label="Meetings"
-                detail="Open meeting workspace"
+                label={t("Meetings")}
+                detail={t("Open meeting workspace")}
                 shortcut={meetingShortcut}
                 onClick={() => void runAction("open_meetings")}
               />
               <TrayRow
                 icon={Video}
-                label="YouTube Transcription"
+                label={t("YouTube Transcription")}
                 onClick={() => void runAction("open_youtube")}
               />
               <TrayRow
                 icon={FileAudio}
-                label="Transcribe File"
+                label={t("Transcribe File")}
                 onClick={() => void runAction("open_file")}
               />
 
@@ -621,15 +648,15 @@ export default function TrayPanel() {
 
               <TrayRow
                 icon={Clock3}
-                label="Recent Transcripts"
-                detail="Select one to copy"
+                label={t("Recent Transcripts")}
+                detail={t("Select one to copy")}
                 trailing={<ChevronRight className="h-4 w-4" />}
                 disabled={!backendReady}
                 onClick={openRecentView}
               />
               <TrayRow
                 icon={MonitorUp}
-                label="Open Main Window"
+                label={t("Open Main Window")}
                 onClick={() => void runAction("show_window")}
               />
 
@@ -637,20 +664,20 @@ export default function TrayPanel() {
 
               <TrayRow
                 icon={Settings}
-                label="Settings"
+                label={t("Settings")}
                 onClick={() => void runAction("open_settings")}
               />
               <TrayRow
                 icon={checkingUpdates ? Loader2 : RefreshCw}
-                label={status.updateAvailable ? "Check Again" : "Check for Updates"}
+                label={status.updateAvailable ? t("Check Again") : t("Check for Updates")}
                 detail={updateCheckDetail}
                 disabled={checkingUpdates || installing}
                 onClick={() => void checkForUpdates()}
               />
               <TrayRow
                 icon={RotateCcw}
-                label="Restart Backend"
-                detail="Only restart the local worker"
+                label={t("Restart Backend")}
+                detail={t("Only restart the local worker")}
                 onClick={() => void runAction("restart_backend")}
               />
             </div>
@@ -664,16 +691,16 @@ export default function TrayPanel() {
                     setView("main");
                     setRecentError("");
                   }}
-                  aria-label="Back to tray menu"
+                  aria-label={t("Back to tray menu")}
                 >
                   <ChevronLeft className="h-5 w-5" />
                 </button>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[14px] font-semibold leading-[18px] text-slate-950">
-                    Recent Transcripts
+                    {t("Recent Transcripts")}
                   </div>
                   <div className="truncate text-[11px] font-medium leading-[13px] text-slate-500">
-                    Select one to copy
+                    {t("Select one to copy")}
                   </div>
                 </div>
                 <button
@@ -681,7 +708,7 @@ export default function TrayPanel() {
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] text-slate-700 outline-none transition-colors hover:bg-slate-950/[0.055] focus-visible:ring-2 focus-visible:ring-blue-500/60 disabled:opacity-50"
                   onClick={() => void loadRecentTranscripts()}
                   disabled={recentLoading || !backendReady}
-                  aria-label="Refresh recent transcripts"
+                  aria-label={t("Refresh recent transcripts")}
                 >
                   <RefreshCw className={cn("h-4 w-4", recentLoading && "animate-spin")} />
                 </button>
@@ -692,8 +719,8 @@ export default function TrayPanel() {
               {recentLoading ? (
                 <TrayRow
                   icon={Loader2}
-                  label="Loading transcripts"
-                  detail="Checking recent history"
+                  label={t("Loading transcripts")}
+                  detail={t("Checking recent history")}
                   disabled
                   onClick={() => undefined}
                 />
@@ -709,8 +736,8 @@ export default function TrayPanel() {
               ) : (
                 <TrayRow
                   icon={Clock3}
-                  label="No completed transcripts"
-                  detail={recentLoaded ? "Nothing available to copy" : "Refresh recent transcripts"}
+                  label={t("No completed transcripts")}
+                  detail={recentLoaded ? t("Nothing available to copy") : t("Refresh recent transcripts")}
                   disabled
                   onClick={() => undefined}
                 />
@@ -724,17 +751,17 @@ export default function TrayPanel() {
             <div className="flex flex-col gap-1.5">
               <TrayRow
                 icon={RotateCw}
-                label="Restart Application"
+                label={t("Restart Application")}
                 onClick={() => void runAction("restart_app")}
               />
-              <TrayRow icon={LogOut} label="Quit Application" onClick={() => void runAction("quit")} />
+              <TrayRow icon={LogOut} label={t("Quit Application")} onClick={() => void runAction("quit")} />
             </div>
           </div>
         ) : null}
 
         {error || recentError ? (
           <div className="rounded-[14px] border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-medium leading-4 text-red-700">
-            {error || recentError}
+            {t(error || recentError)}
           </div>
         ) : null}
       </motion.section>

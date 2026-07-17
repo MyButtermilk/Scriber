@@ -10,6 +10,8 @@ import { useState, useEffect, useCallback, lazy, Suspense, useRef } from "react"
 import { preloadRouteChunk } from "@/lib/route-preload";
 import { BrandMark } from "@/components/BrandMark";
 import { ActiveMeetingPill } from "@/components/meeting/ActiveMeetingPill";
+import { LanguageToggle } from "@/components/language-toggle";
+import { useI18n } from "@/i18n";
 
 const CommandPalette = lazy(async () => {
   const module = await import("@/components/CommandPalette");
@@ -23,6 +25,7 @@ interface AppLayoutProps {
 
 export function AppLayout({ children, path }: AppLayoutProps) {
   const [location, setLocation] = useLocation();
+  const { t } = useI18n();
   const currentKey = path || location;
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [commandOpen, setCommandOpen] = useState(false);
@@ -63,12 +66,12 @@ export function AppLayout({ children, path }: AppLayoutProps) {
   }, [currentKey]);
 
   const tabs = [
-    { href: "/", icon: Mic, label: "Live Mic" },
-    { href: "/meetings", icon: CalendarClock, label: "Meetings" },
-    { href: "/youtube", icon: Youtube, label: "YouTube" },
-    { href: "/file", icon: FolderOpen, label: "File" },
-    { href: "/debug", icon: Terminal, label: "Console" },
-    { href: "/settings", icon: Settings, label: "Settings" },
+    { href: "/", icon: Mic, label: t("Live Mic") },
+    { href: "/meetings", icon: CalendarClock, label: t("Meetings") },
+    { href: "/youtube", icon: Youtube, label: t("YouTube") },
+    { href: "/file", icon: FolderOpen, label: t("File") },
+    { href: "/debug", icon: Terminal, label: t("Console") },
+    { href: "/settings", icon: Settings, label: t("Settings") },
   ];
 
   const renderNav = (onNavigate?: () => void) => (
@@ -114,7 +117,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
         href="#main-content"
         className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-[60] rounded-md bg-background px-3 py-2 text-sm text-foreground shadow-md"
       >
-        Skip to main content
+        {t("Skip to main content")}
       </a>
 
       <DesktopTitleBar />
@@ -126,22 +129,23 @@ export function AppLayout({ children, path }: AppLayoutProps) {
           <div className="flex items-center gap-1.5">
             <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
               <SheetTrigger asChild>
-                <Button type="button" variant="ghost" size="icon" className="min-h-[44px] min-w-[44px]" aria-label="Open navigation">
+                <Button type="button" variant="ghost" size="icon" className="min-h-[44px] min-w-[44px]" aria-label={t("Open navigation")}>
                   <Menu className="h-5 w-5" />
                 </Button>
               </SheetTrigger>
               <SheetContent side="left" className="w-[280px] border-r border-border/50 bg-sidebar p-0">
-                <SheetTitle className="sr-only">Main navigation</SheetTitle>
+                <SheetTitle className="sr-only">{t("Main navigation")}</SheetTitle>
                 <div className="flex h-full flex-col">
                   <div className="px-4 pt-5 pb-3 flex items-center gap-2.5">
                     <BrandMark className="h-9 w-9" />
                     <span className="font-heading font-semibold text-lg text-foreground tracking-tight">Scriber</span>
                   </div>
                   <div className="px-3 pb-3">
-                    <SidebarSearch placeholder="Search" onOpenCommandPalette={handleOpenCommandPaletteFromSheet} />
+                    <SidebarSearch placeholder={t("Search")} onOpenCommandPalette={handleOpenCommandPaletteFromSheet} />
                   </div>
                   {renderNav(() => setMobileNavOpen(false))}
                   <div className="px-4 pb-5 pt-2">
+                    <LanguageToggle className="mb-1 w-full" />
                     <ThemeToggle align="edge" />
                   </div>
                 </div>
@@ -157,10 +161,11 @@ export function AppLayout({ children, path }: AppLayoutProps) {
               size="icon"
               className="min-h-[44px] min-w-[44px]"
               onClick={handleOpenCommandPalette}
-              aria-label="Open command palette"
+              aria-label={t("Open command palette")}
             >
               <Search className="h-4 w-4" />
             </Button>
+            <LanguageToggle compact />
             <ThemeToggle />
           </div>
         </header>
@@ -175,7 +180,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
 
           {/* Search Bar */}
           <div className="px-3 pb-3">
-            <SidebarSearch placeholder="Search" onOpenCommandPalette={handleOpenCommandPalette} />
+            <SidebarSearch placeholder={t("Search")} onOpenCommandPalette={handleOpenCommandPalette} />
           </div>
 
           {/* Navigation */}
@@ -183,6 +188,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
 
           {/* Theme Toggle at bottom */}
           <div className="px-4 pb-5 pt-2">
+            <LanguageToggle className="mb-1 w-full" />
             <ThemeToggle align="edge" />
           </div>
         </aside>

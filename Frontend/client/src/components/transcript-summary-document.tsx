@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type MouseEvent, type RefObject } from "react";
 
 import type { PreparedSummaryHtml, SummaryOutlineItem } from "@/lib/summary-html";
+import { useI18n } from "@/i18n";
 
 interface TranscriptSummaryDocumentProps {
   prepared: PreparedSummaryHtml;
@@ -12,10 +13,11 @@ interface SummaryTableOfContentsProps {
 }
 
 export function TranscriptSummaryDocument({ prepared }: TranscriptSummaryDocumentProps) {
+  const { t } = useI18n();
   if (!prepared.html) {
     return (
       <p className="text-base italic text-muted-foreground">
-        This summary did not contain displayable safe HTML.
+        {t("This summary did not contain displayable safe HTML.")}
       </p>
     );
   }
@@ -30,6 +32,7 @@ export function TranscriptSummaryDocument({ prepared }: TranscriptSummaryDocumen
 }
 
 export function SummaryTableOfContents({ outline, scrollContainerRef }: SummaryTableOfContentsProps) {
+  const { t } = useI18n();
   const outlineKey = useMemo(() => outline.map(({ id }) => id).join("|"), [outline]);
   const [activeId, setActiveId] = useState(() => outline[0]?.id || "");
 
@@ -105,8 +108,8 @@ export function SummaryTableOfContents({ outline, scrollContainerRef }: SummaryT
   if (outline.length < 2) return null;
 
   return (
-    <nav className="summary-toc" aria-label="Table of contents">
-      <p className="summary-toc__eyebrow">Contents</p>
+    <nav className="summary-toc" aria-label={t("Table of contents")}>
+      <p className="summary-toc__eyebrow">{t("Contents")}</p>
       <ol className="summary-toc__list">
         {outline.map((item) => (
           <li key={item.id} className="summary-toc__item" data-level={item.level}>

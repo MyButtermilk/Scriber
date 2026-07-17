@@ -255,6 +255,35 @@ struct TrayState {
     inner: Mutex<TrayStatusInner>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UiLocale {
+    De,
+    En,
+}
+
+impl UiLocale {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "de" => Ok(Self::De),
+            "en" => Ok(Self::En),
+            _ => Err("unsupported interface locale".to_string()),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct UiLocaleState {
+    inner: Mutex<UiLocale>,
+}
+
+impl Default for UiLocaleState {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(UiLocale::En),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TrayStatusInner {
     recording_active: bool,
@@ -1151,6 +1180,17 @@ fn set_desktop_window_chrome_theme(app: AppHandle, theme: String) -> Result<(), 
     reveal_initial_main_window(&window)
 }
 
+#[tauri::command]
+fn set_ui_locale(app: AppHandle, locale: String) -> Result<(), String> {
+    let locale = UiLocale::parse(&locale)?;
+    {
+        let state = app.state::<UiLocaleState>();
+        *lock_unpoisoned(&state.inner) = locale;
+    }
+    refresh_tray_visuals_for_app(&app, &tray_status_for_app(&app));
+    Ok(())
+}
+
 fn reveal_initial_main_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), String> {
     if INITIAL_MAIN_WINDOW_REVEALED.swap(true, Ordering::AcqRel) {
         return Ok(());
@@ -1391,6 +1431,7 @@ pub fn run() {
         .manage(DesktopHotkeyState::new())
         .manage(PendingNavigationState::default())
         .manage(TrayState::default())
+        .manage(UiLocaleState::default())
         .manage(NativeDeviceEventsState::new())
         .manage(ShellIpcState::new(shell_ipc_config, shell_ipc_handle))
         .manage(export_dialog::MeetingExportRegistry::default())
@@ -1442,6 +1483,7 @@ pub fn run() {
             refresh_global_hotkey,
             set_global_hotkey_capture_active,
             set_desktop_window_chrome_theme,
+            set_ui_locale,
             tray_status,
             set_tray_update_status,
             set_tray_recording_state,
@@ -2144,7 +2186,8 @@ fn run_shell_menu_smoke_hotkey_event<R: Runtime>(
 
 fn run_shell_menu_smoke_overlay_show(mode: &str) {
     let started = Instant::now();
-    match native_overlay::handle_shell_command("overlayShow", &json!({ "mode": mode })) {
+    match native_overlay::handle_shell_command_on_ui_thread("overlayShow", &json!({ "mode": mode }))
+    {
         Ok(status) => {
             let visible = status
                 .get("visible")
@@ -2176,7 +2219,7 @@ fn run_shell_menu_smoke_overlay_show(mode: &str) {
 
 fn run_shell_menu_smoke_overlay_hide() {
     let started = Instant::now();
-    match native_overlay::handle_shell_command("overlayHide", &json!({})) {
+    match native_overlay::handle_shell_command_on_ui_thread("overlayHide", &json!({})) {
         Ok(status) => {
             let visible = status
                 .get("visible")
@@ -2557,22 +2600,42 @@ fn tray_icon_kind(status: &TrayStatus) -> TrayIconKind {
     TrayIconKind::Normal
 }
 
-fn tray_tooltip(status: &TrayStatus) -> String {
+fn tray_tooltip(status: &TrayStatus, locale: UiLocale) -> String {
     if status.recording_active {
-        return "Scriber is recording".to_string();
+        return match locale {
+            UiLocale::De => "Scriber nimmt auf".to_string(),
+            UiLocale::En => "Scriber is recording".to_string(),
+        };
     }
     if status.update_installing {
-        return "Scriber is installing an update".to_string();
+        return match locale {
+            UiLocale::De => "Scriber installiert ein Update".to_string(),
+            UiLocale::En => "Scriber is installing an update".to_string(),
+        };
     }
     if status.update_available {
         if let Some(version) = status.update_version.as_deref() {
             if !version.trim().is_empty() {
-                return format!("Scriber {version} is ready to install");
+                return match locale {
+                    UiLocale::De => format!("Scriber {version} kann installiert werden"),
+                    UiLocale::En => format!("Scriber {version} is ready to install"),
+                };
             }
         }
-        return "Scriber update is ready to install".to_string();
+        return match locale {
+            UiLocale::De => "Das Scriber-Update kann installiert werden".to_string(),
+            UiLocale::En => "Scriber update is ready to install".to_string(),
+        };
     }
     "Scriber".to_string()
+}
+
+pub(crate) fn ui_locale_for_app<R: Runtime>(app: &AppHandle<R>) -> UiLocale {
+    let Some(state) = app.try_state::<UiLocaleState>() else {
+        return UiLocale::En;
+    };
+    let locale = *lock_unpoisoned(&state.inner);
+    locale
 }
 
 fn tray_status_for_app<R: Runtime>(app: &AppHandle<R>) -> TrayStatus {
@@ -2615,7 +2678,7 @@ fn refresh_tray_visuals_for_app<R: Runtime>(app: &AppHandle<R>, status: &TraySta
     ))) {
         write_shell_log(&format!("tray icon refresh failed: {err}"));
     }
-    let tooltip = tray_tooltip(status);
+    let tooltip = tray_tooltip(status, ui_locale_for_app(app));
     if let Err(err) = tray.set_tooltip(Some(&tooltip)) {
         write_shell_log(&format!("tray tooltip refresh failed: {err}"));
     }
@@ -3752,7 +3815,7 @@ fn handle_global_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event_stat
         let show_initializing_overlay =
             should_show_initializing_overlay_for_hotkey(path, recording_active);
         if show_initializing_overlay {
-            if let Err(err) = native_overlay::handle_shell_command(
+            if let Err(err) = native_overlay::handle_shell_command_on_ui_thread(
                 "overlayShow",
                 &json!({ "mode": "initializing" }),
             ) {
@@ -3765,7 +3828,8 @@ fn handle_global_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event_stat
         let Some(manager) = app_handle.try_state::<BackendManager>() else {
             write_shell_log("global hotkey ignored because backend manager is unavailable");
             if show_initializing_overlay {
-                let _ = native_overlay::handle_shell_command("overlayHide", &json!({}));
+                let _ =
+                    native_overlay::handle_shell_command_on_ui_thread("overlayHide", &json!({}));
             }
             return;
         };
@@ -3785,7 +3849,8 @@ fn handle_global_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event_stat
                 status.message
             ));
             if show_initializing_overlay {
-                let _ = native_overlay::handle_shell_command("overlayHide", &json!({}));
+                let _ =
+                    native_overlay::handle_shell_command_on_ui_thread("overlayHide", &json!({}));
             }
             return;
         }
@@ -3806,7 +3871,8 @@ fn handle_global_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event_stat
         if let Err(err) = post_backend_path_with_body(&access, path, benchmark_body.as_ref()) {
             write_shell_log(&format!("global hotkey action failed path={path}: {err}"));
             if show_initializing_overlay {
-                let _ = native_overlay::handle_shell_command("overlayHide", &json!({}));
+                let _ =
+                    native_overlay::handle_shell_command_on_ui_thread("overlayHide", &json!({}));
             }
         }
     });
@@ -4829,11 +4895,11 @@ mod tests {
         should_attach_benchmark_hotkey_marker, should_hide_window_instead_of_closing,
         should_refresh_hotkey_after_backend_ready, should_show_initializing_overlay_for_hotkey,
         should_show_window_for_tray_click, should_wait_for_hotkey_backend, split_http_response,
-        tray_icon_image, tray_icon_kind, tray_icon_size_for_scale_factor, wait_for_child_exit,
-        BackendAccess, DesktopHotkeyState, NativeDeviceObserveOnlyLogState,
+        tray_icon_image, tray_icon_kind, tray_icon_size_for_scale_factor, tray_tooltip,
+        wait_for_child_exit, BackendAccess, DesktopHotkeyState, NativeDeviceObserveOnlyLogState,
         RecentTranscriptMenuEntry, ShellMenuSmokeAction, TrayIconKind, TrayStatus, TrayStatusInner,
-        AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST,
-        HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
+        UiLocale, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV,
+        DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
         MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
         SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
@@ -6226,6 +6292,33 @@ mod tests {
         assert_eq!(
             tray_icon_kind(&recording_during_update),
             TrayIconKind::Recording
+        );
+    }
+
+    #[test]
+    fn tray_tooltip_uses_the_selected_interface_locale() {
+        let recording = TrayStatus::from(&TrayStatusInner {
+            recording_active: true,
+            ..TrayStatusInner::default()
+        });
+        assert_eq!(tray_tooltip(&recording, UiLocale::De), "Scriber nimmt auf");
+        assert_eq!(
+            tray_tooltip(&recording, UiLocale::En),
+            "Scriber is recording"
+        );
+
+        let update = TrayStatus::from(&TrayStatusInner {
+            update_available: true,
+            update_version: Some("0.5.33".to_string()),
+            ..TrayStatusInner::default()
+        });
+        assert_eq!(
+            tray_tooltip(&update, UiLocale::De),
+            "Scriber 0.5.33 kann installiert werden"
+        );
+        assert_eq!(
+            tray_tooltip(&update, UiLocale::En),
+            "Scriber 0.5.33 is ready to install"
         );
     }
 

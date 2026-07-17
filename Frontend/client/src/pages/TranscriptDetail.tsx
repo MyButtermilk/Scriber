@@ -24,6 +24,7 @@ import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { extractFailureMessage, friendlyError, friendlyRequestMessage, responseErrorMessage } from "@/lib/request-errors";
 import { prepareSummaryHtml } from "@/lib/summary-html";
 import type { SettingsResponse, TranscriptDetailResponse, TranscriptHistoryItem } from "@/lib/api-types";
+import { useI18n } from "@/i18n";
 
 function normalizeSummaryMarkdown(text: string): string {
   return (text || "")
@@ -32,6 +33,39 @@ function normalizeSummaryMarkdown(text: string): string {
     .replace(/\u200b/g, "")
     .replace(/^([ \t]*)[•●◦▪▫‣⁃]\s+/gm, "$1- ")
     .trim();
+}
+
+function localizedProcessingStep(
+  value: string | null | undefined,
+  fallback: string,
+  t: ReturnType<typeof useI18n>["t"],
+  formatNumber: ReturnType<typeof useI18n>["formatNumber"],
+): string {
+  const source = String(value || fallback).trim();
+  const retryMatch = /^Retrying in ([\d.,]+)s \((\d+)\/(\d+)\)$/.exec(source);
+  if (retryMatch) {
+    const seconds = Number(retryMatch[1].replace(",", "."));
+    return t("Retrying in {{seconds}}s ({{attempt}}/{{total}})", {
+      seconds: Number.isFinite(seconds) ? formatNumber(seconds, { maximumFractionDigits: 2 }) : retryMatch[1],
+      attempt: formatNumber(Number(retryMatch[2])),
+      total: formatNumber(Number(retryMatch[3])),
+    });
+  }
+
+  const downloadMatch = /^Downloading\.\.\.\s+([\d.,]+)%(.*)$/.exec(source);
+  if (downloadMatch) {
+    const percentage = Number(downloadMatch[1].replace(",", "."));
+    const formattedPercentage = Number.isFinite(percentage)
+      ? formatNumber(percentage / 100, { style: "percent", maximumFractionDigits: 1 })
+      : `${downloadMatch[1]}%`;
+    const technicalSuffix = downloadMatch[2].replace(" • ETA ", ` • ${t("ETA")} `);
+    return `${t("Downloading… {{percent}}", { percent: formattedPercentage })}${technicalSuffix}`;
+  }
+
+  if (source.startsWith("Error: ")) {
+    return `${t("Error")}: ${source.slice("Error: ".length)}`;
+  }
+  return t(source);
 }
 
 // Speaker colors for diarization - visually distinct palette
@@ -46,6 +80,7 @@ const SPEAKER_COLORS = [
 
 // Component to render transcript with speaker diarization labels
 function SpeakerFormattedText({ content }: { content: string }) {
+  const { formatNumber, t } = useI18n();
   const hasSpeakerLabels = useMemo(
     () => /\[Speaker (\d+)\]:/.test(content),
     [content]
@@ -83,7 +118,7 @@ function SpeakerFormattedText({ content }: { content: string }) {
               <span
                 className={`inline-flex items-center self-start px-2.5 py-0.5 rounded-full text-xs font-medium border ${colors.bg} ${colors.text} ${colors.border}`}
               >
-                Speaker {segment.speakerNum}
+                {t("Speaker {{number}}", { number: formatNumber(segment.speakerNum) })}
               </span>
               <p className="leading-relaxed">{segment.text}</p>
             </div>
@@ -248,6 +283,7 @@ function useTranscriptDuration({
 function StopButton({ transcriptId, onStop }: { transcriptId: string; onStop: () => void }) {
   const [isStopping, setIsStopping] = useState(false);
   const { toast } = useToast();
+  const { t } = useI18n();
 
   const handleStop = async () => {
     if (isStopping) return;
@@ -257,12 +293,12 @@ function StopButton({ transcriptId, onStop }: { transcriptId: string; onStop: ()
         method: "POST",
         credentials: "include",
       }, 15_000);
-      if (!res.ok) throw new Error("Failed to stop");
+      if (!res.ok) throw new Error(t("Failed to stop"));
 
-      toast({ title: "Stopping...", description: "Task cancellation requested." });
+      toast({ title: t("Stopping…"), description: t("Task cancellation requested.") });
       onStop();
     } catch {
-      toast({ title: "Error", description: "Failed to stop task.", variant: "destructive" });
+      toast({ title: t("Error"), description: t("Failed to stop task."), variant: "destructive" });
       setIsStopping(false);
     }
   };
@@ -270,7 +306,7 @@ function StopButton({ transcriptId, onStop }: { transcriptId: string; onStop: ()
   return (
     <Button size="sm" variant="destructive" onClick={handleStop} disabled={isStopping} type="button">
       {isStopping ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Square className="w-3 h-3 mr-1 fill-current" />}
-      Stop
+      {t("Stop")}
     </Button>
   );
 }
@@ -288,6 +324,7 @@ function SummarizeButton({
 }) {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const { toast } = useToast();
+  const { t } = useI18n();
 
   const handleSummarize = async () => {
     if (!transcriptId || isSummarizing || disabled) return;
@@ -302,14 +339,14 @@ function SummarizeButton({
         throw new Error(err.message || res.statusText);
       }
       toast({
-        title: "Summary generated",
-        description: "The transcript has been summarized.",
+        title: t("Summary generated"),
+        description: t("The transcript has been summarized."),
         duration: 3000,
       });
     } catch (e: any) {
       toast({
-        title: "Summarization failed",
-        description: String(e?.message || e),
+        title: t("Summarization failed"),
+        description: t(String(e?.message || e)),
         duration: 4000,
       });
     } finally {
@@ -321,7 +358,7 @@ function SummarizeButton({
   return (
     <Button size="sm" variant="outline" onClick={handleSummarize} disabled={isSummarizing || disabled} type="button">
       {isSummarizing ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Sparkles className="w-3 h-3 mr-1" />}
-      {isSummarizing ? "Summarizing..." : label}
+      {isSummarizing ? t("Summarizing…") : t(label)}
     </Button>
   );
 }
@@ -330,6 +367,7 @@ export default function TranscriptDetail() {
   const { id } = useParams();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
+  const { formatDate, formatLegacyDate, formatNumber, t } = useI18n();
   const [copied, setCopied] = useState(false);
   const [copiedSummary, setCopiedSummary] = useState(false);
   const copyResetTimerRef = useRef<number | null>(null);
@@ -409,7 +447,7 @@ export default function TranscriptDetail() {
   });
   const transcript: TranscriptDetailResponse = transcriptQuery.data || {
     id: id || "",
-    title: "Transcript",
+    title: t("Transcript"),
     date: "",
     duration: "",
     status: "completed",
@@ -422,6 +460,9 @@ export default function TranscriptDetail() {
     startedAt: transcript.processingStartedAt,
     resetKey: transcript.id,
   });
+  const dateDisplay = transcript.createdAt
+    ? formatDate(transcript.createdAt, { dateStyle: "medium", timeStyle: "short" })
+    : formatLegacyDate(transcript.date);
   const summarySource = useMemo(
     () => String(transcript?.summary || "").trim(),
     [transcript?.summary],
@@ -449,7 +490,7 @@ export default function TranscriptDetail() {
   const isSummaryFailed = !hasSummary && summaryStatus === "failed";
   const summaryFailureMessage = friendlyRequestMessage(
     String(transcript?.summaryError || "").trim(),
-    "Summary generation failed.",
+    t("Summary generation failed."),
   );
   const summaryActionLabel = isSummaryFailed ? "Retry Summary" : "Summarize";
   const showHeaderSummaryAction =
@@ -461,8 +502,8 @@ export default function TranscriptDetail() {
     [transcript?.content, transcript?.step],
   );
   const failedMessage = useMemo(
-    () => (isFailedYoutubeTranscript ? friendlyRequestMessage(rawFailureMessage, "Transcription failed.") : ""),
-    [isFailedYoutubeTranscript, rawFailureMessage],
+    () => (isFailedYoutubeTranscript ? t(friendlyRequestMessage(rawFailureMessage, t("Transcription failed."))) : ""),
+    [isFailedYoutubeTranscript, rawFailureMessage, t],
   );
   const technicalFailureMessage = useMemo(() => {
     if (!isFailedYoutubeTranscript) return "";
@@ -481,8 +522,8 @@ export default function TranscriptDetail() {
     const sourceUrl = String(transcript?.sourceUrl || "").trim();
     if (!sourceUrl) {
       toast({
-        title: "Retry unavailable",
-        description: "No source URL is available for this transcript.",
+        title: t("Retry unavailable"),
+        description: t("No source URL is available for this transcript."),
         variant: "destructive",
       });
       return;
@@ -508,27 +549,27 @@ export default function TranscriptDetail() {
 
       const rec = (await res.json()) as TranscriptHistoryItem;
       if (!rec?.id) {
-        throw new Error("Retry started, but no transcript ID was returned.");
+        throw new Error(t("Retry started, but no transcript ID was returned."));
       }
 
       toast({
-        title: "Retry started",
-        description: "A new YouTube transcription attempt has been queued.",
+        title: t("Retry started"),
+        description: t("A new YouTube transcription attempt has been queued."),
         duration: 3000,
       });
       queryClient.invalidateQueries({ queryKey: ["/api/transcripts"] });
       setLocation(`/transcript/${rec.id}`);
     } catch (e) {
       toast({
-        title: "Retry failed",
-        description: friendlyError(e, "Could not restart transcription."),
+        title: t("Retry failed"),
+        description: t(friendlyError(e, t("Could not restart transcription."))),
         variant: "destructive",
         duration: 5000,
       });
     } finally {
       setIsRetryingYoutube(false);
     }
-  }, [id, isRetryingYoutube, queryClient, setLocation, toast, transcript?.sourceUrl, transcript?.title, transcript?.channel, transcript?.thumbnailUrl, transcript?.duration]);
+  }, [id, isRetryingYoutube, queryClient, setLocation, t, toast, transcript?.sourceUrl, transcript?.title, transcript?.channel, transcript?.thumbnailUrl, transcript?.duration]);
 
   useEffect(() => () => {
     if (copyResetTimerRef.current !== null) {
@@ -542,7 +583,7 @@ export default function TranscriptDetail() {
   const handleCopyTranscript = useCallback(async () => {
     try {
       if (!navigator.clipboard?.writeText) {
-        throw new Error("Clipboard API unavailable");
+        throw new Error(t("Clipboard API unavailable"));
       }
       await navigator.clipboard.writeText(transcript?.content || "");
       setCopied(true);
@@ -551,24 +592,24 @@ export default function TranscriptDetail() {
       }
       copyResetTimerRef.current = window.setTimeout(() => setCopied(false), 2000);
       toast({
-        title: "Copied to Clipboard",
-        description: "Transcript content has been copied.",
+        title: t("Copied to Clipboard"),
+        description: t("Transcript content has been copied."),
         duration: 2000,
       });
     } catch {
       setCopied(false);
       toast({
-        title: "Copy failed",
-        description: "Scriber could not access the clipboard.",
+        title: t("Copy failed"),
+        description: t("Scriber could not access the clipboard."),
         variant: "destructive",
       });
     }
-  }, [toast, transcript?.content]);
+  }, [t, toast, transcript?.content]);
 
   const handleCopySummary = useCallback(async () => {
     try {
       if (!navigator.clipboard?.writeText) {
-        throw new Error("Clipboard API unavailable");
+        throw new Error(t("Clipboard API unavailable"));
       }
       await navigator.clipboard.writeText(summaryCopyText || "");
       setCopiedSummary(true);
@@ -577,19 +618,19 @@ export default function TranscriptDetail() {
       }
       summaryCopyResetTimerRef.current = window.setTimeout(() => setCopiedSummary(false), 2000);
       toast({
-        title: "Copied to Clipboard",
-        description: "Summary has been copied.",
+        title: t("Copied to Clipboard"),
+        description: t("Summary has been copied."),
         duration: 2000,
       });
     } catch {
       setCopiedSummary(false);
       toast({
-        title: "Copy failed",
-        description: "Scriber could not access the clipboard.",
+        title: t("Copy failed"),
+        description: t("Scriber could not access the clipboard."),
         variant: "destructive",
       });
     }
-  }, [summaryCopyText, toast]);
+  }, [summaryCopyText, t, toast]);
 
   const getBackLink = () => {
     switch (transcript?.type) {
@@ -624,16 +665,16 @@ export default function TranscriptDetail() {
       <header className="z-40 shrink-0 backdrop-blur-md border-b border-border/50 h-16 flex items-center justify-between px-4 md:px-8 gap-4" style={{ background: 'var(--neu-bg)' }}>
         <div className="flex items-center gap-4 min-w-0 flex-1">
           <Link href={getBackLink()}>
-            <Button variant="ghost" size="icon" className="-ml-2 shrink-0" aria-label="Go back">
+            <Button variant="ghost" size="icon" className="-ml-2 shrink-0" aria-label={t("Go back")}>
               <ArrowLeft className="w-5 h-5 text-muted-foreground" />
             </Button>
           </Link>
           <div className="min-w-0 flex-1">
             <FitText className="font-bold tracking-tight text-foreground" minFontSize={14} maxFontSize={24}>
-              {transcript?.title || "Transcript"}
+              {transcript?.title || t("Transcript")}
             </FitText>
             <p className="text-xs text-muted-foreground truncate">
-              {transcript.date} • <span>{durationDisplay}</span>
+              {dateDisplay} • <span>{durationDisplay}</span>
             </p>
           </div>
         </div>
@@ -648,7 +689,7 @@ export default function TranscriptDetail() {
               type="button"
             >
               {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-              {copied ? "Copied!" : "Copy Transcript"}
+              {copied ? t("Copied!") : t("Copy transcript")}
             </Button>
           )}
           {transcript.summary && (
@@ -660,13 +701,13 @@ export default function TranscriptDetail() {
               type="button"
             >
               {copiedSummary ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-              {copiedSummary ? "Copied!" : "Copy Summary"}
+              {copiedSummary ? t("Copied!") : t("Copy summary")}
             </Button>
           )}
           <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="hidden md:flex data-[state=open]:bg-accent" style={{ transform: 'none' }} type="button">
-                <Download className="w-4 h-4 mr-2" /> Export
+                <Download className="w-4 h-4 mr-2" /> {t("Export")}
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
@@ -675,33 +716,33 @@ export default function TranscriptDetail() {
                   window.open(apiUrl(`/api/transcripts/${id}/export/pdf`), '_blank');
                 }}
               >
-                <FileText className="w-4 h-4 mr-2" /> Export as PDF
+                <FileText className="w-4 h-4 mr-2" /> {t("Export as PDF")}
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => {
                   window.open(apiUrl(`/api/transcripts/${id}/export/docx`), '_blank');
                 }}
               >
-                <FileText className="w-4 h-4 mr-2" /> Export as DOCX
+                <FileText className="w-4 h-4 mr-2" /> {t("Export as DOCX")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
 
           <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="icon" className="md:hidden" aria-label="Open transcript actions" type="button">
+              <Button variant="outline" size="icon" className="md:hidden" aria-label={t("Open transcript actions")} type="button">
                 <Download className="w-4 h-4" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               {transcript.content && (
                 <DropdownMenuItem onClick={handleCopyTranscript}>
-                  <Copy className="w-4 h-4 mr-2" /> Copy Transcript
+                  <Copy className="w-4 h-4 mr-2" /> {t("Copy transcript")}
                 </DropdownMenuItem>
               )}
               {transcript.summary && (
                 <DropdownMenuItem onClick={handleCopySummary}>
-                  <Copy className="w-4 h-4 mr-2" /> Copy Summary
+                  <Copy className="w-4 h-4 mr-2" /> {t("Copy summary")}
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem
@@ -709,14 +750,14 @@ export default function TranscriptDetail() {
                   window.open(apiUrl(`/api/transcripts/${id}/export/pdf`), "_blank");
                 }}
               >
-                <FileText className="w-4 h-4 mr-2" /> Export as PDF
+                <FileText className="w-4 h-4 mr-2" /> {t("Export as PDF")}
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => {
                   window.open(apiUrl(`/api/transcripts/${id}/export/docx`), "_blank");
                 }}
               >
-                <FileText className="w-4 h-4 mr-2" /> Export as DOCX
+                <FileText className="w-4 h-4 mr-2" /> {t("Export as DOCX")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -742,13 +783,13 @@ export default function TranscriptDetail() {
 
           {/* Meta Card */}
           <div className="flex flex-wrap gap-2">
-            <Badge variant="secondary" className="px-3 py-1 font-normal neu-button"><Calendar className="w-3 h-3 mr-1.5" /> {transcript.date}</Badge>
+            <Badge variant="secondary" className="px-3 py-1 font-normal neu-button"><Calendar className="w-3 h-3 mr-1.5" /> {dateDisplay}</Badge>
           </div>
 
           {transcriptQuery.isError && (
             <QueryErrorState
-              title="Could not load transcript"
-              description="Please retry loading this transcript."
+              title={t("Could not load transcript")}
+              description={t("Please retry loading this transcript.")}
               onRetry={() => transcriptQuery.refetch()}
             />
           )}
@@ -759,10 +800,10 @@ export default function TranscriptDetail() {
               <Loader2 className="w-5 h-5 animate-spin text-primary shrink-0" />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-foreground truncate">
-                  {transcript.step || "Processing..."}
+                  {localizedProcessingStep(transcript.step, "Processing…", t, formatNumber)}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Elapsed: <span>{durationDisplay}</span>
+                  {t("Elapsed")}: <span>{durationDisplay}</span>
                 </p>
               </div>
             </div>
@@ -771,15 +812,15 @@ export default function TranscriptDetail() {
           {isFailedYoutubeTranscript && (
             <div className="space-y-2">
               <QueryErrorState
-                title="YouTube transcription failed"
-                description={failedMessage || "The transcription failed. Please try again."}
+                title={t("YouTube transcription failed")}
+                description={failedMessage || t("The transcription failed. Please try again.")}
                 onRetry={() => {
                   void retryYoutubeTranscription();
                 }}
               />
               {technicalFailureMessage && (
                 <p className="text-xs text-muted-foreground px-1">
-                  Technical details: {technicalFailureMessage}
+                  {t("Technical details")}: {technicalFailureMessage}
                 </p>
               )}
             </div>
@@ -788,12 +829,12 @@ export default function TranscriptDetail() {
           {isSummaryFailed && (
             <div className="space-y-3">
               <QueryErrorState
-                title="Summary generation failed"
-                description={summaryFailureMessage}
+                title={t("Summary generation failed")}
+                description={t(summaryFailureMessage)}
               />
               <SummarizeButton
                 transcriptId={id}
-                label="Retry Summary"
+                label={t("Retry Summary")}
                 onComplete={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })}
               />
             </div>
@@ -810,18 +851,18 @@ export default function TranscriptDetail() {
               <AccordionTrigger className="px-4 py-3 hover:no-underline">
                 <div className="flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-primary" />
-                  <span className="text-base font-semibold tracking-tight">Summary</span>
+                  <span className="text-base font-semibold tracking-tight">{t("Summary")}</span>
                   {isSummaryInProgress && (
                     <span className="flex items-center gap-1 text-xs text-muted-foreground ml-2">
                       <Loader2 className="w-3 h-3 animate-spin" />
-                      {transcript.step}
+                      {localizedProcessingStep(transcript.step, "Summarizing…", t, formatNumber)}
                     </span>
                   )}
                   {isSummaryStepStale && (
-                    <span className="text-xs text-amber-600 ml-2">Summarization timed out</span>
+                    <span className="text-xs text-amber-600 ml-2">{t("Summarization timed out")}</span>
                   )}
                   {isSummaryFailed && (
-                    <span className="text-xs text-destructive ml-2">Summarization failed</span>
+                    <span className="text-xs text-destructive ml-2">{t("Summarization failed")}</span>
                   )}
                 </div>
               </AccordionTrigger>
@@ -838,13 +879,13 @@ export default function TranscriptDetail() {
                   <p className="text-base text-muted-foreground italic">
                     {transcript.status === "completed"
                       ? isSummaryInProgress
-                        ? "Summary is currently being generated."
+                        ? t("Summary is currently being generated.")
                         : isSummaryFailed
-                          ? `${summaryFailureMessage} Use "Retry Summary" to try again.`
+                          ? t("{{message}} Use “Retry Summary” to try again.", { message: t(summaryFailureMessage) })
                         : isSummaryStepStale
-                          ? "Summary generation timed out. Click 'Summarize' in the header to retry."
-                          : "No summary yet. Click 'Summarize' in the header to generate one."
-                      : "Summary will be available after transcription completes."}
+                          ? t("Summary generation timed out. Select “Summarize” in the header to retry.")
+                          : t("No summary yet. Select “Summarize” in the header to generate one.")
+                      : t("Summary will be available after transcription completes.")}
                   </p>
                 )}
               </AccordionContent>
@@ -855,23 +896,23 @@ export default function TranscriptDetail() {
               <AccordionTrigger className="px-4 py-3 hover:no-underline">
                 <div className="flex items-center gap-2">
                   <FileText className="w-4 h-4 text-blue-600" />
-                  <span className="text-base font-semibold tracking-tight">Transcript</span>
+                  <span className="text-base font-semibold tracking-tight">{t("Transcript")}</span>
                 </div>
               </AccordionTrigger>
               <AccordionContent className="px-4 pb-4">
                 <div className="transcript-content">
                   {transcriptQuery.isLoading ? (
-                    "Loading..."
+                    t("Loading…")
                   ) : transcript.status === "processing" ? (
                     <span className="text-muted-foreground italic"></span>
                   ) : isFailedYoutubeTranscript && failedContentLooksLikeErrorOnly ? (
                     <span className="text-muted-foreground italic">
-                      {failedMessage || "No transcript text captured."}
+                      {failedMessage || t("No transcript text captured.")}
                     </span>
                   ) : transcript.content ? (
                     <SpeakerFormattedText content={transcript.content} />
                   ) : (
-                    "No transcript text captured."
+                    t("No transcript text captured.")
                   )}
                 </div>
               </AccordionContent>

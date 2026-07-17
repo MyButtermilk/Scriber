@@ -2,6 +2,7 @@ import { AlertCircle, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 
 interface QueryErrorStateProps {
   title?: string;
@@ -16,12 +17,13 @@ export function QueryErrorState({
   onRetry,
   className,
 }: QueryErrorStateProps) {
+  const { t } = useI18n();
   return (
     <Alert variant="destructive" className={cn("relative", className)}>
       <AlertCircle className="h-4 w-4" />
-      <AlertTitle>{title}</AlertTitle>
+      <AlertTitle>{t(title)}</AlertTitle>
       <AlertDescription className="pr-20">
-        {description}
+        {t(description)}
       </AlertDescription>
       {onRetry && (
         <Button
@@ -32,10 +34,9 @@ export function QueryErrorState({
           onClick={onRetry}
         >
           <RotateCcw className="mr-1 h-3.5 w-3.5" />
-          Retry
+          {t("Retry")}
         </Button>
       )}
     </Alert>
   );
 }
-

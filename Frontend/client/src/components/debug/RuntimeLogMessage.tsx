@@ -1,5 +1,6 @@
 import { Check, ChevronRight, Copy } from "lucide-react";
 import type { RuntimeLogContext, RuntimeLogContextValue } from "@/lib/api-types";
+import { useI18n } from "@/i18n";
 
 type RuntimeLogMessageProps = {
   message: string;
@@ -38,11 +39,18 @@ function isFiniteNumber(value: RuntimeLogContextValue | undefined): value is num
   return typeof value === "number" && Number.isFinite(value);
 }
 
-function formatDuration(value: number) {
-  if (value >= 10_000) return `${(value / 1000).toFixed(1)} s`;
-  if (value >= 1000) return `${(value / 1000).toFixed(2)} s`;
-  if (value >= 100) return `${Math.round(value)} ms`;
-  return `${value.toFixed(1)} ms`;
+function formatDuration(
+  value: number,
+  formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string,
+) {
+  if (value >= 10_000) {
+    return `${formatNumber(value / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} s`;
+  }
+  if (value >= 1000) {
+    return `${formatNumber(value / 1000, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} s`;
+  }
+  if (value >= 100) return `${formatNumber(Math.round(value))} ms`;
+  return `${formatNumber(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ms`;
 }
 
 function compactMessagePreview(message: string) {
@@ -62,12 +70,15 @@ function countPrimitiveFields(value: RuntimeLogContextValue | RuntimeLogContext)
   );
 }
 
-function hotPathMetrics(context?: RuntimeLogContext | null): DisplayMetric[] {
+function hotPathMetrics(
+  context: RuntimeLogContext | null | undefined,
+  formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string,
+): DisplayMetric[] {
   const meta = context?.meta;
   if (!meta) return [];
   return HOT_PATH_METRICS.flatMap(([key, label, group]) => {
     const value = meta[key];
-    return isFiniteNumber(value) ? [{ key, label, value: formatDuration(value), group }] : [];
+    return isFiniteNumber(value) ? [{ key, label, value: formatDuration(value, formatNumber), group }] : [];
   });
 }
 
@@ -88,16 +99,20 @@ function configurationMetrics(context?: RuntimeLogContext | null): DisplayMetric
   });
 }
 
-function technicalContextRows(context: RuntimeLogContext): Array<[string, string]> {
+function technicalContextRows(
+  context: RuntimeLogContext,
+  formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string,
+  t: (source: string) => string,
+): Array<[string, string]> {
   const rows = CONTEXT_LABELS.flatMap(([key, label]) => {
     const value = context[key];
     return typeof value === "string" && value.trim() ? [[label, value] as [string, string]] : [];
   });
   if (typeof context.durationMs === "number" && Number.isFinite(context.durationMs)) {
-    rows.push(["Duration", formatDuration(context.durationMs)]);
+    rows.push(["Duration", formatDuration(context.durationMs, formatNumber)]);
   }
   if (typeof context.milestone === "boolean") {
-    rows.push(["Milestone", context.milestone ? "Yes" : "No"]);
+    rows.push(["Milestone", context.milestone ? t("Yes") : t("No")]);
   }
   return rows;
 }
@@ -111,6 +126,7 @@ function CopyTechnicalButton({
   label: string;
   onClick: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <button
       type="button"
@@ -120,7 +136,7 @@ function CopyTechnicalButton({
       title={label}
     >
       {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-      <span>{copied ? "Copied" : "Copy"}</span>
+      <span>{copied ? t("Copied") : t("Copy")}</span>
     </button>
   );
 }
@@ -132,14 +148,15 @@ export function RuntimeLogMessage({
   copiedKey,
   onCopy,
 }: RuntimeLogMessageProps) {
+  const { formatNumber, t } = useI18n();
   const isLongMessage = message.length > LONG_MESSAGE_PREVIEW_CHARS || message.split("\n").length > 6;
-  const timingMetrics = hotPathMetrics(context);
+  const timingMetrics = hotPathMetrics(context, formatNumber);
   const startupMetrics = timingMetrics.filter((metric) => metric.group === "startup");
   const finalizationMetrics = timingMetrics.filter((metric) => metric.group === "finalization");
   const configMetrics = configurationMetrics(context);
   const summaryMetrics = timingMetrics.length ? timingMetrics : configMetrics;
   const rawContext = context ? JSON.stringify(context, null, 2) : "";
-  const contextRows = context ? technicalContextRows(context) : [];
+  const contextRows = context ? technicalContextRows(context, formatNumber, t) : [];
   const contextFieldCount = context ? countPrimitiveFields(context) : 0;
   const fullMessageCopyKey = `${copyKey}:message`;
   const contextCopyKey = `${copyKey}:context`;
@@ -151,10 +168,10 @@ export function RuntimeLogMessage({
       </div>
 
       {summaryMetrics.length > 0 && (
-        <dl className="debug-log-key-metrics" aria-label="Key diagnostic values">
+        <dl className="debug-log-key-metrics" aria-label={t("Key diagnostic values")}>
           {summaryMetrics.map((metric) => (
             <div key={metric.key}>
-              <dt>{metric.label}</dt>
+              <dt>{t(metric.label)}</dt>
               <dd title={metric.value}>{metric.value}</dd>
             </div>
           ))}
@@ -165,17 +182,19 @@ export function RuntimeLogMessage({
         <details className="debug-log-details">
           <summary>
             <ChevronRight className="debug-log-details-chevron" aria-hidden="true" />
-            <span>Technical details</span>
-            <small>{contextFieldCount} fields</small>
+            <span>{t("Technical details")}</span>
+            <small>{contextFieldCount === 1
+              ? t("{{count}} field", { count: formatNumber(contextFieldCount) })
+              : t("{{count}} fields", { count: formatNumber(contextFieldCount) })}</small>
           </summary>
           <div className="debug-log-details-body">
             {contextRows.length > 0 && (
-              <section className="debug-log-detail-section" aria-label="Event context">
-                <h3>Event context</h3>
+              <section className="debug-log-detail-section" aria-label={t("Event context")}>
+                <h3>{t("Event context")}</h3>
                 <dl className="debug-log-detail-grid">
                   {contextRows.map(([label, value]) => (
                     <div key={label}>
-                      <dt>{label}</dt>
+                      <dt>{t(label)}</dt>
                       <dd title={value}>{value}</dd>
                     </div>
                   ))}
@@ -184,12 +203,12 @@ export function RuntimeLogMessage({
             )}
 
             {startupMetrics.length > 0 && (
-              <section className="debug-log-detail-section" aria-label="Startup timings">
-                <h3>Startup</h3>
+              <section className="debug-log-detail-section" aria-label={t("Startup timings")}>
+                <h3>{t("Startup phase")}</h3>
                 <dl className="debug-log-detail-grid">
                   {startupMetrics.map((metric) => (
                     <div key={metric.key}>
-                      <dt>{metric.label}</dt>
+                      <dt>{t(metric.label)}</dt>
                       <dd>{metric.value}</dd>
                     </div>
                   ))}
@@ -198,12 +217,12 @@ export function RuntimeLogMessage({
             )}
 
             {finalizationMetrics.length > 0 && (
-              <section className="debug-log-detail-section" aria-label="Finalization timings">
-                <h3>After stop</h3>
+              <section className="debug-log-detail-section" aria-label={t("Finalization timings")}>
+                <h3>{t("After stop")}</h3>
                 <dl className="debug-log-detail-grid">
                   {finalizationMetrics.map((metric) => (
                     <div key={metric.key}>
-                      <dt>{metric.label}</dt>
+                      <dt>{t(metric.label)}</dt>
                       <dd>{metric.value}</dd>
                     </div>
                   ))}
@@ -214,14 +233,14 @@ export function RuntimeLogMessage({
             <details className="debug-log-raw-details">
               <summary>
                 <ChevronRight className="debug-log-details-chevron" aria-hidden="true" />
-                <span>Raw structured data</span>
+                <span>{t("Raw structured data")}</span>
               </summary>
               <div className="debug-log-raw-body">
                 <div className="debug-log-raw-header">
-                  <span>Redacted JSON</span>
+                  <span>{t("Redacted JSON")}</span>
                   <CopyTechnicalButton
                     copied={copiedKey === contextCopyKey}
-                    label="Copy raw structured log data"
+                    label={t("Copy raw structured log data")}
                     onClick={() => onCopy(rawContext, contextCopyKey)}
                   />
                 </div>
@@ -236,15 +255,17 @@ export function RuntimeLogMessage({
         <details className="debug-log-details debug-log-full-message">
           <summary>
             <ChevronRight className="debug-log-details-chevron" aria-hidden="true" />
-            <span>Full message</span>
-            <small>{message.length.toLocaleString()} characters</small>
+            <span>{t("Full message")}</span>
+            <small>{message.length === 1
+              ? t("{{count}} character", { count: formatNumber(message.length) })
+              : t("{{count}} characters", { count: formatNumber(message.length) })}</small>
           </summary>
           <div className="debug-log-raw-body">
             <div className="debug-log-raw-header">
-              <span>Original redacted message</span>
+              <span>{t("Original redacted message")}</span>
               <CopyTechnicalButton
                 copied={copiedKey === fullMessageCopyKey}
-                label="Copy full log message"
+                label={t("Copy full log message")}
                 onClick={() => onCopy(message, fullMessageCopyKey)}
               />
             </div>

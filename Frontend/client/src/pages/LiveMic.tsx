@@ -9,6 +9,7 @@ import { PageIntro } from "@/components/page-intro";
 import { TranscriptionHistoryToolbar } from "@/components/transcription-history-toolbar";
 import { useLocation } from "wouter";
 import type { BackendStateResponse } from "@/lib/api-types";
+import { useI18n } from "@/i18n";
 
 const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
 const MIC_VISUAL_NOISE_FLOOR = 0.00003;
@@ -48,6 +49,36 @@ function coerceRecordingState(value: unknown, fallback: LiveRecordingState = "id
   }
 }
 
+function localizedLiveStatus(
+  value: string | null | undefined,
+  fallback: string,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  const source = String(value || fallback).trim();
+  if (source.startsWith("Error: ")) {
+    return `${t("Error")}: ${source.slice("Error: ".length)}`;
+  }
+  return t(source);
+}
+
+function localizedTranscriptLanguage(
+  value: string | null | undefined,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  const source = String(value || "").trim();
+  if (!source) return t("Unknown language");
+  const baseCode = source.toLowerCase().split(/[-_]/, 1)[0];
+  const labelByCode: Record<string, string> = {
+    auto: "Auto-detect",
+    de: "German",
+    en: "English",
+    es: "Spanish",
+    fr: "French",
+    it: "Italian",
+  };
+  return t(labelByCode[baseCode] || source);
+}
+
 function micVisualGainFromAudioLevel(rawInput: number): number {
   const rms = Math.min(1, Math.max(0, rawInput > 1 ? rawInput / 100 : rawInput));
   if (rms <= MIC_VISUAL_NOISE_FLOOR) {
@@ -78,16 +109,19 @@ const TranscriptCard = memo(function TranscriptCard({
   onNavigate,
   onHover,
 }: TranscriptCardProps) {
+  const { formatDate, formatLegacyDate, t } = useI18n();
   const deletingClasses = isDeleting
     ? "pointer-events-none opacity-[0.55] scale-[0.985]"
     : "opacity-100 scale-100";
-  const timeLabel = recordingTimeLabel(item.createdAt, item.date);
+  const timeLabel = item.createdAt
+    ? formatDate(item.createdAt, { dateStyle: "medium", timeStyle: "short" })
+    : formatLegacyDate(item.date);
   const snippet = (item.preview || "").trim();
   const visibleSnippet = snippet && snippet !== item.title
     ? snippet
     : item.status === "processing" || item.status === "recording"
-      ? item.step || "Transcription in progress"
-      : item.title.trim() || "No transcript preview available";
+      ? t(item.step || "Transcription in progress")
+      : item.title.trim() || t("No transcript preview available");
 
   return (
     <div className="h-full w-full">
@@ -117,7 +151,7 @@ const TranscriptCard = memo(function TranscriptCard({
                     </button>
                   </h3>
                   <p className="mt-1.5 truncate text-[11.5px] text-muted-foreground">
-                    {timeLabel} • {formatDurationLikeYoutube(item.duration)} • {item.language || "Unknown language"}
+                    {timeLabel} • {formatDurationLikeYoutube(item.duration)} • {localizedTranscriptLanguage(item.language, t)}
                   </p>
                 </div>
               </div>
@@ -126,16 +160,16 @@ const TranscriptCard = memo(function TranscriptCard({
                   onClick={(e) => onCopy(e, item.id)}
                   disabled={isCopying}
                   copied={isCopying}
-                  title="Copy transcript"
-                  ariaLabel={`Copy transcript ${item.title}`}
+                  title={t("Copy transcript")}
+                  ariaLabel={t("Copy transcript {{title}}", { title: item.title })}
                   className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
                 />
                 <DeleteActionButton
                   onClick={(e) => onDelete(e, item.id)}
                   disabled={isDeleting}
                   loading={isDeleting}
-                  title="Delete transcript"
-                  ariaLabel={`Delete transcript ${item.title}`}
+                  title={t("Delete transcript")}
+                  ariaLabel={t("Delete transcript {{title}}", { title: item.title })}
                   className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
                 />
               </div>
@@ -154,16 +188,16 @@ const TranscriptCard = memo(function TranscriptCard({
                     onClick={(e) => onCopy(e, item.id)}
                     disabled={isCopying}
                     copied={isCopying}
-                    title="Copy transcript"
-                    ariaLabel={`Copy transcript ${item.title}`}
+                    title={t("Copy transcript")}
+                    ariaLabel={t("Copy transcript {{title}}", { title: item.title })}
                     className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
                   />
                   <DeleteActionButton
                     onClick={(e) => onDelete(e, item.id)}
                     disabled={isDeleting}
                     loading={isDeleting}
-                    title="Delete transcript"
-                    ariaLabel={`Delete transcript ${item.title}`}
+                    title={t("Delete transcript")}
+                    ariaLabel={t("Delete transcript {{title}}", { title: item.title })}
                     className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
                   />
                   </div>
@@ -183,7 +217,7 @@ const TranscriptCard = memo(function TranscriptCard({
               </h3>
               <div className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-foreground/[0.06] pt-3 text-[11px] text-muted-foreground">
                 <span>{formatDurationLikeYoutube(item.duration)}</span>
-                <span className="inline-flex items-center gap-1.5 font-medium"><Globe className="h-3 w-3 stroke-[1.65px]" /> {item.language || "Unknown"}</span>
+                <span className="inline-flex items-center gap-1.5 font-medium"><Globe className="h-3 w-3 stroke-[1.65px]" /> {localizedTranscriptLanguage(item.language, t)}</span>
               </div>
             </div>
           )}
@@ -253,6 +287,7 @@ const AudioVisualizer = memo(function AudioVisualizer({
   audioLevelRef,
   barCount,
 }: AudioVisualizerProps) {
+  const { t } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -341,7 +376,7 @@ const AudioVisualizer = memo(function AudioVisualizer({
     <canvas
       ref={canvasRef}
       className="h-12 w-full md:h-16"
-      aria-label={isRecording ? "Recording audio level" : "Recording idle"}
+      aria-label={isRecording ? t("Recording audio level") : t("Recording idle")}
       role="img"
     />
   );
@@ -471,7 +506,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useToast } from "@/hooks/use-toast";
-import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
+import { showRecordingErrorToast } from "@/lib/recording-error-toast";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonList } from "@/components/ui/skeleton-card";
 import { QueryErrorState } from "@/components/ui/query-error-state";
@@ -485,11 +520,18 @@ import {
 } from "@/lib/visualizer-settings";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
-import { recordingTimeLabel, transcriptHistoryPeriod } from "@/lib/transcript-history-period";
-import { requestLiveMicStop } from "@/lib/live-mic-control";
+import { transcriptHistoryPeriod } from "@/lib/transcript-history-period";
+import {
+  presentLiveMicControlFailure,
+  requestLiveMicStart,
+  requestLiveMicStop,
+} from "@/lib/live-mic-control";
+import { useBackendStatus } from "@/hooks/use-backend-status";
 
 export default function LiveMic() {
   const { toast } = useToast();
+  const { locale, t } = useI18n();
+  const { checkNow: checkBackendStatus } = useBackendStatus();
   const [isRecording, setIsRecording] = useState(false);
   const [recordingState, setRecordingState] = useState<LiveRecordingState>("idle");
   const [elapsed, setElapsed] = useState(0);
@@ -563,7 +605,7 @@ export default function LiveMic() {
   const historyReferenceTime = useMemo(() => new Date(), [historyLocalDay]);
   const getTranscriptHistoryGroup = useCallback(
     (item: Transcript) => transcriptHistoryPeriod(item.createdAt, historyReferenceTime),
-    [historyReferenceTime],
+    [historyReferenceTime, locale],
   );
   const activeSessionIdRef = useRef<string | null>(null);
 
@@ -669,12 +711,12 @@ export default function LiveMic() {
       window.location.href = action.uri;
     } catch (e: any) {
       toast({
-        title: "Could not open settings",
-        description: String(e?.message || e || "Please open Windows Sound settings manually."),
+        title: t("Could not open settings"),
+        description: t(String(e?.message || e || "Please open Windows Sound settings manually.")),
         duration: 4000,
       });
     }
-  }, [toast]);
+  }, [t, toast]);
 
   // WebSocket with auto-reconnection
   const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
@@ -855,33 +897,15 @@ export default function LiveMic() {
       setElapsed(0);
     }
     try {
-      const res = action === "stop"
-        ? await requestLiveMicStop()
-        : await fetchWithTimeout(
-            apiUrl("/api/live-mic/start"),
-            { method: "POST", credentials: "include" },
-            15_000,
-          );
-      if (!res.ok) {
-        const text = await res.text();
-        let payload: unknown = null;
-        try {
-          payload = text ? JSON.parse(text) : null;
-        } catch {
-          payload = null;
-        }
-        const recordingError = recordingErrorToastMessageFromPayload(payload, text || res.statusText);
-        if (recordingError) {
-          showRecordingErrorToast(toast, recordingError);
-          return;
-        }
-        throw new Error(text || res.statusText);
+      if (action === "stop") {
+        await requestLiveMicStop();
+      } else {
+        await requestLiveMicStart();
       }
-    } catch (e: any) {
-      toast({
-        title: "Action failed",
-        description: String(e?.message || e),
-        duration: 4000,
+    } catch (error) {
+      presentLiveMicControlFailure(error, {
+        toast,
+        checkBackendStatus,
       });
     } finally {
       toggleRequestInFlightRef.current = false;
@@ -905,21 +929,21 @@ export default function LiveMic() {
       }
       queryClient.invalidateQueries({ queryKey: ["/api/transcripts"] });
       toast({
-        title: "Deleted",
-        description: "Transcript removed successfully.",
+        title: t("Deleted"),
+        description: t("Transcript removed successfully."),
         duration: 2000,
       });
     } catch (e: any) {
       toast({
-        title: "Delete failed",
-        description: String(e?.message || e),
+        title: t("Delete failed"),
+        description: t(String(e?.message || e)),
         duration: 4000,
       });
     } finally {
       deletingRef.current = null;
       setDeletingId(null);
     }
-  }, [queryClient, toast]);
+  }, [queryClient, t, toast]);
 
   const copyTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -938,12 +962,12 @@ export default function LiveMic() {
       const data = await res.json();
       const content = data?.content || "";
       if (!content) {
-        throw new Error("No transcript content available");
+        throw new Error(t("No transcript content available"));
       }
       await navigator.clipboard.writeText(content);
       toast({
-        title: "Copied",
-        description: "Transcript copied to clipboard.",
+        title: t("Copied"),
+        description: t("Transcript copied to clipboard."),
         duration: 2000,
       });
       // Show check mark briefly
@@ -954,14 +978,14 @@ export default function LiveMic() {
       }, 1500);
     } catch (e: any) {
       toast({
-        title: "Copy failed",
-        description: String(e?.message || e),
+        title: t("Copy failed"),
+        description: t(String(e?.message || e)),
         duration: 4000,
       });
       copyingRef.current = null;
       setCopyingId(null);
     }
-  }, [toast]);
+  }, [t, toast]);
 
   const navigateToTranscript = useCallback((id: string) => {
     setLocation(`/transcript/${id}`);
@@ -976,39 +1000,39 @@ export default function LiveMic() {
   }, [queryClient]);
 
   const stageStatusLabel = toggleAction === "start"
-    ? "Starting"
+    ? t("Starting")
     : toggleAction === "stop"
-      ? "Stopping"
+      ? t("Stopping")
       : isRecording
-    ? "Listening"
+    ? t("Listening")
     : isPreparing
-      ? "Preparing microphone"
+      ? t("Preparing microphone")
       : isTranscribing
-        ? "Transcribing"
+        ? t("Transcribing")
         : isConnected
-          ? "Ready"
-          : "Offline";
+          ? t("Ready")
+          : t("Offline");
 
   const stageStatusHint = toggleAction === "start"
-    ? "Connecting to your input device"
+    ? t("Connecting to your input device")
     : toggleAction === "stop"
-      ? "Saving your recording"
+      ? t("Saving your recording")
       : isRecording
-    ? "Tap the microphone to stop"
+    ? t("Tap the microphone to stop")
     : isPreparing
-      ? "Connecting to your input device"
+      ? t("Connecting to your input device")
       : isTranscribing
-        ? "Finalizing your transcript"
+        ? t("Finalizing your transcript")
         : isConnected
-          ? "Press the microphone to start"
-          : "Reconnecting to Scriber";
+          ? t("Press the microphone to start")
+          : t("Reconnecting to Scriber");
 
   return (
     <div className="app-page-shell live-mic-page px-4 py-5 md:px-6 md:py-6" data-page-shell="live-mic">
       <PageIntro
-        eyebrow="Voice capture · 01"
-        title="Live transcription"
-        description="Capture thoughts or longer dictation and watch the transcript appear as you speak."
+        eyebrow={t("Voice capture · 01")}
+        title={t("Live transcription")}
+        description={t("Capture thoughts or longer dictation and watch the transcript appear as you speak.")}
         sticky={false}
       />
 
@@ -1040,14 +1064,14 @@ export default function LiveMic() {
                 busy={toggleAction !== null || isPreparing || isTranscribing}
                 label={
                   toggleAction === "start"
-                    ? "Starting recording"
+                    ? t("Starting recording")
                     : toggleAction === "stop"
-                      ? "Stopping recording"
+                      ? t("Stopping recording")
                       : isTranscribing
-                    ? "Transcribing recording"
+                    ? t("Transcribing recording")
                     : hasActiveSession
-                      ? "Stop recording"
-                      : "Start recording"
+                      ? t("Stop recording")
+                      : t("Start recording")
                 }
                 audioLevelRef={audioLevelRef}
                 onToggle={handleToggle}
@@ -1066,10 +1090,10 @@ export default function LiveMic() {
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="font-heading text-[18px] font-semibold tracking-[-0.015em] text-foreground">
-                  {!hasActiveSession && finalText ? "Last transcript" : "Live transcript"}
+                  {!hasActiveSession && finalText ? t("Last transcript") : t("Live transcript")}
                 </h2>
                 <p className="mt-1 text-[11.5px] leading-4 text-muted-foreground">
-                  {!hasActiveSession && finalText ? "Saved to Recent recordings." : "Speech appears here while you record."}
+                  {!hasActiveSession && finalText ? t("Saved to Recent recordings.") : t("Speech appears here while you record.")}
                 </p>
               </div>
               {(isPreparing || isTranscribing) && (
@@ -1084,17 +1108,17 @@ export default function LiveMic() {
             <div className="live-mic-transcript-well flex min-h-[140px] flex-1 items-center p-5 text-left md:min-h-[168px] md:p-6">
               <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
                 {isRecording
-                  ? "Recording started."
+                  ? t("Recording started.")
                   : isPreparing
-                    ? "Preparing microphone."
+                    ? t("Preparing microphone.")
                     : isTranscribing
-                      ? "Transcribing recording."
-                      : "Recording stopped."}
+                      ? t("Transcribing recording.")
+                      : t("Recording stopped.")}
               </p>
               <div
                 ref={transcriptScrollRef}
                 className="relative z-10 max-h-[228px] w-full overflow-y-auto overscroll-contain pr-1"
-                aria-label={!hasActiveSession && finalText ? "Last saved transcript" : "Live transcript"}
+                aria-label={!hasActiveSession && finalText ? t("Last saved transcript") : t("Live transcript")}
               >
                 {isRecording || finalText || interimText ? (
                   <p className="max-w-[70ch] text-[17px] font-medium leading-relaxed md:text-[19px]">
@@ -1106,17 +1130,19 @@ export default function LiveMic() {
                         )}
                       </>
                     ) : isRecording ? (
-                      <span className="text-foreground/90">{status || "Listening"}...</span>
+                      <span className="text-foreground/90">{localizedLiveStatus(status, "Listening", t)}…</span>
                     ) : (
-                      <span className="text-muted-foreground">No speech was detected.</span>
+                      <span className="text-muted-foreground">{t("No speech was detected.")}</span>
                     )}
                   </p>
                 ) : isPreparing || isTranscribing ? (
-                  <p className="text-[14px] text-muted-foreground">{status}</p>
+                  <p className="text-[14px] text-muted-foreground">
+                    {localizedLiveStatus(status, isTranscribing ? "Transcribing..." : "Preparing microphone...", t)}
+                  </p>
                 ) : (
                   <div>
-                    <p className="text-[15px] font-medium text-foreground/80">Your live transcript will appear here.</p>
-                    <p className="mt-1.5 text-[12px] leading-5 text-muted-foreground">Start recording with the microphone button or your global hotkey.</p>
+                    <p className="text-[15px] font-medium text-foreground/80">{t("Your live transcript will appear here.")}</p>
+                    <p className="mt-1.5 text-[12px] leading-5 text-muted-foreground">{t("Start recording with the microphone button or your global hotkey.")}</p>
                   </div>
                 )}
               </div>
@@ -1124,7 +1150,7 @@ export default function LiveMic() {
 
             {isRecording && inputWarning && (
               <div className="mt-3 space-y-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-200" role="alert">
-                <p>{inputWarning}</p>
+                <p>{t(inputWarning)}</p>
                 {inputWarningActions.length > 0 && (
                   <div className="flex flex-wrap gap-2">
                     {inputWarningActions.map((action) => (
@@ -1136,7 +1162,7 @@ export default function LiveMic() {
                         className="h-8 bg-amber-200/15 text-amber-800 hover:bg-amber-200/25 dark:text-amber-100"
                         onClick={() => handleInputWarningAction(action)}
                       >
-                        {action.label}
+                        {t(action.label)}
                       </Button>
                     ))}
                   </div>
@@ -1158,15 +1184,15 @@ export default function LiveMic() {
         {/* History Section */}
         <section className="live-mic-history space-y-4 pb-2">
           <TranscriptionHistoryToolbar
-            title="Recent recordings"
-            description="Search, copy, or reopen your latest dictations."
+            title={t("Recent recordings")}
+            description={t("Search, copy, or reopen your latest dictations.")}
             total={transcriptsQuery.total}
-            itemLabel={transcriptsQuery.total === 1 ? "recording" : "recordings"}
+            itemLabel={transcriptsQuery.total === 1 ? t("recording") : t("recordings")}
             searchValue={searchQuery}
             onSearchChange={setSearchQuery}
-            searchPlaceholder="Search recordings..."
-            searchAriaLabel="Search recording history"
-            clearSearchLabel="Clear recording search"
+            searchPlaceholder={t("Search recordings…")}
+            searchAriaLabel={t("Search recording history")}
+            clearSearchLabel={t("Clear recording search")}
             viewMode={viewMode}
             onViewModeChange={setViewMode}
           />
@@ -1175,14 +1201,14 @@ export default function LiveMic() {
             <SkeletonList count={3} variant={viewMode} />
           ) : transcriptsQuery.isError ? (
             <QueryErrorState
-              title="Could not load recordings"
-              description="Please retry loading your recording history."
+              title={t("Could not load recordings")}
+              description={t("Please retry loading your recording history.")}
               onRetry={() => transcriptsQuery.refetch()}
             />
           ) : (
             transcripts.length === 0 ? (
               debouncedSearch ? (
-                <p className="text-center text-muted-foreground py-8">No recordings match "{debouncedSearch}"</p>
+                <p className="text-center text-muted-foreground py-8">{t("No recordings match “{{query}}”", { query: debouncedSearch })}</p>
               ) : (
                 <EmptyState type="mic" />
               )

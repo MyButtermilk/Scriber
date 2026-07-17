@@ -218,9 +218,11 @@ _SPEAKER_PROFILE_PREVIEW_MAX_BYTES = 384 * 1024
 
 ScriberPipeline: Any | None = None
 _invalidate_mic_device_resolution_cache_impl: Callable[[], None] | None = None
+_discard_vad_cache_impl: Callable[[], None] | None = None
 _pipeline_runtime_import_lock = threading.Lock()
 _pipeline_cache_state_lock = threading.Lock()
 _pipeline_cache_invalidation_pending = False
+_pipeline_vad_cache_discard_pending = False
 
 
 @dataclass(frozen=True)
@@ -306,12 +308,14 @@ def _load_scriber_pipeline_runtime() -> Any:
     """
 
     global ScriberPipeline, _invalidate_mic_device_resolution_cache_impl
-    global _pipeline_cache_invalidation_pending
+    global _discard_vad_cache_impl, _pipeline_cache_invalidation_pending
+    global _pipeline_vad_cache_discard_pending
     if ScriberPipeline is not None:
         return ScriberPipeline
     with _pipeline_runtime_import_lock:
         if ScriberPipeline is None:
             from src.pipeline import (
+                _AnalyzerCache,
                 ScriberPipeline as pipeline_class,
                 invalidate_mic_device_resolution_cache as invalidate_cache,
             )
@@ -319,10 +323,20 @@ def _load_scriber_pipeline_runtime() -> Any:
             with _pipeline_cache_state_lock:
                 ScriberPipeline = pipeline_class
                 _invalidate_mic_device_resolution_cache_impl = invalidate_cache
+                _discard_vad_cache_impl = _AnalyzerCache.discard_vad_cache
                 invalidate_after_import = _pipeline_cache_invalidation_pending
                 _pipeline_cache_invalidation_pending = False
+                discard_vad_after_import = _pipeline_vad_cache_discard_pending
+                _pipeline_vad_cache_discard_pending = False
             if invalidate_after_import:
                 invalidate_cache()
+            if discard_vad_after_import:
+                try:
+                    _AnalyzerCache.discard_vad_cache()
+                except Exception:
+                    logger.exception(
+                        "Deferred Silero VAD cache cleanup failed after pipeline import"
+                    )
     return ScriberPipeline
 
 
@@ -410,6 +424,33 @@ def invalidate_mic_device_resolution_cache() -> None:
             _pipeline_cache_invalidation_pending = True
             return
     invalidate_cache()
+
+
+def discard_vad_cache_without_importing_pipeline() -> None:
+    """Discard an unused Silero analyzer without importing the Pipecat runtime.
+
+    Settings are available before the heavyweight pipeline has ever been
+    loaded.  Importing ``src.pipeline`` merely to turn Silero off blocks the
+    event loop and, in a damaged frozen runtime, used to turn a harmless
+    preference change into an HTTP 500.  Record one pending cleanup while the
+    runtime is cold (including while another thread is importing it), then let
+    ``_load_scriber_pipeline_runtime`` consume that request atomically.
+
+    Cache cleanup is best-effort lifecycle work.  It must never roll back an
+    already persisted user setting.
+    """
+
+    global _pipeline_vad_cache_discard_pending
+    with _pipeline_cache_state_lock:
+        discard_cache = _discard_vad_cache_impl
+        if discard_cache is None:
+            _pipeline_vad_cache_discard_pending = True
+            return
+    try:
+        discard_cache()
+    except Exception:
+        logger.exception("Silero VAD cache cleanup failed after Settings update")
+
 
 _ALLOWED_ORIGINS_ENV = "SCRIBER_ALLOWED_ORIGINS"
 _UPLOAD_MAX_BYTES_ENV = "SCRIBER_UPLOAD_MAX_BYTES"
@@ -2372,6 +2413,21 @@ def _same_audio_claim(left: AudioAdmissionClaim | None, right: AudioAdmissionCla
     )
 
 
+def _meeting_audio_claim(
+    controller: Any, meeting_id: str
+) -> AudioAdmissionClaim | None:
+    """Return only the process claim owned by this exact Meeting."""
+
+    current = getattr(controller, "_persistent_audio_claim", None)
+    if (
+        isinstance(current, AudioAdmissionClaim)
+        and current.owner_kind == "meeting"
+        and current.owner_id == str(meeting_id or "")
+    ):
+        return current
+    return None
+
+
 async def _handle_persistent_audio_claim_loss(
     controller: Any, claim: AudioAdmissionClaim, *, reason: str
 ) -> None:
@@ -2615,6 +2671,87 @@ class _MeetingCaptureSetupError(RuntimeError):
         self.status = int(status)
         self.code = str(code)
         self.message = str(message)
+
+
+_MEETING_NATIVE_CAPTURE_SOURCES = frozenset(
+    {"microphone", "system", "mic_clean"}
+)
+
+
+def _validated_meeting_native_capture_payload(
+    payload: Mapping[str, Any],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Validate the private three-pipe contract before recording can commit."""
+
+    capture_id = str(payload.get("captureId") or "").strip()
+    try:
+        sample_rate = int(payload.get("sampleRate") or 0)
+        frame_duration_ms = int(payload.get("frameDurationMs") or 0)
+    except (TypeError, ValueError):
+        sample_rate = 0
+        frame_duration_ms = 0
+    raw_sources = payload.get("sources")
+    sources = raw_sources if isinstance(raw_sources, list) else []
+    source_names: set[str] = set()
+    frame_pipes: set[str] = set()
+    valid_sources: list[dict[str, Any]] = []
+    for item in sources:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or "").strip()
+        frame_pipe = str(item.get("framePipe") or "").strip()
+        if (
+            source not in _MEETING_NATIVE_CAPTURE_SOURCES
+            or source in source_names
+            or not frame_pipe
+            or frame_pipe in frame_pipes
+        ):
+            continue
+        source_names.add(source)
+        frame_pipes.add(frame_pipe)
+        valid_sources.append(item)
+    if (
+        not capture_id
+        or len(capture_id) > 160
+        or sample_rate != 16_000
+        or frame_duration_ms != 10
+        or len(sources) != len(_MEETING_NATIVE_CAPTURE_SOURCES)
+        or source_names != _MEETING_NATIVE_CAPTURE_SOURCES
+        or len(valid_sources) != len(_MEETING_NATIVE_CAPTURE_SOURCES)
+    ):
+        raise _MeetingCaptureSetupError(
+            status=503,
+            code="native_capture_contract_invalid",
+            message=(
+                "Native meeting capture returned an incomplete audio stream "
+                "contract. No recording was started."
+            ),
+        )
+    return capture_id, valid_sources
+
+
+def _meeting_recorder_stop_failure(
+    exc: BaseException,
+    snapshot: Mapping[str, Any] | None,
+) -> tuple[str, str]:
+    """Return a bounded, user-visible failure for a recorder join failure."""
+
+    reader_timed_out = any(
+        isinstance(stats, Mapping)
+        and str(stats.get("errorCode") or "") == "reader_stop_timeout"
+        for stats in (snapshot or {}).values()
+    ) or "did not stop before the timeout" in str(exc).lower()
+    if reader_timed_out:
+        return (
+            "meeting_recorder_stop_timeout",
+            "Meeting audio readers did not stop before the cleanup deadline. "
+            "Durable audio recorded so far was preserved for recovery.",
+        )
+    return (
+        "meeting_recorder_stop_failed",
+        "Meeting audio cleanup failed after native capture ended. "
+        "Durable audio recorded so far was preserved for recovery.",
+    )
 
 
 def _meeting_live_preview_metadata(
@@ -11439,6 +11576,7 @@ class ScriberWebController:
             task.cancel()
 
     async def _meeting_capture_watchdog(self, meeting_id: str, capture_id: str) -> None:
+        consecutive_status_failures = 0
         try:
             while not self._shutting_down:
                 await asyncio.sleep(2.0)
@@ -11503,71 +11641,162 @@ class ScriberWebController:
                     }
                     payload = {"reason": response["errorCode"]}
                 else:
-                    response = await asyncio.to_thread(
-                        call_shell_ipc,
-                        "audioMeetingStatus",
-                        {"meetingId": meeting_id, "captureId": capture_id},
-                        timeout_seconds=2.0,
-                    )
-                    payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-                    if response.get("success") and payload.get("active") is True:
-                        continue
+                    try:
+                        response = await asyncio.to_thread(
+                            call_shell_ipc,
+                            "audioMeetingStatus",
+                            {"meetingId": meeting_id, "captureId": capture_id},
+                            timeout_seconds=2.0,
+                        )
+                    except Exception as exc:
+                        consecutive_status_failures += 1
+                        logger.warning(
+                            "Meeting capture status retry: error={} attempt={}",
+                            type(exc).__name__,
+                            consecutive_status_failures,
+                        )
+                        if consecutive_status_failures < 3:
+                            continue
+                        response = {
+                            "success": False,
+                            "errorCode": "meeting_capture_status_unavailable",
+                        }
+                        payload = {
+                            "reason": "meeting_capture_status_unavailable"
+                        }
+                    else:
+                        consecutive_status_failures = 0
+                        payload = (
+                            response.get("payload")
+                            if isinstance(response.get("payload"), dict)
+                            else {}
+                        )
+                        if (
+                            response.get("success")
+                            and payload.get("active") is True
+                        ):
+                            continue
 
-                recorder = self._meeting_recorders.pop(meeting_id, None)
-                if recorder is not None:
-                    await asyncio.to_thread(recorder.stop)
-                live = self._meeting_live_transcribers.pop(meeting_id, None)
-                if live is not None:
-                    await live.stop()
-                stop_response = await asyncio.to_thread(
-                    call_shell_ipc,
-                    "audioMeetingStop",
-                    {"meetingId": meeting_id, "captureId": capture_id},
-                    timeout_seconds=4.0,
-                )
-                if recorder_errors:
-                    stop_payload = (
-                        stop_response.get("payload")
-                        if isinstance(stop_response.get("payload"), dict)
-                        else {}
+                # Status polling stays outside admission, but every destructive
+                # recovery step shares the same lane as HTTP pause/stop/resume.
+                # Re-read after waiting so a successful user stop cannot be
+                # overwritten by a stale watchdog observation.
+                async with _audio_admission_lock(self):
+                    current = await asyncio.to_thread(
+                        self._meeting_store.get, meeting_id
                     )
-                    stop_sidecar = (
-                        stop_payload.get("sidecar")
-                        if isinstance(stop_payload.get("sidecar"), dict)
-                        else {}
+                    if current.get("state") != "recording":
+                        return
+                    capture_metadata = current.get("captureMetadata")
+                    persisted_capture_id = (
+                        str(capture_metadata.get("captureId") or "")
+                        if isinstance(capture_metadata, dict)
+                        else ""
                     )
-                    relay = (
-                        stop_sidecar.get("relay")
-                        if isinstance(stop_sidecar.get("relay"), dict)
-                        else {}
+                    if persisted_capture_id and persisted_capture_id != capture_id:
+                        return
+
+                    meeting_claim = _meeting_audio_claim(self, meeting_id)
+                    recorder = self._meeting_recorders.get(meeting_id)
+                    prepare_disconnect = getattr(
+                        recorder, "prepare_for_expected_disconnect", None
                     )
-                    source_stops = (
-                        stop_sidecar.get("sources")
-                        if isinstance(stop_sidecar.get("sources"), list)
-                        else []
+                    if callable(prepare_disconnect):
+                        prepare_disconnect()
+                    try:
+                        stop_response = await asyncio.to_thread(
+                            call_shell_ipc,
+                            "audioMeetingStop",
+                            {"meetingId": meeting_id, "captureId": capture_id},
+                            timeout_seconds=4.0,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Meeting capture watchdog native stop failed: {}",
+                            type(exc).__name__,
+                        )
+                        stop_response = {
+                            "success": False,
+                            "errorCode": "meeting_capture_stop_failed",
+                            "payload": {},
+                        }
+                    recorder_stop_failure: tuple[str, str] | None = None
+                    recorder_failure_snapshot: dict[str, Any] = {}
+                    if recorder is not None:
+                        try:
+                            await asyncio.to_thread(recorder.stop)
+                        except Exception as exc:
+                            try:
+                                snapshot = recorder.snapshot()
+                            except Exception:
+                                snapshot = {}
+                            recorder_failure_snapshot = (
+                                snapshot if isinstance(snapshot, dict) else {}
+                            )
+                            recorder_stop_failure = _meeting_recorder_stop_failure(
+                                exc,
+                                recorder_failure_snapshot,
+                            )
+                            logger.warning(
+                                "Meeting capture watchdog recorder stop failed: error={} code={}",
+                                type(exc).__name__,
+                                recorder_stop_failure[0],
+                            )
+                        else:
+                            if self._meeting_recorders.get(meeting_id) is recorder:
+                                self._meeting_recorders.pop(meeting_id, None)
+                    live = self._meeting_live_transcribers.pop(meeting_id, None)
+                    if live is not None:
+                        try:
+                            await live.stop()
+                        except Exception as exc:
+                            logger.warning(
+                                "Meeting capture watchdog live stop failed: {}",
+                                type(exc).__name__,
+                            )
+                    if recorder_errors:
+                        stop_payload = (
+                            stop_response.get("payload")
+                            if isinstance(stop_response.get("payload"), dict)
+                            else {}
+                        )
+                        stop_sidecar = (
+                            stop_payload.get("sidecar")
+                            if isinstance(stop_payload.get("sidecar"), dict)
+                            else {}
+                        )
+                        relay = (
+                            stop_sidecar.get("relay")
+                            if isinstance(stop_sidecar.get("relay"), dict)
+                            else {}
+                        )
+                        source_stops = (
+                            stop_sidecar.get("sources")
+                            if isinstance(stop_sidecar.get("sources"), list)
+                            else []
+                        )
+                        logger.warning(
+                            "Meeting native stop diagnostics: relay_error={} frames={} "
+                            "source_errors={}",
+                            relay.get("relayError"),
+                            relay.get("framesProcessed"),
+                            [
+                                {
+                                    "source": item.get("source"),
+                                    "connected": item.get("connected"),
+                                    "framesWritten": item.get("framesWritten"),
+                                    "writerError": item.get("writerError"),
+                                }
+                                for item in source_stops
+                                if isinstance(item, dict)
+                            ],
+                        )
+                    failure_code = str(
+                        response.get("errorCode")
+                        or payload.get("reason")
+                        or "meeting_capture_inactive"
                     )
-                    logger.warning(
-                        "Meeting native stop diagnostics: relay_error={} frames={} "
-                        "source_errors={}",
-                        relay.get("relayError"),
-                        relay.get("framesProcessed"),
-                        [
-                            {
-                                "source": item.get("source"),
-                                "connected": item.get("connected"),
-                                "framesWritten": item.get("framesWritten"),
-                                "writerError": item.get("writerError"),
-                            }
-                            for item in source_stops
-                            if isinstance(item, dict)
-                        ],
-                    )
-                failed = await asyncio.to_thread(
-                    self._meeting_store.transition,
-                    meeting_id,
-                    "capture_failed",
-                    error_code=str(response.get("errorCode") or payload.get("reason") or "meeting_capture_inactive"),
-                    error_message=(
+                    failure_message = (
                         "The meeting audio drive is full. Recording stopped and completed chunks were preserved."
                         if response.get("errorCode") == "meeting_storage_full"
                         else (
@@ -11575,14 +11804,44 @@ class ScriberWebController:
                             if response.get("errorCode") == "audio_admission_lost"
                             else "A meeting audio source stopped unexpectedly. The durable audio recorded so far was preserved."
                         )
-                    ),
-                )
-                lost_meetings = getattr(self, "_audio_admission_lost_meetings", None)
-                if isinstance(lost_meetings, set):
-                    lost_meetings.discard(meeting_id)
-                await _release_persistent_audio(self)
-                await self.broadcast(meeting_state_event(failed))
-                return
+                    )
+                    transition_kwargs: dict[str, Any] = {}
+                    if recorder_stop_failure is not None:
+                        failure_code, failure_message = recorder_stop_failure
+                        failure_metadata = dict(
+                            capture_metadata
+                            if isinstance(capture_metadata, dict)
+                            else {}
+                        )
+                        failure_metadata["persistence"] = recorder_failure_snapshot
+                        persistence_sessions = failure_metadata.get(
+                            "persistenceSessions"
+                        )
+                        if not isinstance(persistence_sessions, list):
+                            persistence_sessions = []
+                        failure_metadata["persistenceSessions"] = [
+                            *persistence_sessions[-19:],
+                            recorder_failure_snapshot,
+                        ]
+                        transition_kwargs["capture_metadata"] = failure_metadata
+                    failed = await asyncio.to_thread(
+                        self._meeting_store.transition,
+                        meeting_id,
+                        "capture_failed",
+                        error_code=failure_code,
+                        error_message=failure_message,
+                        **transition_kwargs,
+                    )
+                    lost_meetings = getattr(
+                        self, "_audio_admission_lost_meetings", None
+                    )
+                    if isinstance(lost_meetings, set):
+                        lost_meetings.discard(meeting_id)
+                    if meeting_claim is not None:
+                        await _release_persistent_audio(self, meeting_claim)
+                    self._resume_idle_mic_prewarm_after_capture()
+                    await self.broadcast(meeting_state_event(failed))
+                    return
         except asyncio.CancelledError:
             raise
         except MeetingNotFound:
@@ -12014,9 +12273,15 @@ class ScriberWebController:
         for task in list(self._overlay_tasks):
             task.cancel()
         self._overlay_tasks.clear()
-        for recorder in self._meeting_recorders.values():
-            recorder.stop(timeout=1.0)
-        self._meeting_recorders.clear()
+        recorders, self._meeting_recorders = list(self._meeting_recorders.values()), {}
+        for recorder in recorders:
+            try:
+                recorder.stop(timeout=1.0)
+            except Exception as exc:
+                logger.warning(
+                    "Meeting recorder cleanup warning: {}",
+                    type(exc).__name__,
+                )
 
         kb = self._keyboard
         if kb and hasattr(kb, "clear_all_hotkeys"):
@@ -12345,12 +12610,10 @@ class ScriberWebController:
         if segment_speech_with_vad is not None:
             Config.set_segment_speech_with_vad(segment_speech_with_vad)
             if not segment_speech_with_vad:
-                # A disabled Settings switch must also release a startup warmup;
-                # otherwise Silero remains resident even though no live pipeline
-                # is allowed to attach it.
-                from src.pipeline import _AnalyzerCache
-
-                _AnalyzerCache.discard_vad_cache()
+                # Release an unused startup warmup without making a Settings
+                # mutation import the complete Pipecat pipeline.  Cleanup is
+                # deliberately best-effort and cannot roll back the setting.
+                discard_vad_cache_without_importing_pipeline()
 
         debug_enabled = _payload_bool(payload, "debug")
         if debug_enabled is not None:
@@ -12912,6 +13175,31 @@ APP_PROVIDER_REPLAY: web.AppKey[ProviderReplayRegistry] = web.AppKey(
 _PROVIDER_REPLAY_ROUTE_PREFIX = "/api/runtime/benchmark/provider-replay"
 
 
+def _live_mic_runtime_unavailable_payload() -> dict[str, Any]:
+    """Return a stable public error without exposing runtime internals."""
+
+    return error_event(
+        "Scriber could not load the live microphone runtime. Restart or reinstall "
+        "Scriber, then try again.",
+        title="Live microphone unavailable",
+        category="runtime_unavailable",
+        code="live_mic_runtime_unavailable",
+        retryable=False,
+    )
+
+
+def _unexpected_api_error_payload() -> dict[str, Any]:
+    """Return the generic public boundary for an unexpected API exception."""
+
+    return error_event(
+        "Scriber could not complete this request. Please try again.",
+        title="Request failed",
+        category="internal_error",
+        code="internal_server_error",
+        retryable=True,
+    )
+
+
 @web.middleware
 async def cors_middleware(request: web.Request, handler):
     origin = request.headers.get("Origin")
@@ -12925,6 +13213,18 @@ async def cors_middleware(request: web.Request, handler):
             resp = await handler(request)
         except web.HTTPException as exc:
             resp = exc
+        except Exception:
+            # Keep full diagnostic context in the private local log while the
+            # WebView always receives a bounded, credential-free JSON error.
+            # Handling this inside the CORS middleware is intentional: aiohttp's
+            # default 500 response otherwise has no CORS headers and browsers
+            # misleadingly reduce it to "Failed to fetch".
+            logger.exception(
+                "Unhandled API request failed: {} {}",
+                request.method,
+                request.path,
+            )
+            resp = web.json_response(_unexpected_api_error_payload(), status=500)
 
     if origin:
         resp.headers["Access-Control-Allow-Origin"] = origin
@@ -13016,8 +13316,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     app = web.Application(
         middlewares=[
-            provider_replay_visibility_middleware,
             cors_middleware,
+            provider_replay_visibility_middleware,
             session_token_middleware,
         ]
     )
@@ -13469,15 +13769,37 @@ def create_app(controller: ScriberWebController) -> web.Application:
     async def provider_replay_not_found(_request: web.Request):
         return web.json_response({"message": "Not found"}, status=404)
 
-    async def start_live(request: web.Request):
+    async def start_live_request(
+        request: web.Request,
+        *,
+        post_process: bool = False,
+    ) -> web.Response:
+        """Start Live Mic behind one sanitized runtime-error boundary."""
+
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         try:
             tauri_hotkey_marker = await _tauri_hotkey_marker_from_request(request)
         except RESTContractError as exc:
             return web.json_response({"message": str(exc)}, status=400)
-        start_error = await ctl.start_listening(
-            tauri_hotkey_marker=tauri_hotkey_marker,
-        )
+        try:
+            start_kwargs: dict[str, Any] = {
+                "tauri_hotkey_marker": tauri_hotkey_marker,
+            }
+            if post_process:
+                start_kwargs["post_process"] = True
+            start_error = await ctl.start_listening(**start_kwargs)
+        except Exception:
+            # The local log retains the traceback needed to diagnose a broken
+            # frozen runtime.  Never reflect module names, filesystem paths, or
+            # exception text through the public API.
+            logger.exception(
+                "Live microphone runtime failed during {} start",
+                "post-processing" if post_process else "standard",
+            )
+            return web.json_response(
+                _live_mic_runtime_unavailable_payload(),
+                status=503,
+            )
         if start_error is not None:
             return web.json_response(
                 version_event_payload(ctl._provider_error_event_from_info(start_error)),
@@ -13485,22 +13807,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
             )
         return web.json_response(ctl.get_state())
 
+    async def start_live(request: web.Request):
+        return await start_live_request(request)
+
     async def start_live_post_processing(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            tauri_hotkey_marker = await _tauri_hotkey_marker_from_request(request)
-        except RESTContractError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        start_error = await ctl.start_listening(
-            post_process=True,
-            tauri_hotkey_marker=tauri_hotkey_marker,
-        )
-        if start_error is not None:
-            return web.json_response(
-                version_event_payload(ctl._provider_error_event_from_info(start_error)),
-                status=400,
-            )
-        return web.json_response(ctl.get_state())
+        return await start_live_request(request, post_process=True)
 
     async def stop_live(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -13538,19 +13849,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             payload["finalizing"] = True
             return web.json_response(payload, status=202)
 
-        try:
-            tauri_hotkey_marker = await _tauri_hotkey_marker_from_request(request)
-        except RESTContractError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        start_error = await ctl.start_listening(
-            tauri_hotkey_marker=tauri_hotkey_marker,
-        )
-        if start_error is not None:
-            return web.json_response(
-                version_event_payload(ctl._provider_error_event_from_info(start_error)),
-                status=400,
-            )
-        return web.json_response(ctl.get_state())
+        return await start_live_request(request)
 
     async def request_stop_live(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -13597,20 +13896,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             payload["finalizing"] = True
             return web.json_response(payload, status=202)
 
-        try:
-            tauri_hotkey_marker = await _tauri_hotkey_marker_from_request(request)
-        except RESTContractError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        start_error = await ctl.start_listening(
-            post_process=True,
-            tauri_hotkey_marker=tauri_hotkey_marker,
-        )
-        if start_error is not None:
-            return web.json_response(
-                version_event_payload(ctl._provider_error_event_from_info(start_error)),
-                status=400,
-            )
-        return web.json_response(ctl.get_state())
+        return await start_live_request(request, post_process=True)
 
     async def get_settings(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -15826,10 +16112,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         ),
                     )
 
-                native_sources = (
-                    native_payload.get("sources")
-                    if isinstance(native_payload.get("sources"), list)
-                    else []
+                (
+                    ownership.capture_id,
+                    native_sources,
+                ) = _validated_meeting_native_capture_payload(
+                    native_payload
                 )
                 live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {
                     "transcriber": None
@@ -16130,10 +16417,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     status=503,
                 )
 
-            sources = (
-                native_payload.get("sources")
-                if isinstance(native_payload.get("sources"), list)
-                else []
+            (
+                ownership.capture_id,
+                sources,
+            ) = _validated_meeting_native_capture_payload(
+                native_payload
             )
             pause_start_ms = int(capture_metadata.get("pauseStartedAtMs") or 0)
             pause_started_raw = str(capture_metadata.get("pauseStartedAtUtc") or "")
@@ -16325,10 +16613,46 @@ def create_app(controller: ScriberWebController) -> web.Application:
             current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
         except MeetingNotFound:
             return web.json_response({"message": "Meeting not found"}, status=404)
+        allowed_source_states = {
+            "audioMeetingPause": frozenset({"recording"}),
+            "audioMeetingResume": frozenset({"paused"}),
+            "audioMeetingStop": frozenset({"recording", "paused"}),
+        }
+        command_labels = {
+            "audioMeetingPause": "pause",
+            "audioMeetingResume": "resume",
+            "audioMeetingStop": "stop",
+        }
+        current_state = str(current.get("state") or "unknown")
+        if current_state not in allowed_source_states.get(command, frozenset()):
+            return web.json_response(
+                {
+                    "message": (
+                        f"Meeting cannot {command_labels.get(command, 'change')} "
+                        f"from {current_state}."
+                    )
+                },
+                status=409,
+            )
+        meeting_claim = _meeting_audio_claim(ctl, meeting_id)
+        if meeting_claim is None:
+            return web.json_response(
+                {"message": "This Meeting does not own native audio capture."},
+                status=409,
+            )
         if command == "audioMeetingResume":
             return await _resume_paused_meeting_claimed(request, current)
+        raw_metadata = current.get("captureMetadata")
+        current_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+
+        def restore_watchdog() -> None:
+            if current_state == "recording":
+                ctl.start_meeting_capture_watchdog(
+                    meeting_id,
+                    str(current_metadata.get("captureId") or ""),
+                )
+
         ctl.stop_meeting_capture_watchdog(meeting_id)
-        current_metadata = current.get("captureMetadata", {})
         ipc_command_payload = {
             "meetingId": meeting_id,
             "captureId": current_metadata.get("captureId"),
@@ -16351,17 +16675,28 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 ipc_command_payload,
                 timeout_seconds=4.0,
             )
-        except (Exception, asyncio.CancelledError):
+        except asyncio.CancelledError:
             if disconnect_prepared and callable(cancel_disconnect):
                 cancel_disconnect()
+            restore_watchdog()
             raise
+        except Exception as exc:
+            if disconnect_prepared and callable(cancel_disconnect):
+                cancel_disconnect()
+            restore_watchdog()
+            logger.warning(
+                "Meeting capture command failed before completion: command={} error={}",
+                command,
+                type(exc).__name__,
+            )
+            return web.json_response(
+                {"message": "Native Meeting audio control is temporarily unavailable."},
+                status=503,
+            )
         if not response.get("success"):
             if disconnect_prepared and callable(cancel_disconnect):
                 cancel_disconnect()
-            if current.get("state") == "recording":
-                ctl.start_meeting_capture_watchdog(
-                    meeting_id, str(current.get("captureMetadata", {}).get("captureId") or "")
-                )
+            restore_watchdog()
             return web.json_response(
                 {"message": str(response.get("fallbackReason") or f"{command} failed")}, status=503
             )
@@ -16378,10 +16713,28 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 ]
                 if isinstance(native_stop.get("aecMetrics"), dict):
                     capture_metadata["aecMetrics"] = native_stop["aecMetrics"]
+        recorder_stop_failure: tuple[str, str] | None = None
         if command in {"audioMeetingPause", "audioMeetingStop"} and recorder is not None:
-            persistence = await asyncio.to_thread(
-                recorder.stop, expected_disconnect=True
-            )
+            try:
+                persistence = await asyncio.to_thread(
+                    recorder.stop, expected_disconnect=True
+                )
+            except Exception as exc:
+                try:
+                    snapshot = recorder.snapshot()
+                except Exception:
+                    snapshot = {}
+                persistence = snapshot if isinstance(snapshot, dict) else {}
+                recorder_stop_failure = _meeting_recorder_stop_failure(
+                    exc,
+                    persistence,
+                )
+                logger.warning(
+                    "Meeting capture command recorder stop failed: command={} error={} code={}",
+                    command,
+                    type(exc).__name__,
+                    recorder_stop_failure[0],
+                )
             capture_metadata["persistence"] = persistence
             persistence_sessions = capture_metadata.get("persistenceSessions")
             if not isinstance(persistence_sessions, list):
@@ -16404,9 +16757,30 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 capture_metadata["liveTranscriptionSessions"] = [
                     *live_sessions[-19:], live_snapshot
                 ]
-        if command == "audioMeetingStop":
-            await _release_persistent_audio(ctl)
+        if recorder_stop_failure is not None:
+            failure_code, failure_message = recorder_stop_failure
+            try:
+                failed = await asyncio.to_thread(
+                    ctl._meeting_store.transition,
+                    meeting_id,
+                    "capture_failed",
+                    error_code=failure_code,
+                    error_message=failure_message,
+                    capture_metadata=capture_metadata,
+                )
+            except (InvalidMeetingTransition, MeetingConflict) as exc:
+                return web.json_response({"message": str(exc)}, status=409)
+            await _release_persistent_audio(ctl, meeting_claim)
             ctl._resume_idle_mic_prewarm_after_capture()
+            await ctl.broadcast(meeting_state_event(failed))
+            return web.json_response(
+                {
+                    "message": failure_message,
+                    "meeting": failed,
+                    "apiVersion": REST_API_VERSION,
+                },
+                status=503,
+            )
         if command == "audioMeetingPause":
             capture_metadata["pauseStartedAtMs"] = max(
                 await asyncio.to_thread(ctl._meeting_store.next_audio_offset_ms, meeting_id, "microphone"),
@@ -16423,6 +16797,9 @@ def create_app(controller: ScriberWebController) -> web.Application:
             )
         except (InvalidMeetingTransition, MeetingConflict) as exc:
             return web.json_response({"message": str(exc)}, status=409)
+        if command == "audioMeetingStop":
+            await _release_persistent_audio(ctl, meeting_claim)
+            ctl._resume_idle_mic_prewarm_after_capture()
         await ctl.broadcast(meeting_state_event(updated))
         return web.json_response({**updated, "apiVersion": REST_API_VERSION})
 
@@ -16432,14 +16809,31 @@ def create_app(controller: ScriberWebController) -> web.Application:
         command: str,
         target_state: str,
     ) -> web.Response:
-        if command != "audioMeetingResume":
-            return await _meeting_capture_command_claimed(
-                request, command=command, target_state=target_state
-            )
-
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         meeting_id = request.match_info.get("id", "")
         async with _audio_admission_lock(ctl):
+            if command != "audioMeetingResume":
+                return await _meeting_capture_command_claimed(
+                    request, command=command, target_state=target_state
+                )
+            try:
+                current = await asyncio.to_thread(
+                    ctl._meeting_store.get, meeting_id
+                )
+            except MeetingNotFound:
+                return web.json_response(
+                    {"message": "Meeting not found"}, status=404
+                )
+            if current.get("state") != "paused":
+                return web.json_response(
+                    {
+                        "message": (
+                            "Meeting cannot resume from "
+                            f"{current.get('state', 'unknown')}."
+                        )
+                    },
+                    status=409,
+                )
             if ctl._is_listening or ctl._is_stopping:
                 return web.json_response(
                     {"message": "Stop Live Mic before resuming this meeting."}, status=409
@@ -16539,10 +16933,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         or "Meeting capture resume failed."
                     ),
                 )
-            sources = (
-                native_payload.get("sources")
-                if isinstance(native_payload.get("sources"), list)
-                else []
+            (
+                ownership.capture_id,
+                sources,
+            ) = _validated_meeting_native_capture_payload(
+                native_payload
             )
             for source in sources:
                 if isinstance(source, dict):
@@ -19135,6 +19530,11 @@ async def _background_init(controller: ScriberWebController) -> None:
     async def _prewarm_models() -> None:
         try:
             def _warm_analyzers() -> None:
+                # Register the lightweight Settings cache-discard callback
+                # before any analyzer construction begins. A concurrent VAD
+                # disable is then either delivered directly or consumed from
+                # the pending flag by the lazy loader.
+                _load_scriber_pipeline_runtime()
                 from src.pipeline import _AnalyzerCache, _live_analyzer_requirements
 
                 needs_vad, uses_smart_turn = _live_analyzer_requirements(

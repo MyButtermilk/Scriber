@@ -1212,6 +1212,18 @@ def test_native_recording_overlay_is_tauri_owned() -> None:
     assert "overlayShow" in shell_ipc
     assert "overlayHide" in shell_ipc
     assert "nativeOverlay" in shell_ipc
+    ui_timeout = re.search(
+        r"OVERLAY_UI_COMMAND_TIMEOUT: Duration = Duration::from_secs\((\d+)\)",
+        native_overlay_rs,
+    )
+    client_timeout = re.search(
+        r"_OVERLAY_TRANSITION_TIMEOUT_SECONDS = ([0-9.]+)",
+        native_overlay_py,
+    )
+    assert ui_timeout is not None
+    assert client_timeout is not None
+    assert float(client_timeout.group(1)) > float(ui_timeout.group(1))
+    assert "handle_shell_command_on_ui_thread" in shell_ipc
     assert '"recording-overlay"' in capabilities
     assert '"core:event:allow-listen"' in capabilities
     assert "NativeRecordingOverlay" not in app

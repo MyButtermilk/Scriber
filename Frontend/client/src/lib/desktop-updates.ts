@@ -28,6 +28,7 @@ export interface DesktopUpdateStatus {
   deferred: boolean;
   deferredUntil?: string;
   message: string;
+  messageValues?: Record<string, string | number>;
 }
 
 export interface DesktopUpdateProgress {
@@ -70,12 +71,13 @@ type DesktopUpdateCache = {
   notes?: string;
   lastCheckedAt?: string;
   message?: string;
+  messageValues?: Record<string, string | number>;
   dismissedVersion?: string;
   deferredVersion?: string;
   deferredUntil?: string;
 };
 
-const CACHE_KEY = "scriber:desktop-update-cache:v1";
+const CACHE_KEY = "scriber:desktop-update-cache:v2";
 const SETTINGS_KEY = "scriber:desktop-update-settings:v1";
 const STATUS_EVENT = "scriber:desktop-update-status";
 const DEFAULT_CHECK_INTERVAL_HOURS = 24 * 7;
@@ -201,6 +203,9 @@ export function publishDesktopUpdateStatusToTray(status: DesktopUpdateStatus): v
     available: actionable,
     installing: status.phase === "installing",
     version: actionable ? status.version : undefined,
+    // Keep the canonical source key in native state. The current WebView
+    // locale owns rendering; persisting translated text would go stale after
+    // a language switch.
     message: status.message,
   }).catch((error) => console.debug("Tray update status sync failed.", error));
 }
@@ -433,7 +438,8 @@ async function performDesktopUpdateCheck(): Promise<DesktopUpdateStatus> {
       version: update.version,
       date: update.date,
       notes: update.body,
-      message: `Scriber ${update.version} is available.`,
+      message: "Scriber {{version}} is available.",
+      messageValues: { version: update.version },
     });
   } catch (error) {
     return cacheAndBuildStatus({
@@ -473,6 +479,7 @@ function cacheAndBuildStatus(input: {
   date?: string;
   notes?: string;
   message: string;
+  messageValues?: Record<string, string | number>;
 }): DesktopUpdateStatus {
   const previous = readCache();
   const inputAvailable = Boolean(input.available && isVersionNewerThanCurrent(input.version, input.currentVersion));
@@ -485,7 +492,12 @@ function cacheAndBuildStatus(input: {
     date: inputAvailable ? input.date : undefined,
     notes: inputAvailable ? input.notes : undefined,
     lastCheckedAt: new Date().toISOString(),
-    message: inputAvailable || input.phase !== "available" ? input.message : "Scriber is up to date.",
+    message: inputAvailable || input.phase !== "available"
+      ? input.message
+      : "Scriber is up to date.",
+    messageValues: inputAvailable || input.phase !== "available"
+      ? input.messageValues
+      : undefined,
     dismissedVersion: sameVersion ? previous?.dismissedVersion : undefined,
     deferredVersion: sameVersion ? previous?.deferredVersion : undefined,
     deferredUntil: sameVersion ? previous?.deferredUntil : undefined,
@@ -529,7 +541,10 @@ function statusFromCache(cache: DesktopUpdateCache | null, settings: DesktopUpda
     dismissed,
     deferred,
     deferredUntil: cache.deferredUntil,
-    message: staleAvailable ? "Scriber is up to date." : cache.message || NOT_CHECKED_STATUS.message,
+    message: staleAvailable
+      ? "Scriber is up to date."
+      : cache.message || NOT_CHECKED_STATUS.message,
+    messageValues: staleAvailable ? undefined : cache.messageValues,
   };
 }
 
@@ -654,12 +669,8 @@ function isUpdaterConfigurationError(error: unknown): boolean {
 }
 
 function friendlyUpdaterError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error || "");
   if (isUpdaterConfigurationError(error)) {
     return "Desktop updater is not configured for this build. Configure the Tauri updater public key, endpoint, and signing key before enabling release updates.";
-  }
-  if (raw.trim()) {
-    return raw;
   }
   return "Update check failed.";
 }

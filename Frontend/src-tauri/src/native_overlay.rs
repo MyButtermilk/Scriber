@@ -3,6 +3,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::{Mutex, OnceLock};
 #[cfg(not(test))]
+use std::{sync::mpsc, time::Duration};
+#[cfg(not(test))]
 use tauri::{Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 #[cfg(all(not(test), windows))]
 use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
@@ -14,6 +16,8 @@ pub const OVERLAY_EVENT: &str = "scriber-overlay-state";
 const OVERLAY_WIDTH: f64 = 255.0;
 const OVERLAY_HEIGHT: f64 = 78.0;
 const OVERLAY_BOTTOM_MARGIN: f64 = 12.0;
+#[cfg(not(test))]
+const OVERLAY_UI_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[cfg(not(test))]
 static OVERLAY_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
@@ -102,10 +106,46 @@ pub fn create_overlay_window(_app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn handle_shell_command(command: &str, payload: &Value) -> Result<Value, String> {
+    // This entry point is intentionally non-scheduling for code already running on Tauri's UI
+    // thread. Off-thread callers (shell IPC, global hotkeys, smoke workers) must use
+    // `handle_shell_command_on_ui_thread`; scheduling and synchronously waiting from the UI thread
+    // itself would deadlock until the bounded timeout.
+    handle_shell_command_now(command, payload)
+}
+
+fn overlay_command_requires_ui_thread(command: &str) -> bool {
+    matches!(command, "overlayPrepare" | "overlayShow" | "overlayHide")
+}
+
+#[cfg(not(test))]
+pub fn handle_shell_command_on_ui_thread(command: &str, payload: &Value) -> Result<Value, String> {
+    if !overlay_command_requires_ui_thread(command) {
+        return handle_shell_command_now(command, payload);
+    }
+    let app = overlay_app_handle()?;
+    let command = command.to_string();
+    let payload = payload.clone();
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        let _ = result_tx.send(handle_shell_command_now(&command, &payload));
+    })
+    .map_err(|err| format!("overlay UI dispatch failed: {err}"))?;
+    result_rx
+        .recv_timeout(OVERLAY_UI_COMMAND_TIMEOUT)
+        .map_err(|_| "overlay UI dispatch timed out".to_string())?
+}
+
+#[cfg(test)]
+pub fn handle_shell_command_on_ui_thread(command: &str, payload: &Value) -> Result<Value, String> {
+    handle_shell_command_now(command, payload)
+}
+
+fn handle_shell_command_now(command: &str, payload: &Value) -> Result<Value, String> {
     // Showing and hiding a WebView is a multi-step state transition. Shell IPC can serve
-    // independent clients concurrently and the desktop hotkey calls this boundary directly, so
-    // keep mutations in one owner-level lane instead of relying on transport serialization.
+    // independent clients concurrently, and audio-level updates intentionally stay off the UI
+    // scheduler, so keep mutations in one owner-level lane instead of relying on transport order.
     let _mutation_guard = if command == "overlayStatus" {
         None
     } else {
@@ -500,6 +540,15 @@ mod tests {
         let status = status_payload();
         assert_eq!(status["renderer"], "tauri-webview");
         assert_eq!(status["available"], false);
+    }
+
+    #[test]
+    fn only_window_mutations_require_the_tauri_ui_thread() {
+        assert!(overlay_command_requires_ui_thread("overlayPrepare"));
+        assert!(overlay_command_requires_ui_thread("overlayShow"));
+        assert!(overlay_command_requires_ui_thread("overlayHide"));
+        assert!(!overlay_command_requires_ui_thread("overlayAudioLevel"));
+        assert!(!overlay_command_requires_ui_thread("overlayStatus"));
     }
 
     #[test]

@@ -7,12 +7,12 @@ use std::{
     sync::Mutex,
     time::Duration,
 };
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
-use crate::BackendManager;
+use crate::{ui_locale_for_app, BackendManager, UiLocale};
 
 const MAX_EXPORT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STREAMED_AUDIO_EXPORT_BYTES: u64 = 512 * 1024 * 1024;
@@ -20,6 +20,248 @@ const MAX_RECENT_EXPORTS: usize = 16;
 const MAX_FILENAME_UTF8_BYTES: usize = 180;
 const MAX_FILENAME_UTF16_UNITS: usize = 180;
 const ALLOWED_EXTENSIONS: &[&str] = &["json", "md", "pdf", "docx", "eml", "opus"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExportError {
+    RegistryUnavailable,
+    SavedActionExpired,
+    UnsupportedFormat,
+    EmptyExport,
+    ExportTooLarge,
+    InvalidSaveLocation,
+    SaveFailed,
+    InvalidAudioAddress,
+    AudioPrepareFailed,
+    AudioReadFailed,
+    AudioNotReady,
+    AudioExportFailed,
+    AudioTooLarge,
+    AudioUnexpectedType,
+    AudioEmpty,
+    AudioSaveFailed,
+    AudioStopped,
+    SavedFileMissing,
+    OpenFailed,
+    RevealFailed,
+}
+
+impl ExportError {
+    fn code(self) -> &'static str {
+        match self {
+            Self::RegistryUnavailable => "meeting_export_registry_unavailable",
+            Self::SavedActionExpired => "meeting_export_action_expired",
+            Self::UnsupportedFormat => "meeting_export_unsupported_format",
+            Self::EmptyExport => "meeting_export_empty",
+            Self::ExportTooLarge => "meeting_export_too_large",
+            Self::InvalidSaveLocation => "meeting_export_invalid_save_location",
+            Self::SaveFailed => "meeting_export_save_failed",
+            Self::InvalidAudioAddress => "meeting_export_invalid_audio_address",
+            Self::AudioPrepareFailed => "meeting_export_audio_prepare_failed",
+            Self::AudioReadFailed => "meeting_export_audio_read_failed",
+            Self::AudioNotReady => "meeting_export_audio_not_ready",
+            Self::AudioExportFailed => "meeting_export_audio_failed",
+            Self::AudioTooLarge => "meeting_export_audio_too_large",
+            Self::AudioUnexpectedType => "meeting_export_audio_unexpected_type",
+            Self::AudioEmpty => "meeting_export_audio_empty",
+            Self::AudioSaveFailed => "meeting_export_audio_save_failed",
+            Self::AudioStopped => "meeting_export_audio_stopped",
+            Self::SavedFileMissing => "meeting_export_saved_file_missing",
+            Self::OpenFailed => "meeting_export_open_failed",
+            Self::RevealFailed => "meeting_export_reveal_failed",
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingExportCommandError {
+    code: &'static str,
+    message: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExportLocale {
+    locale: UiLocale,
+}
+
+impl ExportLocale {
+    fn new(locale: UiLocale) -> Self {
+        Self { locale }
+    }
+
+    fn save_dialog_title(self) -> &'static str {
+        match self.locale {
+            UiLocale::De => "Meeting-Export speichern",
+            UiLocale::En => "Save meeting export",
+        }
+    }
+
+    fn save_audio_dialog_title(self) -> &'static str {
+        match self.locale {
+            UiLocale::De => "Komprimiertes Meeting-Audio speichern",
+            UiLocale::En => "Save compressed meeting audio",
+        }
+    }
+
+    fn fallback_filename_stem(self, extension: &str) -> &'static str {
+        match (self.locale, extension) {
+            (UiLocale::De, "opus") => "Komprimiertes Meeting-Audio",
+            (UiLocale::En, "opus") => "Compressed meeting audio",
+            (UiLocale::De, "eml") => "Meeting-E-Mail-Entwurf",
+            (UiLocale::En, "eml") => "Meeting email draft",
+            (UiLocale::De, _) => "Meeting-Export",
+            (UiLocale::En, _) => "Meeting export",
+        }
+    }
+
+    fn filter_label(self, extension: &str) -> &'static str {
+        match (self.locale, extension) {
+            (UiLocale::De, "json") => "JSON-Daten",
+            (UiLocale::En, "json") => "JSON data",
+            (UiLocale::De, "md") => "Markdown-Dokument",
+            (UiLocale::En, "md") => "Markdown document",
+            (UiLocale::De, "pdf") => "PDF-Dokument",
+            (UiLocale::En, "pdf") => "PDF document",
+            (UiLocale::De, "docx") => "Word-Dokument",
+            (UiLocale::En, "docx") => "Word document",
+            (UiLocale::De, "eml") => "E-Mail-Entwurf",
+            (UiLocale::En, "eml") => "Email draft",
+            (UiLocale::De, "opus") => "Komprimiertes Meeting-Audio",
+            (UiLocale::En, "opus") => "Compressed meeting audio",
+            (UiLocale::De, _) => "Meeting-Export",
+            (UiLocale::En, _) => "Meeting export",
+        }
+    }
+
+    fn error(self, error: ExportError) -> MeetingExportCommandError {
+        let message = match (self.locale, error) {
+            (UiLocale::De, ExportError::RegistryUnavailable) => {
+                "Aktionen für gespeicherte Dateien sind vorübergehend nicht verfügbar. Versuche es erneut."
+            }
+            (UiLocale::En, ExportError::RegistryUnavailable) => {
+                "Saved-file actions are temporarily unavailable. Please try again."
+            }
+            (UiLocale::De, ExportError::SavedActionExpired) => {
+                "Diese Aktion für die gespeicherte Datei ist abgelaufen. Exportiere das Meeting erneut."
+            }
+            (UiLocale::En, ExportError::SavedActionExpired) => {
+                "This saved-file action has expired. Export the meeting again."
+            }
+            (UiLocale::De, ExportError::UnsupportedFormat) => {
+                "Dieses Meeting-Exportformat wird nicht unterstützt."
+            }
+            (UiLocale::En, ExportError::UnsupportedFormat) => {
+                "That meeting export format is not supported."
+            }
+            (UiLocale::De, ExportError::EmptyExport) => {
+                "Der Meeting-Export war leer. Versuche es erneut."
+            }
+            (UiLocale::En, ExportError::EmptyExport) => {
+                "The meeting export was empty. Please try again."
+            }
+            (UiLocale::De, ExportError::ExportTooLarge) => {
+                "Der Meeting-Export ist zu groß, um ihn von dieser Ansicht aus zu speichern."
+            }
+            (UiLocale::En, ExportError::ExportTooLarge) => {
+                "The meeting export is too large to save from this screen."
+            }
+            (UiLocale::De, ExportError::InvalidSaveLocation) => {
+                "Dieser Speicherort kann auf diesem Gerät nicht verwendet werden."
+            }
+            (UiLocale::En, ExportError::InvalidSaveLocation) => {
+                "That save location cannot be used on this device."
+            }
+            (UiLocale::De, ExportError::SaveFailed) => {
+                "Scriber konnte den Meeting-Export nicht speichern. Versuche es erneut."
+            }
+            (UiLocale::En, ExportError::SaveFailed) => {
+                "Scriber could not save the meeting export. Please try again."
+            }
+            (UiLocale::De, ExportError::InvalidAudioAddress) => {
+                "Diese Adresse für den Meeting-Audioexport ist nicht zulässig."
+            }
+            (UiLocale::En, ExportError::InvalidAudioAddress) => {
+                "That meeting audio export address is not allowed."
+            }
+            (UiLocale::De, ExportError::AudioPrepareFailed) => {
+                "Scriber konnte den Audioexport nicht vorbereiten. Versuche es erneut."
+            }
+            (UiLocale::En, ExportError::AudioPrepareFailed) => {
+                "Scriber could not prepare the audio export. Please try again."
+            }
+            (UiLocale::De, ExportError::AudioReadFailed) => {
+                "Scriber konnte das komprimierte Meeting-Audio nicht lesen. Versuche es erneut."
+            }
+            (UiLocale::En, ExportError::AudioReadFailed) => {
+                "Scriber could not read the compressed meeting audio. Please try again."
+            }
+            (UiLocale::De, ExportError::AudioNotReady) => {
+                "Das komprimierte Meeting-Audio ist noch nicht verfügbar."
+            }
+            (UiLocale::En, ExportError::AudioNotReady) => {
+                "Compressed meeting audio is not ready yet."
+            }
+            (UiLocale::De, ExportError::AudioExportFailed) => {
+                "Scriber konnte das komprimierte Meeting-Audio nicht exportieren. Versuche es erneut."
+            }
+            (UiLocale::En, ExportError::AudioExportFailed) => {
+                "Scriber could not export the compressed meeting audio. Please try again."
+            }
+            (UiLocale::De, ExportError::AudioTooLarge) => {
+                "Das komprimierte Meeting-Audio ist für den Export zu groß."
+            }
+            (UiLocale::En, ExportError::AudioTooLarge) => {
+                "The compressed meeting audio is too large to export."
+            }
+            (UiLocale::De, ExportError::AudioUnexpectedType) => {
+                "Der Meeting-Audioexport hat einen unerwarteten Dateityp zurückgegeben."
+            }
+            (UiLocale::En, ExportError::AudioUnexpectedType) => {
+                "The meeting audio export returned an unexpected file type."
+            }
+            (UiLocale::De, ExportError::AudioEmpty) => {
+                "Das komprimierte Meeting-Audio war leer. Versuche es erneut."
+            }
+            (UiLocale::En, ExportError::AudioEmpty) => {
+                "The compressed meeting audio was empty. Please try again."
+            }
+            (UiLocale::De, ExportError::AudioSaveFailed) => {
+                "Scriber konnte die Audiodatei nicht speichern. Versuche es erneut."
+            }
+            (UiLocale::En, ExportError::AudioSaveFailed) => {
+                "Scriber could not save the audio file. Please try again."
+            }
+            (UiLocale::De, ExportError::AudioStopped) => {
+                "Der Meeting-Audioexport wurde unerwartet beendet. Versuche es erneut."
+            }
+            (UiLocale::En, ExportError::AudioStopped) => {
+                "The meeting audio export stopped unexpectedly. Please try again."
+            }
+            (UiLocale::De, ExportError::SavedFileMissing) => {
+                "Die gespeicherte Datei befindet sich nicht mehr an diesem Speicherort."
+            }
+            (UiLocale::En, ExportError::SavedFileMissing) => {
+                "The saved file is no longer at that location."
+            }
+            (UiLocale::De, ExportError::OpenFailed) => {
+                "Scriber konnte die gespeicherte Datei nicht öffnen."
+            }
+            (UiLocale::En, ExportError::OpenFailed) => {
+                "Scriber could not open the saved file."
+            }
+            (UiLocale::De, ExportError::RevealFailed) => {
+                "Scriber konnte den Ordner nicht öffnen."
+            }
+            (UiLocale::En, ExportError::RevealFailed) => {
+                "Scriber could not open the folder."
+            }
+        };
+        MeetingExportCommandError {
+            code: error.code(),
+            message: message.to_string(),
+        }
+    }
+}
 
 #[derive(Default)]
 struct MeetingExportRegistryInner {
@@ -33,12 +275,12 @@ pub struct MeetingExportRegistry {
 }
 
 impl MeetingExportRegistry {
-    fn remember(&self, path: PathBuf) -> Result<String, String> {
+    fn remember(&self, path: PathBuf) -> Result<String, ExportError> {
         let token = Uuid::new_v4().simple().to_string();
         let mut inner = self
             .inner
             .lock()
-            .map_err(|_| "The saved-file list is temporarily unavailable.".to_string())?;
+            .map_err(|_| ExportError::RegistryUnavailable)?;
         inner.paths.insert(token.clone(), path);
         inner.order.push_back(token.clone());
         while inner.order.len() > MAX_RECENT_EXPORTS {
@@ -49,19 +291,19 @@ impl MeetingExportRegistry {
         Ok(token)
     }
 
-    fn resolve(&self, token: &str) -> Result<PathBuf, String> {
+    fn resolve(&self, token: &str) -> Result<PathBuf, ExportError> {
         if token.len() != 32 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(
-                "This saved-file action has expired. Export the meeting again.".to_string(),
-            );
+            return Err(ExportError::SavedActionExpired);
         }
         let inner = self
             .inner
             .lock()
-            .map_err(|_| "The saved-file list is temporarily unavailable.".to_string())?;
-        inner.paths.get(token).cloned().ok_or_else(|| {
-            "This saved-file action has expired. Export the meeting again.".to_string()
-        })
+            .map_err(|_| ExportError::RegistryUnavailable)?;
+        inner
+            .paths
+            .get(token)
+            .cloned()
+            .ok_or(ExportError::SavedActionExpired)
     }
 }
 
@@ -74,7 +316,7 @@ pub struct SavedMeetingExport {
     filename: String,
 }
 
-fn normalize_extension(extension: &str) -> Result<String, String> {
+fn normalize_extension(extension: &str) -> Result<String, ExportError> {
     let normalized = extension
         .trim()
         .trim_start_matches('.')
@@ -82,11 +324,11 @@ fn normalize_extension(extension: &str) -> Result<String, String> {
     if ALLOWED_EXTENSIONS.contains(&normalized.as_str()) {
         Ok(normalized)
     } else {
-        Err("That meeting export format is not supported.".to_string())
+        Err(ExportError::UnsupportedFormat)
     }
 }
 
-fn sanitize_filename(filename: &str, extension: &str) -> String {
+fn sanitize_filename(filename: &str, extension: &str, text: ExportLocale) -> String {
     let mut sanitized = filename
         .chars()
         .map(|character| {
@@ -99,7 +341,7 @@ fn sanitize_filename(filename: &str, extension: &str) -> String {
         .collect::<String>();
     sanitized = sanitized.trim().trim_end_matches(['.', ' ']).to_string();
     if sanitized.is_empty() {
-        sanitized = "Meeting export".to_string();
+        sanitized = text.fallback_filename_stem(extension).to_string();
     }
     let expected_suffix = format!(".{extension}");
     let has_expected_suffix = sanitized.to_ascii_lowercase().ends_with(&expected_suffix);
@@ -114,7 +356,7 @@ fn sanitize_filename(filename: &str, extension: &str) -> String {
     };
     stem = stem.trim_end_matches(['.', ' ']).to_string();
     if stem.is_empty() {
-        stem = "Meeting export".to_string();
+        stem = text.fallback_filename_stem(extension).to_string();
     }
     if is_windows_reserved_stem(&stem) {
         stem.insert(0, '_');
@@ -127,7 +369,7 @@ fn sanitize_filename(filename: &str, extension: &str) -> String {
     format!(
         "{}{suffix}",
         if stem.is_empty() {
-            "Meeting export"
+            text.fallback_filename_stem(extension)
         } else {
             &stem
         }
@@ -173,18 +415,6 @@ fn ensure_extension(mut path: PathBuf, extension: &str) -> PathBuf {
         path.set_extension(extension);
     }
     path
-}
-
-fn export_filter_label(extension: &str) -> &'static str {
-    match extension {
-        "json" => "JSON data",
-        "md" => "Markdown document",
-        "pdf" => "PDF document",
-        "docx" => "Word document",
-        "eml" => "Email draft",
-        "opus" => "Compressed meeting audio",
-        _ => "Meeting export",
-    }
 }
 
 fn write_export_atomically(destination: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -318,22 +548,23 @@ pub async fn save_meeting_export(
     filename: String,
     extension: String,
     bytes: Vec<u8>,
-) -> Result<Option<SavedMeetingExport>, String> {
+) -> Result<Option<SavedMeetingExport>, MeetingExportCommandError> {
+    let text = ExportLocale::new(ui_locale_for_app(window.app_handle()));
     if bytes.is_empty() {
-        return Err("The meeting export was empty. Please try again.".to_string());
+        return Err(text.error(ExportError::EmptyExport));
     }
     if bytes.len() > MAX_EXPORT_BYTES {
-        return Err("The meeting export is too large to save from this screen.".to_string());
+        return Err(text.error(ExportError::ExportTooLarge));
     }
-    let extension = normalize_extension(&extension)?;
-    let filename = sanitize_filename(&filename, &extension);
+    let extension = normalize_extension(&extension).map_err(|error| text.error(error))?;
+    let filename = sanitize_filename(&filename, &extension, text);
     let selected = window
         .dialog()
         .file()
         .set_parent(&window)
-        .set_title("Save meeting export")
+        .set_title(text.save_dialog_title())
         .set_file_name(&filename)
-        .add_filter(export_filter_label(&extension), &[extension.as_str()])
+        .add_filter(text.filter_label(&extension), &[extension.as_str()])
         .blocking_save_file();
     let Some(selected) = selected else {
         return Ok(None);
@@ -341,12 +572,14 @@ pub async fn save_meeting_export(
     let destination = ensure_extension(
         selected
             .into_path()
-            .map_err(|_| "That save location cannot be used on this device.".to_string())?,
+            .map_err(|_| text.error(ExportError::InvalidSaveLocation))?,
         &extension,
     );
     write_export_atomically(&destination, &bytes)
-        .map_err(|error| format!("Scriber could not save the file ({error})."))?;
-    let token = registry.remember(destination.clone())?;
+        .map_err(|_| text.error(ExportError::SaveFailed))?;
+    let token = registry
+        .remember(destination.clone())
+        .map_err(|error| text.error(error))?;
     let filename = destination
         .file_name()
         .and_then(|value| value.to_str())
@@ -379,19 +612,20 @@ pub async fn save_meeting_audio_export(
     registry: State<'_, MeetingExportRegistry>,
     meeting_id: String,
     filename: String,
-) -> Result<Option<SavedMeetingExport>, String> {
+) -> Result<Option<SavedMeetingExport>, MeetingExportCommandError> {
+    let text = ExportLocale::new(ui_locale_for_app(window.app_handle()));
     if !valid_meeting_export_id(&meeting_id) {
-        return Err("That meeting audio export address is not allowed.".to_string());
+        return Err(text.error(ExportError::InvalidAudioAddress));
     }
     let extension = "opus";
-    let filename = sanitize_filename(&filename, extension);
+    let filename = sanitize_filename(&filename, extension, text);
     let selected = window
         .dialog()
         .file()
         .set_parent(&window)
-        .set_title("Save compressed meeting audio")
+        .set_title(text.save_audio_dialog_title())
         .set_file_name(&filename)
-        .add_filter(export_filter_label(extension), &[extension])
+        .add_filter(text.filter_label(extension), &[extension])
         .blocking_save_file();
     let Some(selected) = selected else {
         return Ok(None);
@@ -399,7 +633,7 @@ pub async fn save_meeting_audio_export(
     let destination = ensure_extension(
         selected
             .into_path()
-            .map_err(|_| "That save location cannot be used on this device.".to_string())?,
+            .map_err(|_| text.error(ExportError::InvalidSaveLocation))?,
         extension,
     );
     let access = manager.access();
@@ -409,35 +643,30 @@ pub async fn save_meeting_audio_export(
     );
     let session_token = access.session_token;
     let destination_for_write = destination.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    let export_result = tauri::async_runtime::spawn_blocking(move || -> Result<(), ExportError> {
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(300))
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(|_| "Scriber could not prepare the audio export.".to_string())?;
+            .map_err(|_| ExportError::AudioPrepareFailed)?;
         let mut request = client.get(url);
         if !session_token.is_empty() {
             request = request.header("X-Scriber-Token", session_token);
         }
-        let mut response = request
-            .send()
-            .map_err(|_| "Scriber could not read the compressed meeting audio.".to_string())?;
+        let mut response = request.send().map_err(|_| ExportError::AudioReadFailed)?;
         if !response.status().is_success() {
             return Err(if response.status().as_u16() == 404 {
-                "Compressed meeting audio is not ready yet.".to_string()
+                ExportError::AudioNotReady
             } else {
-                format!(
-                    "Scriber could not export the compressed meeting audio ({}).",
-                    response.status().as_u16()
-                )
+                ExportError::AudioExportFailed
             });
         }
         if response
             .content_length()
             .is_some_and(|length| length > MAX_STREAMED_AUDIO_EXPORT_BYTES)
         {
-            return Err("The compressed meeting audio is too large to export.".to_string());
+            return Err(ExportError::AudioTooLarge);
         }
         let content_type = response
             .headers()
@@ -446,20 +675,28 @@ pub async fn save_meeting_audio_export(
             .unwrap_or_default()
             .to_ascii_lowercase();
         if !content_type.starts_with("audio/") {
-            return Err("The meeting audio export returned an unexpected file type.".to_string());
+            return Err(ExportError::AudioUnexpectedType);
         }
         write_export_stream_atomically(
             &destination_for_write,
             &mut response,
             MAX_STREAMED_AUDIO_EXPORT_BYTES,
         )
-        .map_err(|error| format!("Scriber could not save the audio file ({error})."))?;
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::InvalidData => ExportError::AudioTooLarge,
+            io::ErrorKind::UnexpectedEof => ExportError::AudioEmpty,
+            _ => ExportError::AudioSaveFailed,
+        })?;
         Ok(())
     })
     .await
-    .map_err(|_| "The meeting audio export stopped unexpectedly.".to_string())??;
+    .map_err(|_| ExportError::AudioStopped)
+    .and_then(|result| result);
+    export_result.map_err(|error| text.error(error))?;
 
-    let token = registry.remember(destination.clone())?;
+    let token = registry
+        .remember(destination.clone())
+        .map_err(|error| text.error(error))?;
     let filename = destination
         .file_name()
         .and_then(|value| value.to_str())
@@ -477,10 +714,13 @@ pub async fn save_meeting_audio_export(
     }))
 }
 
-fn saved_export_path(registry: &MeetingExportRegistry, token: &str) -> Result<PathBuf, String> {
+fn saved_export_path(
+    registry: &MeetingExportRegistry,
+    token: &str,
+) -> Result<PathBuf, ExportError> {
     let path = registry.resolve(token)?;
     if !path.is_file() {
-        return Err("The saved file is no longer at that location.".to_string());
+        return Err(ExportError::SavedFileMissing);
     }
     Ok(path)
 }
@@ -490,11 +730,12 @@ pub fn open_meeting_export(
     app: AppHandle,
     registry: State<'_, MeetingExportRegistry>,
     token: String,
-) -> Result<(), String> {
-    let path = saved_export_path(&registry, &token)?;
+) -> Result<(), MeetingExportCommandError> {
+    let text = ExportLocale::new(ui_locale_for_app(&app));
+    let path = saved_export_path(&registry, &token).map_err(|error| text.error(error))?;
     app.opener()
         .open_path(path.to_string_lossy(), None::<String>)
-        .map_err(|error| format!("Scriber could not open the saved file ({error})."))
+        .map_err(|_| text.error(ExportError::OpenFailed))
 }
 
 #[tauri::command]
@@ -502,11 +743,12 @@ pub fn reveal_meeting_export(
     app: AppHandle,
     registry: State<'_, MeetingExportRegistry>,
     token: String,
-) -> Result<(), String> {
-    let path = saved_export_path(&registry, &token)?;
+) -> Result<(), MeetingExportCommandError> {
+    let text = ExportLocale::new(ui_locale_for_app(&app));
+    let path = saved_export_path(&registry, &token).map_err(|error| text.error(error))?;
     app.opener()
         .reveal_item_in_dir(path)
-        .map_err(|error| format!("Scriber could not open the folder ({error})."))
+        .map_err(|_| text.error(ExportError::RevealFailed))
 }
 
 #[cfg(test)]
@@ -515,19 +757,33 @@ mod tests {
 
     #[test]
     fn filename_is_safe_and_keeps_the_requested_format() {
+        let english = ExportLocale::new(UiLocale::En);
         assert_eq!(
-            sanitize_filename("Quarterly: planning?.PDF", "pdf"),
+            sanitize_filename("Quarterly: planning?.PDF", "pdf", english),
             "Quarterly_ planning_.PDF"
         );
-        assert_eq!(sanitize_filename("   ", "docx"), "Meeting export.docx");
-        assert_eq!(sanitize_filename("CON.pdf", "pdf"), "_CON.pdf");
-        assert_eq!(sanitize_filename("conout$.pdf", "pdf"), "_conout$.pdf");
-        assert_eq!(sanitize_filename("Lpt9.notes", "md"), "_Lpt9.notes.md");
+        assert_eq!(
+            sanitize_filename("   ", "docx", english),
+            "Meeting export.docx"
+        );
+        assert_eq!(sanitize_filename("CON.pdf", "pdf", english), "_CON.pdf");
+        assert_eq!(
+            sanitize_filename("conout$.pdf", "pdf", english),
+            "_conout$.pdf"
+        );
+        assert_eq!(
+            sanitize_filename("Lpt9.notes", "md", english),
+            "_Lpt9.notes.md"
+        );
     }
 
     #[test]
     fn unicode_filename_limits_are_boundary_safe_and_preserve_extension() {
-        let filename = sanitize_filename(&format!("{} report.pdf", "🪶".repeat(200)), "pdf");
+        let filename = sanitize_filename(
+            &format!("{} report.pdf", "🪶".repeat(200)),
+            "pdf",
+            ExportLocale::new(UiLocale::En),
+        );
         assert!(filename.ends_with(".pdf"));
         assert!(filename.len() <= MAX_FILENAME_UTF8_BYTES);
         assert!(filename.encode_utf16().count() <= MAX_FILENAME_UTF16_UNITS);
@@ -538,7 +794,84 @@ mod tests {
     fn unsupported_formats_are_rejected() {
         assert_eq!(normalize_extension(".PDF").unwrap(), "pdf");
         assert_eq!(normalize_extension(".OPUS").unwrap(), "opus");
-        assert!(normalize_extension("exe").is_err());
+        assert_eq!(
+            normalize_extension("exe").unwrap_err(),
+            ExportError::UnsupportedFormat
+        );
+    }
+
+    #[test]
+    fn dialog_copy_and_fallback_filenames_follow_the_interface_locale() {
+        let german = ExportLocale::new(UiLocale::De);
+        let english = ExportLocale::new(UiLocale::En);
+
+        assert_eq!(german.save_dialog_title(), "Meeting-Export speichern");
+        assert_eq!(english.save_dialog_title(), "Save meeting export");
+        assert_eq!(
+            german.save_audio_dialog_title(),
+            "Komprimiertes Meeting-Audio speichern"
+        );
+        assert_eq!(german.filter_label("docx"), "Word-Dokument");
+        assert_eq!(english.filter_label("docx"), "Word document");
+        assert_eq!(sanitize_filename("", "pdf", german), "Meeting-Export.pdf");
+        assert_eq!(
+            sanitize_filename("", "opus", german),
+            "Komprimiertes Meeting-Audio.opus"
+        );
+        assert_eq!(
+            sanitize_filename("", "opus", english),
+            "Compressed meeting audio.opus"
+        );
+    }
+
+    #[test]
+    fn native_export_errors_are_localized_and_do_not_leak_internal_details() {
+        let german = ExportLocale::new(UiLocale::De);
+        let english = ExportLocale::new(UiLocale::En);
+        let errors = [
+            ExportError::RegistryUnavailable,
+            ExportError::SavedActionExpired,
+            ExportError::UnsupportedFormat,
+            ExportError::EmptyExport,
+            ExportError::ExportTooLarge,
+            ExportError::InvalidSaveLocation,
+            ExportError::SaveFailed,
+            ExportError::InvalidAudioAddress,
+            ExportError::AudioPrepareFailed,
+            ExportError::AudioReadFailed,
+            ExportError::AudioNotReady,
+            ExportError::AudioExportFailed,
+            ExportError::AudioTooLarge,
+            ExportError::AudioUnexpectedType,
+            ExportError::AudioEmpty,
+            ExportError::AudioSaveFailed,
+            ExportError::AudioStopped,
+            ExportError::SavedFileMissing,
+            ExportError::OpenFailed,
+            ExportError::RevealFailed,
+        ];
+
+        for error in errors {
+            for localized in [german.error(error), english.error(error)] {
+                assert_eq!(localized.code, error.code());
+                assert!(localized.code.starts_with("meeting_export_"));
+                let message = localized.message;
+                assert!(!message.trim().is_empty());
+                assert!(!message.contains("C:\\"));
+                assert!(!message.contains("/Users/"));
+                assert!(!message.contains("os error"));
+                assert!(!message.contains("http://"));
+                assert!(!message.contains("https://"));
+            }
+        }
+        assert_eq!(
+            german.error(ExportError::OpenFailed).message,
+            "Scriber konnte die gespeicherte Datei nicht öffnen."
+        );
+        assert_eq!(
+            english.error(ExportError::RevealFailed).message,
+            "Scriber could not open the folder."
+        );
     }
 
     #[test]

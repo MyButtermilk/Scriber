@@ -20,6 +20,11 @@ const ACTIVE_MEETING_STATES = new Set<MeetingState>([
   "finalizing",
   "analyzing",
 ]);
+const PROCESSING_MEETING_STATES = new Set<MeetingState>([
+  "stopping",
+  "finalizing",
+  "analyzing",
+]);
 
 /**
  * The compact active-meeting query and paginated library intentionally use
@@ -35,6 +40,39 @@ export const ACTIVE_MEETING_QUERY_PATH = "/api/meetings?limit=1";
 
 export function isActiveMeetingState(state: MeetingState): boolean {
   return ACTIVE_MEETING_STATES.has(state);
+}
+
+/**
+ * A connected websocket is normally the completion authority. Processing
+ * states still poll because their terminal event may have happened while this
+ * route was unmounted; disconnected capture states poll until the socket is
+ * back. Terminal detail snapshots stop the interval automatically.
+ */
+export function meetingDetailRefetchInterval(
+  state: MeetingState | null | undefined,
+  websocketConnected: boolean,
+): number | false {
+  if (!state || !isActiveMeetingState(state)) return false;
+  return !websocketConnected || PROCESSING_MEETING_STATES.has(state) ? 2_000 : false;
+}
+
+function isOlderMeetingSummary(
+  incoming: MeetingSummary,
+  current: MeetingSummary | null | undefined,
+): boolean {
+  if (!current || current.id !== incoming.id) return false;
+  const incomingUpdatedAt = new Date(incoming.updatedAt).getTime();
+  const currentUpdatedAt = new Date(current.updatedAt).getTime();
+  return Number.isFinite(incomingUpdatedAt)
+    && Number.isFinite(currentUpdatedAt)
+    && incomingUpdatedAt < currentUpdatedAt;
+}
+
+function hasNewerMeetingSummary(
+  incoming: MeetingSummary,
+  current: ReadonlyArray<MeetingSummary | null | undefined>,
+): boolean {
+  return current.some((candidate) => isOlderMeetingSummary(incoming, candidate));
 }
 
 export function mergeMeetingSegment(
@@ -59,6 +97,10 @@ export function applyMeetingSummaryEvent(
   const activeMeeting = isActiveMeetingState(meeting.state) ? meeting : null;
   queryClient.setQueryData<MeetingsResponse>(MEETING_LIST_QUERY_KEY, (current) => {
     if (!current) return current;
+    if (hasNewerMeetingSummary(meeting, [
+      current.items.find((item) => item.id === meeting.id),
+      current.activeMeeting,
+    ])) return current;
     const index = current.items.findIndex((item) => item.id === meeting.id);
     const items = index >= 0
       ? current.items.map((item, itemIndex) => itemIndex === index ? meeting : item)
@@ -75,6 +117,10 @@ export function applyMeetingSummaryEvent(
   queryClient.setQueryData<InfiniteData<MeetingsResponse, number>>(MEETING_HISTORY_QUERY_KEY, (current) => {
     if (!current) return current;
     const loaded = current.pages.flatMap((page) => page.items);
+    if (hasNewerMeetingSummary(meeting, [
+      ...loaded.filter((item) => item.id === meeting.id),
+      ...current.pages.map((page) => page.activeMeeting),
+    ])) return current;
     const index = loaded.findIndex((item) => item.id === meeting.id);
     const items = index >= 0
       ? loaded.map((item, itemIndex) => itemIndex === index ? meeting : item)
@@ -104,16 +150,22 @@ export function applyMeetingSummaryEvent(
       pages,
     };
   });
-  queryClient.setQueryData<MeetingCapabilities>(["/api/meetings/capabilities"], (current) => current ? {
-    ...current,
-    activeMeeting: activeMeeting ?? (
-      current.activeMeeting?.id === meeting.id ? null : current.activeMeeting
-    ),
-  } : current);
-  queryClient.setQueryData<MeetingDetail>(["/api/meetings", meeting.id], (current) => current ? {
-    ...current,
-    ...meeting,
-  } : current);
+  queryClient.setQueryData<MeetingCapabilities>(["/api/meetings/capabilities"], (current) => {
+    if (!current || isOlderMeetingSummary(meeting, current.activeMeeting)) return current;
+    return {
+      ...current,
+      activeMeeting: activeMeeting ?? (
+        current.activeMeeting?.id === meeting.id ? null : current.activeMeeting
+      ),
+    };
+  });
+  queryClient.setQueryData<MeetingDetail>(["/api/meetings", meeting.id], (current) => {
+    if (!current || isOlderMeetingSummary(meeting, current)) return current;
+    return {
+      ...current,
+      ...meeting,
+    };
+  });
 }
 
 export function applyMeetingSegmentEvent(

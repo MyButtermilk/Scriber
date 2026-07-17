@@ -8,12 +8,14 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useTheme } from "@/components/theme-provider";
+import { useI18n } from "@/i18n";
 
 type ThemeToggleProps = {
     align?: "compact" | "edge";
 };
 
 export function ThemeToggle({ align = "compact" }: ThemeToggleProps) {
+    const { t } = useI18n();
     const { theme, resolvedTheme, setTheme } = useTheme();
     const isDark = resolvedTheme === "dark";
 
@@ -33,13 +35,13 @@ export function ThemeToggle({ align = "compact" }: ThemeToggleProps) {
                 type="button"
                 role="switch"
                 aria-checked={isDark}
-                aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
-                title={isDark ? "Dark mode active" : "Light mode active"}
+                aria-label={isDark ? t("Switch to light mode") : t("Switch to dark mode")}
+                title={isDark ? t("Dark mode active") : t("Light mode active")}
                 className={`magic-theme-toggle ${isDark ? "is-dark" : ""}`}
                 onClick={handleToggleClick}
             >
                 <span className="sr-only">
-                    {isDark ? "Dark mode is active" : "Light mode is active"}
+                    {isDark ? t("Dark mode is active") : t("Light mode is active")}
                 </span>
 
                 <span className="magic-theme-toggle__clouds" aria-hidden="true">
@@ -99,7 +101,7 @@ export function ThemeToggle({ align = "compact" }: ThemeToggleProps) {
                 <DropdownMenuTrigger asChild>
                     <button
                         type="button"
-                        aria-label="Theme mode options"
+                        aria-label={t("Theme mode options")}
                         className={cn(
                             "h-7 w-7 shrink-0 rounded-full border border-border/60 bg-card/70 text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
                             theme === "system" && (align === "edge" ? "text-primary" : "border-primary/60 text-primary"),
@@ -111,15 +113,15 @@ export function ThemeToggle({ align = "compact" }: ThemeToggleProps) {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
                     <DropdownMenuItem onClick={() => setTheme("light")} className="justify-between gap-3">
-                        <span>Light</span>
+                        <span>{t("Light")}</span>
                         {theme === "light" && <span className="text-primary">✓</span>}
                     </DropdownMenuItem>
                     <DropdownMenuItem onClick={() => setTheme("dark")} className="justify-between gap-3">
-                        <span>Dark</span>
+                        <span>{t("Dark")}</span>
                         {theme === "dark" && <span className="text-primary">✓</span>}
                     </DropdownMenuItem>
                     <DropdownMenuItem onClick={() => setTheme("system")} className="justify-between gap-3">
-                        <span>System</span>
+                        <span>{t("System")}</span>
                         {theme === "system" && <span className="text-primary">✓</span>}
                     </DropdownMenuItem>
                 </DropdownMenuContent>

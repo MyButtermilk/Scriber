@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { QueryClient, QueryObserver, type InfiniteData } from "@tanstack/react-query";
 
-import { REST_API_VERSION, type MeetingActionItem, type MeetingDetail, type MeetingNote, type MeetingSpeakerAssignmentsResponse, type MeetingState, type MeetingSummary, type MeetingsResponse } from "./api-types";
+import { REST_API_VERSION, type MeetingActionItem, type MeetingCapabilities, type MeetingDetail, type MeetingNote, type MeetingSpeakerAssignmentsResponse, type MeetingState, type MeetingSummary, type MeetingsResponse } from "./api-types";
 import {
   ACTIVE_MEETING_QUERY_PATH,
   applyMeetingActionItem,
@@ -12,6 +12,7 @@ import {
   applyMeetingSummaryEvent,
   isMeetingWebSocketReconnect,
   isNewMeetingSetupEnabled,
+  meetingDetailRefetchInterval,
   MEETING_HISTORY_QUERY_KEY,
   MEETING_LIST_QUERY_KEY,
   refreshAllMeetingSpeakerIdentityCaches,
@@ -114,6 +115,81 @@ test("flat active-meeting cache and paginated history never share a data shape",
   assert.deepEqual(cachedFlat?.items.map((item) => item.id), ["new", "existing"]);
   assert.equal(cachedFlat?.activeMeeting?.id, "new");
   assert.equal(client.getQueryData(MEETING_HISTORY_QUERY_KEY), undefined);
+});
+
+test("older meeting summaries cannot regress any cache surface", () => {
+  const client = new QueryClient();
+  const newer = {
+    ...meeting("a", "paused"),
+    updatedAt: "2026-07-12T10:02:00.000Z",
+  };
+  const older = {
+    ...meeting("a", "recording"),
+    updatedAt: "2026-07-12T10:01:00.000Z",
+  };
+  const list = {
+    ...page([newer], 0, 1),
+    activeMeeting: newer,
+  };
+  const history: InfiniteData<MeetingsResponse, number> = {
+    pages: [list],
+    pageParams: [0],
+  };
+  const capabilities = {
+    apiVersion: REST_API_VERSION,
+    platform: "windows",
+    shellIpcAvailable: true,
+    nativeMeetingCapture: true,
+    liveMicBusy: false,
+    activeMeeting: newer,
+    sources: ["microphone", "system"],
+    requiresPermissionConfirmation: true,
+    longSession: {
+      targetDurationSeconds: 18_000,
+      checkpointIntervalSeconds: 30,
+      requiredFreeBytes: 6 * 1024 ** 3,
+      availableFreeBytes: 7 * 1024 ** 3,
+      estimatedCaptureSeconds: 18_000,
+      storageReady: true,
+    },
+  } satisfies MeetingCapabilities;
+  const detail = {
+    ...newer,
+    apiVersion: REST_API_VERSION,
+    segments: [],
+    speakers: [],
+    notes: [],
+    actionItems: [],
+    outputs: [],
+    outputVersions: [],
+    audioGaps: [],
+    audioAssets: [],
+    transcriptCheckpoints: [],
+  } satisfies MeetingDetail;
+  client.setQueryData(MEETING_LIST_QUERY_KEY, list);
+  client.setQueryData(MEETING_HISTORY_QUERY_KEY, history);
+  client.setQueryData(["/api/meetings/capabilities"], capabilities);
+  client.setQueryData(["/api/meetings", "a"], detail);
+
+  applyMeetingSummaryEvent(client, older);
+
+  assert.equal(
+    client.getQueryData<MeetingsResponse>(MEETING_LIST_QUERY_KEY)?.items[0].state,
+    "paused",
+  );
+  assert.equal(
+    client.getQueryData<InfiniteData<MeetingsResponse, number>>(MEETING_HISTORY_QUERY_KEY)
+      ?.pages[0].items[0].state,
+    "paused",
+  );
+  assert.equal(
+    client.getQueryData<MeetingCapabilities>(["/api/meetings/capabilities"])?.activeMeeting?.state,
+    "paused",
+  );
+  assert.equal(
+    client.getQueryData<MeetingDetail>(["/api/meetings", "a"])?.state,
+    "paused",
+  );
 });
 
 test("action-item responses update only their target Meeting cache", () => {
@@ -320,4 +396,14 @@ test("reconnect and workspace policies distinguish first connect from recovery",
   assert.equal(isMeetingWebSocketReconnect(true, true, true), false);
   assert.equal(isNewMeetingSetupEnabled(""), true);
   assert.equal(isNewMeetingSetupEnabled("meeting-1"), false);
+});
+
+test("Meeting detail polling survives missed terminal websocket events", () => {
+  assert.equal(meetingDetailRefetchInterval("recording", true), false);
+  assert.equal(meetingDetailRefetchInterval("recording", false), 2_000);
+  assert.equal(meetingDetailRefetchInterval("paused", false), 2_000);
+  assert.equal(meetingDetailRefetchInterval("finalizing", true), 2_000);
+  assert.equal(meetingDetailRefetchInterval("analyzing", true), 2_000);
+  assert.equal(meetingDetailRefetchInterval("ready", false), false);
+  assert.equal(meetingDetailRefetchInterval("capture_failed", false), false);
 });

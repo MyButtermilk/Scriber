@@ -1,3 +1,5 @@
+import { getLocaleTag, translateNow } from "@/i18n";
+
 export interface TranscriptHistoryPeriod {
   key: "today" | "last-week" | "last-month" | "older";
   label: string;
@@ -19,7 +21,7 @@ export function transcriptHistoryPeriod(
 ): TranscriptHistoryPeriod {
   const created = createdAt ? new Date(createdAt) : new Date(Number.NaN);
   if (Number.isNaN(created.getTime())) {
-    return { key: "older", label: "Older" };
+    return { key: "older", label: translateNow("Older") };
   }
 
   const today = startOfLocalDay(now);
@@ -27,25 +29,25 @@ export function transcriptHistoryPeriod(
   const ageInDays = Math.max(0, localCalendarDayNumber(today) - localCalendarDayNumber(createdDay));
 
   if (ageInDays === 0) {
-    return { key: "today", label: "Today" };
+    return { key: "today", label: translateNow("Today") };
   }
   if (ageInDays <= 7) {
-    return { key: "last-week", label: "Last week" };
+    return { key: "last-week", label: translateNow("Last week") };
   }
   if (ageInDays <= 30) {
-    return { key: "last-month", label: "Last month" };
+    return { key: "last-month", label: translateNow("Last month") };
   }
-  return { key: "older", label: "Older" };
+  return { key: "older", label: translateNow("Older") };
 }
 
 export function recordingTimeLabel(createdAt?: string, fallback = ""): string {
   const created = createdAt ? new Date(createdAt) : new Date(Number.NaN);
   if (!Number.isNaN(created.getTime())) {
-    return new Intl.DateTimeFormat(undefined, {
+    return new Intl.DateTimeFormat(getLocaleTag(), {
       hour: "2-digit",
       minute: "2-digit",
     }).format(created);
   }
   const match = fallback.match(/(?:^|,\s*)(\d{1,2}:\d{2})(?:\s|$)/);
-  return match?.[1] || fallback || "Time unavailable";
+  return match?.[1] || (fallback ? translateNow(fallback) : translateNow("Time unavailable"));
 }

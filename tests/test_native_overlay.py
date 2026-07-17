@@ -119,3 +119,29 @@ def test_overlay_audio_level_uses_nonblocking_native_pump(monkeypatch):
     native_overlay.RecordingOverlay().update_audio_level(0.125)
 
     assert published == [0.125]
+
+
+def test_overlay_ipc_deadlines_cover_bounded_ui_dispatch(monkeypatch):
+    calls = []
+
+    def fake_call(command, payload, *, timeout_seconds):
+        calls.append((command, timeout_seconds))
+        return _response(success=True)
+
+    monkeypatch.setattr(native_overlay, "call_shell_ipc", fake_call)
+
+    for command in (
+        "overlayPrepare",
+        "overlayShow",
+        "overlayHide",
+        "overlayStatus",
+        "overlayAudioLevel",
+    ):
+        native_overlay._call_overlay_response(command, log_failure=False)
+
+    deadlines = dict(calls)
+    assert deadlines["overlayPrepare"] > 2.0
+    assert deadlines["overlayShow"] == deadlines["overlayPrepare"]
+    assert deadlines["overlayHide"] == deadlines["overlayPrepare"]
+    assert deadlines["overlayStatus"] < deadlines["overlayPrepare"]
+    assert deadlines["overlayAudioLevel"] < deadlines["overlayStatus"]

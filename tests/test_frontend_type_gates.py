@@ -136,6 +136,9 @@ def test_history_and_command_requests_are_abortable_and_deadlined() -> None:
     command_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "CommandPalette.tsx"
     ).read_text(encoding="utf-8")
+    live_mic_control_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "live-mic-control.ts"
+    ).read_text(encoding="utf-8")
     tray_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "TrayPanel.tsx"
     ).read_text(encoding="utf-8")
@@ -143,7 +146,8 @@ def test_history_and_command_requests_are_abortable_and_deadlined() -> None:
     assert "fetchWithTimeout(" in history_source
     assert "queryFn: async ({ pageParam, signal })" in history_source
     assert "signal?: AbortSignal" in history_source
-    assert command_source.count("fetchWithTimeout(") >= 3
+    assert command_source.count("fetchWithTimeout(") >= 2
+    assert "fetchWithTimeout(" in live_mic_control_source
     assert "queryFn: async ({ signal })" in command_source
     assert "fetchWithTimeout(" in tray_source
 
@@ -189,7 +193,7 @@ def test_transcript_detail_uses_current_attempt_clock_and_truthful_clipboard_fee
     assert "startedAt={transcript.createdAt}" not in page_source
     assert page_source.count("window.setInterval(updateElapsed, 1000)") == 1
     assert page_source.count("await navigator.clipboard.writeText") == 2
-    assert 'title: "Copy failed"' in page_source
+    assert page_source.count('title: t("Copy failed")') == 2
     assert page_source.count("onComplete();") == 1
     assert "enabled: needsAutoSummarySetting" in page_source
     assert "staleTime: 5 * 60_000" in page_source
@@ -426,9 +430,9 @@ def test_settings_microphones_use_shared_api_types() -> None:
     assert "if (!Array.isArray(microphonePayload.devices))" in source
     assert "fetchWithTimeout(" in source
     assert 'apiUrl("/api/microphones")' in source
-    assert 'aria-label="Select input device"' in source
-    assert 'aria-label={`Select microphone ${deviceLabel}`}' in source
-    assert "Loading devices..." in source
+    assert 'aria-label={t("Select input device")}' in source
+    assert 'aria-label={t("Select microphone {{microphone}}", { microphone: deviceLabel })}' in source
+    assert 't("Loading devices...")' in source
     assert "const previousDeviceId = selectedDeviceId;" in source
     assert "setSelectedDeviceId(previousDeviceId);" in source
     assert "const saved = await handleMicDeviceChange(deviceId);" in source
@@ -475,7 +479,7 @@ def test_settings_provider_help_links_are_safe_external_links() -> None:
     assert "href={help.href}" in source
     assert 'target="_blank"' in source
     assert 'rel="noreferrer"' in source
-    assert "title={help.label}" in source
+    assert "title={t(help.label)}" in source
     assert "void openExternalHelpUrl(help.href);" in source
     assert 'const { openUrl } = await import("@tauri-apps/plugin-opener");' in source
     assert "await openUrl(url);" in source
@@ -505,7 +509,7 @@ def test_mobile_header_icon_buttons_keep_touch_targets() -> None:
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "layout" / "AppLayout.tsx"
     ).read_text(encoding="utf-8")
 
-    assert 'className="min-h-[44px] min-w-[44px]" aria-label="Open navigation"' in source
+    assert 'className="min-h-[44px] min-w-[44px]" aria-label={t("Open navigation")}' in source
     assert 'className="min-h-[44px] min-w-[44px]"\n              onClick={handleOpenCommandPalette}' in source
 
 
@@ -521,11 +525,11 @@ def test_navigation_and_command_palette_use_bounded_internal_routes() -> None:
     ).read_text(encoding="utf-8")
 
     for route in [
-        '{ href: "/", icon: Mic, label: "Live Mic" }',
-        '{ href: "/youtube", icon: Youtube, label: "YouTube" }',
-        '{ href: "/file", icon: FolderOpen, label: "File" }',
-        '{ href: "/debug", icon: Terminal, label: "Console" }',
-        '{ href: "/settings", icon: Settings, label: "Settings" }',
+        '{ href: "/", icon: Mic, label: t("Live Mic") }',
+        '{ href: "/youtube", icon: Youtube, label: t("YouTube") }',
+        '{ href: "/file", icon: FolderOpen, label: t("File") }',
+        '{ href: "/debug", icon: Terminal, label: t("Console") }',
+        '{ href: "/settings", icon: Settings, label: t("Settings") }',
     ]:
         assert route in layout_source
     assert "const isActive = location === tab.href || (tab.href !== \"/\" && location.startsWith(tab.href));" in layout_source
@@ -542,7 +546,7 @@ def test_navigation_and_command_palette_use_bounded_internal_routes() -> None:
     assert "enabled: open" in palette_source
     assert "const transcripts = transcriptsData?.items || [];" in palette_source
     assert "transcripts.length > 0 &&" in palette_source
-    assert "<CommandEmpty>Keine Ergebnisse gefunden.</CommandEmpty>" in palette_source
+    assert '<CommandEmpty>{t("No results found.")}</CommandEmpty>' in palette_source
     assert "max-h-[300px] overflow-y-auto overflow-x-hidden" in command_source
 
 
@@ -580,22 +584,22 @@ def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:
     assert "onSummaryRetryComplete" in source
     assert 'historyStatus === "failed"' in source
     assert 'onTranscriptionRetry(event, item)' in source
-    assert '"Retry transcription"' in source
+    assert 't("Retry transcription")' in source
     assert 'apiUrl("/api/youtube/transcribe")' in source
-    assert 'description: "No source URL is available for this video.",' in source
-    assert 'description: `A new transcription attempt for “${item.title}” has been queued.`,' in source
+    assert 'description: t("No source URL is available for this video."),' in source
+    assert 'description: t("A new transcription attempt for “{{title}}” has been queued.", { title: item.title }),' in source
     assert 'isRetryingTranscription={retryingTranscriptId === item.id}' in source
-    assert 'item.summaryStatus === "pending" ? "Summarizing…"' in source
+    assert source.count('? t("Summarizing…")') == 2
     assert "border-red-200 bg-red-50/95" in source
     assert "const isProcessing = isVisiblyProcessing(item);" not in source
     assert "youtubePreferCaptions" in api_types
     settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
         encoding="utf-8"
     )
-    assert 'label="YouTube captions first"' in settings_source
+    assert 'label={t("YouTube captions first")}' in settings_source
     assert "youtubePreferCaptions" in settings_source
-    assert settings_source.index('id="settings-summaries"') < settings_source.index('label="YouTube captions first"')
-    assert settings_source.index('label="Auto-summarize"') < settings_source.index('label="YouTube captions first"')
+    assert settings_source.index('id="settings-summaries"') < settings_source.index('label={t("YouTube captions first")}')
+    assert settings_source.index('label={t("Auto-summarize")}') < settings_source.index('label={t("YouTube captions first")}')
     assert "preferCaptions," not in source
 
 
@@ -612,16 +616,16 @@ def test_live_mic_history_uses_snippets_period_sections_and_stable_virtual_rows(
 
     assert "const visibleSnippet =" in page_source
     assert "item.preview" in page_source
-    assert "recordingTimeLabel(item.createdAt, item.date)" in page_source
+    assert 'formatDate(item.createdAt, { dateStyle: "medium", timeStyle: "short" })' in page_source
     assert "getItemGroup={getTranscriptHistoryGroup}" in page_source
     assert "getItemGroup={(item)" not in page_source
     assert "const getTranscriptHistoryGroup = useCallback(" in page_source
     assert "const historyReferenceTime = useMemo(() => new Date(), [historyLocalDay]);" in page_source
-    assert "[historyReferenceTime]" in page_source
-    assert 'label: "Today"' in period_source
-    assert 'label: "Last week"' in period_source
-    assert 'label: "Last month"' in period_source
-    assert 'label: "Older"' in period_source
+    assert "[historyReferenceTime, locale]" in page_source
+    assert 'label: translateNow("Today")' in period_source
+    assert 'label: translateNow("Last week")' in period_source
+    assert 'label: translateNow("Last month")' in period_source
+    assert 'label: translateNow("Older")' in period_source
     assert (
         "translate3d(0, ${calculateHistoryRowTranslateY(virtualRow.start, scrollMargin)}px, 0)"
         in virtual_source
@@ -691,7 +695,7 @@ def test_onnx_progress_only_updates_the_selected_quantization() -> None:
 
     assert "quantization?: string;" in websocket_source
     assert "msg.quantization !== onnxQuantization" in settings_source
-    assert "[loadOnnxModels, onnxQuantization, queryClient, selectedDeviceId, toast]" in settings_source
+    assert "[loadOnnxModels, onnxQuantization, queryClient, selectedDeviceId, t, toast]" in settings_source
 
 
 def test_primary_page_intros_share_responsive_full_width_layout() -> None:
@@ -713,10 +717,10 @@ def test_primary_page_intros_share_responsive_full_width_layout() -> None:
     assert "sticky = true" in component_source
     assert 'sticky ? "sticky top-0 z-20" : "relative z-0"' in component_source
     assert "bottomContent" in component_source
-    assert 'title="Settings"' in page_sources["Settings.tsx"]
-    assert 'eyebrow="Workspace controls · 06"' in page_sources["Settings.tsx"]
+    assert 'title={t("Settings")}' in page_sources["Settings.tsx"]
+    assert 'eyebrow={t("Workspace controls · 06")}' in page_sources["Settings.tsx"]
     assert page_sources["Settings.tsx"].index("<PageIntro") < page_sources["Settings.tsx"].index(
-        'aria-label="Settings sections"'
+        'aria-label={t("Settings sections")}'
     )
     for source in page_sources.values():
         assert 'from "@/components/page-intro"' in source
@@ -727,12 +731,12 @@ def test_primary_page_intros_share_responsive_full_width_layout() -> None:
 
 def test_primary_section_numbers_follow_navigation_order() -> None:
     page_markers = {
-        "LiveMic.tsx": 'eyebrow="Voice capture · 01"',
-        "Meetings.tsx": 'eyebrow="Meeting workspace · 02"',
-        "Youtube.tsx": 'eyebrow="Media capture · 03"',
-        "FileTranscribe.tsx": 'eyebrow="Media import · 04"',
-        "DebugConsole.tsx": "System observability · 05",
-        "Settings.tsx": 'eyebrow="Workspace controls · 06"',
+        "LiveMic.tsx": 'eyebrow={t("Voice capture · 01")}',
+        "Meetings.tsx": 'eyebrow={t("Meeting workspace · 02")}',
+        "Youtube.tsx": 'eyebrow={t("Media capture · 03")}',
+        "FileTranscribe.tsx": 'eyebrow={t("Media import · 04")}',
+        "DebugConsole.tsx": 't("System observability · 05")',
+        "Settings.tsx": 'eyebrow={t("Workspace controls · 06")}',
     }
 
     for page, marker in page_markers.items():
@@ -825,8 +829,8 @@ def test_youtube_sorting_and_failed_retry_use_client_state_and_source_url() -> N
     assert "const retryYoutubeTranscription = useCallback" in detail_source
     assert 'const sourceUrl = String(transcript?.sourceUrl || "").trim();' in detail_source
     assert "if (!sourceUrl) {" in detail_source
-    assert 'title: "Retry unavailable",' in detail_source
-    assert 'description: "No source URL is available for this transcript.",' in detail_source
+    assert 'title: t("Retry unavailable"),' in detail_source
+    assert 'description: t("No source URL is available for this transcript."),' in detail_source
     assert 'variant: "destructive",' in detail_source
     assert "return;" in detail_source
     assert "url: sourceUrl," in detail_source
@@ -843,7 +847,7 @@ def test_transcript_detail_keeps_failed_retry_actions_contextual_and_single() ->
     # Failed YouTube transcription and summary retries belong beside their
     # respective error explanations, not duplicated in the global toolbar.
     assert detail_source.count("void retryYoutubeTranscription();") == 1
-    assert detail_source.count('label="Retry Summary"') == 1
+    assert detail_source.count('label={t("Retry Summary")}') == 1
     assert 'const showHeaderSummaryAction =' in detail_source
     assert '!isSummaryFailed;' in detail_source
 
@@ -904,7 +908,7 @@ def test_file_upload_progress_uses_route_persistent_store_before_server_processi
     assert "const switchToServerPhase = () => {" in store_source
     assert 'status: "server_processing"' in store_source
     assert "progress: 96" in store_source
-    assert "serverProcessingLabel: getServerProcessingLabel(file)" in store_source
+    assert "serverProcessingText: getServerProcessingText(file)" in store_source
     assert "xhr.upload.onload = () => {" in store_source
     assert 'value={uploadProgress}' in page_source
     assert "uploadStatusText" in page_source
@@ -916,7 +920,7 @@ def test_file_upload_progress_uses_route_persistent_store_before_server_processi
     assert "TranscriptSummaryRetryButton" in page_source
     assert "onSummaryRetryComplete" in page_source
     assert 'item.summaryStatus === "pending" || item.status === "processing"' in page_source
-    assert 'item.summaryStatus === "pending" ? "Summarizing…"' in page_source
+    assert 'item.summaryStatus === "pending" ? t("Summarizing…")' in page_source
     assert "text-red-600 border-red-200 bg-red-50" in page_source
 
 
@@ -937,7 +941,9 @@ def test_failed_summary_history_action_is_accessible_and_retries_in_place() -> N
     assert 'disabled={isRetrying}' in component_source
     assert 'aria-busy={isRetrying}' in component_source
     assert 'aria-live="polite"' in component_source
-    assert '"Retrying…" : "Retry summary"' in component_source
+    assert '<span>{isRetrying ? t("Retrying…") : t("Retry summary")}</span>' in component_source
+    assert '? t("Retrying summary for {{title}}", { title: transcriptTitle })' in component_source
+    assert ': t("Retry summary for {{title}}", { title: transcriptTitle })' in component_source
     assert 'variant: "destructive"' in component_source
 
 
@@ -1049,6 +1055,64 @@ def test_all_interactive_live_mic_stop_controls_use_async_acknowledgement() -> N
         assert '"/api/live-mic/stop"' not in source, control.name
 
 
+def test_live_mic_start_controls_share_structured_errors_without_retrying() -> None:
+    client_root = REPO_ROOT / "Frontend" / "client" / "src"
+    helper = (client_root / "lib" / "live-mic-control.ts").read_text(encoding="utf-8")
+    api_types = (client_root / "lib" / "api-types.ts").read_text(encoding="utf-8")
+    controls = (
+        client_root / "pages" / "LiveMic.tsx",
+        client_root / "components" / "CommandPalette.tsx",
+    )
+
+    assert 'LIVE_MIC_START_PATH = "/api/live-mic/start"' in helper
+    assert "export interface LiveMicRuntimeErrorResponse" in api_types
+    assert 'type: "error";' in api_types
+    assert "retryable: boolean;" in api_types
+    assert 'import type { LiveMicRuntimeErrorResponse } from "@/lib/api-types";' in helper
+    assert "export class LiveMicControlError extends Error" in helper
+    assert "export function requestLiveMicStart(): Promise<Response>" in helper
+    assert "throw await responseFailure(response);" in helper
+    assert 'failure?.kind === "network"' in helper
+    assert "void options.checkBackendStatus().catch(() => false);" in helper
+    assert "showRecordingErrorToast(options.toast, recordingError);" in helper
+    assert "This function never retries a failed start." in helper
+
+    for control in controls:
+        source = control.read_text(encoding="utf-8")
+        assert 'from "@/lib/live-mic-control"' in source, control.name
+        assert 'from "@/hooks/use-backend-status"' in source, control.name
+        assert source.count("requestLiveMicStart()") == 1, control.name
+        assert "presentLiveMicControlFailure(error" in source, control.name
+        assert "checkBackendStatus," in source, control.name
+        assert 'apiUrl("/api/live-mic/start")' not in source, control.name
+
+
+def test_silero_switch_waits_for_the_authoritative_settings_response() -> None:
+    source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+
+    update_start = source.index("const updateSettings = async")
+    update_end = source.index("const saveCustomVocabulary", update_start)
+    update_block = source[update_start:update_end]
+    handler_start = source.index("const handleSegmentSpeechWithVadChange")
+    handler_end = source.index("const handleWsMessage", handler_start)
+    handler = source[handler_start:handler_end]
+
+    assert "responseErrorMessage(res)" in update_block
+    assert "await res.text()" not in update_block
+    assert "segmentSpeechWithVadSaving" in source
+    assert "if (segmentSpeechWithVadSaving) return;" in handler
+    assert "setSegmentSpeechWithVad(enabled);" not in handler
+    assert "const updated = await updateSettings({ segmentSpeechWithVad: enabled });" in handler
+    assert "const savedValue = updated.segmentSpeechWithVad === true;" in handler
+    assert "setSegmentSpeechWithVad(savedValue);" in handler
+    assert "setSegmentSpeechWithVad(previousValue);" in handler
+    assert "setSegmentSpeechWithVadSaving(false);" in handler
+    assert "disabled={segmentSpeechWithVadSaving}" in source
+    assert "aria-busy={segmentSpeechWithVadSaving}" in source
+
+
 def test_virtual_history_releases_load_guard_for_void_and_failed_loaders() -> None:
     source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "virtual-transcript-history.tsx"
@@ -1113,7 +1177,7 @@ def test_live_mic_history_uses_title_when_legacy_preview_is_missing() -> None:
         encoding="utf-8"
     )
 
-    assert 'item.title.trim() || "No transcript preview available"' in source
+    assert 'item.title.trim() || t("No transcript preview available")' in source
 
 
 def test_live_mic_reconciles_active_state_and_websocket_reconnects() -> None:
@@ -1237,12 +1301,14 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     assert "debug-console-stat-icon" in debug_source
     assert 'aria-pressed={selectedLevel === level}' in debug_source
     assert "debug-level-selected-icon" in debug_source
-    assert "Download support bundle" in debug_source
-    assert "Support bundle downloaded as ${filename}. Check your Downloads folder." in debug_source
-    assert "was saved by the browser download manager" in debug_source
+    assert 't("Download support bundle")' in debug_source
+    assert 'source: "Support bundle downloaded as {{filename}}. Check your Downloads folder."' in debug_source
+    assert "values: { filename }" in debug_source
+    assert "renderLocalizedMessage(actionStatus, t, formatNumber)" in debug_source
+    assert 't("{{filename}} was saved by the browser download manager.", { filename })' in debug_source
     assert "/api/runtime/post-processing-diagnostics?limit=8" in debug_source
-    assert "Post-processing diagnostics" in debug_source
-    assert "Raw fallback" in debug_source
+    assert 't("Post-processing diagnostics")' in debug_source
+    assert 't("Raw fallback")' in debug_source
     assert 'className="compact-impact-switch"' in debug_source
     assert "entry.context ? JSON.stringify(entry.context)" in debug_source
     assert "RuntimeLogMessage" in debug_source
@@ -1250,10 +1316,10 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     assert "HOT_PATH_METRICS" in structured_log_source
     assert "hotkey_received_to_mic_ready_ms" in structured_log_source
     assert "stop_requested_to_provider_final_received_ms" in structured_log_source
-    assert "Technical details" in structured_log_source
-    assert "Raw structured data" in structured_log_source
-    assert "Copy raw structured log data" in structured_log_source
-    assert "Full message" in structured_log_source
+    assert 't("Technical details")' in structured_log_source
+    assert 't("Raw structured data")' in structured_log_source
+    assert 't("Copy raw structured log data")' in structured_log_source
+    assert 't("Full message")' in structured_log_source
     assert "LONG_MESSAGE_PREVIEW_CHARS" in structured_log_source
 
     assert "settings-page" in settings_source
@@ -1290,7 +1356,7 @@ def test_settings_hotkey_recorder_uses_window_capture_listener() -> None:
     assert 'window.addEventListener("keydown", handleWindowKeyDown, true)' in source
     assert 'window.removeEventListener("keydown", handleWindowKeyDown, true)' in source
     assert 'event.key === "Escape"' in source
-    assert 'aria-label="Hotkey capture area"' in source
+    assert 'aria-label={t("Hotkey capture area")}' in source
     assert 'useState("Ctrl + Shift + D")' in source
     assert 'useState("Ctrl + Shift + F")' in source
     assert 'useState("Ctrl + Shift + M")' in source
@@ -1416,7 +1482,7 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
         REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
     ).read_text(encoding="utf-8")
 
-    assert "const POST_PROCESSING_MODEL_OPTIONS" in settings_source
+    assert "function createPostProcessingModelOptions(localeTag: string, t: Translate)" in settings_source
     assert 'const DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b";' in settings_source
     assert 'value: "openai/gpt-oss-120b"' in settings_source
     assert "GPT-OSS 120B Baseten" in settings_source
@@ -1424,8 +1490,8 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "GPT-OSS 120B Cerebras" in settings_source
     assert 'value: "cerebras/gemma-4-31b"' in settings_source
     assert "Gemma 4 31B Cerebras" in settings_source
-    assert "return `${priceText}€/M blended, ~${tokensPerSecond} Token/s`;" in settings_source
-    assert "languageModelBenchmarkDetail(0.00000035, 0.00000075, 768)" in settings_source
+    assert 'return t("{{price}}€/M blended, ~{{tokens}} Token/s", { price: priceText, tokens: tokensPerSecond });' in settings_source
+    assert "languageModelBenchmarkDetail(0.00000035, 0.00000075, 768, localeTag, t)" in settings_source
     assert 'baseten: "/provider-icons/baseten.svg"' in settings_source
     assert 'cerebras: "/provider-icons/cerebras.svg"' in settings_source
     assert 'value: "google/gemini-2.5-flash-lite:nitro"' in settings_source
@@ -1444,17 +1510,17 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "setPostProcessingModel(settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL);" in settings_source
     assert "const handlePostProcessingModelChange = async (value: string)" in settings_source
     assert "await updateSettings({ postProcessingModel: value });" in settings_source
-    assert 'label="Post-processing model"' in settings_source
+    assert 'label={t("Post-processing model")}' in settings_source
     assert 'value={postProcessingModel}' in settings_source
     assert "onValueChange={(value) => void handlePostProcessingModelChange(value)}" in settings_source
-    assert "POST_PROCESSING_MODEL_OPTIONS.map((option)" in settings_source
+    assert "postProcessingModelOptions.map((option)" in settings_source
     assert "selectedPostProcessingModelOption" in settings_source
     assert "<ProviderIcon icon={option.icon} label={option.label}" in settings_source
     assert "const requirement = requiredCredentialForLanguageModel(value);" in settings_source
     assert "if (!isCredentialReady(requirement))" in settings_source
     assert "openCredentialDialog(requirement);" in settings_source
     assert "{option.detail}" in settings_source
-    assert "Use a low-cost, low-latency model for simple dictation cleanup." in settings_source
+    assert 'detail={t("Use a low-cost, low-latency model for simple dictation cleanup.")}' in settings_source
     assert "Beantworte keine Fragen im Transkript." in settings_source
     assert "Gliedere den Text in sinnvolle Absätze." in settings_source
     assert "Entferne Füllwörter" in settings_source
@@ -1488,9 +1554,9 @@ def test_settings_model_choices_require_saved_api_keys() -> None:
     assert "{disabledReason ? (" in settings_source
     assert 'const MISSING_CREDENTIAL_CTA = "Add API Key";' in settings_source
     assert "openCredentialDialog(missingPostProcessingCredentialRequirement)" in settings_source
-    assert "{MISSING_CREDENTIAL_CTA}" in settings_source
-    assert "Credential required before model selection." in settings_source
-    assert "below, or choose a model that already has credentials." in settings_source
+    assert "{t(MISSING_CREDENTIAL_CTA)}" in settings_source
+    assert 't("Credential required before model selection.")' in settings_source
+    assert 't("below, or choose a model that already has credentials.")' in settings_source
     assert "setSavedKeys((prev) => ({ ...prev, [provider]: credentialReady }));" in settings_source
     assert "setCredentialReadyKeys((prev) => ({ ...prev, [provider]: credentialReady }));" in settings_source
     assert 'OpenRouter: hasValue(keys.openrouter)' in settings_source
@@ -1515,10 +1581,10 @@ def test_settings_exposes_modulate_final_text_only_realtime_and_batch() -> None:
     assert "const MODULATE_BATCH_USD_PER_AUDIO_HOUR = 0.03;" in settings_source
     assert "const MODULATE_STREAMING_USD_PER_AUDIO_HOUR = 0.06;" in settings_source
     assert "const MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT = 4.43;" in settings_source
-    assert "sttHourlyBenchmarkDetail(MODULATE_STREAMING_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT)" in settings_source
-    assert "sttHourlyBenchmarkDetail(MODULATE_BATCH_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT)" in settings_source
-    assert "Multilingual streaming shows finalized text only. Scriber does not request partial text or enrichment signals." in settings_source
-    assert "Multilingual batch returns one final transcript after recording stops. Scriber does not request enrichment signals." in settings_source
+    assert 'hourlyOption("modulate-realtime", "Modulate.AI Multilingual Realtime", MODULATE_STREAMING_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT, "cloud_streaming", "modulate")' in settings_source
+    assert 'hourlyOption("modulate-async", "Modulate.AI Multilingual Batch", MODULATE_BATCH_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT, "cloud_async", "modulate")' in settings_source
+    assert 't("Multilingual streaming shows finalized text only. Scriber does not request partial text or enrichment signals.")' in settings_source
+    assert 't("Multilingual batch returns one final transcript after recording stops. Scriber does not request enrichment signals.")' in settings_source
     assert 'defaultSttService: "modulate"' in settings_source
     assert 'defaultSttService: "modulate_async"' in settings_source
     assert 'apiKeys.modulate = modulateKey;' in settings_source
@@ -1557,21 +1623,21 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
         REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
     ).read_text(encoding="utf-8")
 
-    assert "return `${euroText}€/h with ${errorText}% Error`;" in settings_source
+    assert 'return t("{{price}}€/h with {{error}}% Error", { price: euroText, error: errorText });' in settings_source
     hourly_benchmark_source = settings_source[
         settings_source.index("function sttHourlyBenchmarkDetail")
         : settings_source.index("function sttBenchmarkDetail")
     ]
     assert hourly_benchmark_source.count("maximumFractionDigits: 2,") == 2
-    assert "0,00€/h with model-dependent Error" in settings_source
+    assert 't("{{price}}€/h with model-dependent Error"' in settings_source
     assert "0,00 €/h" not in settings_source
     assert " % Error" not in settings_source
     assert "{disabledReason || option.detail}" not in settings_source
     assert "title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : \"\"}`}" in settings_source
     assert 'const MISSING_CREDENTIAL_CTA = "Add API Key";' in settings_source
     provider_options_source = settings_source[
-        settings_source.index("const PROVIDER_MODEL_OPTIONS: ProviderModelOption[]")
-        : settings_source.index("function ProviderIcon")
+        settings_source.index("function createProviderModelOptions")
+        : settings_source.index("const MEETING_FINAL_STT_OPTIONS")
     ]
     assert "cloud_segmented" not in provider_options_source
     assert "Cloud live / segmented" not in settings_source
@@ -1605,7 +1671,7 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
     ]
 
     for ordered_values in (streaming_order, async_order):
-        positions = [provider_options_source.index(f"value: {value}") for value in ordered_values]
+        positions = [provider_options_source.index(f"({value},") for value in ordered_values]
         assert positions == sorted(positions)
 
 
@@ -1652,9 +1718,9 @@ def test_tray_panel_exposes_direct_update_install_action() -> None:
 
     assert "function StatusIndicator" in tray_source
     assert "showUpdateInstallBanner" in tray_source
-    assert "Install Scriber" in tray_source
-    assert "Download, install, and restart Scriber." in tray_source
-    assert 'label={status.updateAvailable ? "Check Again" : "Check for Updates"}' in tray_source
+    assert 't("Install Scriber {{version}}", { version: status.updateVersion })' in tray_source
+    assert 't("Download, install, and restart Scriber.")' in tray_source
+    assert 'label={status.updateAvailable ? t("Check Again") : t("Check for Updates")}' in tray_source
     assert "status.updateInstalling || !status.updateAvailable" in tray_source
     assert '<Download className="h-2.5 w-2.5"' in tray_source
     assert "statusDotClass" not in tray_source
@@ -1674,8 +1740,8 @@ def test_tray_panel_exposes_meetings_shortcut_and_installed_version() -> None:
 
     assert 'import("@tauri-apps/api/app")' in tray_source
     assert ".then(({ getVersion }) => getVersion())" in tray_source
-    assert 'label="Meetings"' in tray_source
-    assert 'detail="Open meeting workspace"' in tray_source
+    assert 'label={t("Meetings")}' in tray_source
+    assert 'detail={t("Open meeting workspace")}' in tray_source
     assert "shortcut={meetingShortcut}" in tray_source
     assert 'runAction("open_meetings")' in tray_source
     assert "value?.meetingHotkey" in tray_source
@@ -1776,18 +1842,19 @@ def test_meeting_workspace_uses_focus_canvas_and_gpu_only_live_progress() -> Non
         encoding="utf-8"
     )
 
-    assert "Ready to start" in source
-    assert "Check before a long meeting" in source
-    assert "Ready for a long meeting" in source
-    assert "What matters now" in source
-    assert "Key outcome" in source
-    assert "Render-active attenuation" in source
-    assert "Reduces speaker echo" in source
+    assert 't("Ready to start")' in source
+    assert 't("Check before a long meeting")' in source
+    assert 't("Ready for a long meeting")' in source
+    assert 't("What matters now")' in source
+    assert 't("Key outcome")' in source
+    assert 't("Render-active attenuation")' in source
+    assert 'detail: "Reduces speaker echo"' in source
+    assert "{t(detail)}" in source
     assert "I confirm I am permitted to record" not in source
     assert "Recording conversations without permission" not in source
     assert "consentConfirmed: true" not in source
     assert "h-auto min-h-9 w-full whitespace-normal" in source
-    assert 'className="sr-only">Meeting workspace' in source
+    assert 'className="sr-only">{t("Meeting workspace")}' in source
     assert "<PageIntro" in source
     assert "transition-[width]" not in source
     assert "transition-transform" in source
@@ -1795,16 +1862,16 @@ def test_meeting_workspace_uses_focus_canvas_and_gpu_only_live_progress() -> Non
     assert 'segment.revision === "canonical"' in source
     assert 'if (!hasCanonicalTranscript)' in source
     assert "TERMINAL_MEETING_STATES.has(message.meeting.state)" in source
-    assert "Delete this meeting?" in source
+    assert 't("Delete this meeting?")' in source
     assert "deleteMeetingMutation" in source
     assert "neu-nav-active" in source
     assert "Soniox Realtime" not in source  # Provider/model labels come from the backend contract.
     assert "selectedProfile.stages" in source
     assert "const selectedProfileCostPerHour = selectedProfile?.costEstimate?.totalPerMeetingHour;" in source
     assert "const meetingImportFinalCostPerAudioHour = meetingImportProfile?.costEstimate?.singleTrackFinalPerAudioHour;" in source
-    assert "Models used" in source
+    assert 't("Models used")' in source
     assert "playLoadedAudio" in source
-    assert "Speaker sound played" in source
+    assert 't("Speaker sound played")' in source
 
 
 def test_meeting_workspace_reconciles_after_backend_websocket_restart() -> None:
@@ -1903,25 +1970,25 @@ def test_meeting_defaults_and_voice_library_live_only_in_meeting_settings() -> N
     assert 'voiceLibraryEnabled: Boolean(speakerModelQuery.data?.optedIn && speakerModelQuery.data?.installed)' in meetings
     assert "audioRetentionDays: profile?.audioRetentionDays ?? 0" in meetings
 
-    assert 'label="Meeting shortcut"' in meeting_settings
-    assert 'label="Keep meeting audio"' in meeting_settings
-    assert 'title="Voice Library"' in meeting_settings
-    assert "People sharing the selected microphone currently appear together" in meeting_settings
-    assert 'label="Recognize familiar speakers"' in meeting_settings
-    assert 'aria-label="Recognize familiar speakers in future meetings"' in meeting_settings
-    assert "Add voice" in meeting_settings
+    assert 'label={t("Meeting shortcut")}' in meeting_settings
+    assert 'label={t("Keep meeting audio")}' in meeting_settings
+    assert 'title={t("Voice Library")}' in meeting_settings
+    assert 't("Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as")' in meeting_settings
+    assert 'label={t("Recognize familiar speakers")}' in meeting_settings
+    assert 'aria-label={t("Recognize familiar speakers in future meetings")}' in meeting_settings
+    assert 't("Add voice")' in meeting_settings
     assert '"/api/meetings/speaker-profiles/enroll"' in settings
-    assert "Teach Scriber a voice" in settings
-    assert "The recording is not saved or uploaded." in settings
+    assert 't("Teach Scriber a voice")' in settings
+    assert 't("Scriber listens for about 8 seconds. The recording is not saved or uploaded. The local voice profile remains until you delete it.")' in settings
     assert 'setSonioxRealtimeModel(settings.sonioxRealtimeModel || "stt-rt-v5")' in settings
     assert "sonioxRealtimeModel" in meeting_settings
-    assert 'label="Meeting shortcut"' not in transcription_settings
-    assert 'label="Recognize familiar speakers"' not in transcription_settings
+    assert 'label={t("Meeting shortcut")}' not in transcription_settings
+    assert 'label={t("Recognize familiar speakers")}' not in transcription_settings
 
-    assert 'title="Transcription"' in meeting_settings
-    assert 'title="Summaries and storage"' in meeting_settings
-    assert "Protected every 30 seconds." in meeting_settings
-    assert 'label="Reduce speaker echo"' in meeting_settings
+    assert 'title={t("Transcription")}' in meeting_settings
+    assert 'title={t("Summaries and storage")}' in meeting_settings
+    assert 't("Protected every 30 seconds.")' in meeting_settings
+    assert 'label={t("Reduce speaker echo")}' in meeting_settings
     assert "checkpointed audio" not in meeting_settings
     assert "AEC3 echo control" not in meeting_settings
     assert "Voice embeddings" not in meeting_settings
@@ -1935,15 +2002,12 @@ def test_soniox_region_is_selected_only_in_api_key_dialog() -> None:
         encoding="utf-8"
     )
 
-    assert 'label="Data processing region"' in settings
-    assert "US - Region (default)" in settings
-    assert "EUR - Region (recommended for better latency)" in settings
-    assert "EU access must be enabled by Soniox first" in settings
-    assert "Organization ID" in settings
-    assert "create a new project with the European Union region" in settings
-    assert "separate EU project's API key" in settings
-    assert "selected region and API key must match" in settings
-    assert "Open Soniox API Console" in settings
+    assert 'label={t("Data processing region")}' in settings
+    assert 'label: t("US - Region (default)")' in settings
+    assert 'label: t("EUR - Region (recommended for better latency)")' in settings
+    assert 't("EU access must be enabled by Soniox first")' in settings
+    assert 't("Email Soniox with your Organization ID so they can enable regional deployments. Then open the Soniox API Console, create a new project with the European Union region, and paste that separate EU project\'s API key above. The selected region and API key must match.")' in settings
+    assert 't("Open Soniox API Console")' in settings
     assert "mailto:support@soniox.com" in settings
     assert "https://soniox.com/docs/data-residency" in settings
     assert "https://console.soniox.com/" in settings
@@ -1964,14 +2028,14 @@ def test_meeting_transcription_modes_are_configured_only_in_settings() -> None:
 
     assert 'id="meeting-profile"' not in meetings
     assert 'id="meeting-import-profile"' not in meetings
-    assert "Change in Settings" in meetings
-    assert "Transcript after meeting" in meeting_settings
-    assert "Live text + accurate transcript" in meeting_settings
-    assert 'role="radiogroup" aria-label="Meeting transcription timing"' in meeting_settings
+    assert 't("Change in Settings")' in meetings
+    assert 'title: t("Transcript after meeting")' in meeting_settings
+    assert 'title: t("Live text + accurate transcript")' in meeting_settings
+    assert 'role="radiogroup" aria-label={t("Meeting transcription timing")}' in meeting_settings
     assert "meetingTranscriptionMode" in meeting_settings
-    assert "Estimated total" in meeting_settings
-    assert "Why Scriber does not upload one-minute pieces" in meeting_settings
-    assert "It does not change the final transcript or its price." in meeting_settings
+    assert 't("Estimated total")' in meeting_settings
+    assert 't("Why Scriber does not upload one-minute pieces")' in meeting_settings
+    assert 't("Smart Turn V3 improves where the live preview ends a thought. It does not change the final transcript or its price.")' in meeting_settings
 
 
 def test_live_meeting_transcript_follows_latest_text_without_trapping_review() -> None:
@@ -1983,10 +2047,10 @@ def test_live_meeting_transcript_follows_latest_text_without_trapping_review() -
     assert 'virtualizer.scrollToIndex(segments.length - 1, { align: "end" });' in meetings
     assert "scrollToLatest, search, segments]" in meetings
     assert "element.scrollHeight - element.clientHeight - element.scrollTop <= 40" in meetings
-    assert ">Latest text" in meetings
+    assert '{t("Latest text")}' in meetings
     assert "isLive={detail.state === \"recording\" || detail.state === \"paused\"}" in meetings
     assert "key={detail.id}" in meetings
-    assert "Recording safely. The transcript appears after you stop." in meetings
+    assert 't("Recording safely. The transcript appears after you stop.")' in meetings
 
 
 def test_settings_cards_follow_the_requested_two_column_order() -> None:
@@ -2057,13 +2121,13 @@ def test_outlook_meeting_picker_uses_fresh_daily_events_and_explicit_selection()
     assert "if (calendarEvent?.id) {" in meetings
     assert "setSelectedCalendarEventId(calendarEvent.id);" in meetings
     assert "selectedCalendarSubjectRef.current = calendarEvent.subject;" in meetings
-    assert "Refresh calendar" in picker
-    assert "Use no calendar event" in picker
-    assert "Open online meeting" in picker
+    assert 't("Refresh calendar")' in picker
+    assert 't("Use no calendar event")' in picker
+    assert 't("Open online meeting")' in picker
     assert 'url.protocol !== "https:"' in picker
-    assert "No Outlook meetings today." in picker
-    assert "Today&apos;s meetings could not be loaded." in picker
-    assert "event.isAllDay ? \"All day\"" in picker
+    assert 't("No Outlook meetings today.")' in picker
+    assert 't("Today\'s meetings could not be loaded.")' in picker
+    assert 'event.isAllDay ? t("All day")' in picker
     assert "event.location" in picker
     assert "participant.type === \"resource\"" in picker
     assert "events?.truncated" in picker
@@ -2141,12 +2205,12 @@ def test_meeting_copy_uses_plain_outcome_focused_language() -> None:
         encoding="utf-8"
     )
 
-    assert "Your recording is saved every 30 seconds" in meetings
-    assert ">Safety saves<" in meetings
-    assert ">Final transcript<" in meetings
-    assert "Answers use only this meeting's final transcript." in meetings
-    assert "Creating your meeting brief…" in meetings
-    assert "Added on this device · up to 60 min" in meetings
+    assert 't("Your recording is saved every 30 seconds and can continue for up to 5 hours. The final transcript starts after you stop.")' in meetings
+    assert 't("Safety saves")' in meetings
+    assert 't("Final transcript")' in meetings
+    assert 't("Answers use only this meeting\'s final transcript. Click a source marker to jump to that moment.")' in meetings
+    assert 't("Creating your meeting brief…")' in meetings
+    assert 't("Added on this device · up to 60 min")' in meetings
     assert "Render-aware AEC3" not in meetings
     assert ">Native capture<" not in meetings
     assert ">Final STT<" not in meetings
@@ -2169,7 +2233,7 @@ def test_meeting_workspace_uses_the_shared_transcription_frame_and_type_scale() 
 
     assert "transcription-page meetings-page" in meetings
     assert '<PageIntro' in meetings
-    assert 'eyebrow="Meeting workspace · 02"' in meetings
+    assert 'eyebrow={t("Meeting workspace · 02")}' in meetings
     assert 'app-page-shell' in meetings
     assert 'data-page-shell="meetings"' in meetings
     assert 'max-w-[1440px]' not in meetings

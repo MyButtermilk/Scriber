@@ -409,7 +409,7 @@ def test_shell_ipc_does_not_couple_audio_and_overlay_domains(monkeypatch):
     assert max_active == 2
 
 
-def test_shell_ipc_lifecycle_ack_is_request_bound_and_success_only():
+def test_shell_ipc_response_ack_is_request_bound_for_success_and_failure():
     request = json.dumps(
         {
             "apiVersion": "1",
@@ -425,7 +425,7 @@ def test_shell_ipc_lifecycle_ack_is_request_bound_and_success_only():
             "payload": {"streamId": "stream-123"},
         }
     )
-    acknowledgement = shell_ipc._lifecycle_start_ack_line(
+    acknowledgement = shell_ipc._response_ack_line(
         request,
         success,
         newline_received=True,
@@ -438,68 +438,37 @@ def test_shell_ipc_lifecycle_ack_is_request_bound_and_success_only():
     }
 
     failure = success.replace('"success": true', '"success": false')
-    assert (
-        shell_ipc._lifecycle_start_ack_line(
-            request,
-            failure,
-            newline_received=True,
-        )
-        is None
-    )
+    assert json.loads(
+        shell_ipc._response_ack_line(request, failure, newline_received=True)
+    ) == {
+        "apiVersion": "1",
+        "requestId": "request-123",
+        "type": "responseAck",
+    }
     with pytest.raises(ValueError, match="requestId mismatch"):
-        shell_ipc._lifecycle_start_ack_line(
+        shell_ipc._response_ack_line(
             request,
             success.replace("request-123", "wrong-response", 1),
             newline_received=True,
         )
     with pytest.raises(ValueError, match="not newline delimited"):
-        shell_ipc._lifecycle_start_ack_line(
+        shell_ipc._response_ack_line(
             request,
             success,
             newline_received=False,
         )
 
-    malformed_success = json.loads(success)
-    malformed_success["payload"] = {}
-    assert (
-        shell_ipc._lifecycle_start_ack_line(
-            request,
-            json.dumps(malformed_success),
+    non_lifecycle_request = request.replace("audioCaptureStart", "overlayShow")
+    assert json.loads(
+        shell_ipc._response_ack_line(
+            non_lifecycle_request,
+            success,
             newline_received=True,
         )
-        is None
-    )
-    malformed_success["payload"] = {"streamId": "   "}
-    assert (
-        shell_ipc._lifecycle_start_ack_line(
-            request,
-            json.dumps(malformed_success),
-            newline_received=True,
-        )
-        is None
-    )
-    malformed_success["payload"] = {"streamId": "x" * 97}
-    assert (
-        shell_ipc._lifecycle_start_ack_line(
-            request,
-            json.dumps(malformed_success),
-            newline_received=True,
-        )
-        is None
-    )
-    # Rust's String::len boundary is UTF-8 bytes, not Unicode code points.
-    malformed_success["payload"] = {"streamId": "ä" * 49}
-    assert (
-        shell_ipc._lifecycle_start_ack_line(
-            request,
-            json.dumps(malformed_success),
-            newline_received=True,
-        )
-        is None
-    )
+    )["requestId"] == "request-123"
 
 
-def test_shell_ipc_windows_transport_writes_bounded_lifecycle_ack(monkeypatch):
+def test_shell_ipc_windows_transport_writes_bounded_response_ack(monkeypatch):
     import ctypes
     from ctypes import wintypes
 
@@ -735,11 +704,15 @@ def test_shell_ipc_windows_transport_reads_large_overlapped_response(monkeypatch
 
     response = shell_ipc._send_request_over_pipe_windows(
         r"\\.\pipe\scriber-shell-test",
-        "{}\n",
+        '{"apiVersion":"1","requestId":"request-id","command":"ping"}\n',
         1.0,
     )
 
-    assert fake_kernel32.written == b"{}\n"
+    assert json.loads(fake_kernel32.written) == {
+        "apiVersion": "1",
+        "requestId": "request-id",
+        "type": "responseAck",
+    }
     assert response == response_line.rstrip("\n")
     assert json.loads(response)["payload"]["diagnostics"] == "x" * 5000
 
@@ -761,7 +734,10 @@ def test_shell_ipc_windows_transport_retries_create_file_pipe_busy(monkeypatch):
             self.last_error = 0
             self.wait_calls = 0
             self.create_calls = 0
-            self.response = b'{"success":true}\n'
+            self.response = (
+                b'{"apiVersion":"1","requestId":"pipe-busy",'
+                b'"success":true,"payload":{}}\n'
+            )
             self.WaitNamedPipeW = FakeCall(self._wait_named_pipe)
             self.CreateFileW = FakeCall(self._create_file)
             self.CreateEventW = FakeCall(lambda *_args: 456)
@@ -809,11 +785,11 @@ def test_shell_ipc_windows_transport_retries_create_file_pipe_busy(monkeypatch):
 
     response = shell_ipc._send_request_over_pipe_windows(
         r"\\.\pipe\scriber-shell-test",
-        "{}\n",
+        '{"apiVersion":"1","requestId":"pipe-busy","command":"ping"}\n',
         1.0,
     )
 
-    assert response == '{"success":true}'
+    assert json.loads(response)["success"] is True
     assert fake_kernel32.wait_calls == 2
     assert fake_kernel32.create_calls == 2
 

@@ -34,6 +34,7 @@ import type {
   YouTubeSearchItem,
   YouTubeSearchResponse,
 } from "@/lib/api-types";
+import { useI18n } from "@/i18n";
 
 type SortOption = "date" | "likes" | "views";
 const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
@@ -61,6 +62,39 @@ function youtubeHistoryStatus(item: TranscriptHistoryItem): YoutubeHistoryStatus
   return "ready";
 }
 
+function localizedProcessingStep(
+  value: string | null | undefined,
+  fallback: string,
+  t: ReturnType<typeof useI18n>["t"],
+  formatNumber: ReturnType<typeof useI18n>["formatNumber"],
+): string {
+  const source = String(value || fallback).trim();
+  const retryMatch = /^Retrying in ([\d.,]+)s \((\d+)\/(\d+)\)$/.exec(source);
+  if (retryMatch) {
+    const seconds = Number(retryMatch[1].replace(",", "."));
+    return t("Retrying in {{seconds}}s ({{attempt}}/{{total}})", {
+      seconds: Number.isFinite(seconds) ? formatNumber(seconds, { maximumFractionDigits: 2 }) : retryMatch[1],
+      attempt: formatNumber(Number(retryMatch[2])),
+      total: formatNumber(Number(retryMatch[3])),
+    });
+  }
+
+  const downloadMatch = /^Downloading\.\.\.\s+([\d.,]+)%(.*)$/.exec(source);
+  if (downloadMatch) {
+    const percentage = Number(downloadMatch[1].replace(",", "."));
+    const formattedPercentage = Number.isFinite(percentage)
+      ? formatNumber(percentage / 100, { style: "percent", maximumFractionDigits: 1 })
+      : `${downloadMatch[1]}%`;
+    const technicalSuffix = downloadMatch[2].replace(" • ETA ", ` • ${t("ETA")} `);
+    return `${t("Downloading… {{percent}}", { percent: formattedPercentage })}${technicalSuffix}`;
+  }
+
+  if (source.startsWith("Error: ")) {
+    return `${t("Error")}: ${source.slice("Error: ".length)}`;
+  }
+  return t(source);
+}
+
 interface YoutubeThumbnailProps {
   thumbnailUrl?: string;
   title?: string;
@@ -76,6 +110,7 @@ const YoutubeThumbnail = memo(function YoutubeThumbnail({
   iconClassName = "w-8 h-8",
   loading = "lazy",
 }: YoutubeThumbnailProps) {
+  const { t } = useI18n();
   const [failed, setFailed] = useState(false);
   const src = failed ? "" : youtubeThumbnailSrc(thumbnailUrl);
 
@@ -94,7 +129,7 @@ const YoutubeThumbnail = memo(function YoutubeThumbnail({
   return (
     <img
       src={src}
-      alt={title || "Video thumbnail"}
+      alt={title || t("Video thumbnail")}
       className={`block ${className}`}
       decoding="async"
       loading={loading}
@@ -132,10 +167,14 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
   onNavigate,
   onHover,
 }: YoutubeVideoCardProps) {
+  const { formatDate, formatLegacyDate, formatNumber, t } = useI18n();
   const deletingClasses = isDeleting
     ? "pointer-events-none opacity-[0.55] scale-[0.985]"
     : "opacity-100 scale-100";
   const historyStatus = youtubeHistoryStatus(item);
+  const dateLabel = item.createdAt
+    ? formatDate(item.createdAt, { dateStyle: "medium", timeStyle: "short" })
+    : formatLegacyDate(item.date);
 
   return (
     <div className="w-full">
@@ -176,7 +215,9 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                 {historyStatus === "processing" ? (
                   <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1 shrink-0">
                     <Loader2 className="w-3 h-3 animate-spin" />
-                    {item.summaryStatus === "pending" ? "Summarizing…" : item.step || "Processing"}
+                    {item.summaryStatus === "pending"
+                      ? t("Summarizing…")
+                      : localizedProcessingStep(item.step, "Processing", t, formatNumber)}
                   </Badge>
                 ) : historyStatus === "failed" ? (
                   <Button
@@ -187,15 +228,15 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     onClick={(event) => onTranscriptionRetry(event, item)}
                     disabled={isRetryingTranscription}
                     aria-busy={isRetryingTranscription}
-                    aria-label={`${isRetryingTranscription ? "Retrying" : "Retry"} transcription for ${item.title}`}
-                    title={isRetryingTranscription ? "Restarting transcription" : "Transcription failed. Try again"}
+                    aria-label={t(isRetryingTranscription ? "Retrying transcription for {{title}}" : "Retry transcription for {{title}}", { title: item.title })}
+                    title={isRetryingTranscription ? t("Restarting transcription") : t("Transcription failed. Try again")}
                   >
                     {isRetryingTranscription ? (
                       <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                     ) : (
                       <RotateCcw className="h-3 w-3" aria-hidden="true" />
                     )}
-                    <span>{isRetryingTranscription ? "Retrying…" : "Retry transcription"}</span>
+                    <span>{isRetryingTranscription ? t("Retrying…") : t("Retry transcription")}</span>
                   </Button>
                 ) : historyStatus === "summary_failed" ? (
                   <TranscriptSummaryRetryButton
@@ -205,15 +246,15 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     className="shrink-0"
                   />
                 ) : historyStatus === "stopped" ? (
-                  <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px] shrink-0">Stopped</Badge>
+                  <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px] shrink-0">{t("Stopped")}</Badge>
                 ) : (
                   <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full shrink-0">
                     <CheckCircle2 className="w-3 h-3" />
-                    Ready
+                    {t("Ready")}
                   </div>
                 )}
               </div>
-              <p className="mt-1 truncate text-[12px] text-muted-foreground">{item.channel || item.channelTitle || "Unknown Channel"} • {item.date}</p>
+              <p className="mt-1 truncate text-[12px] text-muted-foreground">{item.channel || item.channelTitle || t("Unknown channel")} • {dateLabel}</p>
             </div>
 
             <div className="flex items-center justify-end gap-1 sm:self-center">
@@ -221,16 +262,16 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                 onClick={(e) => onCopy(e, item.id)}
                 disabled={isCopying}
                 copied={isCopying}
-                title="Copy transcript"
-                ariaLabel={`Copy transcript ${item.title}`}
+                title={t("Copy transcript")}
+                ariaLabel={t("Copy transcript {{title}}", { title: item.title })}
                 className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
               />
               <DeleteActionButton
                 onClick={(e) => onDelete(e, item.id)}
                 disabled={isDeleting}
                 loading={isDeleting}
-                title="Delete transcript"
-                ariaLabel={`Delete transcript ${item.title}`}
+                title={t("Delete transcript")}
+                ariaLabel={t("Delete transcript {{title}}", { title: item.title })}
                 className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
               />
             </div>
@@ -252,7 +293,9 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                 {historyStatus === "processing" ? (
                   <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50/90 text-[10px] flex items-center gap-1">
                     <Loader2 className="w-3 h-3 animate-spin" />
-                    {item.summaryStatus === "pending" ? "Summarizing…" : "Processing"}
+                    {item.summaryStatus === "pending"
+                      ? t("Summarizing…")
+                      : localizedProcessingStep(item.step, "Processing", t, formatNumber)}
                   </Badge>
                 ) : historyStatus === "failed" ? (
                   <Button
@@ -263,15 +306,15 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     onClick={(event) => onTranscriptionRetry(event, item)}
                     disabled={isRetryingTranscription}
                     aria-busy={isRetryingTranscription}
-                    aria-label={`${isRetryingTranscription ? "Retrying" : "Retry"} transcription for ${item.title}`}
-                    title={isRetryingTranscription ? "Restarting transcription" : "Transcription failed. Try again"}
+                    aria-label={t(isRetryingTranscription ? "Retrying transcription for {{title}}" : "Retry transcription for {{title}}", { title: item.title })}
+                    title={isRetryingTranscription ? t("Restarting transcription") : t("Transcription failed. Try again")}
                   >
                     {isRetryingTranscription ? (
                       <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                     ) : (
                       <RotateCcw className="h-3 w-3" aria-hidden="true" />
                     )}
-                    <span>{isRetryingTranscription ? "Retrying…" : "Retry transcription"}</span>
+                    <span>{isRetryingTranscription ? t("Retrying…") : t("Retry transcription")}</span>
                   </Button>
                 ) : historyStatus === "summary_failed" ? (
                   <TranscriptSummaryRetryButton
@@ -280,11 +323,11 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     onComplete={onSummaryRetryComplete}
                   />
                 ) : historyStatus === "stopped" ? (
-                  <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50/90 text-[10px]">Stopped</Badge>
+                  <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50/90 text-[10px]">{t("Stopped")}</Badge>
                 ) : (
                   <div className="flex items-center gap-1 rounded-full bg-green-50/90 px-2 py-1 text-[10px] font-medium text-green-600 dark:bg-green-950/70 dark:text-green-300">
                     <CheckCircle2 className="w-3 h-3" />
-                    Ready
+                    {t("Ready")}
                   </div>
                 )}
               </div>
@@ -302,16 +345,16 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                   {item.title}
                 </button>
               </h3>
-              <p className="text-xs text-muted-foreground mt-1 truncate">{item.channel || item.channelTitle || "Unknown"}</p>
+              <p className="text-xs text-muted-foreground mt-1 truncate">{item.channel || item.channelTitle || t("Unknown")}</p>
               <div className="flex items-center justify-between mt-2">
-                <span className="text-xs text-muted-foreground">{item.date}</span>
+                <span className="text-xs text-muted-foreground">{dateLabel}</span>
                 <div className="flex items-center gap-1">
                   <CopyActionButton
                     onClick={(e) => onCopy(e, item.id)}
                     disabled={isCopying}
                     copied={isCopying}
-                    title="Copy transcript"
-                    ariaLabel={`Copy transcript ${item.title}`}
+                title={t("Copy transcript")}
+                ariaLabel={t("Copy transcript {{title}}", { title: item.title })}
                     size="sm"
                     className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
                   />
@@ -319,8 +362,8 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     onClick={(e) => onDelete(e, item.id)}
                     disabled={isDeleting}
                     loading={isDeleting}
-                    title="Delete transcript"
-                    ariaLabel={`Delete transcript ${item.title}`}
+                title={t("Delete transcript")}
+                ariaLabel={t("Delete transcript {{title}}", { title: item.title })}
                     size="sm"
                     className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
                   />
@@ -338,6 +381,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
 export default function Youtube() {
   const [location, setLocation] = useLocation();
   const { toast } = useToast();
+  const { formatDate, formatNumber, t } = useI18n();
   const [query, setQuery] = useUrlQueryState("search", "", {
     parse: (raw) => raw ?? "",
     serialize: (value) => {
@@ -481,7 +525,7 @@ export default function Youtube() {
         setSearchEmpty(items.length === 0);
       }
     } catch (e: any) {
-      const msg = friendlyError(e, "YouTube lookup failed.");
+      const msg = t(friendlyError(e, t("YouTube lookup failed.")));
       setSearchError(msg);
     } finally {
       searchRequestInFlightRef.current = false;
@@ -549,11 +593,11 @@ export default function Youtube() {
         }
       }
     } catch (e: any) {
-      const msg = friendlyError(e, "Failed to start transcription.");
+      const msg = t(friendlyError(e, t("Failed to start transcription.")));
       setStartError(msg);
       setLastFailedStartItem(item);
       toast({
-        title: "Failed to start transcription",
+        title: t("Failed to start transcription"),
         description: msg,
         variant: "destructive",
         duration: 4000,
@@ -580,8 +624,8 @@ export default function Youtube() {
         throw new Error(errData.message || res.statusText);
       }
       toast({
-        title: "Deleted",
-        description: "Transcript removed successfully.",
+        title: t("Deleted"),
+        description: t("Transcript removed successfully."),
         duration: 2000,
       });
       queryClient.invalidateQueries({
@@ -591,15 +635,15 @@ export default function Youtube() {
       });
     } catch (e: any) {
       toast({
-        title: "Delete failed",
-        description: String(e?.message || e),
+        title: t("Delete failed"),
+        description: t(String(e?.message || e)),
         duration: 4000,
       });
     } finally {
       deletingRef.current = null;
       setDeletingId(null);
     }
-  }, [queryClient, toast]);
+  }, [queryClient, t, toast]);
 
   const copyTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -618,12 +662,12 @@ export default function Youtube() {
       const data = (await res.json()) as TranscriptDetailResponse;
       const content = data?.content || "";
       if (!content) {
-        throw new Error("No transcript content available");
+        throw new Error(t("No transcript content available"));
       }
       await navigator.clipboard.writeText(content);
       toast({
-        title: "Copied",
-        description: "Transcript copied to clipboard.",
+        title: t("Copied"),
+        description: t("Transcript copied to clipboard."),
         duration: 2000,
       });
       // Show check mark briefly
@@ -634,14 +678,14 @@ export default function Youtube() {
       }, 1500);
     } catch (e: any) {
       toast({
-        title: "Copy failed",
-        description: String(e?.message || e),
+        title: t("Copy failed"),
+        description: t(String(e?.message || e)),
         duration: 4000,
       });
       copyingRef.current = null;
       setCopyingId(null);
     }
-  }, [toast]);
+  }, [t, toast]);
 
   const navigateToTranscript = useCallback((id: string) => {
     setLocation(`/transcript/${id}`);
@@ -663,8 +707,8 @@ export default function Youtube() {
     const sourceUrl = String(item.sourceUrl || "").trim();
     if (!sourceUrl) {
       toast({
-        title: "Retry unavailable",
-        description: "No source URL is available for this video.",
+        title: t("Retry unavailable"),
+        description: t("No source URL is available for this video."),
         variant: "destructive",
         duration: 5000,
       });
@@ -692,12 +736,12 @@ export default function Youtube() {
 
       const retry = (await response.json()) as TranscriptHistoryItem;
       if (!retry?.id) {
-        throw new Error("Retry started, but no transcript ID was returned.");
+        throw new Error(t("Retry started, but no transcript ID was returned."));
       }
 
       toast({
-        title: "Retry started",
-        description: `A new transcription attempt for “${item.title}” has been queued.`,
+        title: t("Retry started"),
+        description: t("A new transcription attempt for “{{title}}” has been queued.", { title: item.title }),
         duration: 3000,
       });
       queryClient.invalidateQueries({
@@ -707,8 +751,8 @@ export default function Youtube() {
       });
     } catch (error) {
       toast({
-        title: "Retry failed",
-        description: friendlyError(error, "Scriber could not restart this transcription."),
+        title: t("Retry failed"),
+        description: t(friendlyError(error, t("Scriber could not restart this transcription."))),
         variant: "destructive",
         duration: 5000,
       });
@@ -716,7 +760,7 @@ export default function Youtube() {
       retryingTranscriptRef.current = null;
       setRetryingTranscriptId(null);
     }
-  }, [queryClient, toast]);
+  }, [queryClient, t, toast]);
 
   // Preload TranscriptDetail page and data on hover for instant navigation
   const preloadTranscript = useCallback((id: string) => {
@@ -727,9 +771,9 @@ export default function Youtube() {
   return (
     <div className="app-page-shell transcription-page youtube-page px-4 py-5 md:px-6 md:py-6" data-page-shell="youtube">
       <PageIntro
-        eyebrow="Media capture · 03"
-        title="YouTube transcription"
-        description="Paste a link or search YouTube, then turn the video into a searchable transcript."
+        eyebrow={t("Media capture · 03")}
+        title={t("YouTube transcription")}
+        description={t("Paste a link or search YouTube, then turn the video into a searchable transcript.")}
         accentClassName="bg-red-500/70"
         sticky={false}
       />
@@ -743,17 +787,17 @@ export default function Youtube() {
               event.preventDefault();
               void runSearch();
             }}
-            aria-label="Find a YouTube video"
+            aria-label={t("Find a YouTube video")}
           >
             <div className="youtube-search-mark flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] text-red-500">
               <YoutubeIcon className="h-5 w-5 stroke-[1.65px]" aria-hidden="true" />
             </div>
             <div className="relative min-w-0 flex-1">
-              <label htmlFor="youtube-source-search" className="sr-only">YouTube URL or search terms</label>
+              <label htmlFor="youtube-source-search" className="sr-only">{t("YouTube URL or search terms")}</label>
               <Input
                 id="youtube-source-search"
                 className="h-12 border-0 bg-transparent pr-10 text-[15px] shadow-none focus-visible:ring-0"
-                placeholder="Paste a YouTube link or search videos..."
+                placeholder={t("Paste a YouTube link or search videos…")}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 autoComplete="off"
@@ -763,7 +807,7 @@ export default function Youtube() {
                   type="button"
                   className="absolute right-0 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground outline-none transition-colors hover:bg-foreground/[0.06] hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
                   onClick={() => setQuery("")}
-                  aria-label="Clear YouTube search"
+                  aria-label={t("Clear YouTube search")}
                 >
                   <X className="h-4 w-4" aria-hidden="true" />
                 </button>
@@ -774,7 +818,7 @@ export default function Youtube() {
               className="h-10 w-10 shrink-0 rounded-lg px-0 text-[12px] font-semibold active:scale-[0.98] sm:w-auto sm:min-w-[112px] sm:px-4"
               disabled={!query.trim() || isSearching}
               type="submit"
-              aria-label={isSearching ? "Searching YouTube" : "Find video"}
+              aria-label={isSearching ? t("Searching YouTube") : t("Find video")}
               aria-busy={isSearching}
             >
               {isSearching ? (
@@ -782,12 +826,12 @@ export default function Youtube() {
               ) : (
                 <Search className="h-4 w-4 stroke-[1.7px]" aria-hidden="true" />
               )}
-              <span className="hidden sm:inline">{isSearching ? "Searching" : "Find video"}</span>
+              <span className="hidden sm:inline">{isSearching ? t("Searching") : t("Find video")}</span>
             </Button>
           </form>
           <div className="youtube-search-foot flex items-center justify-between gap-3 px-1 pt-3 text-[10.5px] text-muted-foreground">
-            <span>Paste one link, or search by title and channel</span>
-            <span className="hidden font-mono tabular-nums sm:inline">Enter ↵</span>
+            <span>{t("Paste one link, or search by title and channel")}</span>
+            <span className="hidden font-mono tabular-nums sm:inline">{t("Enter")} ↵</span>
           </div>
         </div>
       </div>
@@ -798,37 +842,39 @@ export default function Youtube() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <div className="flex flex-wrap items-center gap-2.5">
-                <h2 className="font-heading text-[20px] font-semibold tracking-[-0.02em]">Search results</h2>
+                <h2 className="font-heading text-[20px] font-semibold tracking-[-0.02em]">{t("Search results")}</h2>
                 {!isSearching && searchResults.length > 0 ? (
                   <span className="transcription-history-count inline-flex h-6 min-w-6 items-center justify-center rounded-[8px] px-2 font-mono text-[10.5px] font-semibold tabular-nums text-muted-foreground">
-                    {searchResults.length}
+                    {formatNumber(searchResults.length)}
                   </span>
                 ) : null}
               </div>
               <p className="mt-1 max-w-[60ch] text-pretty text-[12px] text-muted-foreground">
-                {isSearching ? `Looking for “${submittedQuery}”` : `Results for “${submittedQuery}”`}
+                {isSearching
+                  ? t("Looking for “{{query}}”", { query: submittedQuery })
+                  : t("Results for “{{query}}”", { query: submittedQuery })}
               </p>
             </div>
             <div className="flex items-center gap-2">
               {searchResults.length > 0 && !isSearching && (
                 <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortOption)}>
-                  <SelectTrigger className="h-9 w-[150px] text-xs" aria-label="Sort search results">
-                    <SelectValue placeholder="Sort by" />
+                  <SelectTrigger className="h-9 w-[150px] text-xs" aria-label={t("Sort search results")}>
+                    <SelectValue placeholder={t("Sort by")} />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="date">
                       <span className="flex items-center gap-2">
-                        <Clock className="w-3 h-3" /> Most Recent
+                        <Clock className="w-3 h-3" /> {t("Most recent")}
                       </span>
                     </SelectItem>
                     <SelectItem value="likes">
                       <span className="flex items-center gap-2">
-                        <ThumbsUp className="w-3 h-3" /> Most Liked
+                        <ThumbsUp className="w-3 h-3" /> {t("Most liked")}
                       </span>
                     </SelectItem>
                     <SelectItem value="views">
                       <span className="flex items-center gap-2">
-                        <Eye className="w-3 h-3" /> Most Viewed
+                        <Eye className="w-3 h-3" /> {t("Most viewed")}
                       </span>
                     </SelectItem>
                   </SelectContent>
@@ -839,8 +885,8 @@ export default function Youtube() {
 
           {!isSearching && searchError && (
             <QueryErrorState
-              title="YouTube search failed"
-              description={searchError}
+              title={t("YouTube search failed")}
+              description={t(searchError)}
               onRetry={query.trim() ? runSearch : undefined}
               className="mx-2"
             />
@@ -848,9 +894,9 @@ export default function Youtube() {
 
           {!isSearching && searchEmpty && (
             <div className="transcription-neutral-state rounded-[18px] px-5 py-6 text-center" role="status">
-              <p className="font-heading text-[15px] font-semibold text-foreground">No videos found</p>
+              <p className="font-heading text-[15px] font-semibold text-foreground">{t("No videos found")}</p>
               <p className="mx-auto mt-1 max-w-[52ch] text-[12px] leading-5 text-muted-foreground">
-                Try a more specific title, a channel name, or paste the full YouTube URL.
+                {t("Try a more specific title, a channel name, or paste the full YouTube URL.")}
               </p>
             </div>
           )}
@@ -869,14 +915,14 @@ export default function Youtube() {
                   </div>
                 </div>
               ))}
-              <span className="sr-only">Searching YouTube</span>
+              <span className="sr-only">{t("Searching YouTube")}</span>
             </div>
           )}
 
           {!isSearching && startError && (
             <QueryErrorState
-              title="Could not start transcription"
-              description={startError}
+              title={t("Could not start transcription")}
+              description={t(startError)}
               onRetry={lastFailedStartItem ? () => startTranscription(lastFailedStartItem) : undefined}
               className="mx-2"
             />
@@ -885,7 +931,7 @@ export default function Youtube() {
           {sortedResults.length > 0 && (
             <div className="grid gap-4 xl:grid-cols-2">
               {sortedResults.map((item) => {
-                const published = item.publishedAt ? new Date(item.publishedAt).toLocaleDateString() : "";
+                const published = item.publishedAt ? formatDate(item.publishedAt, { dateStyle: "medium" }) : "";
                 const isStarting = startingVideoId === (item.videoId || item.url);
                 return (
                   <Card
@@ -896,7 +942,7 @@ export default function Youtube() {
                     }}
                     role="button"
                     tabIndex={isStarting ? -1 : 0}
-                    aria-label={`Start transcription for ${item.title || "video"}`}
+                    aria-label={t("Start transcription for {{title}}", { title: item.title || t("video") })}
                     aria-busy={isStarting}
                     aria-disabled={isStarting}
                     onKeyDown={(e) => {
@@ -928,14 +974,14 @@ export default function Youtube() {
                       <div className="flex-1 min-w-0">
                         <div className="flex justify-between items-start">
                           <h3 className="line-clamp-2 pr-2 font-heading text-[15px] font-medium leading-[1.35] text-foreground">
-                            {item.title || "Untitled"}
+                            {item.title || t("Untitled")}
                           </h3>
                           <Badge variant="outline" className="text-[10px]">
-                            {isStarting ? "Starting…" : "Transcribe"}
+                            {isStarting ? t("Starting…") : t("Transcribe")}
                           </Badge>
                         </div>
                         <p className="text-sm text-muted-foreground mt-1">
-                          {item.channelTitle || "Unknown Channel"}
+                          {item.channelTitle || t("Unknown channel")}
                           {published ? ` · ${published}` : ""}
                         </p>
 
@@ -945,12 +991,12 @@ export default function Youtube() {
                           </span>
                           {item.viewCount !== undefined && item.viewCount > 0 && (
                             <span className="flex items-center gap-1">
-                              <Eye className="w-3 h-3" /> {item.viewCount.toLocaleString()}
+                              <Eye className="w-3 h-3" /> {formatNumber(item.viewCount)}
                             </span>
                           )}
                           {item.likeCount !== undefined && item.likeCount > 0 && (
                             <span className="flex items-center gap-1">
-                              <ThumbsUp className="w-3 h-3" /> {item.likeCount.toLocaleString()}
+                              <ThumbsUp className="w-3 h-3" /> {formatNumber(item.likeCount)}
                             </span>
                           )}
                         </div>
@@ -967,15 +1013,15 @@ export default function Youtube() {
       {/* Recent History */}
       <div className="transcription-history space-y-4">
         <TranscriptionHistoryToolbar
-          title="Recent videos"
-          description="Search, copy, or reopen your latest video transcripts."
+          title={t("Recent videos")}
+          description={t("Search, copy, or reopen your latest video transcripts.")}
           total={transcriptsQuery.total}
-          itemLabel={transcriptsQuery.total === 1 ? "video" : "videos"}
+          itemLabel={transcriptsQuery.total === 1 ? t("video") : t("videos")}
           searchValue={historySearch}
           onSearchChange={setHistorySearch}
-          searchPlaceholder="Search videos..."
-          searchAriaLabel="Search YouTube transcript history"
-          clearSearchLabel="Clear YouTube history search"
+          searchPlaceholder={t("Search videos…")}
+          searchAriaLabel={t("Search YouTube transcript history")}
+          clearSearchLabel={t("Clear YouTube history search")}
           viewMode={viewMode}
           onViewModeChange={setViewMode}
         />
@@ -985,13 +1031,13 @@ export default function Youtube() {
             <SkeletonList count={3} variant={viewMode} />
           ) : transcriptsQuery.isError ? (
             <QueryErrorState
-              title="Could not load recent videos"
-              description="Please retry loading your YouTube transcript history."
+              title={t("Could not load recent videos")}
+              description={t("Please retry loading your YouTube transcript history.")}
               onRetry={() => transcriptsQuery.refetch()}
             />
           ) : recentVideos.length === 0 ? (
             debouncedHistorySearch ? (
-              <p className="text-center text-muted-foreground py-8">No videos match "{debouncedHistorySearch}"</p>
+              <p className="text-center text-muted-foreground py-8">{t("No videos match “{{query}}”", { query: debouncedHistorySearch })}</p>
             ) : (
               <EmptyState type="youtube" />
             )

@@ -253,7 +253,7 @@ def test_frontend_browser_smoke_exercises_command_palette() -> None:
     script = (REPO_ROOT / "scripts" / "smoke_frontend_browser.py").read_text(encoding="utf-8")
 
     assert "exercise_command_palette" in script
-    assert "Debug-Konsole" in script
+    assert "Debug Console" in script
     assert "Synthetic Recording 00003" in script
     assert "commandPaletteCheck" in script
     assert "\"command-palette\"" in script
@@ -307,7 +307,7 @@ def test_frontend_browser_smoke_exercises_file_actions() -> None:
     assert "Synthetic File Processing" in script
     assert "processing queue" in script
     assert "View transcript Synthetic File Processing" in script
-    assert "Synthetic processes files in-app up to 2GB" in script
+    assert "Synthetic processes files in the app up to 2GB" in script
     assert "Search files" in script
     assert "Copy transcript Synthetic File 00002" in script
     assert "Delete transcript Synthetic File 00002" in script
@@ -341,7 +341,7 @@ def test_frontend_browser_smoke_exercises_transcript_detail_actions() -> None:
     assert "exercise_transcript_detail_actions" in script
     assert "Synthetic No Summary Recording" in script
     assert "Synthetic Failed Summary Recording" in script
-    assert "Copy Transcript" in script
+    assert "Copy transcript" in script
     assert "Export as PDF" in script
     assert "Export as DOCX" in script
     assert "Retry Summary" in script

@@ -19,6 +19,7 @@ import {
   isScriberWebSocketMessage,
   type ScriberWebSocketMessage,
 } from "@/contexts/WebSocketContext";
+import { useI18n } from "@/i18n";
 
 type OverlayMode = "hidden" | "initializing" | "recording" | "transcribing";
 
@@ -243,7 +244,8 @@ function OverlayWaveform({
 }
 
 function StatusContent({ mode }: { mode: "initializing" | "transcribing" }) {
-  const label = mode === "initializing" ? "Preparing..." : "Transcribing...";
+  const { t } = useI18n();
+  const label = mode === "initializing" ? t("Preparing...") : t("Transcribing...");
   const color = mode === "initializing" ? "text-blue-300" : "text-blue-400";
   return (
     <div className={`flex h-full w-full items-center justify-center gap-1.5 ${color}`}>
@@ -262,6 +264,7 @@ function overlayLayerClass(active: boolean): string {
 }
 
 export default function NativeRecordingOverlay() {
+  const { t } = useI18n();
   const [backendReady, setBackendReady] = useState(!isTauriRuntime());
   const [mode, setMode] = useState<OverlayMode>(() => devOverlayModeFromLocation());
   const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
@@ -488,7 +491,7 @@ export default function NativeRecordingOverlay() {
                     height: STOP_BUTTON_SIZE,
                     borderRadius: STOP_BUTTON_SIZE / 2,
                   }}
-                  aria-label="Stop recording"
+                  aria-label={t("Stop recording")}
                 >
                   <Square className="fill-current" style={{ width: STOP_ICON_SIZE, height: STOP_ICON_SIZE }} />
                 </button>

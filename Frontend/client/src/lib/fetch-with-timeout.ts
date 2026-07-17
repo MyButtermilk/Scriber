@@ -1,3 +1,5 @@
+import { translateNow } from "@/i18n";
+
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
 
 /**
@@ -21,7 +23,7 @@ export async function fetchWithTimeout(
   }
 
   const timeoutId = globalThis.setTimeout(
-    () => controller.abort(new DOMException("Request timed out", "TimeoutError")),
+    () => controller.abort(new DOMException(translateNow("Request timed out"), "TimeoutError")),
     Math.max(1, timeoutMs),
   );
   try {
@@ -39,7 +41,11 @@ export function withPromiseTimeout<T>(
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timeoutId = globalThis.setTimeout(
-      () => reject(new Error(`${label} timed out`)),
+      () => {
+        const error = new Error(translateNow("{{label}} timed out", { label: translateNow(label) }));
+        error.name = "TimeoutError";
+        reject(error);
+      },
       Math.max(1, timeoutMs),
     );
     promise.then(

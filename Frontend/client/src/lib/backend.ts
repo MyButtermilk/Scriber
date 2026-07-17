@@ -6,6 +6,7 @@ import {
 } from "@/lib/api-types";
 import { responseDetailMessage } from "@/lib/request-errors";
 import { fetchWithTimeout, withPromiseTimeout } from "@/lib/fetch-with-timeout";
+import { translateNow } from "@/i18n";
 
 declare global {
   interface Window {
@@ -240,7 +241,7 @@ export async function getAutostartStatus(): Promise<AutostartStatus> {
     5_000,
   );
   if (!res.ok) {
-    throw new Error(await responseMessage(res, "Failed to load autostart status"));
+    throw new Error(await responseMessage(res, translateNow("Failed to load autostart status")));
   }
   return (await res.json()) as AutostartStatus;
 }
@@ -262,7 +263,7 @@ export async function setAutostartEnabled(enabled: boolean): Promise<AutostartSt
     credentials: "include",
   }, 5_000);
   if (!res.ok) {
-    throw new Error(await responseMessage(res, "Failed to update autostart"));
+    throw new Error(await responseMessage(res, translateNow("Failed to update autostart")));
   }
   return (await res.json()) as AutostartStatus;
 }

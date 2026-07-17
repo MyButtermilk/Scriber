@@ -7,6 +7,7 @@ import {
   calculateHistoryScrollMargin,
 } from "@/lib/virtual-transcript-history-layout";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 
 type ViewMode = "list" | "grid";
 
@@ -75,6 +76,7 @@ export function VirtualTranscriptHistory<TItem>({
   estimateGridRowHeight = 252,
   estimateGroupHeaderHeight = 48,
 }: VirtualTranscriptHistoryProps<TItem>) {
+  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const loadInFlightRef = useRef(false);
@@ -304,7 +306,7 @@ export function VirtualTranscriptHistory<TItem>({
         {isLoadingMore && (
           <>
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />
-            <span className="sr-only">Loading more transcripts</span>
+            <span className="sr-only">{t("Loading more transcripts")}</span>
           </>
         )}
       </div>

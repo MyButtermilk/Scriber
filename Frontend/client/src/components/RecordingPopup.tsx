@@ -8,6 +8,7 @@ import { requestLiveMicStop } from "@/lib/live-mic-control";
 import { useToast } from "@/hooks/use-toast";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { showRecordingErrorToast } from "@/lib/recording-error-toast";
+import { useI18n } from "@/i18n";
 
 const BAR_COUNT = 56; // ~30% reduction from 80
 
@@ -141,6 +142,7 @@ const AudioWaveform = memo(function AudioWaveform({ levelsRef, displayRef, fallR
 
 // Transcribing text with animated dots
 function TranscribingText() {
+    const { t } = useI18n();
     return (
         <motion.div
             initial={{ opacity: 0 }}
@@ -172,7 +174,7 @@ function TranscribingText() {
                     letterSpacing: '0.02em',
                 }}
             >
-                Transcribing...
+                {t("Transcribing...")}
             </span>
             <style>{`
                 @keyframes spin {
@@ -189,6 +191,7 @@ interface RecordingPopupProps {
 }
 
 export function RecordingPopup({ className }: RecordingPopupProps) {
+    const { t } = useI18n();
     const { toast } = useToast();
     const [isRecording, setIsRecording] = useState(false);
     const [isTranscribing, setIsTranscribing] = useState(false);
@@ -349,7 +352,7 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
                                 }}
                                 onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
                                 onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
-                                aria-label="Stop recording"
+                                aria-label={t("Stop recording")}
                             >
                                 <Square
                                     style={{

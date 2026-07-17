@@ -1525,6 +1525,14 @@ class FrontendSmokeBackend:
 async def install_page_error_capture(cdp: CdpClient) -> None:
     source = r"""
 (() => {
+  try {
+    const storedLocale = window.localStorage.getItem("scriber-ui-locale");
+    if (storedLocale !== "de" && storedLocale !== "en") {
+      window.localStorage.setItem("scriber-ui-locale", "en");
+    }
+  } catch (_error) {
+    // The smoke remains usable when a browser profile disables local storage.
+  }
   window.__scriberSmoke = { consoleErrors: [], pageErrors: [], unhandledRejections: [] };
   const originalError = console.error.bind(console);
   console.error = (...args) => {
@@ -1650,6 +1658,109 @@ async def wait_for_interaction_state(
             return last_state
         await asyncio.sleep(0.25)
     raise RuntimeError(f"Timed out waiting for interaction '{label}'. Last state: {last_state}")
+
+
+async def exercise_interface_locale_switch(
+    cdp: CdpClient,
+    *,
+    frontend_base_url: str,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    await cdp.call("Page.navigate", {"url": f"{frontend_base_url}/"}, timeout=10)
+    initial = await wait_for_route_ready(
+        cdp,
+        route="/",
+        expected_text=ROUTE_EXPECTATIONS["/"],
+        expect_history_virtualized=True,
+        timeout_sec=timeout_sec,
+    )
+    await click_visible_target(
+        cdp,
+        label="switch interface to German",
+        selector='button[aria-label="Switch interface to German"]',
+        timeout_sec=timeout_sec,
+    )
+    german = await wait_for_interaction_state(
+        cdp,
+        label="German interface locale",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  const switchBack = document.querySelector('button[aria-label="Oberfläche auf Englisch umstellen"]');
+  return {
+    ok: document.documentElement.lang === 'de'
+      && window.localStorage.getItem('scriber-ui-locale') === 'de'
+      && text.includes('Live-Transkription')
+      && text.includes('Letzte Aufnahmen')
+      && !!switchBack,
+    lang: document.documentElement.lang,
+    storedLocale: window.localStorage.getItem('scriber-ui-locale'),
+    hasGermanLiveTitle: text.includes('Live-Transkription'),
+    hasGermanHistoryTitle: text.includes('Letzte Aufnahmen'),
+    hasGermanSwitchBackLabel: !!switchBack,
+  };
+})()
+""",
+    )
+
+    await cdp.call("Page.navigate", {"url": f"{frontend_base_url}/settings"}, timeout=10)
+    persisted = await wait_for_interaction_state(
+        cdp,
+        label="German interface locale persistence",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  return {
+    ok: document.readyState === 'complete'
+      && document.documentElement.lang === 'de'
+      && window.localStorage.getItem('scriber-ui-locale') === 'de'
+      && text.includes('Einstellungen')
+      && text.includes('Oberflächensprache'),
+    lang: document.documentElement.lang,
+    storedLocale: window.localStorage.getItem('scriber-ui-locale'),
+    hasGermanSettingsTitle: text.includes('Einstellungen'),
+    hasInterfaceLanguageControl: text.includes('Oberflächensprache'),
+  };
+})()
+""",
+    )
+    await click_visible_target(
+        cdp,
+        label="switch interface back to English",
+        selector='button[aria-label="Oberfläche auf Englisch umstellen"]',
+        timeout_sec=timeout_sec,
+    )
+    restored = await wait_for_interaction_state(
+        cdp,
+        label="English interface locale restored",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  return {
+    ok: document.documentElement.lang === 'en'
+      && window.localStorage.getItem('scriber-ui-locale') === 'en'
+      && text.includes('Settings')
+      && text.includes('Interface language')
+      && !!document.querySelector('button[aria-label="Switch interface to German"]'),
+    lang: document.documentElement.lang,
+    storedLocale: window.localStorage.getItem('scriber-ui-locale'),
+    hasEnglishSettingsTitle: text.includes('Settings'),
+    hasInterfaceLanguageControl: text.includes('Interface language'),
+  };
+})()
+""",
+    )
+    return {
+        "name": "interface-locale-switch",
+        "ok": bool(initial.get("ready")) and bool(german.get("ok")) and bool(persisted.get("ok")) and bool(restored.get("ok")),
+        "initialLocale": "en",
+        "german": german,
+        "persistedAfterNavigation": persisted,
+        "restored": restored,
+    }
 
 
 async def click_page_coordinates(cdp: CdpClient, *, x: float, y: float) -> None:
@@ -2517,7 +2628,7 @@ async def exercise_meeting_end_to_end(
     speaker_changed = await cdp.evaluate(
         r"""
 (() => {
-  const input = document.querySelector('input[aria-label="Rename Alex"]');
+  const input = document.querySelector('[data-testid="meeting-speaker-name-speaker-smoke-1"]');
   if (!input) return { ok: false, reason: 'missing speaker rename control' };
   const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
   valueSetter.call(input, 'Alex Morgan');
@@ -4399,11 +4510,11 @@ async def exercise_file_history_interactions(cdp: CdpClient, *, timeout_sec: flo
     ok: !!root
       && document.querySelectorAll('.perf-scroll-item').length > 0
       && text.includes('Synthetic File 00001')
-      && text.includes('Synthetic processes files in-app up to 2GB')
+      && text.includes('Synthetic processes files in the app up to 2GB')
       && text.includes('video up to 2GB'),
     view: root?.getAttribute('data-history-view') || '',
     visibleCards: document.querySelectorAll('.perf-scroll-item').length,
-    hasUploadLimitHint: text.includes('Synthetic processes files in-app up to 2GB'),
+    hasUploadLimitHint: text.includes('Synthetic processes files in the app up to 2GB'),
     hasVideoLimitHint: text.includes('video up to 2GB'),
     hasFirstFile: text.includes('Synthetic File 00001')
   };
@@ -5385,9 +5496,9 @@ async def exercise_transcript_detail_actions(
 (() => {
   if (!window.__scriberSmokeDetailCopyStarted) {
     const transcriptButton = Array.from(document.querySelectorAll('button'))
-      .find((node) => (node.textContent || '').includes('Copy Transcript'));
+      .find((node) => (node.textContent || '').includes('Copy transcript'));
     const summaryButton = Array.from(document.querySelectorAll('button'))
-      .find((node) => (node.textContent || '').includes('Copy Summary'));
+      .find((node) => (node.textContent || '').includes('Copy summary'));
     if (!transcriptButton || !summaryButton) {
       return {
         ok: false,
@@ -5435,7 +5546,7 @@ async def exercise_transcript_detail_actions(
     const button = Array.from(document.querySelectorAll('button'))
       .find((node) => {
         const label = node.textContent || '';
-        return label.includes('Copy Transcript') || label.includes('Copied!');
+        return label.includes('Copy transcript') || label.includes('Copied!');
       });
     if (!button) return { ok: false, reason: 'missing transcript copy button' };
     window.__scriberSmokeDetailCopyFailureStarted = true;
@@ -6068,10 +6179,10 @@ async def exercise_command_palette(
   const text = dialog ? dialog.innerText : '';
   return {
     ok: !!dialog
-      && text.includes('Aktionen')
+      && text.includes('Actions')
       && text.includes('Navigation')
-      && text.includes('Aufnahme starten')
-      && text.includes('Debug-Konsole'),
+      && text.includes('Start recording')
+      && text.includes('Debug Console'),
     hasDialog: !!dialog,
     text: text.slice(0, 600)
   };
@@ -6084,7 +6195,7 @@ async def exercise_command_palette(
 (() => {
   const dialog = document.querySelector('[role="dialog"]');
   const item = Array.from((dialog || document).querySelectorAll('[cmdk-item]'))
-    .find((node) => (node.textContent || '').includes('Debug-Konsole'));
+    .find((node) => (node.textContent || '').includes('Debug Console'));
   if (!item) return { ok: false, reason: 'missing debug item' };
   item.dispatchEvent(new PointerEvent('pointermove', { bubbles: true }));
   item.click();
@@ -6094,7 +6205,7 @@ async def exercise_command_palette(
         timeout=5,
     )
     if not debug_clicked or not debug_clicked.get("ok"):
-        raise RuntimeError(f"Could not click Debug-Konsole command palette item: {debug_clicked}")
+        raise RuntimeError(f"Could not click Debug Console command palette item: {debug_clicked}")
 
     debug_state = await wait_for_interaction_state(
         cdp,
@@ -6147,8 +6258,8 @@ async def exercise_command_palette(
   input.dispatchEvent(new Event('input', { bubbles: true }));
   const text = dialog.innerText;
   return {
-    ok: text.includes('Transkripte') && text.includes('Synthetic Recording 00003'),
-    hasTranscriptGroup: text.includes('Transkripte'),
+    ok: text.includes('Transcripts') && text.includes('Synthetic Recording 00003'),
+    hasTranscriptGroup: text.includes('Transcripts'),
     hasTargetTranscript: text.includes('Synthetic Recording 00003')
   };
 })()
@@ -6740,6 +6851,7 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
     vite = None
     browser = None
     cdp: CdpClient | None = None
+    interface_locale_check: dict[str, Any] | None = None
 
     await backend.start()
     with tempfile.TemporaryDirectory(prefix="scriber-frontend-browser-", ignore_cleanup_errors=True) as temp_dir:
@@ -6762,6 +6874,11 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 frontend_base_url=frontend_base_url,
                 timeout_sec=args.page_timeout_sec,
                 screenshot_dir=screenshot_dir,
+            )
+            interface_locale_check = await exercise_interface_locale_switch(
+                cdp,
+                frontend_base_url=frontend_base_url,
+                timeout_sec=args.page_timeout_sec,
             )
             routes = [route for route in args.routes if route in ROUTE_EXPECTATIONS]
             scenarios = []
@@ -6969,6 +7086,7 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
         bool(scenarios)
         and all(item["ok"] for item in scenarios)
         and bool(dark_boot_check and dark_boot_check.get("ok"))
+        and bool(interface_locale_check and interface_locale_check.get("ok"))
         and bool(command_palette_check and command_palette_check.get("ok"))
         and bool(transcript_detail_actions_check and transcript_detail_actions_check.get("ok"))
         and bool(transcript_cancel_check and transcript_cancel_check.get("ok"))
@@ -6991,6 +7109,8 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
     ]
     if dark_boot_check:
         interaction_checks.append(dark_boot_check)
+    if interface_locale_check:
+        interaction_checks.append(interface_locale_check)
     if token_required_check:
         interaction_checks.append(token_required_check)
     if command_palette_check:
@@ -7025,6 +7145,7 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
         },
         "scenarios": scenarios,
         "darkBootCheck": dark_boot_check,
+        "interfaceLocaleCheck": interface_locale_check,
         "commandPaletteCheck": command_palette_check,
         "transcriptDetailActionsCheck": transcript_detail_actions_check,
         "transcriptCancelCheck": transcript_cancel_check,

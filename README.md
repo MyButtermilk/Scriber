@@ -183,6 +183,9 @@ Provider credentials, transcription models, summary models, prompts, language be
 - Automatic summarization and caption-first controls
 - Gemini, OpenRouter, OpenAI, and Cerebras summary paths
 - Light, dark, and system theme support
+- Complete German and English interface with a persistent language switch in
+  the app shell and Settings; transcription-language choices remain separate
+  from the interface language
 
 ## 🛡️ Local-first where it matters
 

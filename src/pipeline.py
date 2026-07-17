@@ -52,11 +52,6 @@ from src.soniox_region import soniox_realtime_websocket_url, soniox_rest_api_bas
 _SONIOX_MANUAL_FINALIZE_MESSAGE = '{"type": "finalize"}'
 
 try:
-    from pipecat.audio.streams.input import SoundDeviceAudioInputStream
-except ImportError:
-    SoundDeviceAudioInputStream = None
-
-try:
     from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
     HAS_SMART_TURN = True
 except ImportError:
@@ -97,6 +92,29 @@ class _AnalyzerCache:
     _vad_analyzer = None
     _smart_turn_analyzer = None
     _refill_in_progress = False
+    _vad_generation = 0
+    _smart_turn_generation = 0
+
+    @staticmethod
+    def _cleanup_unclaimed(analyzer: Any, *, label: str) -> None:
+        """Best-effort cleanup for a constructed analyzer that lost its slot."""
+
+        if analyzer is None:
+            return
+        cleanup = getattr(analyzer, "cleanup", None)
+        if not callable(cleanup):
+            return
+        try:
+            cleanup_result = cleanup()
+            if inspect.isawaitable(cleanup_result):
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    asyncio.run(cleanup_result)
+                else:
+                    loop.create_task(cleanup_result)
+        except Exception as exc:
+            logger.debug(f"Unused {label} analyzer cleanup failed: {exc}")
 
     @classmethod
     def prewarm(
@@ -107,6 +125,8 @@ class _AnalyzerCache:
     ) -> None:
         """Create at most one requested, unclaimed analyzer of each type."""
         with cls._lock:
+            vad_generation = cls._vad_generation
+            smart_turn_generation = cls._smart_turn_generation
             needs_vad = bool(
                 include_vad
                 and HAS_SILERO_VAD
@@ -132,11 +152,29 @@ class _AnalyzerCache:
             logger.info("Prewarming one-shot SmartTurn V3 analyzer")
             smart_turn_analyzer = LocalSmartTurnAnalyzerV3()
 
+        unused_vad = None
+        unused_smart_turn = None
         with cls._lock:
-            if vad_analyzer is not None and cls._vad_analyzer is None:
+            if (
+                vad_analyzer is not None
+                and cls._vad_analyzer is None
+                and cls._vad_generation == vad_generation
+                and bool(Config.SEGMENT_SPEECH_WITH_VAD)
+            ):
                 cls._vad_analyzer = vad_analyzer
-            if smart_turn_analyzer is not None and cls._smart_turn_analyzer is None:
+            else:
+                unused_vad = vad_analyzer
+            if (
+                smart_turn_analyzer is not None
+                and cls._smart_turn_analyzer is None
+                and cls._smart_turn_generation == smart_turn_generation
+                and bool(Config.SEGMENT_SPEECH_WITH_VAD)
+            ):
                 cls._smart_turn_analyzer = smart_turn_analyzer
+            else:
+                unused_smart_turn = smart_turn_analyzer
+        cls._cleanup_unclaimed(unused_vad, label="Silero VAD")
+        cls._cleanup_unclaimed(unused_smart_turn, label="SmartTurn")
 
     @classmethod
     def request_background_replenish(
@@ -220,16 +258,28 @@ class _AnalyzerCache:
     def clear_cache(cls):
         """Discard only unclaimed warmup instances."""
         with cls._lock:
+            vad_analyzer = cls._vad_analyzer
+            smart_turn_analyzer = cls._smart_turn_analyzer
             cls._vad_analyzer = None
             cls._smart_turn_analyzer = None
+            cls._vad_generation += 1
+            cls._smart_turn_generation += 1
             logger.debug("Unclaimed analyzer warmup cache cleared")
+        cls._cleanup_unclaimed(vad_analyzer, label="Silero VAD")
+        cls._cleanup_unclaimed(smart_turn_analyzer, label="SmartTurn")
 
     @classmethod
     def discard_vad_cache(cls) -> None:
         """Release an unused Silero warmup when the user disables VAD."""
         with cls._lock:
+            vad_analyzer = cls._vad_analyzer
             cls._vad_analyzer = None
+            # Invalidate a constructor that is currently running outside the
+            # lock. Even if the setting is re-enabled before it returns, that
+            # stale generation must not repopulate the discarded warm slot.
+            cls._vad_generation += 1
         logger.debug("Unclaimed Silero VAD warmup cache cleared")
+        cls._cleanup_unclaimed(vad_analyzer, label="Silero VAD")
 
 
 def _live_service_uses_async_finalization(service_name: str) -> bool:

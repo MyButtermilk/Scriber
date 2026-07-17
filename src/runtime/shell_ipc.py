@@ -16,13 +16,6 @@ SHELL_IPC_API_VERSION_ENV = "SCRIBER_SHELL_IPC_API_VERSION"
 DEFAULT_API_VERSION = "1"
 DEFAULT_TIMEOUT_SECONDS = 0.75
 MAX_RESPONSE_BYTES = 512 * 1024
-_LIFECYCLE_START_RESOURCE_ID_FIELDS = {
-    "audioCaptureStart": "streamId",
-    "audioPrewarmStart": "prewarmId",
-    "audioMeetingStart": "captureId",
-    "audioMeetingResume": "captureId",
-}
-_LIFECYCLE_START_COMMANDS = frozenset(_LIFECYCLE_START_RESOURCE_ID_FIELDS)
 _RESPONSE_ACK_TYPE = "responseAck"
 _PIPE_NAME_PATTERN = re.compile(
     r"(?:\\\\){1,2}\.(?:\\){1,2}pipe(?:\\){1,2}scriber-shell-[A-Za-z0-9_.-]+",
@@ -482,7 +475,7 @@ def _send_request_over_pipe_file(pipe_name: str, request_line: str) -> str:
                 break
             chunks.append(chunk)
         response_line = b"".join(chunks).decode("utf-8", errors="replace")
-        acknowledgement = _lifecycle_start_ack_line(
+        acknowledgement = _response_ack_line(
             request_line,
             response_line,
             newline_received=newline_received,
@@ -492,34 +485,42 @@ def _send_request_over_pipe_file(pipe_name: str, request_line: str) -> str:
         return response_line
 
 
-def _lifecycle_start_ack_line(
+def _response_ack_line(
     request_line: str,
     response_line: str,
     *,
     newline_received: bool,
-) -> str | None:
-    """Build the delivery ACK required by successful shell-owned audio starts.
+) -> str:
+    """Build the request-bound ACK required by every complete shell response.
 
     A closed pipe is ambiguous: it can mean either that the caller consumed the
     response or that a timed-out OVERLAPPED read was cancelled.  Rust therefore
-    retains cleanup ownership until this request-bound acknowledgement arrives.
-    The acknowledgement is intentionally created only after the complete
-    newline-delimited response has passed the minimum envelope checks.
+    retains cleanup ownership for successful audio starts until this request-bound
+    acknowledgement arrives. Other commands use the same acknowledgement to keep
+    the server from reclaiming a pipe while Python is still consuming the response,
+    but never gain audio rollback semantics. The acknowledgement is created only
+    after the complete newline-delimited response passes the envelope checks.
     """
 
     request = json.loads(request_line)
     if not isinstance(request, dict):
         raise ValueError("shell IPC request was not an object")
-    if request.get("command") not in _LIFECYCLE_START_COMMANDS:
-        return None
     if not newline_received:
-        raise ValueError("shell IPC lifecycle response was not newline delimited")
+        raise ValueError("shell IPC response was not newline delimited")
 
     api_version = request.get("apiVersion")
     request_id = request.get("requestId")
-    if not isinstance(api_version, str) or not api_version:
+    if (
+        not isinstance(api_version, str)
+        or not api_version
+        or len(api_version.encode("utf-8")) > 16
+    ):
         raise ValueError("shell IPC request apiVersion was invalid")
-    if not isinstance(request_id, str) or not request_id:
+    if (
+        not isinstance(request_id, str)
+        or not request_id
+        or len(request_id.encode("utf-8")) > 128
+    ):
         raise ValueError("shell IPC request requestId was invalid")
 
     response = json.loads(response_line)
@@ -529,26 +530,8 @@ def _lifecycle_start_ack_line(
         raise ValueError("shell IPC response apiVersion mismatch")
     if response.get("requestId") != request_id:
         raise ValueError("shell IPC response requestId mismatch")
-    success = response.get("success")
-    if not isinstance(success, bool):
+    if not isinstance(response.get("success"), bool):
         raise ValueError("shell IPC response success must be bool")
-    if not success:
-        return None
-
-    # Match Rust's cleanup-ownership predicate exactly. A malformed successful
-    # response without a bounded resource identifier does not leave Rust
-    # waiting for an ACK, so Python must not race a write against an already
-    # reclaimed pipe instance either.
-    payload = response.get("payload")
-    resource_id_field = _LIFECYCLE_START_RESOURCE_ID_FIELDS[request["command"]]
-    if not isinstance(payload, dict):
-        return None
-    resource_id = payload.get(resource_id_field)
-    if not isinstance(resource_id, str):
-        return None
-    cleaned_resource_id = resource_id.strip()
-    if not cleaned_resource_id or len(cleaned_resource_id.encode("utf-8")) > 96:
-        return None
 
     return (
         json.dumps(
@@ -756,7 +739,7 @@ def _send_request_over_pipe_windows(
         if newline_at >= 0:
             response = response[:newline_at]
         response_line = response.decode("utf-8", errors="replace")
-        acknowledgement = _lifecycle_start_ack_line(
+        acknowledgement = _response_ack_line(
             request_line,
             response_line,
             newline_received=newline_at >= 0,

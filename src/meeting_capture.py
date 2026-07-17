@@ -144,6 +144,8 @@ class MeetingDeviceLevelProbe:
 class MeetingAudioRecorder:
     """Consumes private Rust frame pipes into independently durable WAV chunks."""
 
+    _REQUIRED_SOURCES = frozenset({"microphone", "system", "mic_clean"})
+
     def __init__(
         self,
         meeting_id: str,
@@ -177,16 +179,26 @@ class MeetingAudioRecorder:
     def start(self, sources: list[dict[str, Any]]) -> None:
         resolved_sources: list[tuple[str, str, int]] = []
         seen_sources: set[str] = set()
+        seen_pipes: set[str] = set()
         for item in sources:
             source = str(item.get("source", ""))
             pipe = str(item.get("framePipe", ""))
             timeline_offset_ms = max(0, int(item.get("timelineOffsetMs", 0) or 0))
-            if source not in {"microphone", "system", "mic_clean"} or not pipe:
+            if source not in self._REQUIRED_SOURCES or not pipe:
                 raise ValueError("Native meeting capture omitted a required frame pipe.")
             if source in seen_sources:
                 raise ValueError("Native meeting capture duplicated an audio source.")
+            if pipe in seen_pipes:
+                raise ValueError("Native meeting capture reused an audio frame pipe.")
             seen_sources.add(source)
+            seen_pipes.add(pipe)
             resolved_sources.append((source, pipe, timeline_offset_ms))
+        missing_sources = self._REQUIRED_SOURCES - seen_sources
+        if missing_sources:
+            missing = ", ".join(sorted(missing_sources))
+            raise ValueError(
+                f"Native meeting capture omitted required audio sources: {missing}."
+            )
         with self._lifecycle_lock:
             alive = [thread for thread in self._threads if thread.is_alive()]
             if alive:

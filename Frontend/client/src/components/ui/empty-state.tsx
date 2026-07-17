@@ -1,4 +1,5 @@
 import { Mic, Youtube, UploadCloud, FileText } from "lucide-react";
+import { useI18n } from "@/i18n";
 
 interface EmptyStateProps {
     type: "mic" | "youtube" | "file" | "transcript";
@@ -33,6 +34,7 @@ const defaultContent = {
 };
 
 export function EmptyState({ type, title, description }: EmptyStateProps) {
+    const { t } = useI18n();
     const Icon = iconMap[type];
     const content = defaultContent[type];
 
@@ -41,8 +43,8 @@ export function EmptyState({ type, title, description }: EmptyStateProps) {
             <div className="neu-search-inset p-6 rounded-full">
                 <Icon className="empty-state-icon text-muted-foreground" />
             </div>
-            <h3 className="empty-state-title">{title || content.title}</h3>
-            <p className="empty-state-description">{description || content.description}</p>
+            <h3 className="empty-state-title">{t(title || content.title)}</h3>
+            <p className="empty-state-description">{t(description || content.description)}</p>
         </div>
     );
 }

@@ -4,6 +4,18 @@ export type SummaryFormat = "html" | "markdown";
 
 export const REST_API_VERSION = "1";
 
+export interface LiveMicRuntimeErrorResponse {
+  apiVersion: typeof REST_API_VERSION;
+  type: "error";
+  title: string;
+  message: string;
+  category: string;
+  code: string;
+  retryable: boolean;
+  provider?: string;
+  providerLabel?: string;
+}
+
 export type TranscriptType = "mic" | "file" | "youtube" | "meeting";
 
 export type MeetingState =

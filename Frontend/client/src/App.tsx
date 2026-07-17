@@ -20,6 +20,7 @@ import {
 } from "@/lib/frontend-performance";
 import { ToastAction } from "@/components/ui/toast";
 import { Download } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   checkDesktopUpdateIfDue,
   getCachedDesktopUpdateStatus,
@@ -44,8 +45,9 @@ const NotFound = lazy(() => import("@/pages/not-found"));
 
 // Loading fallback component - only needed for lazy-loaded pages
 function PageLoader() {
+  const { t } = useI18n();
   return (
-    <div className="flex min-h-[300px] items-start justify-center px-6 py-8" aria-label="Loading section">
+    <div className="flex min-h-[300px] items-start justify-center px-6 py-8" aria-label={t("Loading section")}>
       <div className="w-full max-w-5xl space-y-4">
         <div className="h-8 w-44 animate-pulse rounded-lg bg-slate-200/80 dark:bg-slate-800/80" />
         <div className="grid gap-3 sm:grid-cols-3">
@@ -94,6 +96,7 @@ function Router() {
 
 function RecordingErrorToastBridge() {
   const { toast } = useToast();
+  const { t } = useI18n();
 
   const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
     if (msg.type === "error") {
@@ -103,12 +106,12 @@ function RecordingErrorToastBridge() {
     if (msg.type === "session_finished" && String(msg.session?.status || "").toLowerCase() === "failed") {
       const content = String(msg.session?.content || "");
       const match = content.match(/\[Error\]\s*([^\n]+)/i);
-      const message = match?.[1]?.trim() || "Live mic transcription failed. Check the selected provider and try again.";
+      const message = match?.[1]?.trim() || t("Live mic transcription failed. Check the selected provider and try again.");
       const recordingError = recordingErrorToastMessageFromPayload({
         type: "error",
         apiVersion: msg.apiVersion,
         message,
-        title: "Recording Error",
+        title: t("Recording Error"),
         sessionId: msg.sessionId || (msg.session?.id != null ? String(msg.session.id) : undefined),
       });
       if (recordingError) {
@@ -215,6 +218,7 @@ function TranscriptHistoryInvalidationBridge() {
 function MeetingDetectionBridge() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
+  const { t } = useI18n();
   const seenRef = useRef<Set<string>>(new Set());
 
   const handleWsMessage = useCallback((message: ScriberWebSocketMessage) => {
@@ -224,16 +228,16 @@ function MeetingDetectionBridge() {
       setLocation(message.meetingId ? `/meetings/${message.meetingId}` : "/meetings");
     }
     toast({
-      title: message.meetingId ? "Meeting controls opened" : "Meeting recording requires confirmation",
+      title: message.meetingId ? t("Meeting controls opened") : t("Meeting recording requires confirmation"),
       description: message.label,
       duration: 5000,
       action: message.source === "hotkey" ? undefined : (
-        <ToastAction altText="Review meeting recording" onClick={() => setLocation("/meetings")}>
-          Review
+        <ToastAction altText={t("Review meeting recording")} onClick={() => setLocation("/meetings")}>
+          {t("Review")}
         </ToastAction>
       ),
     });
-  }, [setLocation, toast]);
+  }, [setLocation, t, toast]);
 
   useSharedWebSocket(handleWsMessage);
   return null;
@@ -409,6 +413,7 @@ function TauriNavigationBridge() {
 function DesktopUpdateAutoCheckBridge() {
   const { toast, dismiss } = useToast();
   const [, setLocation] = useLocation();
+  const { t } = useI18n();
   const busyRef = useRef(false);
   const installingFromToastRef = useRef(false);
   const notifiedVersionRef = useRef<string | null>(null);
@@ -440,8 +445,8 @@ function DesktopUpdateAutoCheckBridge() {
     installingFromToastRef.current = true;
     toast({
       variant: "update",
-      title: "Installing update",
-      description: "Scriber is downloading the update and will restart when it is ready.",
+      title: t("Installing update"),
+      description: t("Scriber is downloading the update and will restart when it is ready."),
       duration: 30000,
     });
     try {
@@ -450,12 +455,12 @@ function DesktopUpdateAutoCheckBridge() {
       installingFromToastRef.current = false;
       toast({
         variant: "destructive",
-        title: "Update failed",
-        description: error instanceof Error ? error.message : String(error || "Update installation failed."),
+        title: t("Update failed"),
+        description: error instanceof Error ? error.message : String(error || t("Update installation failed.")),
         duration: 7000,
       });
     }
-  }, [toast]);
+  }, [t, toast]);
 
   const maybeNotify = useCallback((status: DesktopUpdateStatus) => {
     if (busyRef.current || !shouldNotifyDesktopUpdate(status) || !status.version) {
@@ -472,24 +477,24 @@ function DesktopUpdateAutoCheckBridge() {
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white shadow-[0_10px_22px_rgba(37,99,235,0.22)]">
             <Download className="h-4 w-4" aria-hidden="true" />
           </span>
-          <span>Update ready</span>
+          <span>{t("Update ready")}</span>
         </span>
       ),
       description: (
         <span>
-          Scriber {status.version} is available. Click this notice to open update settings.
+          {t("Scriber {{version}} is available. Click this notice to open update settings.", { version: status.version })}
         </span>
       ),
       duration: 12000,
       className: "select-none",
       onClick: handleUpdateToastClick,
       action: (
-        <ToastAction altText="Install update now" onClick={(event) => void installUpdateFromToast(event)}>
-          Install now
+        <ToastAction altText={t("Install update now")} onClick={(event) => void installUpdateFromToast(event)}>
+          {t("Install now")}
         </ToastAction>
       ),
     });
-  }, [handleUpdateToastClick, installUpdateFromToast, toast]);
+  }, [handleUpdateToastClick, installUpdateFromToast, t, toast]);
 
   const checkIfDue = useCallback(() => {
     if (!isTauriRuntime()) {

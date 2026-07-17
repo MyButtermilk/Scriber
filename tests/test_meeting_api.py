@@ -112,6 +112,35 @@ class FakeRecorder:
         return {"microphone": {"chunks": 1}, "system": {"chunks": 1}}
 
 
+def _valid_meeting_native_payload(
+    capture_id: str,
+    *,
+    aec_active: bool = True,
+) -> dict:
+    return {
+        "captureId": capture_id,
+        "sampleRate": 16_000,
+        "frameDurationMs": 10,
+        "aecActive": aec_active,
+        "sources": [
+            {"source": "microphone", "framePipe": "private-microphone"},
+            {"source": "system", "framePipe": "private-system"},
+            {"source": "mic_clean", "framePipe": "private-mic-clean"},
+        ],
+    }
+
+
+def _test_audio_claim(owner_kind: str, owner_id: str) -> web_api.AudioAdmissionClaim:
+    return web_api.AudioAdmissionClaim(
+        owner_kind=owner_kind,
+        owner_id=owner_id,
+        controller_id="test-controller",
+        state_version=1,
+        lease_expires_at="2099-01-01T00:00:00Z",
+        updated_at="2026-07-17T00:00:00Z",
+    )
+
+
 class FakeLiveTranscriber:
     def enqueue_from_thread(self, _source, _pcm):
         pass
@@ -212,6 +241,7 @@ async def test_meeting_capture_watchdog_stops_visibly_on_disk_full(monkeypatch):
     controller._meeting_store = Store()
     controller._meeting_recorders = {"meeting-disk": Recorder()}
     controller._meeting_live_transcribers = {"meeting-disk": FakeLiveTranscriber()}
+    controller._resume_idle_mic_prewarm_after_capture = lambda: None
     controller.broadcast = lambda payload: _append_event(events, payload)
     monkeypatch.setattr(web_api.asyncio, "sleep", no_wait)
 
@@ -284,6 +314,7 @@ async def test_meeting_capture_watchdog_fails_closed_after_audio_lease_loss(
         "meeting-lease": FakeLiveTranscriber()
     }
     controller._audio_admission_lost_meetings = {"meeting-lease"}
+    controller._resume_idle_mic_prewarm_after_capture = lambda: None
     controller.broadcast = lambda payload: _append_event([], payload)
     monkeypatch.setattr(web_api.asyncio, "sleep", no_wait)
 
@@ -311,6 +342,371 @@ async def test_meeting_capture_watchdog_fails_closed_after_audio_lease_loss(
     )]
     assert shell_calls[0][0] == "audioMeetingStop"
     assert controller._audio_admission_lost_meetings == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("claim_kind", "claim_id", "should_release"),
+    [
+        ("meeting", "meeting-status-errors", True),
+        ("live_mic", "foreign-live-session", False),
+    ],
+)
+async def test_meeting_capture_watchdog_fails_after_three_status_exceptions_and_releases_only_matching_claim(
+    monkeypatch,
+    claim_kind,
+    claim_id,
+    should_release,
+):
+    meeting_id = "meeting-status-errors"
+    capture_id = "capture-status-errors"
+    transitions = []
+    events = []
+    shell_calls = []
+    released = []
+    prewarm_resumes = []
+
+    class Store:
+        def get(self, _meeting_id):
+            return {
+                "id": meeting_id,
+                "state": "recording",
+                "captureMetadata": {"captureId": capture_id},
+            }
+
+        def transition(self, changed_id, state, **kwargs):
+            transitions.append((changed_id, state, kwargs))
+            return {"id": changed_id, "state": state, **kwargs}
+
+    class Recorder:
+        def __init__(self):
+            self.stop_count = 0
+
+        @staticmethod
+        def snapshot():
+            return {"system": {"errorCode": ""}}
+
+        def stop(self):
+            self.stop_count += 1
+            return {"system": {"errorCode": ""}}
+
+    class Live:
+        def __init__(self):
+            self.stop_count = 0
+
+        async def stop(self):
+            self.stop_count += 1
+
+    async def no_wait(_seconds):
+        return None
+
+    controller = object.__new__(web_api.ScriberWebController)
+    controller._shutting_down = False
+    controller._meeting_store = Store()
+    recorder = Recorder()
+    live = Live()
+    controller._meeting_recorders = {meeting_id: recorder}
+    controller._meeting_live_transcribers = {meeting_id: live}
+    controller._audio_admission_lost_meetings = set()
+    claim = _test_audio_claim(claim_kind, claim_id)
+    controller._persistent_audio_claim = claim
+    controller._resume_idle_mic_prewarm_after_capture = (
+        lambda: prewarm_resumes.append(True)
+    )
+    controller.broadcast = lambda payload: _append_event(events, payload)
+    monkeypatch.setattr(web_api.asyncio, "sleep", no_wait)
+
+    def shell_call(command, payload, **_kwargs):
+        shell_calls.append((command, payload))
+        if command == "audioMeetingStatus":
+            raise OSError("private IPC transport failed")
+        assert command == "audioMeetingStop"
+        return {"success": True, "payload": {"stopped": True}}
+
+    async def release_audio(changed_controller, released_claim):
+        assert changed_controller is controller
+        released.append(released_claim)
+        if changed_controller._persistent_audio_claim is released_claim:
+            changed_controller._persistent_audio_claim = None
+        return True
+
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+
+    await web_api.ScriberWebController._meeting_capture_watchdog(
+        controller,
+        meeting_id,
+        capture_id,
+    )
+
+    assert [command for command, _payload in shell_calls] == [
+        "audioMeetingStatus",
+        "audioMeetingStatus",
+        "audioMeetingStatus",
+        "audioMeetingStop",
+    ]
+    assert transitions == [
+        (
+            meeting_id,
+            "capture_failed",
+            {
+                "error_code": "meeting_capture_status_unavailable",
+                "error_message": (
+                    "A meeting audio source stopped unexpectedly. The durable "
+                    "audio recorded so far was preserved."
+                ),
+            },
+        )
+    ]
+    assert recorder.stop_count == 1
+    assert live.stop_count == 1
+    assert prewarm_resumes == [True]
+    assert events[-1]["type"] == "meeting_state"
+    if should_release:
+        assert released == [claim]
+        assert controller._persistent_audio_claim is None
+    else:
+        assert released == []
+        assert controller._persistent_audio_claim is claim
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("claim_kind", "claim_id", "should_release"),
+    [
+        ("meeting", "meeting-reader-timeout", True),
+        ("live_mic", "foreign-live-session", False),
+    ],
+)
+async def test_meeting_capture_watchdog_persists_reader_stop_timeout_and_releases_only_matching_claim(
+    monkeypatch,
+    claim_kind,
+    claim_id,
+    should_release,
+):
+    meeting_id = "meeting-reader-timeout"
+    capture_id = "capture-reader-timeout"
+    transitions = []
+    events = []
+    released = []
+    timeline = []
+
+    class Store:
+        def get(self, _meeting_id):
+            return {
+                "id": meeting_id,
+                "state": "recording",
+                "captureMetadata": {"captureId": capture_id},
+            }
+
+        def transition(self, changed_id, state, **kwargs):
+            transitions.append((changed_id, state, kwargs))
+            return {"id": changed_id, "state": state, **kwargs}
+
+    class Recorder:
+        def __init__(self):
+            self.timed_out = False
+            self.expected_disconnect = False
+
+        def prepare_for_expected_disconnect(self):
+            self.expected_disconnect = True
+
+        def snapshot(self):
+            return {
+                "microphone": {
+                    "chunks": 1,
+                    "errorCode": "reader_stop_timeout" if self.timed_out else "",
+                }
+            }
+
+        def stop(self):
+            timeline.append("recorder_stop")
+            self.timed_out = True
+            raise RuntimeError("Meeting audio reader did not stop before the timeout.")
+
+    class Live:
+        def __init__(self):
+            self.stop_count = 0
+
+        async def stop(self):
+            self.stop_count += 1
+
+    async def no_wait(_seconds):
+        return None
+
+    store = Store()
+    recorder = Recorder()
+    live = Live()
+    controller = object.__new__(web_api.ScriberWebController)
+    controller._shutting_down = False
+    controller._meeting_store = store
+    controller._meeting_recorders = {meeting_id: recorder}
+    controller._meeting_live_transcribers = {meeting_id: live}
+    controller._audio_admission_lost_meetings = set()
+    claim = _test_audio_claim(claim_kind, claim_id)
+    controller._persistent_audio_claim = claim
+    controller._resume_idle_mic_prewarm_after_capture = lambda: None
+    controller.broadcast = lambda payload: _append_event(events, payload)
+    monkeypatch.setattr(web_api.asyncio, "sleep", no_wait)
+
+    def shell_call(command, payload, **_kwargs):
+        assert payload == {"meetingId": meeting_id, "captureId": capture_id}
+        if command == "audioMeetingStatus":
+            timeline.append("native_status")
+            return {
+                "success": False,
+                "errorCode": "meeting_capture_inactive",
+                "payload": {"reason": "meeting_capture_inactive"},
+            }
+        assert command == "audioMeetingStop"
+        timeline.append("native_stop")
+        return {"success": True, "payload": {"stopped": True}}
+
+    async def release_audio(changed_controller, released_claim):
+        assert changed_controller is controller
+        assert transitions[-1][1] == "capture_failed"
+        released.append(released_claim)
+        if changed_controller._persistent_audio_claim is released_claim:
+            changed_controller._persistent_audio_claim = None
+        return True
+
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+
+    await web_api.ScriberWebController._meeting_capture_watchdog(
+        controller,
+        meeting_id,
+        capture_id,
+    )
+
+    assert timeline == ["native_status", "native_stop", "recorder_stop"]
+    assert transitions[0][0:2] == (meeting_id, "capture_failed")
+    transition_kwargs = transitions[0][2]
+    assert transition_kwargs["error_code"] == "meeting_recorder_stop_timeout"
+    assert "cleanup deadline" in transition_kwargs["error_message"]
+    assert transition_kwargs["capture_metadata"]["captureId"] == capture_id
+    assert transition_kwargs["capture_metadata"]["persistence"] == {
+        "microphone": {"chunks": 1, "errorCode": "reader_stop_timeout"}
+    }
+    assert controller._meeting_recorders == {meeting_id: recorder}
+    assert recorder.expected_disconnect is True
+    assert live.stop_count == 1
+    assert events[-1]["meeting"]["state"] == "capture_failed"
+    if should_release:
+        assert released == [claim]
+        assert controller._persistent_audio_claim is None
+    else:
+        assert released == []
+        assert controller._persistent_audio_claim is claim
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reread_state", "reread_capture_id"),
+    [
+        ("paused", "capture-watchdog-race"),
+        ("recording", "capture-replacement"),
+    ],
+)
+async def test_meeting_capture_watchdog_aborts_stale_status_failure_after_locked_reread(
+    monkeypatch,
+    reread_state,
+    reread_capture_id,
+):
+    meeting_id = "meeting-watchdog-race"
+    capture_id = "capture-watchdog-race"
+    released = []
+    shell_calls = []
+    prewarm_resumes = []
+
+    class Store:
+        def __init__(self):
+            self.get_count = 0
+            self.transitions = []
+
+        def get(self, _meeting_id):
+            self.get_count += 1
+            if self.get_count <= 3:
+                state = "recording"
+                current_capture_id = capture_id
+            else:
+                state = reread_state
+                current_capture_id = reread_capture_id
+            return {
+                "id": meeting_id,
+                "state": state,
+                "captureMetadata": {"captureId": current_capture_id},
+            }
+
+        def transition(self, changed_id, state, **kwargs):
+            self.transitions.append((changed_id, state, kwargs))
+            return {"id": changed_id, "state": state, **kwargs}
+
+    class Recorder:
+        def __init__(self):
+            self.stop_count = 0
+
+        @staticmethod
+        def snapshot():
+            return {"system": {"errorCode": ""}}
+
+        def stop(self):
+            self.stop_count += 1
+            return {"system": {"errorCode": ""}}
+
+    async def no_wait(_seconds):
+        return None
+
+    store = Store()
+    recorder = Recorder()
+    controller = object.__new__(web_api.ScriberWebController)
+    controller._shutting_down = False
+    controller._meeting_store = store
+    controller._meeting_recorders = {meeting_id: recorder}
+    controller._meeting_live_transcribers = {}
+    controller._audio_admission_lost_meetings = set()
+    claim = _test_audio_claim("meeting", meeting_id)
+    controller._persistent_audio_claim = claim
+    controller._resume_idle_mic_prewarm_after_capture = (
+        lambda: prewarm_resumes.append(True)
+    )
+
+    async def unexpected_broadcast(_payload):
+        raise AssertionError("stale watchdog observation must not broadcast")
+
+    controller.broadcast = unexpected_broadcast
+    monkeypatch.setattr(web_api.asyncio, "sleep", no_wait)
+
+    def shell_call(command, payload, **_kwargs):
+        shell_calls.append((command, payload))
+        assert command == "audioMeetingStatus"
+        raise OSError("private IPC transport failed")
+
+    async def release_audio(_controller, released_claim):
+        released.append(released_claim)
+        return True
+
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+
+    await web_api.ScriberWebController._meeting_capture_watchdog(
+        controller,
+        meeting_id,
+        capture_id,
+    )
+
+    assert store.get_count == 4
+    assert [command for command, _payload in shell_calls] == [
+        "audioMeetingStatus",
+        "audioMeetingStatus",
+        "audioMeetingStatus",
+    ]
+    assert store.transitions == []
+    assert recorder.stop_count == 0
+    assert controller._meeting_recorders == {meeting_id: recorder}
+    assert released == []
+    assert controller._persistent_audio_claim is claim
+    assert prewarm_resumes == []
 
 
 async def _append_event(items, value):
@@ -1036,6 +1432,235 @@ class TrackingLiveTranscriber(FakeLiveTranscriber):
         self.stop_count += 1
 
 
+def _recording_meeting_control_controller(monkeypatch, tmp_path, db_name):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / db_name)
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    meeting = store.create(MeetingCreate(title=f"Control {db_name}"))
+    capture_id = f"capture-{meeting['id']}"
+    meeting = store.transition(
+        meeting["id"],
+        "recording",
+        capture_metadata={"captureId": capture_id},
+    )
+    controller = FakeController(store)
+    recorder = TrackingRecorder()
+    recorder.start(_valid_meeting_native_payload(capture_id)["sources"])
+    controller._meeting_recorders[meeting["id"]] = recorder
+    controller.start_meeting_capture_watchdog(meeting["id"], capture_id)
+    return controller, store, meeting, recorder
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["pause", "stop"])
+@pytest.mark.parametrize(
+    ("owner_kind", "owner_id", "case_name"),
+    [
+        ("live_mic", "foreign-live-session", "foreign-live"),
+        ("meeting", "different-meeting", "wrong-meeting"),
+    ],
+)
+async def test_nonmatching_audio_claim_cannot_control_or_release_meeting_capture(
+    monkeypatch,
+    tmp_path,
+    action,
+    owner_kind,
+    owner_id,
+    case_name,
+):
+    controller, store, meeting, recorder = _recording_meeting_control_controller(
+        monkeypatch,
+        tmp_path,
+        f"{case_name}-{action}.db",
+    )
+    claim = _test_audio_claim(owner_kind, owner_id)
+    controller._persistent_audio_claim = claim
+    shell_calls = []
+    released = []
+
+    def shell_call(command, payload, **_kwargs):
+        shell_calls.append((command, payload))
+        raise AssertionError("non-matching audio claim must be rejected before IPC")
+
+    async def release_audio(_controller, released_claim):
+        released.append(released_claim)
+        return True
+
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", f"/api/meetings/{{id}}/{action}")
+
+    response = await handler(_DirectRequest(app, meeting_id=meeting["id"]))
+
+    assert response.status == 409
+    assert json.loads(response.body) == {
+        "message": "This Meeting does not own native audio capture."
+    }
+    assert store.get(meeting["id"])["state"] == "recording"
+    assert shell_calls == []
+    assert released == []
+    assert controller._persistent_audio_claim is claim
+    assert controller.capture_watchdogs == {
+        meeting["id"]: meeting["captureMetadata"]["captureId"]
+    }
+    assert recorder.stop_count == 0
+    assert recorder.expected_disconnect is False
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_pause_ipc_exception_restores_watchdog_and_preserves_state_and_claim(
+    monkeypatch,
+    tmp_path,
+):
+    controller, store, meeting, recorder = _recording_meeting_control_controller(
+        monkeypatch,
+        tmp_path,
+        "pause-ipc-exception.db",
+    )
+    claim = _test_audio_claim("meeting", meeting["id"])
+    controller._persistent_audio_claim = claim
+    shell_calls = []
+    released = []
+
+    def shell_call(command, payload, **_kwargs):
+        shell_calls.append((command, payload))
+        raise OSError("private named-pipe failure")
+
+    async def release_audio(_controller, released_claim):
+        released.append(released_claim)
+        return True
+
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/{id}/pause")
+
+    response = await handler(_DirectRequest(app, meeting_id=meeting["id"]))
+
+    assert response.status == 503
+    response_payload = json.loads(response.body)
+    assert response_payload == {
+        "message": "Native Meeting audio control is temporarily unavailable."
+    }
+    assert "named-pipe" not in json.dumps(response_payload)
+    assert shell_calls == [
+        (
+            "audioMeetingPause",
+            {
+                "meetingId": meeting["id"],
+                "captureId": meeting["captureMetadata"]["captureId"],
+            },
+        )
+    ]
+    assert store.get(meeting["id"])["state"] == "recording"
+    assert controller.capture_watchdogs == {
+        meeting["id"]: meeting["captureMetadata"]["captureId"]
+    }
+    assert recorder.stop_count == 0
+    assert recorder.expected_disconnect is False
+    assert released == []
+    assert controller._persistent_audio_claim is claim
+    assert controller.events == []
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["pause", "stop"])
+async def test_capture_command_reader_stop_timeout_becomes_visible_recovery_and_releases_matching_claim(
+    monkeypatch,
+    tmp_path,
+    action,
+):
+    controller, store, meeting, recorder = _recording_meeting_control_controller(
+        monkeypatch,
+        tmp_path,
+        f"{action}-reader-stop-timeout.db",
+    )
+    claim = _test_audio_claim("meeting", meeting["id"])
+    controller._persistent_audio_claim = claim
+    controller.prewarm_paused = True
+    live = TrackingLiveTranscriber()
+    controller._meeting_live_transcribers[meeting["id"]] = live
+    released = []
+    shell_calls = []
+
+    def recorder_snapshot():
+        return {
+            "microphone": {
+                "chunks": 1,
+                "errorCode": "reader_stop_timeout",
+            }
+        }
+
+    def recorder_stop(**_kwargs):
+        recorder.stop_count += 1
+        raise RuntimeError("Meeting audio reader did not stop before the timeout.")
+
+    recorder.snapshot = recorder_snapshot
+    recorder.stop = recorder_stop
+
+    def shell_call(command, payload, **_kwargs):
+        shell_calls.append((command, payload))
+        return {
+            "success": True,
+            "payload": {
+                "stopped": True,
+                "captureId": meeting["captureMetadata"]["captureId"],
+            },
+        }
+
+    async def release_audio(changed_controller, released_claim):
+        assert changed_controller is controller
+        persisted = store.get(meeting["id"])
+        assert persisted["state"] == "capture_failed"
+        released.append(released_claim)
+        if changed_controller._persistent_audio_claim is released_claim:
+            changed_controller._persistent_audio_claim = None
+        return True
+
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", f"/api/meetings/{{id}}/{action}")
+
+    response = await handler(_DirectRequest(app, meeting_id=meeting["id"]))
+
+    assert response.status == 503
+    response_payload = json.loads(response.body)
+    assert response_payload["meeting"]["state"] == "capture_failed"
+    assert response_payload["meeting"]["errorCode"] == "meeting_recorder_stop_timeout"
+    assert "cleanup deadline" in response_payload["message"]
+    assert shell_calls == [
+        (
+            f"audioMeeting{action.title()}",
+            {
+                "meetingId": meeting["id"],
+                "captureId": meeting["captureMetadata"]["captureId"],
+            },
+        )
+    ]
+    persisted = store.get(meeting["id"])
+    assert persisted["state"] == "capture_failed"
+    assert persisted["captureMetadata"]["persistence"] == {
+        "microphone": {"chunks": 1, "errorCode": "reader_stop_timeout"}
+    }
+    assert controller.capture_watchdogs == {}
+    assert controller._meeting_recorders[meeting["id"]] is recorder
+    assert live.stop_count == 1
+    assert meeting["id"] not in controller._meeting_live_transcribers
+    assert released == [claim]
+    assert controller._persistent_audio_claim is None
+    assert controller.prewarm_paused is False
+    assert controller.events[-1]["meeting"]["state"] == "capture_failed"
+    database._close_all_connections()
+
+
 def _capture_cancellation_controller(monkeypatch, tmp_path, db_name):
     monkeypatch.setattr(web_api.Config, "MEETING_TRANSCRIPTION_MODE", "live_final")
     database._close_all_connections()
@@ -1079,13 +1704,7 @@ def _calendar_start_controller(monkeypatch, tmp_path, db_name, calendar):
         if command == "audioMeetingStart":
             return {
                 "success": True,
-                "payload": {
-                    "captureId": f"capture-{db_name}",
-                    "sampleRate": 16_000,
-                    "frameDurationMs": 10,
-                    "aecActive": True,
-                    "sources": [],
-                },
+                "payload": _valid_meeting_native_payload(f"capture-{db_name}"),
             }
         if command == "audioMeetingStop":
             return {"success": True, "payload": {"stopped": True}}
@@ -1142,6 +1761,90 @@ def _audio_race_controller(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_meeting_start_rejects_duplicate_native_frame_pipes_and_cleans_up(
+    monkeypatch,
+    tmp_path,
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "invalid-pipe-topology.db")
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
+    monkeypatch.setattr(web_api.Config, "MEETING_TRANSCRIPTION_MODE", "final_only")
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    controller = FakeController(store)
+    controller.on_meeting_pcm = lambda *_args, **_kwargs: None
+    TrackingRecorder.instances = []
+    monkeypatch.setattr(web_api, "MeetingAudioRecorder", TrackingRecorder)
+    shell_calls = []
+
+    def shell_call(command, payload, **_kwargs):
+        shell_calls.append((command, dict(payload)))
+        if command == "audioMeetingStart":
+            return {
+                "success": True,
+                "payload": {
+                    "captureId": "capture-invalid-pipes",
+                    "sampleRate": 16_000,
+                    "frameDurationMs": 10,
+                    "sources": [
+                        {
+                            "source": "microphone",
+                            "framePipe": "private-duplicate-pipe",
+                        },
+                        {
+                            "source": "system",
+                            "framePipe": "private-duplicate-pipe",
+                        },
+                        {
+                            "source": "mic_clean",
+                            "framePipe": "private-clean-pipe",
+                        },
+                    ],
+                },
+            }
+        assert command == "audioMeetingStop"
+        assert payload["captureId"] == "capture-invalid-pipes"
+        return {"success": True, "payload": {"stopped": True}}
+
+    monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings")
+
+    response = await handler(
+        _DirectRequest(
+            app,
+            payload={
+                "title": "Invalid native pipes",
+                "transcriptionMode": "final_only",
+            },
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.status == 503
+    assert payload["message"] == (
+        "Native meeting capture returned an incomplete audio stream contract. "
+        "No recording was started."
+    )
+    assert payload["meeting"]["state"] == "capture_failed"
+    assert payload["meeting"]["errorCode"] == "native_capture_contract_invalid"
+    assert "private-duplicate-pipe" not in json.dumps(payload)
+    assert [command for command, _payload in shell_calls] == [
+        "audioMeetingStart",
+        "audioMeetingStop",
+    ]
+    assert TrackingRecorder.instances == []
+    assert store.active() is None
+    assert controller._meeting_recorders == {}
+    assert controller._meeting_live_transcribers == {}
+    assert controller.prewarm_paused is False
+    assert controller._audio_admission_store.active() is None
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
 async def test_meeting_start_keeps_durable_capture_when_live_preview_fails(
     monkeypatch, tmp_path
 ):
@@ -1171,13 +1874,9 @@ async def test_meeting_start_keeps_durable_capture_when_live_preview_fails(
             lifecycle.append("native")
             return {
                 "success": True,
-                "payload": {
-                    "captureId": "capture-degraded-preview",
-                    "sampleRate": 16_000,
-                    "frameDurationMs": 10,
-                    "aecActive": True,
-                    "sources": [],
-                },
+                "payload": _valid_meeting_native_payload(
+                    "capture-degraded-preview"
+                ),
             }
         if command == "audioMeetingStop":
             native_stops.append(command)
@@ -1383,13 +2082,7 @@ async def test_final_only_start_skips_live_provider_but_records_durably(
         if command == "audioMeetingStart":
             return {
                 "success": True,
-                "payload": {
-                    "captureId": "capture-final-only",
-                    "sampleRate": 16_000,
-                    "frameDurationMs": 10,
-                    "aecActive": True,
-                    "sources": [],
-                },
+                "payload": _valid_meeting_native_payload("capture-final-only"),
             }
         if command == "audioMeetingStop":
             return {"success": True, "payload": {"stopped": True}}
@@ -1487,11 +2180,9 @@ async def test_final_only_resume_stays_final_only_when_global_setting_changes(
         if command == "audioMeetingResume":
             return {
                 "success": True,
-                "payload": {
-                    "captureId": f"capture-final-only-{resume_state}",
-                    "sampleRate": 16_000,
-                    "sources": [],
-                },
+                "payload": _valid_meeting_native_payload(
+                    f"capture-final-only-{resume_state}"
+                ),
             }
         if command == "audioMeetingStop":
             return {"success": True, "payload": {"stopped": True}}
@@ -1553,11 +2244,9 @@ async def test_meeting_resume_keeps_durable_capture_when_live_preview_fails(
             lifecycle.append("native")
             return {
                 "success": True,
-                "payload": {
-                    "captureId": f"capture-{resume_state}-degraded",
-                    "sampleRate": 16_000,
-                    "sources": [],
-                },
+                "payload": _valid_meeting_native_payload(
+                    f"capture-{resume_state}-degraded"
+                ),
             }
         if command == "audioMeetingStop":
             native_stops.append(command)
@@ -1633,11 +2322,9 @@ async def test_default_device_reconnect_keeps_recorder_when_live_preview_fails(
         if command == "audioMeetingResume":
             return {
                 "success": True,
-                "payload": {
-                    "captureId": "capture-after-device-change",
-                    "sampleRate": 16_000,
-                    "sources": [],
-                },
+                "payload": _valid_meeting_native_payload(
+                    "capture-after-device-change"
+                ),
             }
         raise AssertionError(command)
 
@@ -1778,7 +2465,7 @@ async def test_meeting_native_start_claim_blocks_live_mic_during_ipc_await(monke
             assert release_ipc.wait(timeout=2.0)
             return {
                 "success": True,
-                "payload": {"captureId": "race-start", "sampleRate": 16_000, "sources": []},
+                "payload": _valid_meeting_native_payload("race-start"),
             }
         return {"success": True, "payload": {}}
 
@@ -1828,7 +2515,9 @@ async def test_meeting_resume_claim_blocks_live_mic_until_recording_is_persisted
             assert release_ipc.wait(timeout=2.0)
             return {
                 "success": True,
-                "payload": {"captureId": f"resume-{resume_state}", "sampleRate": 16_000, "sources": []},
+                "payload": _valid_meeting_native_payload(
+                    f"resume-{resume_state}"
+                ),
             }
         return {"success": True, "payload": {}}
 
@@ -1929,11 +2618,9 @@ async def test_meeting_start_cancellation_releases_every_owned_stage(
             native_active = True
             return {
                 "success": True,
-                "payload": {
-                    "captureId": f"capture-{cancel_stage}",
-                    "sampleRate": 16_000,
-                    "sources": [],
-                },
+                "payload": _valid_meeting_native_payload(
+                    f"capture-{cancel_stage}"
+                ),
             }
         if command == "audioMeetingStop":
             native_active = False
@@ -2026,11 +2713,9 @@ async def test_meeting_resume_cancellation_returns_to_owned_interrupted_state(
             native_active = True
             return {
                 "success": True,
-                "payload": {
-                    "captureId": f"resume-{resume_state}-{cancel_stage}",
-                    "sampleRate": 16_000,
-                    "sources": [],
-                },
+                "payload": _valid_meeting_native_payload(
+                    f"resume-{resume_state}-{cancel_stage}"
+                ),
             }
         if command == "audioMeetingStop":
             native_active = False
@@ -3368,16 +4053,10 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
         if command in {"audioMeetingStart", "audioMeetingResume"}:
             return {
                 "success": True,
-                "payload": {
-                    "captureId": "mic.system",
-                    "sampleRate": 16_000,
-                    "frameDurationMs": 10,
-                    "aecActive": False,
-                    "sources": [
-                        {"source": "microphone", "framePipe": "private-mic"},
-                        {"source": "system", "framePipe": "private-system"},
-                    ],
-                },
+                "payload": _valid_meeting_native_payload(
+                    "mic.system",
+                    aec_active=False,
+                ),
             }
         return {
             "success": True,
@@ -3519,7 +4198,11 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
         assert meeting["state"] == "recording"
         assert meeting["origin"] == "captured"
         assert meeting["consentConfirmed"] is False
-        assert meeting["captureMetadata"]["sources"] == ["microphone", "system"]
+        assert meeting["captureMetadata"]["sources"] == [
+            "microphone",
+            "system",
+            "mic_clean",
+        ]
         assert meeting["captureMetadata"]["captureStartLatencyMs"] >= 0
         assert meeting["captureMetadata"]["timelineOffsetMs"] == 0
         assert meeting["captureMetadata"]["timelineStartedAtUtc"]

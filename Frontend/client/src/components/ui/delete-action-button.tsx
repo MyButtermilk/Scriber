@@ -1,6 +1,7 @@
 import type { MouseEvent } from "react";
 import { Loader2, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 
 type DeleteActionButtonProps = {
   onClick: (e: MouseEvent<HTMLButtonElement>) => void;
@@ -22,6 +23,7 @@ export function DeleteActionButton({
   size = "md",
   className,
 }: DeleteActionButtonProps) {
+  const { t } = useI18n();
   return (
     <button
       type="button"
@@ -29,7 +31,7 @@ export function DeleteActionButton({
       onClick={onClick}
       onKeyDown={(event) => event.stopPropagation()}
       disabled={disabled}
-      data-label={label}
+      data-label={t(label)}
       aria-label={ariaLabel}
     >
       {loading ? (

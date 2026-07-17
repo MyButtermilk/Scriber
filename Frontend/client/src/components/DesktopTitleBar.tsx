@@ -3,6 +3,7 @@ import type { MouseEvent } from "react";
 import { useCallback } from "react";
 import { isTauriRuntime } from "@/lib/backend";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 
 type TauriWindowControls = {
     minimize: () => Promise<void>;
@@ -35,6 +36,7 @@ async function startWindowDrag() {
 }
 
 export function DesktopTitleBar() {
+    const { t } = useI18n();
     const handleMinimize = useCallback(() => {
         void runWindowCommand("minimize");
     }, []);
@@ -64,12 +66,12 @@ export function DesktopTitleBar() {
             />
             <div
                 className="desktop-titlebar__controls"
-                aria-label="Window controls"
+                aria-label={t("Window controls")}
                 onMouseDown={(event) => event.stopPropagation()}
             >
                 <button
                     type="button"
-                    aria-label="Minimize window"
+                    aria-label={t("Minimize window")}
                     className="desktop-titlebar__button"
                     onClick={handleMinimize}
                 >
@@ -77,7 +79,7 @@ export function DesktopTitleBar() {
                 </button>
                 <button
                     type="button"
-                    aria-label="Maximize window"
+                    aria-label={t("Maximize window")}
                     className="desktop-titlebar__button"
                     onClick={handleMaximize}
                 >
@@ -85,7 +87,7 @@ export function DesktopTitleBar() {
                 </button>
                 <button
                     type="button"
-                    aria-label="Close window"
+                    aria-label={t("Close window")}
                     className={cn("desktop-titlebar__button", "desktop-titlebar__button--close")}
                     onClick={handleClose}
                 >

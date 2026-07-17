@@ -1,3 +1,5 @@
+import { translateNow } from "@/i18n";
+
 const NETWORK_ERROR_TOKENS = [
   "failed to fetch",
   "networkerror",
@@ -22,34 +24,37 @@ function stripLowLevelPrefixes(rawMessage: string): string {
 export function friendlyRequestMessage(rawMessage: string, fallback = "Request failed."): string {
   const stripped = stripLowLevelPrefixes(rawMessage);
   const message = stripped || (rawMessage || "").trim();
-  if (!message) return fallback;
+  if (!message) return translateNow(fallback);
 
   const normalized = message.toLowerCase();
 
   if (NETWORK_ERROR_TOKENS.some((token) => normalized.includes(token))) {
-    return "Cannot connect to the Scriber backend. Please start the backend service and try again.";
+    return translateNow("Cannot connect to the Scriber backend. Please start the backend service and try again.");
   }
   if (TIMEOUT_ERROR_TOKENS.some((token) => normalized.includes(token))) {
-    return "The backend is taking too long to respond. It may still be starting. Please try again.";
+    return translateNow("The backend is taking too long to respond. It may still be starting. Please try again.");
   }
   if (CORS_ERROR_TOKENS.some((token) => normalized.includes(token))) {
-    return "Connection was blocked by browser security settings. Please check your backend URL and CORS settings.";
+    return translateNow("Connection was blocked by browser security settings. Please check your backend URL and CORS settings.");
   }
   if (INVALID_ARGUMENT_TOKENS.some((token) => normalized.includes(token))) {
-    return "The backend rejected the request (invalid argument). Please ensure the backend is running and retry.";
+    return translateNow("The backend rejected the request (invalid argument). Please ensure the backend is running and retry.");
   }
 
-  return message;
+  return translateNow(message);
 }
 
 export function friendlyError(error: unknown, fallback = "Request failed."): string {
   if (error instanceof Error) {
+    if (error.name === "TimeoutError" || error.name === "AbortError") {
+      return translateNow("The backend is taking too long to respond. It may still be starting. Please try again.");
+    }
     return friendlyRequestMessage(error.message, fallback);
   }
   if (typeof error === "string") {
     return friendlyRequestMessage(error, fallback);
   }
-  return fallback;
+  return translateNow(fallback);
 }
 
 export async function responseDetailMessage(res: Response): Promise<string> {
@@ -74,7 +79,7 @@ export async function responseErrorMessage(res: Response): Promise<string> {
   if (detail) {
     return `${res.status}: ${detail}`;
   }
-  return `${res.status}: ${res.statusText || "Request failed"}`;
+  return `${res.status}: ${res.statusText || translateNow("Request failed")}`;
 }
 
 export function extractFailureMessage(content: string, step: string): string {

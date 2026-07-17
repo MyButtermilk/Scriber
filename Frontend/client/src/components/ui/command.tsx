@@ -7,6 +7,7 @@ import { Search } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
+import { useI18n } from "@/i18n"
 
 const Command = React.forwardRef<
   React.ElementRef<typeof CommandPrimitive>,
@@ -24,12 +25,13 @@ const Command = React.forwardRef<
 Command.displayName = CommandPrimitive.displayName
 
 const CommandDialog = ({ children, ...props }: DialogProps) => {
+  const { t } = useI18n()
   return (
     <Dialog {...props}>
       <DialogContent className="overflow-hidden p-0 data-[state=open]:duration-0 data-[state=closed]:duration-0 data-[state=open]:zoom-in-100 data-[state=closed]:zoom-out-100">
-        <DialogTitle className="sr-only">Search Scriber</DialogTitle>
+        <DialogTitle className="sr-only">{t("Search Scriber")}</DialogTitle>
         <DialogDescription className="sr-only">
-          Navigate to a section or run a Scriber command.
+          {t("Navigate to a section or run a Scriber command.")}
         </DialogDescription>
         <Command className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-group]]:px-2 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5">
           {children}

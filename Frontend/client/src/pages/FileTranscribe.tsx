@@ -27,6 +27,7 @@ import {
   isFileUploadActive,
   startFileUploadBatch,
   subscribeFileUpload,
+  type FileUploadLocalizedText,
 } from "@/lib/file-upload-store";
 import type {
   ApiMessageResponse,
@@ -35,25 +36,67 @@ import type {
   TranscriptDetailResponse,
   TranscriptHistoryItem,
 } from "@/lib/api-types";
+import { formatNumberNow, translateNow, useI18n } from "@/i18n";
 
 const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
 const DEFAULT_COMPRESSION_THRESHOLD_BYTES = 50 * 1024 * 1024;
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"]);
+
+interface FileDropError {
+  reason: string;
+  fileName?: string;
+}
 
 function getFileExtension(fileName: string): string {
   const dotIndex = fileName.lastIndexOf(".");
   return dotIndex >= 0 ? fileName.slice(dotIndex).toLowerCase() : "";
 }
 
-function inferServerProcessingLabel(file: File, compressionThresholdBytes: number): string {
+function inferServerProcessingText(
+  file: File,
+  compressionThresholdBytes: number,
+): FileUploadLocalizedText {
   const ext = getFileExtension(file.name);
   if (VIDEO_EXTENSIONS.has(ext)) {
-    return `Extracting audio from ${file.name}...`;
+    return { key: "Extracting audio from {{file}}…", values: { file: file.name } };
   }
   if (file.size > compressionThresholdBytes) {
-    return `Compressing ${file.name}...`;
+    return { key: "Compressing {{file}}…", values: { file: file.name } };
   }
-  return `Preparing ${file.name}...`;
+  return { key: "Preparing {{file}}…", values: { file: file.name } };
+}
+
+function localizedProcessingStep(
+  value: string | null | undefined,
+  fallback: string,
+  t: ReturnType<typeof useI18n>["t"],
+  formatNumber: ReturnType<typeof useI18n>["formatNumber"],
+): string {
+  const source = String(value || fallback).trim();
+  const retryMatch = /^Retrying in ([\d.,]+)s \((\d+)\/(\d+)\)$/.exec(source);
+  if (retryMatch) {
+    const seconds = Number(retryMatch[1].replace(",", "."));
+    return t("Retrying in {{seconds}}s ({{attempt}}/{{total}})", {
+      seconds: Number.isFinite(seconds) ? formatNumber(seconds, { maximumFractionDigits: 2 }) : retryMatch[1],
+      attempt: formatNumber(Number(retryMatch[2])),
+      total: formatNumber(Number(retryMatch[3])),
+    });
+  }
+
+  const downloadMatch = /^Downloading\.\.\.\s+([\d.,]+)%(.*)$/.exec(source);
+  if (downloadMatch) {
+    const percentage = Number(downloadMatch[1].replace(",", "."));
+    const formattedPercentage = Number.isFinite(percentage)
+      ? formatNumber(percentage / 100, { style: "percent", maximumFractionDigits: 1 })
+      : `${downloadMatch[1]}%`;
+    const technicalSuffix = downloadMatch[2].replace(" • ETA ", ` • ${t("ETA")} `);
+    return `${t("Downloading… {{percent}}", { percent: formattedPercentage })}${technicalSuffix}`;
+  }
+
+  if (source.startsWith("Error: ")) {
+    return `${t("Error")}: ${source.slice("Error: ".length)}`;
+  }
+  return t(source);
 }
 
 type FileHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";
@@ -90,10 +133,14 @@ const FileCard = memo(function FileCard({
   onNavigate,
   onHover,
 }: FileCardProps) {
+  const { formatDate, formatLegacyDate, formatNumber, t } = useI18n();
   const deletingClasses = isDeleting
     ? "pointer-events-none opacity-[0.55] scale-[0.985]"
     : "opacity-100 scale-100";
   const historyStatus = fileHistoryStatus(item);
+  const dateLabel = item.createdAt
+    ? formatDate(item.createdAt, { dateStyle: "medium", timeStyle: "short" })
+    : formatLegacyDate(item.date);
 
   return (
     <div className="w-full">
@@ -134,7 +181,7 @@ const FileCard = memo(function FileCard({
                   {item.channel && <span>•</span>}
                   <span>{item.duration}</span>
                   <span>•</span>
-                  <span>{item.date}</span>
+                  <span>{dateLabel}</span>
                 </div>
               </div>
             </div>
@@ -142,10 +189,12 @@ const FileCard = memo(function FileCard({
               {historyStatus === 'processing' ? (
                 <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1">
                   <Loader2 className="w-3 h-3 animate-spin" />
-                  {item.summaryStatus === "pending" ? "Summarizing…" : item.step || "Processing"}
+                  {item.summaryStatus === "pending"
+                    ? t("Summarizing…")
+                    : localizedProcessingStep(item.step, "Processing", t, formatNumber)}
                 </Badge>
               ) : historyStatus === 'failed' ? (
-                <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">Failed</Badge>
+                <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">{t("Failed")}</Badge>
               ) : historyStatus === "summary_failed" ? (
                 <TranscriptSummaryRetryButton
                   transcriptId={item.id}
@@ -153,27 +202,27 @@ const FileCard = memo(function FileCard({
                   onComplete={onSummaryRetryComplete}
                 />
               ) : historyStatus === 'stopped' ? (
-                <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px]">Stopped</Badge>
+                <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px]">{t("Stopped")}</Badge>
               ) : (
                 <div className="hidden sm:flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">
                   <CheckCircle2 className="w-3 h-3" />
-                  Ready
+                  {t("Ready")}
                 </div>
               )}
               <CopyActionButton
                 onClick={(e) => onCopy(e, item.id)}
                 disabled={isCopying}
                 copied={isCopying}
-                title="Copy transcript"
-                ariaLabel={`Copy transcript ${item.title}`}
+                title={t("Copy transcript")}
+                ariaLabel={t("Copy transcript {{title}}", { title: item.title })}
                 className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
               />
               <DeleteActionButton
                 onClick={(e) => onDelete(e, item.id)}
                 disabled={isDeleting}
                 loading={isDeleting}
-                title="Delete transcript"
-                ariaLabel={`Delete transcript ${item.title}`}
+                title={t("Delete transcript")}
+                ariaLabel={t("Delete transcript {{title}}", { title: item.title })}
                 className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
               />
             </div>
@@ -196,10 +245,10 @@ const FileCard = memo(function FileCard({
                 {historyStatus === 'processing' ? (
                   <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1">
                     <Loader2 className="w-3 h-3 animate-spin" />
-                    {item.summaryStatus === "pending" ? "Summarizing…" : null}
+                    {item.summaryStatus === "pending" ? t("Summarizing…") : null}
                   </Badge>
                 ) : historyStatus === 'failed' ? (
-                  <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">Failed</Badge>
+                  <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">{t("Failed")}</Badge>
                 ) : historyStatus === "summary_failed" ? (
                   <TranscriptSummaryRetryButton
                     transcriptId={item.id}
@@ -207,11 +256,11 @@ const FileCard = memo(function FileCard({
                     onComplete={onSummaryRetryComplete}
                   />
                 ) : historyStatus === 'stopped' ? (
-                  <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px]">Stopped</Badge>
+                  <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px]">{t("Stopped")}</Badge>
                 ) : (
                   <div className="flex items-center gap-1 rounded-full bg-green-50 px-2 py-1 text-[10px] font-medium text-green-600 dark:bg-green-950/40 dark:text-green-300">
                     <CheckCircle2 className="w-3 h-3" />
-                    Ready
+                    {t("Ready")}
                   </div>
                 )}
               </div>
@@ -231,15 +280,15 @@ const FileCard = memo(function FileCard({
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-auto">
               <span>{item.duration}</span>
               <span>•</span>
-              <span>{item.date}</span>
+              <span>{dateLabel}</span>
             </div>
             <div className="flex items-center justify-end mt-2 gap-1">
               <CopyActionButton
                 onClick={(e) => onCopy(e, item.id)}
                 disabled={isCopying}
                 copied={isCopying}
-                title="Copy transcript"
-                ariaLabel={`Copy transcript ${item.title}`}
+                title={t("Copy transcript")}
+                ariaLabel={t("Copy transcript {{title}}", { title: item.title })}
                 size="sm"
                 className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
               />
@@ -247,8 +296,8 @@ const FileCard = memo(function FileCard({
                 onClick={(e) => onDelete(e, item.id)}
                 disabled={isDeleting}
                 loading={isDeleting}
-                title="Delete transcript"
-                ariaLabel={`Delete transcript ${item.title}`}
+                title={t("Delete transcript")}
+                ariaLabel={t("Delete transcript {{title}}", { title: item.title })}
                 size="sm"
                 className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
               />
@@ -263,9 +312,10 @@ const FileCard = memo(function FileCard({
 export default function FileTranscribe() {
   const [location, setLocation] = useLocation();
   const { toast } = useToast();
+  const { formatNumber, t } = useI18n();
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
-  const [dropError, setDropError] = useState("");
+  const [dropError, setDropError] = useState<FileDropError | null>(null);
   const deletingRef = useRef<string | null>(null);
   const copyingRef = useRef<string | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
@@ -278,6 +328,7 @@ export default function FileTranscribe() {
   const uploadProgress = uploadSnapshot.progress;
   const uploadingFileName = uploadSnapshot.fileName;
   const uploadStatusText = uploadSnapshot.statusText;
+  const uploadStatusValues = uploadSnapshot.statusValues;
   const uploadQueueItems = uploadSnapshot.items;
   const uploadTotalFiles = uploadSnapshot.totalFiles;
   const uploadFinishedFiles = uploadSnapshot.completedFiles + uploadSnapshot.failedFiles;
@@ -335,7 +386,7 @@ export default function FileTranscribe() {
         { credentials: "include", signal },
         10_000,
       );
-      if (!res.ok) throw new Error("Failed to load settings");
+      if (!res.ok) throw new Error(t("Failed to load settings"));
       return (await res.json()) as SettingsResponse;
     },
     staleTime: Infinity,
@@ -346,20 +397,24 @@ export default function FileTranscribe() {
     Number(fileUploadLimits?.compressionThresholdBytes) || DEFAULT_COMPRESSION_THRESHOLD_BYTES;
   const uploadHint = useMemo(() => {
     if (!fileUploadLimits) {
-      return "Audio and video up to 2GB · files over 50MB are optimized automatically";
+      return t("Audio and video up to 2 GB · files over 50 MB are optimized automatically");
     }
 
-    const providerLabel = fileUploadLimits.providerLabel || "Selected provider";
+    const providerLabel = fileUploadLimits.providerLabel || t("Selected provider");
     const compressionThresholdLabel = fileUploadLimits.compressionThresholdLabel || "50MB";
-    const audioLimitLabel = fileUploadLimits.audioMaxLabel || "unknown";
+    const audioLimitLabel = fileUploadLimits.audioMaxLabel || t("unknown");
     const videoLimitLabel = fileUploadLimits.videoMaxLabel || "2GB";
 
     const audioHint = fileUploadLimits.usesDirectProviderLimit
-      ? `${providerLabel} accepts audio up to ${audioLimitLabel}`
-      : `${providerLabel} processes files in-app up to ${audioLimitLabel}`;
+      ? t("{{provider}} accepts audio up to {{limit}}", { provider: providerLabel, limit: audioLimitLabel })
+      : t("{{provider}} processes files in the app up to {{limit}}", { provider: providerLabel, limit: audioLimitLabel });
 
-    return `${audioHint} · video up to ${videoLimitLabel} · files over ${compressionThresholdLabel} are optimized automatically`;
-  }, [fileUploadLimits]);
+    return t("{{audioHint}} · video up to {{videoLimit}} · files over {{threshold}} are optimized automatically", {
+      audioHint,
+      videoLimit: videoLimitLabel,
+      threshold: compressionThresholdLabel,
+    });
+  }, [fileUploadLimits, t]);
   const maxUploadBytes = useMemo(
     () => Math.max(
       Number(fileUploadLimits?.rawAudioIngestMaxBytes) || 0,
@@ -378,27 +433,37 @@ export default function FileTranscribe() {
     if (selectedFiles.length === 0) return;
     try {
       const result = await startFileUploadBatch(selectedFiles, {
-        getServerProcessingLabel: (file) => inferServerProcessingLabel(file, compressionThresholdBytes),
+        getServerProcessingText: (file) => inferServerProcessingText(file, compressionThresholdBytes),
       });
 
       if (result.failures.length > 0) {
         const firstFailure = result.failures[0];
         toast({
-          title: result.responses.length > 0 ? "Some uploads failed" : "Upload failed",
+          title: result.responses.length > 0 ? translateNow("Some uploads failed") : translateNow("Upload failed"),
           description:
             result.responses.length > 0
-              ? `${result.responses.length} started, ${result.failures.length} failed. ${firstFailure.fileName}: ${firstFailure.error}`
-              : `${firstFailure.fileName}: ${firstFailure.error}`,
+              ? translateNow("{{started}} started, {{failed}} failed. {{file}}: {{error}}", {
+                  started: formatNumberNow(result.responses.length),
+                  failed: formatNumberNow(result.failures.length),
+                  file: firstFailure.fileName,
+                  error: translateNow(firstFailure.error),
+                })
+              : translateNow("{{file}}: {{error}}", {
+                  file: firstFailure.fileName,
+                  error: translateNow(firstFailure.error),
+                }),
           variant: "destructive",
           duration: 7000,
         });
       } else {
         toast({
-          title: selectedFiles.length === 1 ? "File uploaded" : "Files uploaded",
+          title: selectedFiles.length === 1 ? translateNow("File uploaded") : translateNow("Files uploaded"),
           description:
             selectedFiles.length === 1
-              ? "Transcription started..."
-              : `${result.responses.length} transcriptions started...`,
+              ? translateNow("Transcription started…")
+              : translateNow("{{count}} transcriptions started…", {
+                  count: formatNumberNow(result.responses.length),
+                }),
           duration: 3000,
         });
       }
@@ -417,8 +482,8 @@ export default function FileTranscribe() {
       }
     } catch (e: any) {
       toast({
-        title: "Upload failed",
-        description: String(e?.message || e),
+        title: translateNow("Upload failed"),
+        description: translateNow(String(e?.message || e)),
         duration: 5000,
       });
     }
@@ -441,11 +506,11 @@ export default function FileTranscribe() {
       }
       const deleted = (await res.json().catch(() => ({ success: true }))) as TranscriptDeleteResponse;
       if (deleted.success === false) {
-        throw new Error(deleted.message || "Delete failed");
+        throw new Error(deleted.message || t("Delete failed"));
       }
       toast({
-        title: "Deleted",
-        description: "Transcript removed successfully.",
+        title: t("Deleted"),
+        description: t("Transcript removed successfully."),
         duration: 2000,
       });
       queryClient.invalidateQueries({
@@ -455,15 +520,15 @@ export default function FileTranscribe() {
       });
     } catch (e: any) {
       toast({
-        title: "Delete failed",
-        description: String(e?.message || e),
+        title: t("Delete failed"),
+        description: t(String(e?.message || e)),
         duration: 4000,
       });
     } finally {
       deletingRef.current = null;
       setDeletingId(null);
     }
-  }, [queryClient, toast]);
+  }, [queryClient, t, toast]);
 
   const copyTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -482,12 +547,12 @@ export default function FileTranscribe() {
       const data = (await res.json()) as TranscriptDetailResponse;
       const content = data?.content || "";
       if (!content) {
-        throw new Error("No transcript content available");
+        throw new Error(t("No transcript content available"));
       }
       await navigator.clipboard.writeText(content);
       toast({
-        title: "Copied",
-        description: "Transcript copied to clipboard.",
+        title: t("Copied"),
+        description: t("Transcript copied to clipboard."),
         duration: 2000,
       });
       // Show check mark briefly
@@ -498,14 +563,14 @@ export default function FileTranscribe() {
       }, 1500);
     } catch (e: any) {
       toast({
-        title: "Copy failed",
-        description: String(e?.message || e),
+        title: t("Copy failed"),
+        description: t(String(e?.message || e)),
         duration: 4000,
       });
       copyingRef.current = null;
       setCopyingId(null);
     }
-  }, [toast]);
+  }, [t, toast]);
 
   const navigateToTranscript = useCallback((id: string) => {
     setLocation(`/transcript/${id}`);
@@ -528,7 +593,7 @@ export default function FileTranscribe() {
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0 && !isFileUploadActive()) {
-      setDropError("");
+      setDropError(null);
       uploadFiles(acceptedFiles);
     }
   }, [uploadFiles]);
@@ -545,9 +610,9 @@ export default function FileTranscribe() {
     onDropRejected: (rejections) => {
       const first = rejections[0];
       const reason = first?.errors?.[0]?.code === "file-too-large"
-        ? "This file is larger than the current 2GB ingest limit."
+        ? "This file is larger than the current 2 GB import limit."
         : "Choose a supported audio or video file.";
-      setDropError(first?.file?.name ? `${first.file.name}: ${reason}` : reason);
+      setDropError({ reason, fileName: first?.file?.name });
     },
   });
 
@@ -558,9 +623,9 @@ export default function FileTranscribe() {
   return (
     <div className="app-page-shell transcription-page file-page px-4 py-5 md:px-6 md:py-6" data-page-shell="file">
       <PageIntro
-        eyebrow="Media import · 04"
-        title="File transcription"
-        description="Drop in audio or video; Scriber prepares, transcribes, and organizes it."
+        eyebrow={t("Media import · 04")}
+        title={t("File transcription")}
+        description={t("Drop in audio or video; Scriber prepares, transcribes, and organizes it.")}
         sticky={false}
       />
 
@@ -568,7 +633,7 @@ export default function FileTranscribe() {
       <div
         {...getRootProps({
           role: "button",
-          "aria-label": "Upload file for transcription",
+          "aria-label": t("Upload file for transcription"),
           "aria-describedby": "file-upload-formats file-upload-limits",
           "aria-busy": isUploading,
         })}
@@ -589,31 +654,49 @@ export default function FileTranscribe() {
         <div className="space-y-1">
           {isUploading ? (
             <>
-              <p className="text-pretty font-heading text-[17px] font-semibold">{uploadStatusText || `Uploading ${uploadingFileName}...`}</p>
+              <p className="text-pretty font-heading text-[17px] font-semibold">
+                {uploadTotalFiles > 1
+                  ? `${t("File {{current}} of {{total}}: ", {
+                      current: formatNumber(uploadSnapshot.currentIndex + 1),
+                      total: formatNumber(uploadTotalFiles),
+                    })}${t(uploadStatusText || "Uploading {{file}}…", {
+                      file: uploadingFileName,
+                      ...uploadStatusValues,
+                    })}`
+                  : t(uploadStatusText || "Uploading {{file}}…", {
+                      file: uploadingFileName,
+                      ...uploadStatusValues,
+                    })}
+              </p>
               <Progress value={uploadProgress} className="mx-auto mt-3 h-2 w-[min(18rem,70vw)]" />
               {uploadTotalFiles > 1 && (
                 <p className="text-xs text-muted-foreground mt-1">
-                  {uploadFinishedFiles} of {uploadTotalFiles} files prepared
+                  {t("{{finished}} of {{total}} files prepared", {
+                    finished: formatNumber(uploadFinishedFiles),
+                    total: formatNumber(uploadTotalFiles),
+                  })}
                 </p>
               )}
             </>
           ) : (
             <>
-              <p className="font-heading text-[19px] font-semibold tracking-[-0.02em]">Choose audio or video</p>
+              <p className="font-heading text-[19px] font-semibold tracking-[-0.02em]">{t("Choose audio or video")}</p>
               <p id="file-upload-formats" className="text-[12px] leading-5 text-muted-foreground">
-                MP3, M4A, WAV, FLAC, MP4, MOV and WebM · multiple files supported
+                {t("MP3, M4A, WAV, FLAC, MP4, MOV and WebM · multiple files supported")}
               </p>
               <span className="file-upload-cta mt-2 inline-flex h-10 items-center gap-2 rounded-[11px] px-4 text-[12px] font-semibold text-primary">
                 <UploadCloud className="h-4 w-4" aria-hidden="true" />
-                Browse files
+                {t("Browse files")}
               </span>
-              <p className="text-[11px] text-muted-foreground">or drop them anywhere in this panel</p>
+              <p className="text-[11px] text-muted-foreground">{t("or drop them anywhere in this panel")}</p>
             </>
           )}
         </div>
         {dropError && !isUploading ? (
           <div className="file-upload-error max-w-xl rounded-[12px] px-3 py-2 text-left text-[12px] leading-5 text-destructive" role="alert">
-            {dropError}
+            {dropError.fileName
+              ? t("{{file}}: {{error}}", { file: dropError.fileName, error: t(dropError.reason) })
+              : t(dropError.reason)}
           </div>
         ) : null}
         {isUploading && uploadQueueItems.length > 1 && (
@@ -633,7 +716,11 @@ export default function FileTranscribe() {
                 />
                 <span className="min-w-0 flex-1 truncate text-foreground">{item.fileName}</span>
                 <span className="text-muted-foreground tabular-nums">
-                  {item.status === "queued" ? "Queued" : item.status === "failed" ? "Failed" : `${item.progress}%`}
+                  {item.status === "queued"
+                    ? t("Queued")
+                    : item.status === "failed"
+                      ? t("Failed")
+                      : formatNumber(item.progress / 100, { style: "percent", maximumFractionDigits: 0 })}
                 </span>
               </div>
             ))}
@@ -653,12 +740,12 @@ export default function FileTranscribe() {
           <div className="flex flex-wrap items-end justify-between gap-2 px-1">
             <div>
               <div className="flex items-center gap-2.5">
-                <h2 id="file-processing-heading" className="font-heading text-[17px] font-semibold tracking-[-0.015em]">Processing queue</h2>
+                <h2 id="file-processing-heading" className="font-heading text-[17px] font-semibold tracking-[-0.015em]">{t("Processing queue")}</h2>
                 <span className="transcription-history-count inline-flex h-6 min-w-6 items-center justify-center rounded-[8px] px-2 font-mono text-[10.5px] font-semibold tabular-nums text-muted-foreground">
-                  {processingItems.length}
+                  {formatNumber(processingItems.length)}
                 </span>
               </div>
-              <p className="mt-1 text-[12px] text-muted-foreground">You can leave this page while Scriber continues.</p>
+              <p className="mt-1 text-[12px] text-muted-foreground">{t("You can leave this page while Scriber continues.")}</p>
             </div>
           </div>
           {processingItems.map((item) => (
@@ -672,20 +759,20 @@ export default function FileTranscribe() {
                     <span className="min-w-0 flex-1 truncate font-heading text-[14px] font-medium">{item.title}</span>
                     <Badge variant="outline" className="flex shrink-0 items-center gap-1 border-primary/20 bg-primary/[0.06] text-[10px] text-primary">
                       <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-                      {item.step || "Processing"}
+                      {localizedProcessingStep(item.step, "Processing", t, formatNumber)}
                     </Badge>
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground">{item.channel || "Preparing your transcript"}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{item.channel || t("Preparing your transcript")}</p>
                 </div>
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-9 justify-center gap-2 self-stretch text-muted-foreground hover:text-foreground sm:self-auto"
                   type="button"
-                  aria-label={`View transcript ${item.title}`}
+                  aria-label={t("View transcript {{title}}", { title: item.title })}
                   onClick={() => setLocation(`/transcript/${item.id}`)}
                 >
-                  View
+                  {t("View")}
                   <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
                 </Button>
               </div>
@@ -697,15 +784,15 @@ export default function FileTranscribe() {
       {/* History */}
       <div className="transcription-history space-y-4">
         <TranscriptionHistoryToolbar
-          title="Recent files"
-          description="Search, copy, or reopen your imported transcripts."
+          title={t("Recent files")}
+          description={t("Search, copy, or reopen your imported transcripts.")}
           total={transcriptsQuery.total}
-          itemLabel={transcriptsQuery.total === 1 ? "file" : "files"}
+          itemLabel={transcriptsQuery.total === 1 ? t("file") : t("files")}
           searchValue={searchQuery}
           onSearchChange={setSearchQuery}
-          searchPlaceholder="Search files..."
-          searchAriaLabel="Search file transcript history"
-          clearSearchLabel="Clear file search"
+          searchPlaceholder={t("Search files…")}
+          searchAriaLabel={t("Search file transcript history")}
+          clearSearchLabel={t("Clear file search")}
           viewMode={viewMode}
           onViewModeChange={setViewMode}
         />
@@ -713,13 +800,13 @@ export default function FileTranscribe() {
           <SkeletonList count={3} variant={viewMode} />
         ) : transcriptsQuery.isError ? (
           <QueryErrorState
-            title="Could not load file transcripts"
-            description="Please retry loading your file history."
+            title={t("Could not load file transcripts")}
+            description={t("Please retry loading your file history.")}
             onRetry={() => transcriptsQuery.refetch()}
           />
         ) : completedItems.length === 0 && !transcriptsQuery.hasNextPage && !transcriptsQuery.isFetchingNextPage ? (
           debouncedSearch ? (
-            <p className="text-center text-muted-foreground py-8">No files match "{debouncedSearch}"</p>
+            <p className="text-center text-muted-foreground py-8">{t("No files match “{{query}}”", { query: debouncedSearch })}</p>
           ) : (
             <EmptyState type="file" />
           )

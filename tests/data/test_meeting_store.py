@@ -851,6 +851,34 @@ def test_replace_segments_rolls_back_delete_when_replacement_is_invalid(store: M
     ]
 
 
+def test_replace_segments_rejects_reversed_timestamps_before_mutating_snapshot(
+    store: MeetingStore,
+):
+    meeting_id = store.create(create_request())["id"]
+    store.replace_segments(meeting_id, "canonical", [{
+        "id": "canonical-safe", "revision": "canonical", "source": "system",
+        "sequence": 0, "startMs": 0, "endMs": 1_000, "text": "Keep me",
+    }])
+
+    with pytest.raises(ValueError, match="endMs must be greater than or equal to startMs"):
+        store.replace_segments(meeting_id, "canonical", [
+            {
+                "id": "would-replace", "revision": "canonical", "source": "system",
+                "sequence": 0, "startMs": 0, "endMs": 500, "text": "New first turn",
+            },
+            {
+                "id": "reversed", "revision": "canonical", "source": "system",
+                "sequence": 1, "startMs": 5_000, "endMs": 1_000,
+                "text": "Invalid reversed turn", "speakerLabel": "Should not persist",
+            },
+        ])
+
+    detail = store.detail(meeting_id)
+    assert [item["id"] for item in detail["segments"]] == ["canonical-safe"]
+    assert detail["segments"][0]["durationMs"] == 1_000
+    assert all(item["label"] != "Should not persist" for item in detail["speakers"])
+
+
 def test_notes_and_interrupted_recovery_are_durable(store: MeetingStore):
     meeting = store.create(create_request(audio_retention_days=1))
     store.transition(meeting["id"], "recording")

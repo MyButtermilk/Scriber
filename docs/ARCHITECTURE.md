@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-07-15
+Last verified: 2026-07-16
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -24,6 +24,12 @@ prepends `backend/app` to `sys.path`, checks the staged Scriber version, and onl
 then imports `src.backend_worker`. The runtime cache therefore contains no
 `src` package and can survive ordinary backend-code changes; the complete
 composed sidecar remains independently cacheable for exact hits.
+
+The runtime contract pins Pipecat 1.5 and enumerates the exact direct
+`pipecat.*` modules used by `src`. An AST parity gate prevents application code
+from importing a module that PyInstaller did not freeze. Contract revision 3
+adds `pipecat.transports.base_input`; changing that revision invalidates the
+stable runtime cache instead of reusing an incomplete packaged interpreter.
 
 The installed app is local-first. The backend binds to loopback, and the Tauri
 supervisor injects a per-run session token for local control endpoints.
@@ -853,6 +859,9 @@ Key modules:
   local update cache, weekly automatic-check policy, per-version dismissal,
   reminder deferral, and release-notes opener.
 - `Frontend/client/src/lib/api-types.ts`: shared REST-facing types.
+- `Frontend/client/src/i18n/`: the German/English interface boundary. English
+  source text is the stable catalog key, German translations are split by
+  product area, and the literal-key gate rejects missing German entries.
 
 The frontend should not own backend lifecycle decisions. In desktop runtime it
 asks Tauri commands for backend access and posts the frontend-ready beacon after
@@ -881,6 +890,16 @@ links directly to the Meeting workspace, and displays the effective registered
 Meeting shortcut, including a Windows registration fallback when necessary.
 Unsigned/dev builds keep the updater plugin wired but are expected to report
 that release updater configuration is missing.
+
+Interface locale is independent from transcription and output-language
+settings. `LocaleProvider` resolves `scriber-ui-locale` first, then the browser
+language, persists explicit `de`/`en` choices, updates the document language,
+and provides locale-aware date/number formatting. Main, tray-panel, and native
+overlay WebViews each mount the provider and synchronize through the shared
+WebView storage origin. The provider also sends the bounded `set_ui_locale`
+command to Tauri so native recording/update tray tooltips switch immediately;
+the command accepts only `de` or `en` and never changes backend language or STT
+configuration.
 
 ## Tauri Shell
 
@@ -931,7 +950,12 @@ that release updater configuration is missing.
   WebView brand mark remains theme-aware and unboxed on light surfaces.
 - Render the recording overlay as a non-taskbar, non-focusable window; on
   Windows it is shown without activation so hotkey recordings do not flash the
-  main taskbar icon while the user is working in another app.
+  main taskbar icon while the user is working in another app. Prepare, show,
+  and hide mutations are dispatched to Tauri's UI thread through a bounded
+  result channel; high-frequency audio-level updates remain off that blocking
+  path. Private shell IPC acknowledges every complete response before pipe
+  reclamation, contains worker panics, and retains rollback semantics only for
+  successful audio lifecycle starts.
 - Initialize the Tauri updater plugin. Release builds provide updater endpoint,
   public key, and signed artifacts through build-time configuration; Windows
   updater installation runs in Tauri's passive mode.
@@ -1149,7 +1173,11 @@ exposed through the dedicated `openai_async` direct adapter.
 Pipecat/Silero VAD is opt-in through `SCRIBER_SEGMENT_SPEECH_WITH_VAD` and the
 Settings toggle. When disabled, Live Mic neither loads nor attaches Silero;
 HTTP-style providers receive one synthetic recording-wide turn that closes on
-stop, and Soniox SmartTurn is disabled for that session. When enabled, Silero
+stop, and Soniox SmartTurn is disabled for that session. The Settings write
+does not import the pipeline merely to clear a warm analyzer: a loaded cache is
+discarded immediately, while a cold or concurrently importing runtime records
+one deferred discard. Cleanup failure is logged without reverting the saved
+preference. When enabled, Silero
 may segment HTTP-style providers at pauses, skip confirmed silent sessions, and
 provide the explicit turn boundaries required by Soniox SmartTurn. If the user
 presses the hotkey while a live streaming provider is still inside an active

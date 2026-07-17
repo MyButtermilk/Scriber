@@ -155,6 +155,7 @@ def test_analyzer_warmup_instances_are_claimed_once_per_session(monkeypatch):
         return analyzer
 
     _AnalyzerCache.clear_cache()
+    monkeypatch.setattr(Config, "SEGMENT_SPEECH_WITH_VAD", True)
     monkeypatch.setattr(pipeline_module, "HAS_SILERO_VAD", True)
     monkeypatch.setattr(pipeline_module, "HAS_SMART_TURN", True)
     monkeypatch.setattr(pipeline_module, "SileroVADAnalyzer", create_vad)
@@ -201,6 +202,7 @@ def test_analyzer_warmup_refills_with_new_unclaimed_instances(monkeypatch):
             self.target()
 
     _AnalyzerCache.clear_cache()
+    monkeypatch.setattr(Config, "SEGMENT_SPEECH_WITH_VAD", True)
     monkeypatch.setattr(pipeline_module, "HAS_SILERO_VAD", True)
     monkeypatch.setattr(pipeline_module, "HAS_SMART_TURN", True)
     monkeypatch.setattr(pipeline_module, "SileroVADAnalyzer", create_vad)
@@ -223,6 +225,51 @@ def test_analyzer_warmup_refills_with_new_unclaimed_instances(monkeypatch):
     assert next_smart_turn is created_smart_turn[1]
     assert next_vad is not used_vad
     assert next_smart_turn is not used_smart_turn
+
+
+def test_vad_discard_invalidates_analyzer_constructing_outside_cache_lock(monkeypatch):
+    construction_started = threading.Event()
+    allow_construction = threading.Event()
+    cleaned: list[object] = []
+    failures: list[BaseException] = []
+
+    class _BlockingVadAnalyzer:
+        def __init__(self):
+            construction_started.set()
+            if not allow_construction.wait(timeout=2):
+                raise TimeoutError("test did not release VAD construction")
+
+        def cleanup(self):
+            cleaned.append(self)
+
+    monkeypatch.setattr(Config, "SEGMENT_SPEECH_WITH_VAD", True)
+    monkeypatch.setattr(pipeline_module, "HAS_SILERO_VAD", True)
+    monkeypatch.setattr(pipeline_module, "SileroVADAnalyzer", _BlockingVadAnalyzer)
+    _AnalyzerCache.clear_cache()
+
+    def warm_vad() -> None:
+        try:
+            _AnalyzerCache.prewarm(include_vad=True, include_smart_turn=False)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    worker = threading.Thread(target=warm_vad)
+    worker.start()
+    try:
+        assert construction_started.wait(timeout=2)
+        monkeypatch.setattr(Config, "SEGMENT_SPEECH_WITH_VAD", False)
+        _AnalyzerCache.discard_vad_cache()
+        allow_construction.set()
+        worker.join(timeout=2)
+
+        assert not worker.is_alive()
+        assert failures == []
+        assert _AnalyzerCache._vad_analyzer is None
+        assert len(cleaned) == 1
+    finally:
+        allow_construction.set()
+        worker.join(timeout=2)
+        _AnalyzerCache.clear_cache()
 
 
 def test_soniox_smart_turn_uses_explicit_pipecat_1_5_strategies(monkeypatch):

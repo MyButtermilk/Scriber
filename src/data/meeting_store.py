@@ -4281,6 +4281,17 @@ class MeetingStore:
             for item in items:
                 if str(item.get("revision", replace_revision)) != replace_revision:
                     raise ValueError("Replacement segments must share one revision.")
+        for item in items:
+            start_ms = int(item.get("startMs", 0))
+            end_ms = int(item.get("endMs", 0))
+            if end_ms < start_ms:
+                raise ValueError(
+                    "Meeting segment endMs must be greater than or equal to startMs."
+                )
+            # Normalize the copied input once so persistence and the returned
+            # projection cannot disagree when callers supplied numeric strings.
+            item["startMs"] = start_ms
+            item["endMs"] = end_ms
         created: list[dict[str, Any]] = []
         now = _utc_now()
         with db._get_connection() as conn:
@@ -4334,8 +4345,8 @@ class MeetingStore:
                     )
                 values = (
                     segment_id, meeting_id, revision, source, str(item.get("providerSegmentId", "")),
-                    speaker_id, speaker_label, int(item.get("startMs", 0)),
-                    int(item.get("endMs", 0)), str(item.get("text", "")), item.get("confidence"),
+                    speaker_id, speaker_label, item["startMs"],
+                    item["endMs"], str(item.get("text", "")), item.get("confidence"),
                     alignment_quality, int(bool(item.get("isFinal", True))), sequence, now,
                 )
                 conn.execute(

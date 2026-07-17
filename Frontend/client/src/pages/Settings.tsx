@@ -32,7 +32,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
 import {
@@ -53,6 +53,7 @@ import {
 } from "@/lib/backend";
 import { invalidateSettingsBootstrap, loadSettingsBootstrap } from "@/lib/settings-bootstrap";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
+import { responseErrorMessage } from "@/lib/request-errors";
 import type {
   ApiMessageResponse,
   DiarizationComponentStatus,
@@ -98,6 +99,11 @@ import {
   MIN_VISUALIZER_BAR_COUNT,
   normalizeVisualizerBarCount,
 } from "@/lib/visualizer-settings";
+import { localizeOnnxDownloadMessage } from "@/lib/onnx-download-message";
+import { getCurrentLocale, translateNow, useI18n } from "@/i18n";
+
+type Translate = ReturnType<typeof useI18n>["t"];
+type FormatDate = ReturnType<typeof useI18n>["formatDate"];
 
 const LANGUAGE_OPTIONS = [
   { value: "auto", label: "Auto-detect" },
@@ -141,29 +147,46 @@ function captureScrollSnapshot(): ScrollSnapshot | null {
   };
 }
 
-function formatUpdateTimestamp(value?: string): string {
-  if (!value) return "Never";
+function formatUpdateTimestamp(value: string | undefined, formatDate: FormatDate, t: Translate): string {
+  if (!value) return t("Never");
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "Unknown";
-  return new Intl.DateTimeFormat(undefined, {
+  if (Number.isNaN(parsed.getTime())) return t("Unknown");
+  return formatDate(parsed, {
     dateStyle: "short",
     timeStyle: "short",
-  }).format(parsed);
+  });
 }
 
-function outlookSyncErrorMessage(value?: string): string {
+function outlookSyncErrorMessage(value: string | undefined, t: Translate): string {
   const code = String(value || "").toLocaleLowerCase();
   if (!code) return "";
   if (code.includes("cancel")) {
-    return "The last Microsoft sign-in was canceled. Connect again when you are ready.";
+    return t("The last Microsoft sign-in was canceled. Connect again when you are ready.");
   }
   if (code.includes("author") || code.includes("token") || code.includes("credential")) {
-    return "Microsoft needs you to connect Outlook again before the calendar can refresh.";
+    return t("Microsoft needs you to connect Outlook again before the calendar can refresh.");
   }
   if (code.includes("timeout") || code.includes("connector") || code.includes("network")) {
-    return "Outlook could not be reached. Check your connection, then choose Sync now.";
+    return t("Outlook could not be reached. Check your connection, then choose Sync now.");
   }
-  return "The last calendar refresh did not finish. Your previously saved meetings are unchanged; choose Sync now to retry.";
+  return t("The last calendar refresh did not finish. Your previously saved meetings are unchanged; choose Sync now to retry.");
+}
+
+function localizedSettingsError(
+  error: unknown,
+  fallback: string,
+  locale: "de" | "en",
+  t: Translate,
+): string {
+  const raw = error instanceof Error ? error.message.trim() : String(error || "").trim();
+  if (!raw) return t(fallback);
+  if (locale === "en") return raw;
+  const translated = t(raw);
+  return translated === raw ? t(fallback) : translated;
+}
+
+function localizedSettingsErrorNow(error: unknown, fallback: string): string {
+  return localizedSettingsError(error, fallback, getCurrentLocale(), translateNow);
 }
 
 function restoreScrollSnapshot(snapshot: ScrollSnapshot) {
@@ -304,40 +327,34 @@ type SummarizationModelOption = {
   icon: ProviderIconKey;
 };
 
-const SUMMARIZATION_MODEL_OPTIONS: readonly SummarizationModelOption[] = [
-  { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", detail: aaLanguageBenchmarkDetail(0.22, 25), group: "gemini", icon: "gemini" },
-  { value: "gemini-flash-latest", label: "Gemini Flash Latest", detail: aaLanguageBenchmarkDetail(1.31, 50), group: "gemini", icon: "gemini" },
-  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash", detail: aaLanguageBenchmarkDetail(1.31, 50), group: "gemini", icon: "gemini" },
-  { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", detail: aaLanguageBenchmarkDetail(1.74, 46), group: "gemini", icon: "gemini" },
-  { value: "cerebras/gemma-4-31b", label: "Gemma 4 31B", detail: aaLanguageBenchmarkDetail(1.04, 29), group: "cerebras", icon: "cerebras" },
-  { value: "minimax/minimax-m3:nitro", label: "MiniMax M3 Nitro", detail: aaLanguageBenchmarkDetail(0.22, 44), group: "openrouter", icon: "openrouter" },
-  { value: "z-ai/glm-5.2:nitro", label: "GLM 5.2 Nitro", detail: aaLanguageBenchmarkDetail(0.90, 51), group: "openrouter", icon: "openrouter" },
-  { value: "gpt-5.5", label: "OpenAI GPT 5.5", detail: aaLanguageBenchmarkDetail(4.35, 53), group: "openai", icon: "openai" },
-  { value: "gpt-5.4-mini", label: "OpenAI GPT 5.4 Mini", detail: aaLanguageBenchmarkDetail(0.65, 30), group: "openai", icon: "openai" },
-  { value: "gpt-5.4-nano", label: "OpenAI GPT 5.4 Nano", detail: aaLanguageBenchmarkDetail(0.18, 18), group: "openai", icon: "openai" },
-] as const;
-
 function languageModelBenchmarkDetail(
   inputUsdPerToken: number,
   outputUsdPerToken: number,
   tokensPerSecond: number,
+  localeTag: string,
+  t: Translate,
 ): string {
   const euroPerMillionBlendedTokens =
     ((inputUsdPerToken + outputUsdPerToken) / 2) * 1_000_000 * USD_TO_EUR_FOR_ESTIMATES;
-  const priceText = euroPerMillionBlendedTokens.toLocaleString("de-DE", {
+  const priceText = euroPerMillionBlendedTokens.toLocaleString(localeTag, {
     minimumFractionDigits: euroPerMillionBlendedTokens < 1 ? 2 : 1,
     maximumFractionDigits: euroPerMillionBlendedTokens < 1 ? 2 : 1,
   });
-  return `${priceText}€/M blended, ~${tokensPerSecond} Token/s`;
+  return t("{{price}}€/M blended, ~{{tokens}} Token/s", { price: priceText, tokens: tokensPerSecond });
 }
 
-function aaLanguageBenchmarkDetail(usdPerMillionTokens: number, intelligenceScore: number): string {
+function aaLanguageBenchmarkDetail(
+  usdPerMillionTokens: number,
+  intelligenceScore: number,
+  localeTag: string,
+  t: Translate,
+): string {
   const euroPerMillionTokens = usdPerMillionTokens * USD_TO_EUR_FOR_ESTIMATES;
-  const priceText = euroPerMillionTokens.toLocaleString("de-DE", {
+  const priceText = euroPerMillionTokens.toLocaleString(localeTag, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
-  return `${priceText}€/M with AA Score ${intelligenceScore}`;
+  return t("{{price}}€/M with AA Score {{score}}", { price: priceText, score: intelligenceScore });
 }
 
 function expandPromptTextarea(element: HTMLTextAreaElement, minimumHeightPx: number): void {
@@ -345,21 +362,38 @@ function expandPromptTextarea(element: HTMLTextAreaElement, minimumHeightPx: num
   element.style.height = `${Math.max(element.scrollHeight + 2, minimumHeightPx)}px`;
 }
 
-const POST_PROCESSING_MODEL_OPTIONS: readonly SummarizationModelOption[] = [
-  { value: "cerebras/gemma-4-31b", label: "Gemma 4 31B Cerebras", detail: languageModelBenchmarkDetail(0.0000006, 0.0000012, 500), group: "cerebras", icon: "cerebras" },
-  { value: "openai/gpt-oss-120b", label: "GPT-OSS 120B Baseten", detail: languageModelBenchmarkDetail(0.0000001, 0.0000005, 189), group: "openrouter", icon: "baseten" },
-  { value: "openai/gpt-oss-120b:cerebras", label: "GPT-OSS 120B Cerebras", detail: languageModelBenchmarkDetail(0.00000035, 0.00000075, 768), group: "openrouter", icon: "cerebras" },
-  { value: "google/gemini-2.5-flash-lite:nitro", label: "Gemini 2.5 Flash Lite Nitro", detail: languageModelBenchmarkDetail(0.0000001, 0.0000004, 45), group: "openrouter", icon: "openrouter" },
-  { value: "gpt-5.4-nano", label: "OpenAI GPT 5.4 Nano", detail: languageModelBenchmarkDetail(0.00000005, 0.0000004, 81), group: "openai", icon: "openai" },
-  { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", detail: languageModelBenchmarkDetail(0.00000025, 0.0000015, 81), group: "gemini", icon: "gemini" },
-  { value: "minimax/minimax-m3:nitro", label: "MiniMax M3 Nitro", detail: languageModelBenchmarkDetail(0.0000003, 0.0000012, 58), group: "openrouter", icon: "openrouter" },
-  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash", detail: languageModelBenchmarkDetail(0.0000015, 0.000009, 69), group: "gemini", icon: "gemini" },
-  { value: "gpt-5.4-mini", label: "OpenAI GPT 5.4 Mini", detail: languageModelBenchmarkDetail(0.00000025, 0.000002, 72), group: "openai", icon: "openai" },
-  { value: "z-ai/glm-5.2:nitro", label: "GLM 5.2 Nitro", detail: languageModelBenchmarkDetail(0.00000093, 0.000003, 30), group: "openrouter", icon: "openrouter" },
-  { value: "gemini-flash-latest", label: "Gemini Flash Latest", detail: languageModelBenchmarkDetail(0.0000015, 0.000009, 69), group: "gemini", icon: "gemini" },
-  { value: "gpt-5.5", label: "OpenAI GPT 5.5", detail: languageModelBenchmarkDetail(0.00000175, 0.000014, 39), group: "openai", icon: "openai" },
-  { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", detail: languageModelBenchmarkDetail(0.000002, 0.000012, 95), group: "gemini", icon: "gemini" },
-] as const;
+function createSummarizationModelOptions(localeTag: string, t: Translate): readonly SummarizationModelOption[] {
+  return [
+    { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", detail: aaLanguageBenchmarkDetail(0.22, 25, localeTag, t), group: "gemini", icon: "gemini" },
+    { value: "gemini-flash-latest", label: "Gemini Flash Latest", detail: aaLanguageBenchmarkDetail(1.31, 50, localeTag, t), group: "gemini", icon: "gemini" },
+    { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash", detail: aaLanguageBenchmarkDetail(1.31, 50, localeTag, t), group: "gemini", icon: "gemini" },
+    { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", detail: aaLanguageBenchmarkDetail(1.74, 46, localeTag, t), group: "gemini", icon: "gemini" },
+    { value: "cerebras/gemma-4-31b", label: "Gemma 4 31B", detail: aaLanguageBenchmarkDetail(1.04, 29, localeTag, t), group: "cerebras", icon: "cerebras" },
+    { value: "minimax/minimax-m3:nitro", label: "MiniMax M3 Nitro", detail: aaLanguageBenchmarkDetail(0.22, 44, localeTag, t), group: "openrouter", icon: "openrouter" },
+    { value: "z-ai/glm-5.2:nitro", label: "GLM 5.2 Nitro", detail: aaLanguageBenchmarkDetail(0.90, 51, localeTag, t), group: "openrouter", icon: "openrouter" },
+    { value: "gpt-5.5", label: "OpenAI GPT 5.5", detail: aaLanguageBenchmarkDetail(4.35, 53, localeTag, t), group: "openai", icon: "openai" },
+    { value: "gpt-5.4-mini", label: "OpenAI GPT 5.4 Mini", detail: aaLanguageBenchmarkDetail(0.65, 30, localeTag, t), group: "openai", icon: "openai" },
+    { value: "gpt-5.4-nano", label: "OpenAI GPT 5.4 Nano", detail: aaLanguageBenchmarkDetail(0.18, 18, localeTag, t), group: "openai", icon: "openai" },
+  ];
+}
+
+function createPostProcessingModelOptions(localeTag: string, t: Translate): readonly SummarizationModelOption[] {
+  return [
+    { value: "cerebras/gemma-4-31b", label: "Gemma 4 31B Cerebras", detail: languageModelBenchmarkDetail(0.0000006, 0.0000012, 500, localeTag, t), group: "cerebras", icon: "cerebras" },
+    { value: "openai/gpt-oss-120b", label: "GPT-OSS 120B Baseten", detail: languageModelBenchmarkDetail(0.0000001, 0.0000005, 189, localeTag, t), group: "openrouter", icon: "baseten" },
+    { value: "openai/gpt-oss-120b:cerebras", label: "GPT-OSS 120B Cerebras", detail: languageModelBenchmarkDetail(0.00000035, 0.00000075, 768, localeTag, t), group: "openrouter", icon: "cerebras" },
+    { value: "google/gemini-2.5-flash-lite:nitro", label: "Gemini 2.5 Flash Lite Nitro", detail: languageModelBenchmarkDetail(0.0000001, 0.0000004, 45, localeTag, t), group: "openrouter", icon: "openrouter" },
+    { value: "gpt-5.4-nano", label: "OpenAI GPT 5.4 Nano", detail: languageModelBenchmarkDetail(0.00000005, 0.0000004, 81, localeTag, t), group: "openai", icon: "openai" },
+    { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite", detail: languageModelBenchmarkDetail(0.00000025, 0.0000015, 81, localeTag, t), group: "gemini", icon: "gemini" },
+    { value: "minimax/minimax-m3:nitro", label: "MiniMax M3 Nitro", detail: languageModelBenchmarkDetail(0.0000003, 0.0000012, 58, localeTag, t), group: "openrouter", icon: "openrouter" },
+    { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash", detail: languageModelBenchmarkDetail(0.0000015, 0.000009, 69, localeTag, t), group: "gemini", icon: "gemini" },
+    { value: "gpt-5.4-mini", label: "OpenAI GPT 5.4 Mini", detail: languageModelBenchmarkDetail(0.00000025, 0.000002, 72, localeTag, t), group: "openai", icon: "openai" },
+    { value: "z-ai/glm-5.2:nitro", label: "GLM 5.2 Nitro", detail: languageModelBenchmarkDetail(0.00000093, 0.000003, 30, localeTag, t), group: "openrouter", icon: "openrouter" },
+    { value: "gemini-flash-latest", label: "Gemini Flash Latest", detail: languageModelBenchmarkDetail(0.0000015, 0.000009, 69, localeTag, t), group: "gemini", icon: "gemini" },
+    { value: "gpt-5.5", label: "OpenAI GPT 5.5", detail: languageModelBenchmarkDetail(0.00000175, 0.000014, 39, localeTag, t), group: "openai", icon: "openai" },
+    { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", detail: languageModelBenchmarkDetail(0.000002, 0.000012, 95, localeTag, t), group: "gemini", icon: "gemini" },
+  ];
+}
 
 const API_KEY_HELP_LINKS = {
   openai: { href: "https://platform.openai.com/api-keys", label: "OpenAI keys" },
@@ -405,7 +439,8 @@ async function openExternalHelpUrl(url: string): Promise<void> {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
-function ApiKeyLink({ helpKey, children = "Get key" }: { helpKey: ApiKeyHelpKey; children?: ReactNode }) {
+function ApiKeyLink({ helpKey, children }: { helpKey: ApiKeyHelpKey; children?: ReactNode }) {
+  const { t } = useI18n();
   const help = API_KEY_HELP_LINKS[helpKey];
   return (
     <a
@@ -417,9 +452,9 @@ function ApiKeyLink({ helpKey, children = "Get key" }: { helpKey: ApiKeyHelpKey;
         void openExternalHelpUrl(help.href);
       }}
       className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      title={help.label}
+      title={t(help.label)}
     >
-      {children}
+      {children ?? t("Get key")}
       <ExternalLink className="h-3 w-3" aria-hidden="true" />
     </a>
   );
@@ -548,51 +583,98 @@ interface ProviderModelOption {
   detail: string;
   group: "cloud_streaming" | "cloud_async" | "local";
   icon?: ProviderIconKey;
+  hourlyCostEur?: number;
+  wordErrorRatePercent?: number;
 }
 
-function sttHourlyBenchmarkDetail(usdPerHour: number, wordErrorRatePercent: number): string {
+function sttHourlyBenchmarkDetail(
+  usdPerHour: number,
+  wordErrorRatePercent: number,
+  localeTag: string,
+  t: Translate,
+): string {
   const euroPerHour = usdPerHour * USD_TO_EUR_FOR_ESTIMATES;
-  const euroText = euroPerHour.toLocaleString("de-DE", {
+  const euroText = euroPerHour.toLocaleString(localeTag, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
-  const errorText = wordErrorRatePercent.toLocaleString("de-DE", {
+  const errorText = wordErrorRatePercent.toLocaleString(localeTag, {
     minimumFractionDigits: wordErrorRatePercent % 1 === 0 ? 0 : 1,
     maximumFractionDigits: 2,
   });
-  return `${euroText}€/h with ${errorText}% Error`;
+  return t("{{price}}€/h with {{error}}% Error", { price: euroText, error: errorText });
 }
 
-function sttBenchmarkDetail(usdPerThousandMinutes: number, wordErrorRatePercent: number): string {
-  return sttHourlyBenchmarkDetail(usdPerThousandMinutes * 0.06, wordErrorRatePercent);
+function sttBenchmarkDetail(
+  usdPerThousandMinutes: number,
+  wordErrorRatePercent: number,
+  localeTag: string,
+  t: Translate,
+): string {
+  return sttHourlyBenchmarkDetail(usdPerThousandMinutes * 0.06, wordErrorRatePercent, localeTag, t);
 }
 
-const PROVIDER_MODEL_OPTIONS: ProviderModelOption[] = [
-  { value: "elevenlabs", label: "ElevenLabs Live", detail: sttBenchmarkDetail(6.50, 3.6), group: "cloud_streaming", icon: "elevenlabs" },
-  { value: "assemblyai-realtime", label: "AssemblyAI", detail: sttBenchmarkDetail(7.50, 4.1), group: "cloud_streaming", icon: "assemblyai" },
-  { value: "modulate-realtime", label: "Modulate.AI Multilingual Realtime", detail: sttHourlyBenchmarkDetail(MODULATE_STREAMING_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT), group: "cloud_streaming", icon: "modulate" },
-  { value: "soniox-realtime", label: "Soniox", detail: sttBenchmarkDetail(2.00, 4.5), group: "cloud_streaming", icon: "soniox" },
-  { value: "google", label: "Google Cloud", detail: sttBenchmarkDetail(16.00, 4.8), group: "cloud_streaming", icon: "googlecloud" },
-  { value: "openai", label: "OpenAI Realtime", detail: sttBenchmarkDetail(17.00, 4.9), group: "cloud_streaming", icon: "openai" },
-  { value: "mistral-realtime", label: "Mistral Live", detail: sttBenchmarkDetail(6.00, 5.2), group: "cloud_streaming", icon: "mistral" },
-  { value: "smallest-realtime", label: "Smallest AI", detail: sttBenchmarkDetail(8.00, 6.5), group: "cloud_streaming", icon: "smallest" },
-  { value: "deepgram", label: "Deepgram", detail: sttBenchmarkDetail(4.80, 6.6), group: "cloud_streaming", icon: "deepgram" },
-  { value: "gladia", label: "Gladia", detail: sttBenchmarkDetail(12.50, 7.8), group: "cloud_streaming", icon: "gladia" },
-  { value: "speechmatics", label: "Speechmatics", detail: sttBenchmarkDetail(17.50, 8.0), group: "cloud_streaming", icon: "speechmatics" },
-  { value: "azure_mai", label: "Microsoft MAI", detail: sttBenchmarkDetail(6.00, 2.4), group: "cloud_async", icon: "azure" },
-  { value: "assemblyai", label: "AssemblyAI", detail: sttBenchmarkDetail(3.50, 3.1), group: "cloud_async", icon: "assemblyai" },
-  { value: "mistral-async", label: "Mistral Batch", detail: sttBenchmarkDetail(3.00, 3.6), group: "cloud_async", icon: "mistral" },
-  { value: "groq", label: "Groq Live", detail: sttBenchmarkDetail(4.00, 3.7), group: "cloud_async", icon: "groq" },
-  { value: "soniox-async", label: "Soniox", detail: sttBenchmarkDetail(1.66, 3.8), group: "cloud_async", icon: "soniox" },
-  { value: "speechmatics-async", label: "Speechmatics", detail: sttBenchmarkDetail(6.70, 4.0), group: "cloud_async", icon: "speechmatics" },
-  { value: "gladia-async", label: "Gladia", detail: sttBenchmarkDetail(4.07, 4.1), group: "cloud_async", icon: "gladia" },
-  { value: "smallest-async", label: "Smallest AI", detail: sttBenchmarkDetail(5.00, 4.4), group: "cloud_async", icon: "smallest" },
-  { value: "modulate-async", label: "Modulate.AI Multilingual Batch", detail: sttHourlyBenchmarkDetail(MODULATE_BATCH_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT), group: "cloud_async", icon: "modulate" },
-  { value: "openai-async", label: "OpenAI Batch", detail: sttBenchmarkDetail(3.00, 4.5), group: "cloud_async", icon: "openai" },
-  { value: "gemini-stt", label: "Gemini", detail: sttBenchmarkDetail(6.66, 5.1), group: "cloud_async", icon: "gemini" },
-  { value: "deepgram-async", label: "Deepgram", detail: sttBenchmarkDetail(4.30, 5.2), group: "cloud_async", icon: "deepgram" },
-  { value: "onnx_local", label: "Local ONNX", detail: "0,00€/h with model-dependent Error", group: "local" },
-];
+function createProviderModelOptions(localeTag: string, t: Translate): ProviderModelOption[] {
+  const benchmarkOption = (
+    value: string,
+    label: string,
+    usdPerThousandMinutes: number,
+    wordErrorRatePercent: number,
+    group: ProviderModelOption["group"],
+    icon?: ProviderIconKey,
+  ): ProviderModelOption => ({
+    value,
+    label,
+    detail: sttBenchmarkDetail(usdPerThousandMinutes, wordErrorRatePercent, localeTag, t),
+    group,
+    icon,
+    hourlyCostEur: usdPerThousandMinutes * 0.06 * USD_TO_EUR_FOR_ESTIMATES,
+    wordErrorRatePercent,
+  });
+  const hourlyOption = (
+    value: string,
+    label: string,
+    usdPerHour: number,
+    wordErrorRatePercent: number,
+    group: ProviderModelOption["group"],
+    icon?: ProviderIconKey,
+  ): ProviderModelOption => ({
+    value,
+    label,
+    detail: sttHourlyBenchmarkDetail(usdPerHour, wordErrorRatePercent, localeTag, t),
+    group,
+    icon,
+    hourlyCostEur: usdPerHour * USD_TO_EUR_FOR_ESTIMATES,
+    wordErrorRatePercent,
+  });
+
+  return [
+    benchmarkOption("elevenlabs", "ElevenLabs Live", 6.50, 3.6, "cloud_streaming", "elevenlabs"),
+    benchmarkOption("assemblyai-realtime", "AssemblyAI", 7.50, 4.1, "cloud_streaming", "assemblyai"),
+    hourlyOption("modulate-realtime", "Modulate.AI Multilingual Realtime", MODULATE_STREAMING_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT, "cloud_streaming", "modulate"),
+    benchmarkOption("soniox-realtime", "Soniox", 2.00, 4.5, "cloud_streaming", "soniox"),
+    benchmarkOption("google", "Google Cloud", 16.00, 4.8, "cloud_streaming", "googlecloud"),
+    benchmarkOption("openai", "OpenAI Realtime", 17.00, 4.9, "cloud_streaming", "openai"),
+    benchmarkOption("mistral-realtime", "Mistral Live", 6.00, 5.2, "cloud_streaming", "mistral"),
+    benchmarkOption("smallest-realtime", "Smallest AI", 8.00, 6.5, "cloud_streaming", "smallest"),
+    benchmarkOption("deepgram", "Deepgram", 4.80, 6.6, "cloud_streaming", "deepgram"),
+    benchmarkOption("gladia", "Gladia", 12.50, 7.8, "cloud_streaming", "gladia"),
+    benchmarkOption("speechmatics", "Speechmatics", 17.50, 8.0, "cloud_streaming", "speechmatics"),
+    benchmarkOption("azure_mai", "Microsoft MAI", 6.00, 2.4, "cloud_async", "azure"),
+    benchmarkOption("assemblyai", "AssemblyAI", 3.50, 3.1, "cloud_async", "assemblyai"),
+    benchmarkOption("mistral-async", "Mistral Batch", 3.00, 3.6, "cloud_async", "mistral"),
+    benchmarkOption("groq", "Groq Live", 4.00, 3.7, "cloud_async", "groq"),
+    benchmarkOption("soniox-async", "Soniox", 1.66, 3.8, "cloud_async", "soniox"),
+    benchmarkOption("speechmatics-async", "Speechmatics", 6.70, 4.0, "cloud_async", "speechmatics"),
+    benchmarkOption("gladia-async", "Gladia", 4.07, 4.1, "cloud_async", "gladia"),
+    benchmarkOption("smallest-async", "Smallest AI", 5.00, 4.4, "cloud_async", "smallest"),
+    hourlyOption("modulate-async", "Modulate.AI Multilingual Batch", MODULATE_BATCH_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT, "cloud_async", "modulate"),
+    benchmarkOption("openai-async", "OpenAI Batch", 3.00, 4.5, "cloud_async", "openai"),
+    benchmarkOption("gemini-stt", "Gemini", 6.66, 5.1, "cloud_async", "gemini"),
+    benchmarkOption("deepgram-async", "Deepgram", 4.30, 5.2, "cloud_async", "deepgram"),
+    { value: "onnx_local", label: "Local ONNX", detail: t("{{price}}€/h with model-dependent Error", { price: (0).toLocaleString(localeTag, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }), group: "local", hourlyCostEur: 0 },
+  ];
+}
 
 const MEETING_FINAL_STT_OPTIONS = [
   { value: "soniox_async", label: "Soniox Async", model: "stt-async-v5", credentialModel: "soniox-async", recommended: true, nativeDiarization: true, fiveHourSupported: true, detail: "Keeps live and final transcription with the same service. Separates remote voices from system audio and keeps exact timing for meetings up to 5 hours." },
@@ -610,24 +692,19 @@ const MEETING_FINAL_STT_OPTIONS = [
   { value: "onnx_local", label: "Local ONNX STT", model: "Configured local model", credentialModel: "onnx_local", recommended: false, nativeDiarization: false, fiveHourSupported: true, detail: "Works without uploading audio. Scriber can also add speaker names on this device." },
 ] as const;
 
-function parseGermanMetricNumber(value: string | undefined): number {
-  if (!value) return Number.POSITIVE_INFINITY;
-  const parsed = Number.parseFloat(value.replace(/\./g, "").replace(",", "."));
-  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
-}
-
 function providerErrorRate(option: ProviderModelOption): number {
-  return parseGermanMetricNumber(option.detail.match(/with\s+([\d,.]+)\s*%\s+Error/i)?.[1]);
+  return option.wordErrorRatePercent ?? Number.POSITIVE_INFINITY;
 }
 
 function providerHourlyCost(option: ProviderModelOption): number {
-  return parseGermanMetricNumber(option.detail.match(/^([\d,.]+)\s*€\/h/i)?.[1]);
+  return option.hourlyCostEur ?? Number.POSITIVE_INFINITY;
 }
 
-function formatMeetingHourlyCost(value: number | null | undefined): string {
-  if (value == null) return "Provider rate varies";
-  if (value === 0) return "$0.00 / meeting hour";
-  return `~$${value.toFixed(2)} / meeting hour`;
+function formatMeetingHourlyCost(value: number | null | undefined, localeTag: string, t: Translate): string {
+  if (value == null) return t("Provider rate varies");
+  const price = value.toLocaleString(localeTag, { style: "currency", currency: "USD" });
+  if (value === 0) return t("{{price}} / meeting hour", { price });
+  return t("~{{price}} / meeting hour", { price });
 }
 
 function compareMetricAscending(a: number, b: number): number {
@@ -635,7 +712,7 @@ function compareMetricAscending(a: number, b: number): number {
   return a < b ? -1 : 1;
 }
 
-function sortProviderOptionsByErrorRate(options: ProviderModelOption[]): ProviderModelOption[] {
+function sortProviderOptionsByErrorRate(options: ProviderModelOption[], localeTag: string): ProviderModelOption[] {
   return [...options].sort((a, b) => {
     const errorDelta = compareMetricAscending(providerErrorRate(a), providerErrorRate(b));
     if (errorDelta !== 0) return errorDelta;
@@ -643,7 +720,7 @@ function sortProviderOptionsByErrorRate(options: ProviderModelOption[]): Provide
     const costDelta = compareMetricAscending(providerHourlyCost(a), providerHourlyCost(b));
     if (costDelta !== 0) return costDelta;
 
-    return a.label.localeCompare(b.label, "de");
+    return a.label.localeCompare(b.label, localeTag);
   });
 }
 
@@ -656,6 +733,7 @@ function ProviderIcon({
   label: string;
   className?: string;
 }) {
+  const { t } = useI18n();
   if (!icon) {
     return null;
   }
@@ -668,7 +746,7 @@ function ProviderIcon({
     >
       <img
         src={PROVIDER_ICON_PATHS[icon]}
-        alt={`${label} logo`}
+        alt={t("{{label}} logo", { label })}
         className="h-full w-full object-contain"
         draggable={false}
       />
@@ -974,7 +1052,7 @@ function FieldShell({
 }
 
 function maskedSecret(value: string): string {
-  return hasValue(value) ? "************" : "Not set";
+  return hasValue(value) ? "************" : "";
 }
 
 function SonioxRegionPicker({
@@ -984,26 +1062,27 @@ function SonioxRegionPicker({
   value: "us" | "eu";
   onValueChange: (value: "us" | "eu") => void;
 }) {
+  const { t } = useI18n();
   const options = [
     {
       value: "us" as const,
-      label: "US - Region (default)",
-      detail: "Use the standard Soniox US project and API endpoint.",
+      label: t("US - Region (default)"),
+      detail: t("Use the standard Soniox US project and API endpoint."),
     },
     {
       value: "eu" as const,
-      label: "EUR - Region (recommended for better latency)",
-      detail: "Process and store audio and transcripts in the European Union.",
+      label: t("EUR - Region (recommended for better latency)"),
+      detail: t("Process and store audio and transcripts in the European Union."),
     },
   ];
 
   return (
     <FieldShell
-      label="Data processing region"
-      detail="This selection applies to Soniox realtime and uploaded-audio transcription."
+      label={t("Data processing region")}
+      detail={t("This selection applies to Soniox realtime and uploaded-audio transcription.")}
     >
       <fieldset className="space-y-2.5">
-        <legend className="sr-only">Soniox data processing region</legend>
+        <legend className="sr-only">{t("Soniox data processing region")}</legend>
         <div className="grid gap-2">
           {options.map((option) => {
             const selected = value === option.value;
@@ -1039,9 +1118,9 @@ function SonioxRegionPicker({
           <div className="flex items-start gap-2.5">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
             <div>
-              <p className="font-semibold">EU access must be enabled by Soniox first</p>
+              <p className="font-semibold">{t("EU access must be enabled by Soniox first")}</p>
               <p className="mt-1">
-                Email Soniox with your Organization ID so they can enable regional deployments. Then open the Soniox API Console, create a new project with the European Union region, and paste that separate EU project's API key above. The selected region and API key must match.
+                {t("Email Soniox with your Organization ID so they can enable regional deployments. Then open the Soniox API Console, create a new project with the European Union region, and paste that separate EU project's API key above. The selected region and API key must match.")}
               </p>
               <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
                 <button
@@ -1049,7 +1128,7 @@ function SonioxRegionPicker({
                   onClick={() => void openExternalHelpUrl(API_KEY_HELP_LINKS.soniox.href)}
                   className="inline-flex items-center gap-1 rounded-md font-semibold text-amber-950 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 dark:text-amber-100"
                 >
-                  Open Soniox API Console
+                  {t("Open Soniox API Console")}
                   <ExternalLink className="h-3 w-3" aria-hidden="true" />
                 </button>
                 <button
@@ -1057,7 +1136,7 @@ function SonioxRegionPicker({
                   onClick={() => void openExternalHelpUrl(SONIOX_REGION_SUPPORT_URL)}
                   className="inline-flex items-center gap-1 rounded-md font-semibold text-amber-950 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 dark:text-amber-100"
                 >
-                  Email Soniox support
+                  {t("Email Soniox support")}
                   <ExternalLink className="h-3 w-3" aria-hidden="true" />
                 </button>
                 <button
@@ -1065,7 +1144,7 @@ function SonioxRegionPicker({
                   onClick={() => void openExternalHelpUrl(SONIOX_DATA_RESIDENCY_URL)}
                   className="inline-flex items-center gap-1 rounded-md font-semibold text-amber-950 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 dark:text-amber-100"
                 >
-                  Read the official setup guide
+                  {t("Read the official setup guide")}
                   <ExternalLink className="h-3 w-3" aria-hidden="true" />
                 </button>
               </div>
@@ -1116,6 +1195,7 @@ function ApiCredentialRow({
   inputType?: "password" | "text";
   children?: ReactNode;
 }) {
+  const { t } = useI18n();
   const hasCredential = hasValue(value);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -1132,12 +1212,12 @@ function ApiCredentialRow({
                 {provider}
               </span>
               <span className={cn("block truncate font-mono text-[10px] leading-3", hasCredential ? "text-slate-500" : "text-slate-400")}>
-                {maskedSecret(value)}
+                {maskedSecret(value) || t("Not set")}
               </span>
             </span>
           </span>
           <span className="inline-flex items-center gap-1 text-[10.5px] font-semibold text-blue-600 group-hover:text-blue-700 dark:text-blue-400">
-            Open
+            {t("Open")}
             <ArrowRight className="h-3 w-3" aria-hidden="true" />
           </span>
         </button>
@@ -1156,18 +1236,18 @@ function ApiCredentialRow({
         <DialogHeader>
           <DialogTitle>{provider}</DialogTitle>
           <DialogDescription>
-            {note || "Add or update the credential for this provider."}
+            {note || t("Add or update the credential for this provider.")}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
-          <FieldShell label="Credential">
+          <FieldShell label={t("Credential")}>
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <Input
                   type={inputType === "text" ? "text" : show ? "text" : "password"}
                   value={value}
                   onChange={(event) => onValueChange(event.target.value)}
-                  placeholder={placeholder || `Enter ${provider} credential`}
+                  placeholder={placeholder || t("Enter {{provider}} credential", { provider })}
                   className="pr-10 font-mono text-sm"
                 />
                 {typeof show === "boolean" && onShowChange ? (
@@ -1175,7 +1255,7 @@ function ApiCredentialRow({
                     type="button"
                     onClick={() => onShowChange(!show)}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 transition-colors hover:text-slate-950 dark:hover:text-slate-100"
-                    aria-label={show ? "Hide credential" : "Show credential"}
+                    aria-label={show ? t("Hide credential") : t("Show credential")}
                   >
                     {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
@@ -1187,12 +1267,12 @@ function ApiCredentialRow({
                 className={cn(saved && "border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700")}
               >
                 {saved ? <Check className="mr-2 h-4 w-4" /> : <Save className="mr-2 h-4 w-4" />}
-                {saved ? "Saved" : "Save"}
+                {saved ? t("Saved") : t("Save")}
               </Button>
             </div>
           </FieldShell>
           {children}
-          <ApiKeyLink helpKey={helpKey}>Open provider page</ApiKeyLink>
+          <ApiKeyLink helpKey={helpKey}>{t("Open provider page")}</ApiKeyLink>
         </div>
       </DialogContent>
     </Dialog>
@@ -1200,6 +1280,19 @@ function ApiCredentialRow({
 }
 
 export default function Settings() {
+  const { t, locale, localeTag, setLocale, formatDate, formatNumber } = useI18n();
+  const providerModelOptions = useMemo(
+    () => createProviderModelOptions(localeTag, t),
+    [localeTag, t],
+  );
+  const summarizationModelOptions = useMemo(
+    () => createSummarizationModelOptions(localeTag, t),
+    [localeTag, t],
+  );
+  const postProcessingModelOptions = useMemo(
+    () => createPostProcessingModelOptions(localeTag, t),
+    [localeTag, t],
+  );
   const queryClient = useQueryClient();
   const [openAIKey, setOpenAIKey] = useState("");
   const [deepgramKey, setDeepgramKey] = useState("");
@@ -1301,6 +1394,7 @@ export default function Settings() {
   const [isInstallingDesktopUpdate, setIsInstallingDesktopUpdate] = useState(false);
   const [micAlwaysOn, setMicAlwaysOn] = useState(false);
   const [segmentSpeechWithVad, setSegmentSpeechWithVad] = useState(false);
+  const [segmentSpeechWithVadSaving, setSegmentSpeechWithVadSaving] = useState(false);
   const [favoriteMic, setFavoriteMic] = useState("");
   const [isMicDropdownOpen, setIsMicDropdownOpen] = useState(false);
   const [isLanguageDropdownOpen, setIsLanguageDropdownOpen] = useState(false);
@@ -1394,9 +1488,9 @@ export default function Settings() {
       setEditingSpeakerProfileId("");
       setSpeakerProfileName("");
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
-      toast({ title: variables.action === "delete" ? "Saved speaker deleted" : "Speaker name saved" });
+      toast({ title: variables.action === "delete" ? t("Saved speaker deleted") : t("Speaker name saved") });
     },
-    onError: (error) => toast({ title: "Saved speaker could not be updated", description: error.message, variant: "destructive" }),
+    onError: (error) => toast({ title: t("Saved speaker could not be updated"), description: localizedSettingsError(error, "The requested settings action failed.", locale, t), variant: "destructive" }),
   });
   const speakerModelMutation = useMutation({
     mutationFn: async () => {
@@ -1406,9 +1500,9 @@ export default function Settings() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-model"] });
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
-      toast({ title: "Voice recognition ready", description: "Scriber can now recognize familiar speakers in new meetings." });
+      toast({ title: t("Voice recognition ready"), description: t("Scriber can now recognize familiar speakers in new meetings.") });
     },
-    onError: (error) => toast({ title: "Voice recognition download failed", description: error.message, variant: "destructive" }),
+    onError: (error) => toast({ title: t("Voice recognition download failed"), description: localizedSettingsError(error, "The requested settings action failed.", locale, t), variant: "destructive" }),
   });
   const voiceEnrollmentMutation = useMutation({
     mutationFn: async () => {
@@ -1431,7 +1525,7 @@ export default function Settings() {
       setVoiceEnrollmentStage("success");
       setVoiceEnrollmentResult(result);
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
-      toast({ title: `${result.profile.displayName} is ready`, description: "Scriber can match this voice in future meetings." });
+      toast({ title: t("{{name}} is ready", { name: result.profile.displayName }), description: t("Scriber can match this voice in future meetings.") });
     },
     onError: () => {
       setVoiceEnrollmentStartedAt(null);
@@ -1451,9 +1545,9 @@ export default function Settings() {
       setMergeTargetProfileId(payload.targetProfileId);
       setMergeSourceProfileId("");
       await refreshAllMeetingSpeakerIdentityCaches(queryClient);
-      toast({ title: "Duplicate speakers merged" });
+      toast({ title: t("Duplicate speakers merged") });
     },
-    onError: (error) => toast({ title: "Speakers could not be merged", description: error.message, variant: "destructive" }),
+    onError: (error) => toast({ title: t("Speakers could not be merged"), description: localizedSettingsError(error, "The requested settings action failed.", locale, t), variant: "destructive" }),
   });
   const outlookMutation = useMutation({
     mutationFn: async (action: "connect" | "sync" | "disconnect") => {
@@ -1489,7 +1583,7 @@ export default function Settings() {
         queryClient.removeQueries({ queryKey: ["/api/calendar/outlook/events"] });
       }
       if (action === "disconnect") setOutlookDisconnectOpen(false);
-      toast({ title: action === "connect" ? "Continue in your browser" : action === "sync" ? "Outlook calendar synchronized" : "Outlook disconnected" });
+      toast({ title: action === "connect" ? t("Continue in your browser") : action === "sync" ? t("Outlook calendar synchronized") : t("Outlook disconnected") });
     },
     onError: (error) => {
       // A failed refresh can be the first proof that Microsoft revoked the
@@ -1499,7 +1593,7 @@ export default function Settings() {
         queryKey: ["/api/calendar/outlook/status"],
         exact: true,
       });
-      toast({ title: "Outlook action failed", description: error.message, variant: "destructive" });
+      toast({ title: t("Outlook action failed"), description: localizedSettingsError(error, "The requested settings action failed.", locale, t), variant: "destructive" });
     },
   });
   const outlookCredentialStatusUnavailable = outlookQuery.data?.credentialStatusAvailable === false;
@@ -1674,7 +1768,7 @@ export default function Settings() {
   };
 
   const missingCredentialReason = (requirement: CredentialRequirement | null) =>
-    requirement && !isCredentialReady(requirement) ? MISSING_CREDENTIAL_CTA : undefined;
+    requirement && !isCredentialReady(requirement) ? t(MISSING_CREDENTIAL_CTA) : undefined;
 
   const requiredCredentialForTranscriptionModel = (model: string): CredentialRequirement | null => {
     switch (model) {
@@ -1749,7 +1843,7 @@ export default function Settings() {
     return isCredentialReady(requirement) ? null : requirement;
   })();
   const selectedPostProcessingModelOption =
-    POST_PROCESSING_MODEL_OPTIONS.find((option) => option.value === postProcessingModel) ?? null;
+    postProcessingModelOptions.find((option) => option.value === postProcessingModel) ?? null;
   const selectedMeetingFinalOption =
     MEETING_FINAL_STT_OPTIONS.find((option) => option.value === meetingFinalProvider)
     ?? MEETING_FINAL_STT_OPTIONS[0];
@@ -1813,9 +1907,9 @@ export default function Settings() {
       setOnnxQuantization(data.quantization || "int8");
     } catch (e: any) {
       setOnnxAvailable(false);
-      setOnnxMessage(String(e?.message || e));
+      setOnnxMessage(localizedSettingsError(e, "The requested settings action failed.", locale, t));
     }
-  }, []);
+  }, [locale, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1961,10 +2055,10 @@ export default function Settings() {
         setSettingsLoaded(true);
       } catch (e: any) {
         setSettingsLoaded(true); // Still mark as loaded even on error
-        setSettingsError(String(e?.message || e));
+        setSettingsError(localizedSettingsErrorNow(e, "The requested settings action failed."));
         toast({
-          title: "Failed to load settings",
-          description: String(e?.message || e),
+          title: translateNow("Failed to load settings"),
+          description: localizedSettingsErrorNow(e, "The requested settings action failed."),
           duration: 4000,
         });
       }
@@ -1991,8 +2085,7 @@ export default function Settings() {
         credentials: "include",
       }, 15_000);
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || res.statusText);
+        throw new Error(await responseErrorMessage(res));
       }
       const updatedSettings = (await res.json()) as SettingsResponse;
       queryClient.setQueryData<SettingsResponse>(["/api/settings"], updatedSettings);
@@ -2024,8 +2117,8 @@ export default function Settings() {
           savedCustomVocabularyRef.current = valueToSave;
         } catch (e: any) {
           toast({
-            title: "Save failed",
-            description: String(e?.message || e),
+            title: translateNow("Save failed"),
+            description: localizedSettingsErrorNow(e, "The requested settings action failed."),
             duration: 4000,
           });
         }
@@ -2153,8 +2246,8 @@ export default function Settings() {
       setCredentialReadyKeys((prev) => ({ ...prev, [provider]: credentialReady }));
       setSavedKeys((prev) => ({ ...prev, [provider]: credentialReady }));
       toast({
-        title: "Saved",
-        description: `${provider} settings updated.`,
+        title: t("Saved"),
+        description: t("{{provider}} settings updated.", { provider }),
         duration: 2000,
       });
       const previousResetTimer = savedKeyResetTimersRef.current.get(provider);
@@ -2168,8 +2261,8 @@ export default function Settings() {
       savedKeyResetTimersRef.current.set(provider, resetTimer);
     } catch (e: any) {
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -2284,8 +2377,8 @@ export default function Settings() {
     } catch (e: any) {
       setSelectedDeviceId(previousDeviceId);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
       return false;
@@ -2310,17 +2403,17 @@ export default function Settings() {
     try {
       await updateSettings({ favoriteMic: newFavorite });
       toast({
-        title: newFavorite ? "Favorite set" : "Favorite cleared",
+        title: newFavorite ? t("Favorite set") : t("Favorite cleared"),
         description: newFavorite
-          ? "This microphone will be used automatically when available."
-          : "No preferred microphone set.",
+          ? t("This microphone will be used automatically when available.")
+          : t("No preferred microphone set."),
         duration: 2000,
       });
     } catch (e: any) {
       setFavoriteMic(originalFavorite); // Revert to original value on error
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -2369,8 +2462,8 @@ export default function Settings() {
     } catch (e: any) {
       setTranscriptionModel(previousValue);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -2384,8 +2477,8 @@ export default function Settings() {
     } catch (e: any) {
       setLanguage(previousValue);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -2420,16 +2513,16 @@ export default function Settings() {
         await updateSettings({ onnxModel: value });
       }
       toast({
-        title: "Saved",
-        description: "Local model selection updated.",
+        title: t("Saved"),
+        description: t("Local model selection updated."),
         duration: 2000,
       });
     } catch (e: any) {
       setOnnxModel(previousModel);
       setOnnxQuantization(previousQuantization);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -2442,15 +2535,15 @@ export default function Settings() {
       await updateSettings({ onnxQuantization: value });
       await loadOnnxModels();
       toast({
-        title: "Saved",
-        description: "Quantization updated.",
+        title: t("Saved"),
+        description: t("Quantization updated."),
         duration: 2000,
       });
     } catch (e: any) {
       setOnnxQuantization(previousValue);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -2478,14 +2571,14 @@ export default function Settings() {
         throw new Error(data?.message || "Download failed");
       }
       toast({
-        title: "Download finished",
-        description: "Model downloaded successfully.",
+        title: t("Download finished"),
+        description: t("Model downloaded successfully."),
         duration: 2000,
       });
     } catch (e: any) {
       toast({
-        title: "Download failed",
-        description: String(e?.message || e),
+        title: t("Download failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     } finally {
@@ -2511,15 +2604,15 @@ export default function Settings() {
         throw new Error(data?.message || "Delete failed");
       }
       toast({
-        title: "Deleted",
-        description: "Model removed from cache.",
+        title: t("Deleted"),
+        description: t("Model removed from cache."),
         duration: 2000,
       });
       await loadOnnxModels();
     } catch (e: any) {
       toast({
-        title: "Delete failed",
-        description: String(e?.message || e),
+        title: t("Delete failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     } finally {
@@ -2538,15 +2631,15 @@ export default function Settings() {
     try {
       await updateSettings({ summarizationModel: value });
       toast({
-        title: "Saved",
-        description: "Summarization model updated.",
+        title: t("Saved"),
+        description: t("Summarization model updated."),
         duration: 2000,
       });
     } catch (e: any) {
       setSummarizationModel(previousValue);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -2563,15 +2656,15 @@ export default function Settings() {
     try {
       await updateSettings({ postProcessingModel: value });
       toast({
-        title: "Saved",
-        description: "Live post-processing model updated.",
+        title: t("Saved"),
+        description: t("Live post-processing model updated."),
         duration: 2000,
       });
     } catch (e: any) {
       setPostProcessingModel(previousValue);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -2583,15 +2676,15 @@ export default function Settings() {
     try {
       await updateSettings({ autoSummarize: enabled });
       toast({
-        title: "Saved",
-        description: enabled ? "Auto-summarize enabled." : "Auto-summarize disabled.",
+        title: t("Saved"),
+        description: enabled ? t("Auto-summarize enabled.") : t("Auto-summarize disabled."),
         duration: 2000,
       });
     } catch (e: any) {
       setAutoSummarize(previousValue);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -2603,17 +2696,17 @@ export default function Settings() {
     try {
       await updateSettings({ youtubePreferCaptions: enabled });
       toast({
-        title: "Saved",
+        title: t("Saved"),
         description: enabled
-          ? "YouTube captions will be used before audio transcription."
-          : "YouTube videos will always be transcribed from audio.",
+          ? t("YouTube captions will be used before audio transcription.")
+          : t("YouTube videos will always be transcribed from audio."),
         duration: 2000,
       });
     } catch (e: any) {
       setYoutubePreferCaptions(previousValue);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -2629,15 +2722,15 @@ export default function Settings() {
         queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] }),
       ]);
       toast({
-        title: "Saved",
+        title: t("Saved"),
         description: enabled
-          ? "Voice Library will recognize recurring speakers in new meetings after its local model is installed."
-          : "Scriber will not learn new voices. Existing saved speakers remain until you delete them.",
+          ? t("Voice Library will recognize recurring speakers in new meetings after its local model is installed.")
+          : t("Scriber will not learn new voices. Existing saved speakers remain until you delete them."),
         duration: 3500,
       });
     } catch (e: any) {
       setVoiceprintLibraryOptIn(previousValue);
-      toast({ title: "Save failed", description: String(e?.message || e), duration: 4000 });
+      toast({ title: t("Save failed"), description: localizedSettingsError(e, "The requested settings action failed.", locale, t), duration: 4000 });
     }
   };
 
@@ -2668,9 +2761,9 @@ export default function Settings() {
       setVoiceLibraryDeleteOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-model"] });
-      toast({ title: "Voice data deleted", description: "All saved speakers and the local download were removed.", duration: 3500 });
+      toast({ title: t("Voice data deleted"), description: t("All saved speakers and the local download were removed."), duration: 3500 });
     } catch (e: any) {
-      toast({ title: "Delete failed", description: String(e?.message || e), duration: 5000 });
+      toast({ title: t("Delete failed"), description: localizedSettingsError(e, "The requested settings action failed.", locale, t), duration: 5000 });
     } finally {
       setVoiceLibraryDeletePending(false);
     }
@@ -2682,15 +2775,15 @@ export default function Settings() {
     try {
       await updateSettings({ postProcessingEnabled: enabled });
       toast({
-        title: "Saved",
-        description: enabled ? "Live post-processing enabled." : "Live post-processing disabled.",
+        title: t("Saved"),
+        description: enabled ? t("Live post-processing enabled.") : t("Live post-processing disabled."),
         duration: 2000,
       });
     } catch (e: any) {
       setPostProcessingEnabled(previousValue);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
       return;
@@ -2699,8 +2792,8 @@ export default function Settings() {
       await refreshGlobalHotkey();
     } catch (e: any) {
       toast({
-        title: "Saved, hotkey refresh failed",
-        description: String(e?.message || e),
+        title: t("Saved, hotkey refresh failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 5000,
       });
     }
@@ -2711,14 +2804,14 @@ export default function Settings() {
       const updated = await updateSettings({ hotkey });
       setHotkey(updated.hotkey || hotkey);
       toast({
-        title: "Saved",
-        description: "Hotkey updated.",
+        title: t("Saved"),
+        description: t("Hotkey updated."),
         duration: 2000,
       });
     } catch (e: any) {
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
       setIsRecordingHotkey(false);
@@ -2729,8 +2822,8 @@ export default function Settings() {
       await refreshGlobalHotkey();
     } catch (e: any) {
       toast({
-        title: "Saved, hotkey refresh failed",
-        description: String(e?.message || e),
+        title: t("Saved, hotkey refresh failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 5000,
       });
     } finally {
@@ -2743,14 +2836,14 @@ export default function Settings() {
       const updated = await updateSettings({ postProcessingHotkey });
       setPostProcessingHotkey(updated.postProcessingHotkey || postProcessingHotkey);
       toast({
-        title: "Saved",
-        description: "Post-processing hotkey updated.",
+        title: t("Saved"),
+        description: t("Post-processing hotkey updated."),
         duration: 2000,
       });
     } catch (e: any) {
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
       setIsRecordingPostProcessingHotkey(false);
@@ -2761,8 +2854,8 @@ export default function Settings() {
       await refreshGlobalHotkey();
     } catch (e: any) {
       toast({
-        title: "Saved, hotkey refresh failed",
-        description: String(e?.message || e),
+        title: t("Saved, hotkey refresh failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 5000,
       });
     } finally {
@@ -2777,9 +2870,9 @@ export default function Settings() {
       await setGlobalHotkeyCaptureActive(false);
       const status = await refreshGlobalHotkey();
       if (status?.meetingHotkey) setMeetingHotkey(status.meetingHotkey);
-      toast({ title: "Saved", description: "Meeting hotkey updated.", duration: 2000 });
+      toast({ title: t("Saved"), description: t("Meeting hotkey updated."), duration: 2000 });
     } catch (e: any) {
-      toast({ title: "Meeting hotkey save failed", description: String(e?.message || e), duration: 5000 });
+      toast({ title: t("Meeting hotkey save failed"), description: localizedSettingsError(e, "The requested settings action failed.", locale, t), duration: 5000 });
     } finally {
       setIsRecordingMeetingHotkey(false);
     }
@@ -2797,9 +2890,9 @@ export default function Settings() {
       setMeetingAudioRetentionDays(updated.meetingAudioRetentionDays ?? meetingAudioRetentionDays);
       setSpeakerDiarizationFallbackEnabled(updated.speakerDiarizationFallbackEnabled !== false);
       await queryClient.invalidateQueries({ queryKey: ["/api/meeting-profiles"] });
-      toast({ title: "Meeting settings saved", description: "New meetings will use these choices.", duration: 2200 });
+      toast({ title: t("Meeting settings saved"), description: t("New meetings will use these choices."), duration: 2200 });
     } catch (error: any) {
-      toast({ title: "Meeting settings could not be saved", description: String(error?.message || error), duration: 5000 });
+      toast({ title: t("Meeting settings could not be saved"), description: localizedSettingsError(error, "The requested settings action failed.", locale, t), duration: 5000 });
       throw error;
     }
   };
@@ -2830,14 +2923,14 @@ export default function Settings() {
       if (!response.ok) throw new Error(payload.message || `Install failed (${response.status})`);
       setDiarizationComponent(payload);
       toast({
-        title: "Local speaker separation installed",
-        description: "Local speaker separation is ready to use.",
+        title: t("Local speaker separation installed"),
+        description: t("Local speaker separation is ready to use."),
         duration: 3500,
       });
     } catch (error: any) {
       toast({
-        title: "Local speaker separation could not be installed",
-        description: String(error?.message || error),
+        title: t("Local speaker separation could not be installed"),
+        description: localizedSettingsError(error, "The requested settings action failed.", locale, t),
         duration: 6000,
       });
     } finally {
@@ -2853,8 +2946,8 @@ export default function Settings() {
     } catch (e: any) {
       setRecordingMode(previousMode);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
       return;
@@ -2863,8 +2956,8 @@ export default function Settings() {
       await refreshGlobalHotkey();
     } catch (e: any) {
       toast({
-        title: "Saved, hotkey refresh failed",
-        description: String(e?.message || e),
+        title: t("Saved, hotkey refresh failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 5000,
       });
     }
@@ -2878,14 +2971,14 @@ export default function Settings() {
     try {
       await updateSettings({ summarizationPrompt });
       toast({
-        title: "Saved",
-        description: "Summarization prompt updated.",
+        title: t("Saved"),
+        description: t("Summarization prompt updated."),
         duration: 2000,
       });
     } catch (e: any) {
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -2907,8 +3000,8 @@ export default function Settings() {
     } catch (e: any) {
       setVisualizerBarCount(savedVisualizerBarCount);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -2922,16 +3015,16 @@ export default function Settings() {
       setAutostartAvailable(autostart.available);
 
       toast({
-        title: "Saved",
-        description: enabled ? "Autostart enabled" : "Autostart disabled",
+        title: t("Saved"),
+        description: enabled ? t("Autostart enabled") : t("Autostart disabled"),
         duration: 2000,
       });
     } catch (e: any) {
       // Revert on error
       setAutostartEnabled(!enabled);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -2944,21 +3037,21 @@ export default function Settings() {
       const status = await checkDesktopUpdate();
       setDesktopUpdate(status);
       toast({
-        title: status.available ? "Update available" : "Update check finished",
-        description: status.message,
+        title: status.available ? t("Update available") : t("Update check finished"),
+        description: t(status.message, status.messageValues),
         duration: 3500,
       });
     } catch (e: any) {
-      const message = String(e?.message || e);
+      const message = localizedSettingsError(e, "The requested settings action failed.", locale, t);
       setDesktopUpdate((prev) => ({
         ...prev,
         phase: "error",
         enabled: false,
         available: false,
-        message,
+        message: "Update check failed.",
       }));
       toast({
-        title: "Update check failed",
+        title: t("Update check failed"),
         description: message,
         duration: 5000,
       });
@@ -2971,14 +3064,14 @@ export default function Settings() {
     try {
       await updateSettings({ postProcessingPrompt });
       toast({
-        title: "Saved",
-        description: "Live post-processing prompt updated.",
+        title: t("Saved"),
+        description: t("Live post-processing prompt updated."),
         duration: 2000,
       });
     } catch (e: any) {
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -2990,15 +3083,15 @@ export default function Settings() {
     try {
       await updateSettings({ postProcessingPrompt: DEFAULT_POST_PROCESSING_PROMPT });
       toast({
-        title: "Saved",
-        description: "Live post-processing prompt reset.",
+        title: t("Saved"),
+        description: t("Live post-processing prompt reset."),
         duration: 2000,
       });
     } catch (e: any) {
       setPostProcessingPrompt(previousPrompt);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
@@ -3012,14 +3105,14 @@ export default function Settings() {
       });
       setDesktopUpdate(status);
     } catch (e: any) {
-      const message = String(e?.message || e);
+      const message = localizedSettingsError(e, "The requested settings action failed.", locale, t);
       setDesktopUpdate((prev) => ({
         ...prev,
         phase: "error",
-        message,
+        message: "Update installation failed.",
       }));
       toast({
-        title: "Update failed",
+        title: t("Update failed"),
         description: message,
         duration: 5000,
       });
@@ -3032,8 +3125,8 @@ export default function Settings() {
     const status = updateDesktopUpdateSettings({ autoCheckEnabled: enabled });
     setDesktopUpdate(status);
     toast({
-      title: "Saved",
-      description: enabled ? "Weekly update checks enabled." : "Automatic update checks disabled.",
+      title: t("Saved"),
+      description: enabled ? t("Weekly update checks enabled.") : t("Automatic update checks disabled."),
       duration: 2500,
     });
   };
@@ -3042,8 +3135,8 @@ export default function Settings() {
     const status = remindDesktopUpdateLater(desktopUpdate.version);
     setDesktopUpdate(status);
     toast({
-      title: "Reminder set",
-      description: "Scriber will remind you about this update tomorrow.",
+      title: t("Reminder set"),
+      description: t("Scriber will remind you about this update tomorrow."),
       duration: 3000,
     });
   };
@@ -3052,8 +3145,8 @@ export default function Settings() {
     const status = skipDesktopUpdateVersion(desktopUpdate.version);
     setDesktopUpdate(status);
     toast({
-      title: "Update skipped",
-      description: "This version will not be announced again.",
+      title: t("Update skipped"),
+      description: t("This version will not be announced again."),
       duration: 3000,
     });
   };
@@ -3067,36 +3160,42 @@ export default function Settings() {
     try {
       await updateSettings({ micAlwaysOn: enabled });
       toast({
-        title: "Saved",
-        description: enabled ? "Mic pre-warming enabled" : "Mic pre-warming disabled",
+        title: t("Saved"),
+        description: enabled ? t("Mic pre-warming enabled") : t("Mic pre-warming disabled"),
         duration: 2000,
       });
     } catch (e: any) {
       setMicAlwaysOn(!enabled);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
     }
   };
 
   const handleSegmentSpeechWithVadChange = async (enabled: boolean) => {
-    setSegmentSpeechWithVad(enabled);
+    if (segmentSpeechWithVadSaving) return;
+    const previousValue = segmentSpeechWithVad;
+    setSegmentSpeechWithVadSaving(true);
     try {
-      await updateSettings({ segmentSpeechWithVad: enabled });
+      const updated = await updateSettings({ segmentSpeechWithVad: enabled });
+      const savedValue = updated.segmentSpeechWithVad === true;
+      setSegmentSpeechWithVad(savedValue);
       toast({
-        title: "Saved",
-        description: enabled ? "Silero voice detection enabled." : "Silero voice detection disabled.",
+        title: t("Saved"),
+        description: savedValue ? t("Silero voice detection enabled.") : t("Silero voice detection disabled."),
         duration: 2000,
       });
-    } catch (e: any) {
-      setSegmentSpeechWithVad(!enabled);
+    } catch (error) {
+      setSegmentSpeechWithVad(previousValue);
       toast({
-        title: "Save failed",
-        description: String(e?.message || e),
+        title: t("Save failed"),
+        description: localizedSettingsError(error, "Silero voice detection could not be saved.", locale, t),
         duration: 4000,
       });
+    } finally {
+      setSegmentSpeechWithVadSaving(false);
     }
   };
 
@@ -3110,8 +3209,8 @@ export default function Settings() {
       if (selectedDeviceId !== "default" && !availableIds.has(selectedDeviceId)) {
         setSelectedDeviceId("default");
         toast({
-          title: "Mikrofon getrennt",
-          description: "Das ausgewahlte Mikrofon ist nicht mehr verfugbar. Es wurde auf Default zuruckgestellt.",
+          title: t("Microphone disconnected"),
+          description: t("The selected microphone is no longer available. Scriber switched back to the Windows default."),
           duration: 3000,
         });
       }
@@ -3124,8 +3223,8 @@ export default function Settings() {
             ? msg.restoredDeviceLabel
             : msg.restoredDeviceId;
         toast({
-          title: "Favorite mic restored",
-          description: `Favorite microphone '${restoredLabel}' is available again.`,
+          title: t("Favorite mic restored"),
+          description: t("Favorite microphone '{{name}}' is available again.", { name: restoredLabel }),
           duration: 2500,
         });
       }
@@ -3155,7 +3254,7 @@ export default function Settings() {
     if (msg.type === "meeting_state" && ["ready", "capture_failed", "finalization_failed", "analysis_failed", "discarded"].includes(msg.meeting.state)) {
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
     }
-  }, [loadOnnxModels, onnxQuantization, queryClient, selectedDeviceId, toast]);
+  }, [loadOnnxModels, onnxQuantization, queryClient, selectedDeviceId, t, toast]);
 
   useSharedWebSocket(handleWsMessage);
 
@@ -3174,8 +3273,9 @@ export default function Settings() {
     (device, index) => (device.deviceId || `device-${index}`) === selectedDeviceId
   );
   const selectedMicLabel = inputDevices.length === 0
-    ? "Loading devices..."
-    : (selectedMicDevice?.label || (selectedDeviceId === "default" ? "Default" : ""));
+    ? t("Loading devices...")
+    : (selectedMicDevice?.label || (selectedDeviceId === "default" ? t("Default") : ""));
+  const savedSpeakerCount = speakerProfilesQuery.data?.items.length ?? 0;
   const hasSelectedMic = Boolean(selectedMicDevice || selectedDeviceId === "default");
   const selectedLanguage = LANGUAGE_OPTIONS.find((option) => option.value === language) || LANGUAGE_OPTIONS[0];
   const selectedTranscriptionModelOption = TRANSCRIPTION_MODEL_OPTIONS.find((option) => option.value === transcriptionModel);
@@ -3183,11 +3283,11 @@ export default function Settings() {
   const quantizationSupported = supportedQuantizations.includes(onnxQuantization);
   const formatSize = (sizeMb?: number) => {
     if (!sizeMb) return "";
-    if (sizeMb >= 1024) return `${(sizeMb / 1024).toFixed(1)} GB`;
-    return `${sizeMb} MB`;
+    if (sizeMb >= 1024) return t("{{size}} GB", { size: formatNumber(sizeMb / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) });
+    return t("{{size}} MB", { size: formatNumber(sizeMb) });
   };
   const formatOnnxRuntime = (runtime?: string) => {
-    if (!runtime || runtime === "onnx_asr") return "ONNX Runtime";
+    if (!runtime || runtime === "onnx_asr") return t("ONNX Runtime");
     return runtime.replace(/_/g, " ");
   };
   const selectedOnnxSize =
@@ -3195,10 +3295,10 @@ export default function Settings() {
   const selectedOnnxRepo =
     selectedOnnxModel?.hfRepoByQuantization?.[onnxQuantization] || selectedOnnxModel?.hfRepo || "";
   const getStatusLabel = (status?: string) => {
-    if (status === "ready") return "Downloaded";
-    if (status === "downloading") return "Downloading";
-    if (status === "error") return "Error";
-    return "Not downloaded";
+    if (status === "ready") return t("Downloaded");
+    if (status === "downloading") return t("Downloading");
+    if (status === "error") return t("Error");
+    return t("Not downloaded");
   };
   const getStatusVariant = (status?: string): "default" | "secondary" | "destructive" | "outline" => {
     if (status === "ready") return "default";
@@ -3215,82 +3315,85 @@ export default function Settings() {
     return "outline";
   })();
   const desktopUpdateBadgeLabel = (() => {
-    if (desktopUpdate.available && desktopUpdate.dismissed) return "Skipped";
-    if (desktopUpdate.available && desktopUpdate.deferred) return "Later";
-    if (desktopUpdate.available) return "Available";
-    if (desktopUpdate.phase === "idle") return "Not checked";
-    if (desktopUpdate.enabled) return "Current";
-    return "Not configured";
+    if (desktopUpdate.available && desktopUpdate.dismissed) return t("Skipped");
+    if (desktopUpdate.available && desktopUpdate.deferred) return t("Later");
+    if (desktopUpdate.available) return t("Available");
+    if (desktopUpdate.phase === "idle") return t("Not checked");
+    if (desktopUpdate.enabled) return t("Current");
+    return t("Not configured");
   })();
-  const desktopUpdateLastCheckedLabel = formatUpdateTimestamp(desktopUpdate.lastCheckedAt);
+  const desktopUpdateLastCheckedLabel = formatUpdateTimestamp(desktopUpdate.lastCheckedAt, formatDate, t);
   const desktopUpdateNextCheckLabel = !desktopUpdate.autoCheckEnabled
-    ? "Automatic checks disabled"
+    ? t("Automatic checks disabled")
     : desktopUpdate.lastCheckedAt && desktopUpdate.nextCheckAt
-      ? formatUpdateTimestamp(desktopUpdate.nextCheckAt)
-      : "When Scriber starts";
+      ? formatUpdateTimestamp(desktopUpdate.nextCheckAt, formatDate, t)
+      : t("When Scriber starts");
   const desktopUpdateAvailableVersionLabel = (() => {
     if (desktopUpdate.version) return desktopUpdate.version;
-    if (desktopUpdate.phase === "idle") return "Not checked";
-    if (desktopUpdate.phase === "error") return "Check failed";
-    if (!desktopUpdate.enabled) return "Not configured";
-    return "No newer version";
+    if (desktopUpdate.phase === "idle") return t("Not checked");
+    if (desktopUpdate.phase === "error") return t("Check failed");
+    if (!desktopUpdate.enabled) return t("Not configured");
+    return t("No newer version");
   })();
 
   const providerGroups = [
     {
       key: "cloud_streaming",
-      label: "Cloud streaming",
-      description: "True realtime STT streams.",
-      items: sortProviderOptionsByErrorRate(PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_streaming")),
+      label: t("Cloud streaming"),
+      description: t("True realtime STT streams."),
+      items: sortProviderOptionsByErrorRate(providerModelOptions.filter((option) => option.group === "cloud_streaming"), localeTag),
     },
     {
       key: "cloud_async",
-      label: "Cloud async / batch",
-      description: "Finalizes captured audio after upload or recording stop.",
-      items: sortProviderOptionsByErrorRate(PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "cloud_async")),
+      label: t("Cloud async / batch"),
+      description: t("Finalizes captured audio after upload or recording stop."),
+      items: sortProviderOptionsByErrorRate(providerModelOptions.filter((option) => option.group === "cloud_async"), localeTag),
     },
     {
       key: "local",
-      label: "Local",
-      description: "Runs on this device.",
-      items: PROVIDER_MODEL_OPTIONS.filter((option) => option.group === "local"),
+      label: t("Local"),
+      description: t("Runs on this device."),
+      items: providerModelOptions.filter((option) => option.group === "local"),
     },
   ];
   const summaryModelGroups = [
     {
       key: "gemini",
       label: "Gemini",
-      items: SUMMARIZATION_MODEL_OPTIONS.filter((option) => option.group === "gemini"),
+      items: summarizationModelOptions.filter((option) => option.group === "gemini"),
     },
     {
       key: "cerebras",
       label: "Cerebras",
-      items: SUMMARIZATION_MODEL_OPTIONS.filter((option) => option.group === "cerebras"),
+      items: summarizationModelOptions.filter((option) => option.group === "cerebras"),
     },
     {
       key: "openrouter",
       label: "OpenRouter",
-      items: SUMMARIZATION_MODEL_OPTIONS.filter((option) => option.group === "openrouter"),
+      items: summarizationModelOptions.filter((option) => option.group === "openrouter"),
     },
     {
       key: "openai",
       label: "OpenAI",
-      items: SUMMARIZATION_MODEL_OPTIONS.filter((option) => option.group === "openai"),
+      items: summarizationModelOptions.filter((option) => option.group === "openai"),
     },
   ];
-  const compactTranscriptionModelLabel =
-    selectedTranscriptionModelOption?.label.replace(" - No API Key", "") || transcriptionModel || "Select provider";
+  const compactTranscriptionModelLabel = transcriptionModel === "onnx_local"
+    ? t("Local ONNX")
+    : selectedTranscriptionModelOption
+      ? t(selectedTranscriptionModelOption.label.replace(" - No API Key", ""))
+      : transcriptionModel || t("Select provider");
 
   const customVocabularySettings = (
     <FieldShell
-      label="Custom vocabulary"
-      detail="Names, brands, and domain terms passed to supported STT providers."
+      label={t("Custom vocabulary")}
+      detail={t("Names, brands, and domain terms passed to supported STT providers.")}
     >
       <Textarea
         value={customVocabulary}
         onChange={(event) => setCustomVocabulary(event.target.value)}
         onBlur={handleCustomVocabBlur}
-        placeholder="Enter terms, one per line..."
+        placeholder={t("Enter terms, one per line...")}
         className="min-h-[54px] resize-none bg-white/70 font-mono text-[12px] leading-5 dark:bg-[var(--live-well)]"
       />
     </FieldShell>
@@ -3298,13 +3401,13 @@ export default function Settings() {
 
   const livePostProcessingSettings = (
     <SettingsSubsection
-      title="Live post-processing"
-      description="A separate live-mic shortcut cleans dictation before paste. Files and YouTube stay unchanged."
+      title={t("Live post-processing")}
+      description={t("A separate live-mic shortcut cleans dictation before paste. Files and YouTube stay unchanged.")}
       icon={Sparkles}
       action={<Switch checked={postProcessingEnabled} onCheckedChange={handlePostProcessingEnabledChange} />}
     >
       <div className="grid gap-3">
-        <SettingLine label="Post-processing hotkey" description="Starts Live Mic with cleanup enabled.">
+        <SettingLine label={t("Post-processing hotkey")} description={t("Starts Live Mic with cleanup enabled.")}>
           <Dialog open={isRecordingPostProcessingHotkey} onOpenChange={setIsRecordingPostProcessingHotkey}>
             <DialogTrigger asChild>
               <Button variant="outline" className="h-8 w-[220px] max-w-full justify-start font-mono text-[11px]" disabled={!postProcessingEnabled}>
@@ -3314,28 +3417,28 @@ export default function Settings() {
             </DialogTrigger>
             <DialogContent className="sm:max-w-[425px]">
               <DialogHeader>
-                <DialogTitle>Post-processing hotkey</DialogTitle>
-                <DialogDescription>Press the key combination for cleaned live dictation.</DialogDescription>
+                <DialogTitle>{t("Post-processing hotkey")}</DialogTitle>
+                <DialogDescription>{t("Press the key combination for cleaned live dictation.")}</DialogDescription>
               </DialogHeader>
               <div
                 ref={postProcessingHotkeyCaptureRef}
                 className="flex h-32 items-center justify-center rounded-lg border-2 border-dashed bg-secondary/20 outline-none transition-colors focus:border-primary focus:bg-primary/5"
                 tabIndex={0}
-                aria-label="Post-processing hotkey capture area"
+                aria-label={t("Post-processing hotkey capture area")}
               >
                 <p className="text-lg font-medium text-primary">{postProcessingHotkey}</p>
               </div>
               <div className="flex justify-end gap-2">
-                <Button variant="ghost" onClick={() => setIsRecordingPostProcessingHotkey(false)}>Cancel</Button>
-                <Button onClick={handleSavePostProcessingHotkey}>Save</Button>
+                <Button variant="ghost" onClick={() => setIsRecordingPostProcessingHotkey(false)}>{t("Cancel")}</Button>
+                <Button onClick={handleSavePostProcessingHotkey}>{t("Save")}</Button>
               </div>
             </DialogContent>
           </Dialog>
         </SettingLine>
 
         <FieldShell
-          label="Post-processing model"
-          detail="Use a low-cost, low-latency model for simple dictation cleanup."
+          label={t("Post-processing model")}
+          detail={t("Use a low-cost, low-latency model for simple dictation cleanup.")}
         >
           <Select value={postProcessingModel} onValueChange={(value) => void handlePostProcessingModelChange(value)}>
             <SelectTrigger className="h-10 bg-white/70 dark:bg-[var(--live-well)]">
@@ -3351,11 +3454,11 @@ export default function Settings() {
                   </span>
                 </div>
               ) : (
-                <SelectValue placeholder="Select cleanup model" />
+                <SelectValue placeholder={t("Select cleanup model")} />
               )}
             </SelectTrigger>
             <SelectContent className="min-w-[320px]">
-              {POST_PROCESSING_MODEL_OPTIONS.map((option) => {
+              {postProcessingModelOptions.map((option) => {
                 const requirement = requiredCredentialForLanguageModel(option.value);
                 const disabledReason = missingCredentialReason(requirement);
                 return (
@@ -3385,12 +3488,12 @@ export default function Settings() {
               onClick={() => openCredentialDialog(missingPostProcessingCredentialRequirement)}
               className="inline-flex w-fit rounded-full bg-amber-100 px-2 py-1 text-[10.5px] font-semibold leading-4 text-amber-700 transition-colors hover:bg-amber-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 dark:bg-amber-950/50 dark:text-amber-300 dark:hover:bg-amber-900/70"
             >
-              {MISSING_CREDENTIAL_CTA}
+              {t(MISSING_CREDENTIAL_CTA)}
             </button>
           ) : null}
         </FieldShell>
 
-        <FieldShell label="Live cleanup prompt">
+        <FieldShell label={t("Live cleanup prompt")}>
           <Textarea
             value={postProcessingPrompt}
             onFocus={(event) => expandPromptTextarea(event.currentTarget, 560)}
@@ -3408,10 +3511,10 @@ export default function Settings() {
           />
           <div className="mt-2 flex min-w-0 flex-wrap items-center justify-between gap-2">
             <p className="min-w-[220px] flex-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-              Use <span className="font-mono">${"{output}"}</span> where the raw transcript should be inserted.
+              {t("Use")} <span className="font-mono">${"{output}"}</span> {t("where the raw transcript should be inserted.")}
             </p>
             <Button size="sm" variant="outline" className="shrink-0" onClick={handleResetPostProcessingPrompt} disabled={!postProcessingEnabled}>
-              Reset prompt
+              {t("Reset prompt")}
             </Button>
           </div>
         </FieldShell>
@@ -3421,8 +3524,8 @@ export default function Settings() {
 
   const summarizationPromptSettings = (
     <FieldShell
-      label="Summarization prompt"
-      detail="Controls content and emphasis. Scriber always applies a safe HTML structure for display."
+      label={t("Summarization prompt")}
+      detail={t("Controls content and emphasis. Scriber always applies a safe HTML structure for display.")}
     >
       <Textarea
         value={summarizationPrompt}
@@ -3435,7 +3538,7 @@ export default function Settings() {
           event.currentTarget.style.height = "";
           void handleSummarizationPromptBlur();
         }}
-        placeholder="Summarize the key points, decisions, and action items. Keep it concise and structured."
+        placeholder={t("Summarize the key points, decisions, and action items. Keep it concise and structured.")}
         className="min-h-[60px] resize-none overflow-hidden bg-white/70 text-sm transition-[height,box-shadow,transform,border-color] duration-300 ease-out focus:-translate-y-0.5 focus:border-blue-300 focus:shadow-[0_18px_45px_-30px_rgba(37,99,235,0.75)] motion-reduce:transform-none motion-reduce:transition-none dark:bg-[var(--live-well)] dark:focus:border-blue-700"
       />
     </FieldShell>
@@ -3445,8 +3548,8 @@ export default function Settings() {
     <div className="rounded-xl bg-white/70 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-well)]">
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[13px] font-bold text-slate-950 dark:text-slate-100">ONNX model</p>
-          <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">Whisper / Parakeet local ONNX Runtime</p>
+          <p className="text-[13px] font-bold text-slate-950 dark:text-slate-100">{t("ONNX model")}</p>
+          <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">{t("Whisper / Parakeet local ONNX Runtime")}</p>
         </div>
         {selectedOnnxModel ? (
           <Badge variant={getStatusVariant(selectedOnnxModel.status)}>{getStatusLabel(selectedOnnxModel.status)}</Badge>
@@ -3454,13 +3557,13 @@ export default function Settings() {
       </div>
 
       {onnxAvailable === null ? (
-        <p className="text-[12px] text-slate-500">Loading local models...</p>
+        <p className="text-[12px] text-slate-500">{t("Loading local models...")}</p>
       ) : onnxAvailable === false ? (
-        <p className="text-[12px] leading-4 text-slate-500">{onnxMessage || "onnx-asr is not installed."}</p>
+        <p className="text-[12px] leading-4 text-slate-500">{t(onnxMessage || "onnx-asr is not installed.")}</p>
       ) : (
         <div className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
-            <FieldShell label="Model">
+            <FieldShell label={t("Model")}>
               <Select value={onnxModel} onValueChange={handleOnnxModelChange}>
                 <SelectTrigger className="h-9">
                   {selectedOnnxModel ? (
@@ -3468,7 +3571,7 @@ export default function Settings() {
                       {selectedOnnxModel.name}
                     </span>
                   ) : (
-                    <SelectValue placeholder="Select local model" />
+                    <SelectValue placeholder={t("Select local model")} />
                   )}
                 </SelectTrigger>
                 <SelectContent className="min-w-[320px]">
@@ -3485,10 +3588,10 @@ export default function Settings() {
                 </SelectContent>
               </Select>
             </FieldShell>
-            <FieldShell label="Quantization">
+            <FieldShell label={t("Quantization")}>
               <Select value={onnxQuantization} onValueChange={handleOnnxQuantizationChange}>
                 <SelectTrigger className="h-9">
-                  <SelectValue placeholder="Select quantization" />
+                  <SelectValue placeholder={t("Select quantization")} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="int8" disabled={!supportedQuantizations.includes("int8")}>int8</SelectItem>
@@ -3500,7 +3603,7 @@ export default function Settings() {
           </div>
           {selectedOnnxModel?.description ? (
             <div className="space-y-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-              <p>{selectedOnnxModel.description}</p>
+              <p>{t(selectedOnnxModel.description)}</p>
               <p>
                 {formatOnnxRuntime(selectedOnnxModel.runtime)}
                 {selectedOnnxSize ? ` · ${formatSize(selectedOnnxSize)}` : ""}
@@ -3513,8 +3616,8 @@ export default function Settings() {
               <Progress value={selectedOnnxModel.progress || 0} />
               <p className="flex items-center gap-2 text-[11px] text-slate-500">
                 <Loader2 className="h-3 w-3 animate-spin" />
-                {selectedOnnxModel.message || "Downloading..."}
-                <span className="ml-auto">{Math.round(selectedOnnxModel.progress || 0)}%</span>
+                {localizeOnnxDownloadMessage(selectedOnnxModel.message, t, formatNumber)}
+                <span className="ml-auto">{formatNumber(Math.round(selectedOnnxModel.progress || 0))}%</span>
               </p>
             </div>
           )}
@@ -3525,7 +3628,7 @@ export default function Settings() {
               disabled={!selectedOnnxModel || selectedOnnxModel.status === "downloading" || selectedOnnxModel.downloaded || !quantizationSupported}
             >
               <Download className="mr-2 h-4 w-4" />
-              Download
+              {t("Download")}
             </Button>
             <Button
               size="sm"
@@ -3534,7 +3637,7 @@ export default function Settings() {
               disabled={!selectedOnnxModel?.downloaded || selectedOnnxModel.status === "downloading"}
             >
               <Trash2 className="mr-2 h-4 w-4" />
-              Delete
+              {t("Delete")}
             </Button>
           </div>
         </div>
@@ -3547,15 +3650,15 @@ export default function Settings() {
   const speechToTextProviderPanel = (
     <SectionPanel
       id="settings-providers"
-      title="Speech-to-text provider"
-      description="Choose the primary transcription provider."
+      title={t("Speech-to-text provider")}
+      description={t("Choose the primary transcription provider.")}
       icon={Cloud}
     >
       <div className="mb-2.5 rounded-xl bg-slate-50 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
-        <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Current provider</p>
+        <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">{t("Current provider")}</p>
         <div className="mt-1 flex items-center gap-2">
           <ProviderIcon
-            icon={PROVIDER_MODEL_OPTIONS.find((option) => option.value === transcriptionModel)?.icon}
+            icon={providerModelOptions.find((option) => option.value === transcriptionModel)?.icon}
             label={compactTranscriptionModelLabel}
           />
           <p className="truncate text-[14px] font-semibold text-slate-950 dark:text-slate-100">
@@ -3564,22 +3667,22 @@ export default function Settings() {
         </div>
         {transcriptionModel === "assemblyai" && (
           <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-            Async mode returns the transcript after recording stops.
+            {t("Async mode returns the transcript after recording stops.")}
           </p>
         )}
         {transcriptionModel === "assemblyai-realtime" && (
           <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-            Realtime mode uses AssemblyAI Universal-3.5 Pro through Pipecat.
+            {t("Realtime mode uses AssemblyAI Universal-3.5 Pro through Pipecat.")}
           </p>
         )}
         {transcriptionModel === "modulate-realtime" && (
           <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-            Multilingual streaming shows finalized text only. Scriber does not request partial text or enrichment signals.
+            {t("Multilingual streaming shows finalized text only. Scriber does not request partial text or enrichment signals.")}
           </p>
         )}
         {transcriptionModel === "modulate-async" && (
           <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-            Multilingual batch returns one final transcript after recording stops. Scriber does not request enrichment signals.
+            {t("Multilingual batch returns one final transcript after recording stops. Scriber does not request enrichment signals.")}
           </p>
         )}
       </div>
@@ -3590,7 +3693,7 @@ export default function Settings() {
             <div
               key={group.key}
               role="radiogroup"
-              aria-label={`${group.label} transcription providers`}
+              aria-label={t("{{group}} transcription providers", { group: group.label })}
               className="rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]"
             >
               <div className="mb-1.5">
@@ -3640,18 +3743,18 @@ export default function Settings() {
       {settingsError && (
         <QueryErrorState
           className="mb-4"
-          title="Could not load settings"
+          title={t("Could not load settings")}
           description={settingsError}
           onRetry={() => window.location.reload()}
         />
       )}
 
       <PageIntro
-        eyebrow="Workspace controls · 06"
-        title="Settings"
-        description="Configure capture, transcription providers, AI processing, credentials, updates, and language behavior."
+        eyebrow={t("Workspace controls · 06")}
+        title={t("Settings")}
+        description={t("Configure capture, transcription providers, AI processing, credentials, updates, and language behavior.")}
         bottomContent={(
-          <nav aria-label="Settings sections" className="settings-section-nav overflow-x-auto">
+          <nav aria-label={t("Settings sections")} className="settings-section-nav overflow-x-auto">
             <div className="flex w-max items-center gap-1 rounded-xl bg-slate-100/80 p-1 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.05)] dark:bg-[var(--live-well)]">
               {[
                 { section: "transcription", href: "#settings-transcription", label: "Transcription", icon: Mic },
@@ -3673,7 +3776,7 @@ export default function Settings() {
                   className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[10.5px] font-semibold text-slate-500 no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 hover:bg-white hover:text-slate-950 hover:shadow-sm active:translate-y-px focus-visible:ring-2 focus-visible:ring-blue-500/60 dark:hover:bg-[var(--live-card-hover)] dark:hover:text-slate-100"
                 >
                   <item.icon className="h-3.5 w-3.5" aria-hidden="true" />
-                  {item.label}
+                  {t(item.label)}
                 </a>
               ))}
             </div>
@@ -3684,42 +3787,42 @@ export default function Settings() {
       <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
         <SectionPanel
           id="settings-transcription"
-          title="Transcription"
-          description="Control how audio is captured and how the recording hotkey behaves."
+          title={t("Transcription")}
+          description={t("Control how audio is captured and how the recording hotkey behaves.")}
           icon={Mic}
         >
           <div className="space-y-3">
             {autostartAvailable && (
               <SettingsSubsection
-                title="Startup"
-                description="Control whether Scriber is ready after Windows login."
+                title={t("Startup")}
+                description={t("Control whether Scriber is ready after Windows login.")}
                 icon={Shield}
               >
-                <SettingLine label="Start with Windows" description="Launch Scriber when you log in." className="py-0">
+                <SettingLine label={t("Start with Windows")} description={t("Launch Scriber when you log in.")} className="py-0">
                   <Switch checked={autostartEnabled} onCheckedChange={handleAutostartChange} />
                 </SettingLine>
               </SettingsSubsection>
             )}
 
             <SettingsSubsection
-              title="Microphone input"
-              description="Choose the active device and keep capture warm when low latency matters."
+              title={t("Microphone input")}
+              description={t("Choose the active device and keep capture warm when low latency matters.")}
               icon={Mic}
             >
               <div className="divide-y divide-slate-200/80 dark:divide-[var(--workspace-border)]">
-                <SettingLine label="Input device" description="Select the active microphone.">
+                <SettingLine label={t("Input device")} description={t("Select the active microphone.")}>
                   <div className={cn("mic-device-dropdown w-full", isMicDropdownOpen && "is-open")}>
                     <button
                       type="button"
                       className="mic-device-dropdown-header"
                       onClick={() => setIsMicDropdownOpen((prev) => !prev)}
-                      aria-label="Select input device"
+                      aria-label={t("Select input device")}
                       aria-expanded={isMicDropdownOpen}
                       aria-controls="mic-device-dropdown-tray"
                     >
                       <span className="mic-device-dropdown-header-info">
                         <span className={cn("mic-device-dropdown-selected-text", hasSelectedMic && "is-selected")}>
-                          {selectedMicLabel || "Select a device..."}
+                          {selectedMicLabel || t("Select a device...")}
                         </span>
                       </span>
                       <ChevronDown className="mic-device-dropdown-chevron" />
@@ -3730,11 +3833,11 @@ export default function Settings() {
                         <div className="mic-device-dropdown-tray-inner">
                           <div className="mic-device-list">
                             {inputDevices.length === 0 ? (
-                              <div className="px-2 py-2 text-sm text-muted-foreground">Loading devices...</div>
+                              <div className="px-2 py-2 text-sm text-muted-foreground">{t("Loading devices...")}</div>
                             ) : (
                               inputDevices.map((device, index) => {
                                 const deviceValue = device.deviceId || `device-${index}`;
-                                const deviceLabel = device.label || `Device ${index + 1}`;
+                                const deviceLabel = device.label || t("Device {{number}}", { number: formatNumber(index + 1) });
                                 const micInputId = `mic-device-${index}`;
                                 const favoriteInputId = `favorite-mic-${index}`;
                                 const isSelected = selectedDeviceId === deviceValue;
@@ -3754,7 +3857,7 @@ export default function Settings() {
                                       className="mic-device-radio sr-only"
                                       checked={isSelected}
                                       onChange={() => handleMicDeviceSelectFromDropdown(deviceValue)}
-                                      aria-label={`Select microphone ${deviceLabel}`}
+                                      aria-label={t("Select microphone {{microphone}}", { microphone: deviceLabel })}
                                     />
                                     <label htmlFor={micInputId} className="mic-device-label">
                                       <span className="mic-device-name">{deviceLabel}</span>
@@ -3769,12 +3872,14 @@ export default function Settings() {
                                       className="mic-device-star-radio sr-only"
                                       checked={isFavorite}
                                       onChange={() => handleSetFavoriteMic(deviceValue)}
-                                      aria-label={isFavorite ? `Remove ${deviceLabel} from favorites` : `Set ${deviceLabel} as favorite`}
+                                      aria-label={isFavorite
+                                        ? t("Remove {{microphone}} from favorites", { microphone: deviceLabel })
+                                        : t("Set {{microphone}} as favorite", { microphone: deviceLabel })}
                                     />
                                     <label
                                       htmlFor={favoriteInputId}
                                       className="mic-device-star-label"
-                                      title={isFavorite ? "Remove from favorites" : "Set as favorite"}
+                                      title={isFavorite ? t("Remove from favorites") : t("Set as favorite")}
                                     >
                                       <svg className="mic-device-star" viewBox="0 0 24 24" aria-hidden="true">
                                         <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
@@ -3794,23 +3899,23 @@ export default function Settings() {
                 {favoriteMic && (
                   <div className="flex items-center gap-1.5 py-2 text-[11px] font-medium text-amber-600 dark:text-amber-400">
                     <Star className="h-3 w-3 fill-current" />
-                    Favorite microphone is used automatically when connected.
+                    {t("Favorite microphone is used automatically when connected.")}
                   </div>
                 )}
 
-                <SettingLine label="Mic always on" description="Keep capture pre-warmed for minimum latency.">
+                <SettingLine label={t("Mic always on")} description={t("Keep capture pre-warmed for minimum latency.")}>
                   <Switch checked={micAlwaysOn} onCheckedChange={handleMicAlwaysOnChange} />
                 </SettingLine>
               </div>
             </SettingsSubsection>
 
             <SettingsSubsection
-              title="Recording control"
-              description="Configure the main hotkey, trigger mode, and overlay density."
+              title={t("Recording control")}
+              description={t("Configure the main hotkey, trigger mode, and overlay density.")}
               icon={Keyboard}
             >
               <div className="divide-y divide-slate-200/80 dark:divide-[var(--workspace-border)]">
-                <SettingLine label="Recording mode" description="Choose how the hotkey behaves.">
+                <SettingLine label={t("Recording mode")} description={t("Choose how the hotkey behaves.")}>
                   <ToggleGroup
                     type="single"
                     value={recordingMode}
@@ -3819,23 +3924,28 @@ export default function Settings() {
                   >
                     <ToggleGroupItem value="start_stop" className="h-8 rounded-md text-[11px] data-[state=on]:bg-white data-[state=on]:text-blue-700 data-[state=on]:shadow-sm dark:data-[state=on]:bg-slate-800">
                       <ToggleLeft className="h-4 w-4" />
-                      Toggle
+                      {t("Toggle")}
                     </ToggleGroupItem>
                     <ToggleGroupItem value="press_hold" className="h-8 rounded-md text-[11px] data-[state=on]:bg-white data-[state=on]:text-blue-700 data-[state=on]:shadow-sm dark:data-[state=on]:bg-slate-800">
                       <Mic className="h-4 w-4" />
-                      Push-to-talk
+                      {t("Push-to-talk")}
                     </ToggleGroupItem>
                   </ToggleGroup>
                 </SettingLine>
 
                 <SettingLine
-                  label="Silero voice detection"
-                  description="Optional. Detect pauses for segmented live transcription and Soniox SmartTurn. When off, Silero is not loaded and the recording is transcribed as one continuous segment."
+                  label={t("Silero voice detection")}
+                  description={t("Optional. Detect pauses for segmented live transcription and Soniox SmartTurn. When off, Silero is not loaded and the recording is transcribed as one continuous segment.")}
                 >
-                  <Switch checked={segmentSpeechWithVad} onCheckedChange={handleSegmentSpeechWithVadChange} />
+                  <Switch
+                    checked={segmentSpeechWithVad}
+                    disabled={segmentSpeechWithVadSaving}
+                    aria-busy={segmentSpeechWithVadSaving}
+                    onCheckedChange={handleSegmentSpeechWithVadChange}
+                  />
                 </SettingLine>
 
-                <SettingLine label="Global hotkey" description="Shortcut to start or stop recording.">
+                <SettingLine label={t("Global hotkey")} description={t("Shortcut to start or stop recording.")}>
                 <Dialog open={isRecordingHotkey} onOpenChange={setIsRecordingHotkey}>
                 <DialogTrigger asChild>
                   <Button variant="outline" className="h-8 w-[220px] max-w-full justify-start font-mono text-[11px]">
@@ -3845,26 +3955,29 @@ export default function Settings() {
                 </DialogTrigger>
                 <DialogContent className="sm:max-w-[425px]">
                   <DialogHeader>
-                    <DialogTitle>Record hotkey</DialogTitle>
-                    <DialogDescription>Press the key combination you want to use as a shortcut.</DialogDescription>
+                    <DialogTitle>{t("Record hotkey")}</DialogTitle>
+                    <DialogDescription>{t("Press the key combination you want to use as a shortcut.")}</DialogDescription>
                   </DialogHeader>
                   <div
                     ref={hotkeyCaptureRef}
                     className="flex h-32 items-center justify-center rounded-lg border-2 border-dashed bg-secondary/20 outline-none transition-colors focus:border-primary focus:bg-primary/5"
                     tabIndex={0}
-                    aria-label="Hotkey capture area"
+                    aria-label={t("Hotkey capture area")}
                   >
                     <p className="text-lg font-medium text-primary">{hotkey}</p>
                   </div>
                   <div className="flex justify-end gap-2">
-                    <Button variant="ghost" onClick={() => setIsRecordingHotkey(false)}>Cancel</Button>
-                    <Button onClick={handleSaveHotkey}>Save</Button>
+                    <Button variant="ghost" onClick={() => setIsRecordingHotkey(false)}>{t("Cancel")}</Button>
+                    <Button onClick={handleSaveHotkey}>{t("Save")}</Button>
                   </div>
                 </DialogContent>
               </Dialog>
                 </SettingLine>
 
-                <SettingLine label="Visualizer bars" description={`Current count: ${visualizerBarCount}`}>
+                <SettingLine
+                  label={t("Visualizer bars")}
+                  description={t("Current count: {{count}}", { count: formatNumber(visualizerBarCount) })}
+                >
                   <div className="flex w-full items-center gap-2">
                     <BarChart3 className="h-4 w-4 shrink-0 text-slate-500" />
                     <Slider
@@ -3882,8 +3995,8 @@ export default function Settings() {
             </SettingsSubsection>
 
             <SettingsSubsection
-              title="Transcript context"
-              description="Give providers and summaries the domain terms and summary behavior they need."
+              title={t("Transcript context")}
+              description={t("Give providers and summaries the domain terms and summary behavior they need.")}
               icon={FileText}
             >
               <div className="grid gap-3">
@@ -3900,33 +4013,33 @@ export default function Settings() {
 
         <SectionPanel
           id="settings-meetings"
-          title="Meetings"
-          description="Choose how new meetings are transcribed, summarized, protected, and connected to Outlook. Changes apply to new meetings."
+          title={t("Meetings")}
+          description={t("Choose how new meetings are transcribed, summarized, protected, and connected to Outlook. Changes apply to new meetings.")}
           icon={Users}
           className="lg:col-span-2"
         >
           <div className="grid gap-3 lg:grid-cols-2">
             <SettingsSubsection
-              title="Transcription"
-              description="Choose whether to see live text or wait for the accurate transcript after the meeting."
+              title={t("Transcription")}
+              description={t("Choose whether to see live text or wait for the accurate transcript after the meeting.")}
               icon={Mic}
             >
               <div className="divide-y divide-slate-200/80 dark:divide-[var(--workspace-border)]">
-                <div className="pb-3" role="radiogroup" aria-label="Meeting transcription timing">
+                <div className="pb-3" role="radiogroup" aria-label={t("Meeting transcription timing")}>
                   <div className="grid gap-2 sm:grid-cols-2">
                     {([
                       {
                         value: "final_only" as const,
-                        title: "Transcript after meeting",
-                        badge: "Lowest cost",
-                        description: "Records safely without cloud live text. The accurate transcript appears after you stop.",
+                        title: t("Transcript after meeting"),
+                        badge: t("Lowest cost"),
+                        description: t("Records safely without cloud live text. The accurate transcript appears after you stop."),
                         cost: finalOnlyHourlyCost,
                       },
                       {
                         value: "live_final" as const,
-                        title: "Live text + accurate transcript",
-                        badge: "Live captions",
-                        description: "Shows words while people speak, then transcribes both saved tracks again for the final version.",
+                        title: t("Live text + accurate transcript"),
+                        badge: t("Live captions"),
+                        description: t("Shows words while people speak, then transcribes both saved tracks again for the final version."),
                         cost: liveAndFinalHourlyCost,
                       },
                     ] satisfies Array<{
@@ -3957,25 +4070,25 @@ export default function Settings() {
                           </span>
                           <span className="mt-1.5 block text-[11px] leading-4 text-slate-600 dark:text-slate-300">{option.description}</span>
                           <span className="mt-2 block font-mono text-[10.5px] font-semibold text-slate-700 dark:text-slate-200">
-                            {formatMeetingHourlyCost(option.cost)}
+                            {formatMeetingHourlyCost(option.cost, localeTag, t)}
                           </span>
                         </button>
                       );
                     })}
                   </div>
                   <p className="mt-2 text-[10.5px] leading-4 text-slate-500 dark:text-slate-400">
-                    {meetingCostEstimate?.assumption || "Estimate for a typical meeting hour with separate microphone and system-audio tracks. Provider prices can change."}
+                    {t(meetingCostEstimate?.assumption || "Estimate for a typical meeting hour with separate microphone and system-audio tracks. Provider prices can change.")}
                   </p>
                 </div>
-                <SettingLine label="Live text" description="Shows words from your microphone and speakers as people talk.">
+                <SettingLine label={t("Live text")} description={t("Shows words from your microphone and speakers as people talk.")}>
                   <div className="text-right">
-                    <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">{meetingTranscriptionMode === "live_final" ? "Soniox Realtime" : "Off"}</p>
-                    <p className="font-mono text-[10.5px] text-slate-500">{meetingTranscriptionMode === "live_final" ? sonioxRealtimeModel : "No live provider cost"}</p>
+                    <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">{meetingTranscriptionMode === "live_final" ? "Soniox Realtime" : t("Off")}</p>
+                    <p className="font-mono text-[10.5px] text-slate-500">{meetingTranscriptionMode === "live_final" ? sonioxRealtimeModel : t("No live provider cost")}</p>
                   </div>
                 </SettingLine>
-                <SettingLine label="Final transcript" description="Choose the service that creates the accurate transcript and speaker names after the meeting.">
+                <SettingLine label={t("Final transcript")} description={t("Choose the service that creates the accurate transcript and speaker names after the meeting.")}>
                   <Select value={meetingFinalProvider} onValueChange={(value) => void updateMeetingPreferences({ meetingFinalProvider: value })}>
-                    <SelectTrigger className="h-9 w-[220px] max-w-full text-xs" aria-label="Final meeting transcription model">
+                    <SelectTrigger className="h-9 w-[220px] max-w-full text-xs" aria-label={t("Final meeting transcription model")}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -3983,7 +4096,7 @@ export default function Settings() {
                         const unavailable = Boolean(missingCredentialReason(requiredCredentialForTranscriptionModel(option.credentialModel)));
                         return (
                           <SelectItem key={option.value} value={option.value} disabled={unavailable}>
-                            {option.recommended ? "Recommended: " : ""}{option.label} ({option.model})
+                            {option.recommended ? t("Recommended: ") : ""}{option.label} ({option.model})
                           </SelectItem>
                         );
                       })}
@@ -3995,39 +4108,43 @@ export default function Settings() {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">{selectedMeetingFinalOption.label}</p>
                       <div className="flex flex-wrap items-center justify-end gap-1.5">
-                        {selectedMeetingFinalOption.recommended && <Badge variant="outline" className="text-[10px]">Recommended</Badge>}
+                        {selectedMeetingFinalOption.recommended && <Badge variant="outline" className="text-[10px]">{t("Recommended")}</Badge>}
                         <Badge variant="outline" className={selectedMeetingFinalOption.fiveHourSupported ? "border-emerald-500/40 text-[10px] text-emerald-700 dark:text-emerald-300" : "text-[10px] text-slate-500"}>
-                          {selectedMeetingFinalOption.fiveHourSupported ? "Ready for 5 hours" : "Not for 5-hour meetings"}
+                          {selectedMeetingFinalOption.fiveHourSupported ? t("Ready for 5 hours") : t("Not for 5-hour meetings")}
                         </Badge>
                       </div>
                     </div>
-                    <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">{selectedMeetingFinalOption.detail}</p>
+                    <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">{t(selectedMeetingFinalOption.detail)}</p>
                     <p className="mt-1.5 font-mono text-[10.5px] text-slate-500 dark:text-slate-400">
                       {selectedMeetingFinalOption.model}. {selectedMeetingFinalOption.nativeDiarization
-                        ? "Includes speaker names and exact timing."
-                        : "Scriber can add speaker names on this device."} {selectedMeetingFinalOption.fiveHourSupported
-                          ? "Works with meetings up to 5 hours."
-                          : "Choose a 5-hour option for very long meetings."}
+                        ? t("Includes speaker names and exact timing.")
+                        : t("Scriber can add speaker names on this device.")} {selectedMeetingFinalOption.fiveHourSupported
+                          ? t("Works with meetings up to 5 hours.")
+                          : t("Choose a 5-hour option for very long meetings.")}
                     </p>
                     <p className="mt-1.5 text-[10.5px] leading-4 text-slate-500 dark:text-slate-400">
-                      Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as <span className="font-semibold text-slate-700 dark:text-slate-200">You</span>.
+                      {t("Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as")} <span className="font-semibold text-slate-700 dark:text-slate-200">{t("You")}</span>.
                     </p>
                     <div className="mt-2.5 grid gap-1 border-t border-slate-200/80 pt-2.5 text-[10.5px] dark:border-[var(--workspace-border)] sm:grid-cols-3">
-                      <span className="text-slate-500">During meeting <strong className="block font-mono font-semibold text-slate-800 dark:text-slate-200">{meetingTranscriptionMode === "live_final" ? formatMeetingHourlyCost(meetingCostEstimate?.livePreviewPerMeetingHour) : "$0.00 / meeting hour"}</strong></span>
-                      <span className="text-slate-500">After meeting <strong className="block font-mono font-semibold text-slate-800 dark:text-slate-200">{formatMeetingHourlyCost(finalOnlyHourlyCost)}</strong></span>
-                      <span className="text-slate-500">Estimated total <strong className="block font-mono font-semibold text-primary">{formatMeetingHourlyCost(meetingTranscriptionMode === "live_final" ? liveAndFinalHourlyCost : finalOnlyHourlyCost)}</strong></span>
+                      <span className="text-slate-500">{t("During meeting")} <strong className="block font-mono font-semibold text-slate-800 dark:text-slate-200">{formatMeetingHourlyCost(meetingTranscriptionMode === "live_final" ? meetingCostEstimate?.livePreviewPerMeetingHour : 0, localeTag, t)}</strong></span>
+                      <span className="text-slate-500">{t("After meeting")} <strong className="block font-mono font-semibold text-slate-800 dark:text-slate-200">{formatMeetingHourlyCost(finalOnlyHourlyCost, localeTag, t)}</strong></span>
+                      <span className="text-slate-500">{t("Estimated total")} <strong className="block font-mono font-semibold text-primary">{formatMeetingHourlyCost(meetingTranscriptionMode === "live_final" ? liveAndFinalHourlyCost : finalOnlyHourlyCost, localeTag, t)}</strong></span>
                     </div>
                     {meetingCostEstimate?.sources.length ? <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
                       {meetingCostEstimate.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[10.5px] text-primary hover:underline">{source.label}<ExternalLink className="h-3 w-3" /></a>)}
-                      <span className="text-[10px] text-slate-500">Prices checked {meetingCostEstimate.pricingUpdatedAt}</span>
+                      <span className="text-[10px] text-slate-500">
+                        {t("Prices checked {{date}}", {
+                          date: formatDate(`${meetingCostEstimate.pricingUpdatedAt}T00:00:00Z`, { dateStyle: "medium", timeZone: "UTC" }),
+                        })}
+                      </span>
                     </div> : null}
                   </div>
                 </div>
-                <SettingLine label="Add speaker names locally" description="When the chosen service cannot identify speakers, Scriber can do it on this device for File, YouTube, and Meetings.">
+                <SettingLine label={t("Add speaker names locally")} description={t("When the chosen service cannot identify speakers, Scriber can do it on this device for File, YouTube, and Meetings.")}>
                   <Switch
                     checked={speakerDiarizationFallbackEnabled}
                     onCheckedChange={(enabled) => void updateMeetingPreferences({ speakerDiarizationFallbackEnabled: enabled })}
-                    aria-label="Add speaker names on this device when needed"
+                    aria-label={t("Add speaker names on this device when needed")}
                   />
                 </SettingLine>
                 {speakerDiarizationFallbackEnabled && <div className="py-3">
@@ -4035,17 +4152,17 @@ export default function Settings() {
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">Local speaker separation</p>
+                          <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">{t("Local speaker separation")}</p>
                           <Badge variant="outline" className="text-[10px]">
                             {diarizationComponent?.installed
-                              ? "Installed"
+                              ? t("Installed")
                               : diarizationComponent?.workerReady === false
-                                ? "Unavailable in this build"
-                                : "Optional download"}
+                                ? t("Unavailable in this build")
+                                : t("Optional download")}
                           </Badge>
                         </div>
                         <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">
-                          Separates speakers on this device for recordings up to 60 minutes. For longer recordings, choose a service that already includes speaker names.
+                          {t("Separates speakers on this device for recordings up to 60 minutes. For longer recordings, choose a service that already includes speaker names.")}
                         </p>
                       </div>
                       {!diarizationComponent?.installed && <Button
@@ -4058,42 +4175,45 @@ export default function Settings() {
                         {diarizationComponentPending
                           ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
                           : <Download className="mr-2 h-3.5 w-3.5" />}
-                        Install speaker tool
+                        {t("Install speaker tool")}
                       </Button>}
                     </div>
                     {diarizationComponent?.installed && <p className="mt-2 font-mono text-[10.5px] text-slate-500 dark:text-slate-400">
-                      v{diarizationComponent.version} · {(diarizationComponent.byteSize / 1_048_576).toFixed(1)} MB installed locally
+                      {t("v{{version}} · {{size}} MB installed locally", {
+                        version: diarizationComponent.version,
+                        size: formatNumber(diarizationComponent.byteSize / 1_048_576, { minimumFractionDigits: 1, maximumFractionDigits: 1 }),
+                      })}
                     </p>}
                     {!diarizationComponent?.installed && diarizationComponent?.workerReady === false && <p className="mt-2 text-[10.5px] leading-4 text-amber-700 dark:text-amber-300">
-                      This version of Scriber does not include local speaker separation. Update Scriber or choose a service that includes speaker names.
+                      {t("This version of Scriber does not include local speaker separation. Update Scriber or choose a service that includes speaker names.")}
                     </p>}
                   </div>
                 </div>}
-                {meetingTranscriptionMode === "live_final" && <SettingLine label="Keep live sentences together" description="Smart Turn V3 improves where the live preview ends a thought. It does not change the final transcript or its price.">
-                  <Switch checked={meetingSmartTurnEnabled} onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingSmartTurnEnabled: enabled })} aria-label="Keep meeting live sentences together across short pauses" />
+                {meetingTranscriptionMode === "live_final" && <SettingLine label={t("Keep live sentences together")} description={t("Smart Turn V3 improves where the live preview ends a thought. It does not change the final transcript or its price.")}>
+                  <Switch checked={meetingSmartTurnEnabled} onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingSmartTurnEnabled: enabled })} aria-label={t("Keep meeting live sentences together across short pauses")} />
                 </SettingLine>}
                 <details className="group py-3 text-[11px]">
                   <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-medium text-slate-700 marker:content-none dark:text-slate-200">
-                    Why Scriber does not upload one-minute pieces
+                    {t("Why Scriber does not upload one-minute pieces")}
                     <ChevronDown className="h-3.5 w-3.5 text-slate-500 transition-transform group-open:rotate-180 motion-reduce:transition-none" />
                   </summary>
                   <p className="mt-2 max-w-[70ch] leading-5 text-slate-600 dark:text-slate-300">
-                    Small cloud requests do not reduce the audio duration you pay for and can reset speaker labels or cut words at the boundary. Scriber instead protects audio locally every 30 seconds, then gives the final service the longest supported context.
+                    {t("Small cloud requests do not reduce the audio duration you pay for and can reset speaker labels or cut words at the boundary. Scriber instead protects audio locally every 30 seconds, then gives the final service the longest supported context.")}
                   </p>
                 </details>
-                <SettingLine label="Reduce speaker echo" description="Helps prevent voices from your speakers being recorded again through your microphone.">
-                  <Switch checked={meetingAecEnabled} onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingAecEnabled: enabled })} aria-label="Reduce speaker echo in meetings" />
+                <SettingLine label={t("Reduce speaker echo")} description={t("Helps prevent voices from your speakers being recorded again through your microphone.")}>
+                  <Switch checked={meetingAecEnabled} onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingAecEnabled: enabled })} aria-label={t("Reduce speaker echo in meetings")} />
                 </SettingLine>
               </div>
             </SettingsSubsection>
 
             <SettingsSubsection
-              title="Summaries and storage"
-              description="Choose how Scriber creates the meeting brief and how long it keeps local audio."
+              title={t("Summaries and storage")}
+              description={t("Choose how Scriber creates the meeting brief and how long it keeps local audio.")}
               icon={Sparkles}
             >
               <div className="divide-y divide-slate-200/80 dark:divide-[var(--workspace-border)]">
-                <SettingLine label="Meeting shortcut" description="Open the meeting workspace from anywhere in Windows.">
+                <SettingLine label={t("Meeting shortcut")} description={t("Open the meeting workspace from anywhere in Windows.")}>
                   <Dialog open={isRecordingMeetingHotkey} onOpenChange={setIsRecordingMeetingHotkey}>
                     <DialogTrigger asChild>
                       <Button variant="outline" className="h-8 w-[220px] max-w-full justify-start font-mono text-[11px]">
@@ -4103,31 +4223,31 @@ export default function Settings() {
                     </DialogTrigger>
                     <DialogContent className="sm:max-w-[425px]">
                       <DialogHeader>
-                        <DialogTitle>Meeting shortcut</DialogTitle>
-                        <DialogDescription>Press the key combination that should open the meeting workspace.</DialogDescription>
+                        <DialogTitle>{t("Meeting shortcut")}</DialogTitle>
+                        <DialogDescription>{t("Press the key combination that should open the meeting workspace.")}</DialogDescription>
                       </DialogHeader>
                       <div
                         ref={meetingHotkeyCaptureRef}
                         className="flex h-32 items-center justify-center rounded-lg border-2 border-dashed bg-secondary/20 outline-none transition-colors focus:border-primary focus:bg-primary/5"
                         tabIndex={0}
-                        aria-label="Meeting shortcut capture area"
+                        aria-label={t("Meeting shortcut capture area")}
                       >
                         <p className="text-lg font-medium text-primary">{meetingHotkey}</p>
                       </div>
                       <div className="flex justify-end gap-2">
-                        <Button variant="ghost" onClick={() => setIsRecordingMeetingHotkey(false)}>Cancel</Button>
-                        <Button onClick={handleSaveMeetingHotkey}>Save</Button>
+                        <Button variant="ghost" onClick={() => setIsRecordingMeetingHotkey(false)}>{t("Cancel")}</Button>
+                        <Button onClick={handleSaveMeetingHotkey}>{t("Save")}</Button>
                       </div>
                     </DialogContent>
                   </Dialog>
                 </SettingLine>
-                <SettingLine label="Summary model" description="Creates the summary, decisions, action items, and answers after the transcript is ready.">
+                <SettingLine label={t("Summary model")} description={t("Creates the summary, decisions, action items, and answers after the transcript is ready.")}>
                   <Select value={meetingAnalysisModel} onValueChange={(value) => void updateMeetingPreferences({ meetingAnalysisModel: value })}>
-                    <SelectTrigger className="h-9 w-[220px] max-w-full text-xs" aria-label="Meeting summary model">
+                    <SelectTrigger className="h-9 w-[220px] max-w-full text-xs" aria-label={t("Meeting summary model")}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {SUMMARIZATION_MODEL_OPTIONS.map((option) => (
+                      {summarizationModelOptions.map((option) => (
                         <SelectItem
                           key={option.value}
                           value={option.value}
@@ -4139,60 +4259,60 @@ export default function Settings() {
                     </SelectContent>
                   </Select>
                 </SettingLine>
-                <SettingLine label="Create meeting brief automatically" description="Creates the summary, decisions, and action items when transcription is finished.">
-                  <Switch checked={meetingAutoAnalyze} onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingAutoAnalyze: enabled })} aria-label="Automatically analyze completed meetings" />
+                <SettingLine label={t("Create meeting brief automatically")} description={t("Creates the summary, decisions, and action items when transcription is finished.")}>
+                  <Switch checked={meetingAutoAnalyze} onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingAutoAnalyze: enabled })} aria-label={t("Automatically analyze completed meetings")} />
                 </SettingLine>
-                <SettingLine label="Keep meeting audio" description="Choose how long audio stays on this device. The transcript and notes remain until you delete them.">
+                <SettingLine label={t("Keep meeting audio")} description={t("Choose how long audio stays on this device. The transcript and notes remain until you delete them.")}>
                   <Select value={String(meetingAudioRetentionDays)} onValueChange={(value) => void updateMeetingPreferences({ meetingAudioRetentionDays: Number(value) })}>
-                    <SelectTrigger className="h-9 w-[180px] max-w-full text-xs" aria-label="Default meeting audio retention">
+                    <SelectTrigger className="h-9 w-[180px] max-w-full text-xs" aria-label={t("Default meeting audio retention")}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="0">Until deleted</SelectItem>
-                      <SelectItem value="7">7 days</SelectItem>
-                      <SelectItem value="30">30 days</SelectItem>
-                      <SelectItem value="90">90 days</SelectItem>
+                      <SelectItem value="0">{t("Until deleted")}</SelectItem>
+                      <SelectItem value="7">{t("7 days")}</SelectItem>
+                      <SelectItem value="30">{t("30 days")}</SelectItem>
+                      <SelectItem value="90">{t("90 days")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </SettingLine>
                 <div className="py-3">
                   <div className="flex items-start gap-2.5 rounded-lg bg-slate-50 px-3 py-2.5 text-[11.5px] leading-4 text-slate-600 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)] dark:text-slate-300">
                     <Shield className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-300" />
-                    <p><span className="font-semibold text-slate-950 dark:text-slate-100">Protected every 30 seconds.</span> Scriber saves audio and transcript progress while the meeting runs, so a crash should not lose the whole meeting.</p>
+                    <p><span className="font-semibold text-slate-950 dark:text-slate-100">{t("Protected every 30 seconds.")}</span> {t("Scriber saves audio and transcript progress while the meeting runs, so a crash should not lose the whole meeting.")}</p>
                   </div>
                 </div>
               </div>
             </SettingsSubsection>
 
             <SettingsSubsection
-              title="Voice Library"
-              description="Optionally remember familiar voices and add their names in future meetings. Voice data stays on this device and is never included in exports or support files."
+              title={t("Voice Library")}
+              description={t("Optionally remember familiar voices and add their names in future meetings. Voice data stays on this device and is never included in exports or support files.")}
               icon={Users}
             >
               <div className="space-y-2.5">
                 <div className="divide-y divide-slate-200/80 rounded-lg border border-slate-200/80 px-3 dark:divide-[var(--workspace-border)] dark:border-[var(--workspace-border)]">
                   <SettingLine
-                    label="Recognize familiar speakers"
-                    description="Turn this on only when everyone has agreed. Saved voice data stays on this device."
+                    label={t("Recognize familiar speakers")}
+                    description={t("Turn this on only when everyone has agreed. Saved voice data stays on this device.")}
                     className="py-3"
                   >
                     <div className="flex flex-wrap items-center justify-end gap-2">
                       {(speakerModelQuery.data?.installed || (speakerProfilesQuery.data?.items.length ?? 0) > 0) && (
                         <Button type="button" size="sm" variant="ghost" className="text-destructive hover:text-destructive" disabled={voiceLibraryDeletePending || speakerProfileMutation.isPending} onClick={() => setVoiceLibraryDeleteOpen(true)}>
-                          <Trash2 className="mr-1.5 h-3.5 w-3.5" />Delete voice data
+                          <Trash2 className="mr-1.5 h-3.5 w-3.5" />{t("Delete voice data")}
                         </Button>
                       )}
                       <Switch
                         checked={voiceprintLibraryOptIn}
                         disabled={voiceLibraryDeletePending}
                         onCheckedChange={handleVoiceprintOptInChange}
-                        aria-label="Recognize familiar speakers in future meetings"
+                        aria-label={t("Recognize familiar speakers in future meetings")}
                       />
                     </div>
                   </SettingLine>
                   <SettingLine
-                    label="Voice recognition download"
-                    description="A one-time local download. Scriber checks it before use and applies it automatically to new meetings."
+                    label={t("Voice recognition download")}
+                    description={t("A one-time local download. Scriber checks it before use and applies it automatically to new meetings.")}
                     className="py-3"
                   >
                     {speakerModelQuery.data?.installed ? (
@@ -4201,7 +4321,7 @@ export default function Settings() {
                         voiceprintLibraryOptIn
                           ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
                           : "text-slate-500",
-                      )}>{voiceprintLibraryOptIn ? "Ready" : "Installed, off"}</Badge>
+                      )}>{voiceprintLibraryOptIn ? t("Ready") : t("Installed, off")}</Badge>
                     ) : (
                       <Button
                         type="button"
@@ -4211,7 +4331,7 @@ export default function Settings() {
                         onClick={() => speakerModelMutation.mutate()}
                       >
                         {speakerModelMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Download className="mr-2 h-3.5 w-3.5" />}
-                        {voiceprintLibraryOptIn ? "Download" : "Turn on first"}
+                        {voiceprintLibraryOptIn ? t("Download") : t("Turn on first")}
                       </Button>
                     )}
                   </SettingLine>
@@ -4219,19 +4339,21 @@ export default function Settings() {
                 <div className="flex flex-col gap-3 rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)] sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">
-                      {speakerProfilesQuery.data?.enabled ? "Voice recognition is ready" : "Voice recognition is off"}
+                      {speakerProfilesQuery.data?.enabled ? t("Voice recognition is ready") : t("Voice recognition is off")}
                     </p>
                     <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">
                       {voiceprintLibraryOptIn && speakerModelQuery.data?.installed
-                        ? "Add a short named sample now, or let Scriber learn familiar voices from meetings. Saved voice data never leaves this device."
+                        ? t("Add a short named sample now, or let Scriber learn familiar voices from meetings. Saved voice data never leaves this device.")
                         : voiceprintLibraryOptIn
-                          ? "Download voice recognition above before adding a named voice sample."
-                          : "Turn on familiar speaker recognition before adding a named voice sample."}
+                          ? t("Download voice recognition above before adding a named voice sample.")
+                          : t("Turn on familiar speaker recognition before adding a named voice sample.")}
                     </p>
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
                     <Badge variant="outline" className="text-[10px]">
-                      {speakerProfilesQuery.data?.items.length ?? 0} saved {(speakerProfilesQuery.data?.items.length ?? 0) === 1 ? "speaker" : "speakers"}
+                      {t(savedSpeakerCount === 1 ? "{{count}} saved speaker" : "{{count}} saved speakers", {
+                        count: formatNumber(savedSpeakerCount),
+                      })}
                     </Badge>
                     <Button
                       type="button"
@@ -4241,12 +4363,12 @@ export default function Settings() {
                       onClick={() => handleVoiceEnrollmentOpenChange(true)}
                     >
                       <Mic className="mr-1.5 h-3.5 w-3.5" />
-                      Add voice
+                      {t("Add voice")}
                     </Button>
                   </div>
                 </div>
                 {speakerProfilesQuery.isLoading && (
-                  <div className="space-y-2" aria-label="Loading saved speakers">
+                  <div className="space-y-2" aria-label={t("Loading saved speakers")}>
                     {[0, 1].map((item) => (
                       <div key={item} className="h-12 animate-pulse rounded-lg bg-slate-100 motion-reduce:animate-none dark:bg-[var(--live-card)]" />
                     ))}
@@ -4254,13 +4376,13 @@ export default function Settings() {
                 )}
                 {speakerProfilesQuery.isError && (
                   <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/35 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
-                    <span>Saved speakers could not be loaded.</span>
-                    <Button type="button" size="sm" variant="outline" className="h-7" onClick={() => void speakerProfilesQuery.refetch()}>Try again</Button>
+                    <span>{t("Saved speakers could not be loaded.")}</span>
+                    <Button type="button" size="sm" variant="outline" className="h-7" onClick={() => void speakerProfilesQuery.refetch()}>{t("Try again")}</Button>
                   </div>
                 )}
                 {speakerProfilesQuery.data?.items.length === 0 && (
                   <p className="rounded-lg border border-dashed border-slate-300 px-3 py-4 text-center text-[11px] text-slate-500 dark:border-[var(--workspace-border)]">
-                    No saved speakers yet. Add a named voice sample, or let Scriber learn familiar voices from future meetings.
+                    {t("No saved speakers yet. Add a named voice sample, or let Scriber learn familiar voices from future meetings.")}
                   </p>
                 )}
                 {speakerProfilesQuery.data?.items.map((profile) => (
@@ -4275,25 +4397,39 @@ export default function Settings() {
                           if (event.key === "Escape") setEditingSpeakerProfileId("");
                         }}
                         className="h-8 min-w-0 flex-1 text-xs"
-                        aria-label={`Name saved speaker ${profile.displayName}`}
+                        aria-label={t("Name saved speaker {{name}}", { name: profile.displayName })}
                       />
                     ) : (
                       <button
                         type="button"
                         className="min-w-0 flex-1 rounded-md px-1 py-0.5 text-left transition-transform duration-150 active:scale-[0.98]"
                         onClick={() => { setEditingSpeakerProfileId(profile.id); setSpeakerProfileName(profile.displayName); }}
-                        title="Rename saved speaker"
+                        title={t("Rename saved speaker")}
                       >
                         <span className="block truncate text-xs font-semibold text-slate-950 dark:text-slate-100">{profile.displayName}</span>
                         <span className="block text-[10.5px] text-slate-500">
                           {profile.enrolled
-                            ? `Named voice sample saved. ${profile.sampleCount} ${profile.sampleCount === 1 ? "sample" : "samples"} total.`
-                            : `${profile.sampleCount} meeting ${profile.sampleCount === 1 ? "match" : "matches"}. ${profile.isNamed ? "Name saved." : "Choose a name."}`}
+                            ? t(
+                                profile.sampleCount === 1
+                                  ? "Named voice sample saved. {{count}} sample total."
+                                  : "Named voice sample saved. {{count}} samples total.",
+                                { count: formatNumber(profile.sampleCount) },
+                              )
+                            : t(
+                                profile.sampleCount === 1
+                                  ? profile.isNamed
+                                    ? "{{count}} meeting match. Name saved."
+                                    : "{{count}} meeting match. Choose a name."
+                                  : profile.isNamed
+                                    ? "{{count}} meeting matches. Name saved."
+                                    : "{{count}} meeting matches. Choose a name.",
+                                { count: formatNumber(profile.sampleCount) },
+                              )}
                         </span>
                       </button>
                     )}
                     {editingSpeakerProfileId === profile.id && (
-                      <Button size="sm" className="h-8" disabled={!speakerProfileName.trim() || speakerProfileMutation.isPending} onClick={() => speakerProfileMutation.mutate({ action: "rename", id: profile.id, displayName: speakerProfileName })}>Save</Button>
+                      <Button size="sm" className="h-8" disabled={!speakerProfileName.trim() || speakerProfileMutation.isPending} onClick={() => speakerProfileMutation.mutate({ action: "rename", id: profile.id, displayName: speakerProfileName })}>{t("Save")}</Button>
                     )}
                     <Button
                       type="button"
@@ -4302,7 +4438,7 @@ export default function Settings() {
                       className="h-8 w-8 shrink-0 text-slate-500 hover:text-destructive active:scale-[0.96]"
                       disabled={speakerProfileMutation.isPending || voiceLibraryDeletePending}
                       onClick={() => setSpeakerProfilePendingDelete({ id: profile.id, name: profile.displayName })}
-                      aria-label={`Delete saved speaker ${profile.displayName}`}
+                      aria-label={t("Delete saved speaker {{name}}", { name: profile.displayName })}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
@@ -4310,18 +4446,18 @@ export default function Settings() {
                 ))}
                 {(speakerProfilesQuery.data?.items.length ?? 0) >= 2 && (
                   <div className="rounded-lg border border-slate-200/80 p-3 dark:border-[var(--workspace-border)]">
-                    <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">Merge duplicate speakers</p>
-                    <p className="mt-1 text-[11px] leading-4 text-slate-500">Keep the correct speaker and merge the duplicate into it.</p>
+                    <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">{t("Merge duplicate speakers")}</p>
+                    <p className="mt-1 text-[11px] leading-4 text-slate-500">{t("Keep the correct speaker and merge the duplicate into it.")}</p>
                     <div className="mt-2.5 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                       <Select value={mergeTargetProfileId} onValueChange={setMergeTargetProfileId}>
-                        <SelectTrigger className="h-9 min-w-0 text-xs" aria-label="Saved speaker to keep"><SelectValue placeholder="Keep speaker…" /></SelectTrigger>
-                        <SelectContent>{speakerProfilesQuery.data?.items.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.displayName}, {profile.sampleCount} {profile.sampleCount === 1 ? "sample" : "samples"}</SelectItem>)}</SelectContent>
+                        <SelectTrigger className="h-9 min-w-0 text-xs" aria-label={t("Saved speaker to keep")}><SelectValue placeholder={t("Keep speaker…")} /></SelectTrigger>
+                        <SelectContent>{speakerProfilesQuery.data?.items.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.displayName}, {formatNumber(profile.sampleCount)} {profile.sampleCount === 1 ? t("sample") : t("samples")}</SelectItem>)}</SelectContent>
                       </Select>
                       <Select value={mergeSourceProfileId} onValueChange={setMergeSourceProfileId}>
-                        <SelectTrigger className="h-9 min-w-0 text-xs" aria-label="Duplicate saved speaker"><SelectValue placeholder="Merge duplicate…" /></SelectTrigger>
-                        <SelectContent>{speakerProfilesQuery.data?.items.filter((profile) => profile.id !== mergeTargetProfileId).map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.displayName}, {profile.sampleCount} {profile.sampleCount === 1 ? "sample" : "samples"}</SelectItem>)}</SelectContent>
+                        <SelectTrigger className="h-9 min-w-0 text-xs" aria-label={t("Duplicate saved speaker")}><SelectValue placeholder={t("Merge duplicate…")} /></SelectTrigger>
+                        <SelectContent>{speakerProfilesQuery.data?.items.filter((profile) => profile.id !== mergeTargetProfileId).map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.displayName}, {formatNumber(profile.sampleCount)} {profile.sampleCount === 1 ? t("sample") : t("samples")}</SelectItem>)}</SelectContent>
                       </Select>
-                      <Button type="button" size="sm" variant="outline" className="h-9" disabled={!mergeTargetProfileId || !mergeSourceProfileId || mergeTargetProfileId === mergeSourceProfileId || mergeProfilesMutation.isPending} onClick={() => mergeProfilesMutation.mutate()}>Merge speakers</Button>
+                      <Button type="button" size="sm" variant="outline" className="h-9" disabled={!mergeTargetProfileId || !mergeSourceProfileId || mergeTargetProfileId === mergeSourceProfileId || mergeProfilesMutation.isPending} onClick={() => mergeProfilesMutation.mutate()}>{t("Merge speakers")}</Button>
                     </div>
                   </div>
                 )}
@@ -4329,8 +4465,8 @@ export default function Settings() {
             </SettingsSubsection>
 
             <SettingsSubsection
-              title="Outlook calendar"
-              description="Connect Outlook once. Scriber then suggests meeting titles and participants and addresses recap emails for you."
+              title={t("Outlook calendar")}
+              description={t("Connect Outlook once. Scriber then suggests meeting titles and participants and addresses recap emails for you.")}
               icon={CalendarClock}
             >
               <div className="space-y-3">
@@ -4338,43 +4474,43 @@ export default function Settings() {
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">
                       {outlookQuery.isLoading
-                        ? "Checking Outlook"
+                        ? t("Checking Outlook")
                         : outlookQuery.isError || outlookCredentialStatusUnavailable
-                          ? "Outlook status could not be checked"
+                          ? t("Outlook status could not be checked")
                         : outlookQuery.data?.authorizationPending
-                          ? "Finish signing in with Microsoft"
+                          ? t("Finish signing in with Microsoft")
                           : outlookQuery.data?.connected
-                            ? "Outlook is connected"
+                            ? t("Outlook is connected")
                             : outlookQuery.data?.configured
-                              ? outlookQuery.data.lastError ? "Outlook needs to reconnect" : "Outlook is ready to connect"
-                              : "Outlook is not available in this release"}
+                              ? outlookQuery.data.lastError ? t("Outlook needs to reconnect") : t("Outlook is ready to connect")
+                              : t("Outlook is not available in this release")}
                     </p>
                     <Badge variant="outline" className={cn(
                       "text-[10px]",
                       outlookQuery.data?.connected && !outlookQuery.data.authorizationPending && !outlookCredentialStatusUnavailable && "border-emerald-500/40 text-emerald-700 dark:text-emerald-300",
                       !outlookQuery.isLoading && (!outlookQuery.data?.connected || outlookQuery.data.authorizationPending) && "border-amber-500/40 text-amber-700 dark:text-amber-300",
                     )}>
-                      {outlookQuery.isLoading ? "Checking" : outlookQuery.isError || outlookCredentialStatusUnavailable ? "Unavailable" : outlookQuery.data?.authorizationPending ? "Waiting" : outlookQuery.data?.connected ? "Connected" : "Not connected"}
+                      {outlookQuery.isLoading ? t("Checking") : outlookQuery.isError || outlookCredentialStatusUnavailable ? t("Unavailable") : outlookQuery.data?.authorizationPending ? t("Waiting") : outlookQuery.data?.connected ? t("Connected") : t("Not connected")}
                     </Badge>
                   </div>
                   <p className="mt-1 text-[11px] leading-4 text-slate-600 dark:text-slate-300">
                     {outlookQuery.isError || outlookCredentialStatusUnavailable
-                        ? "Scriber could not check the protected Outlook sign-in right now. Previously synchronized calendar entries stay on this device; choose Check again before reconnecting."
+                        ? t("Scriber could not check the protected Outlook sign-in right now. Previously synchronized calendar entries stay on this device; choose Check again before reconnecting.")
                       : outlookQuery.data?.authorizationPending
-                        ? "Complete the Microsoft sign-in in your browser. This page updates automatically when you return."
+                        ? t("Complete the Microsoft sign-in in your browser. This page updates automatically when you return.")
                       : outlookQuery.data?.connected
-                        ? "Upcoming meeting titles and participants now appear automatically. Scriber cannot edit your calendar or see your Microsoft password."
+                        ? t("Upcoming meeting titles and participants now appear automatically. Scriber cannot edit your calendar or see your Microsoft password.")
                         : outlookQuery.data?.configured
-                          ? "Click Connect Outlook below. Microsoft opens in your browser and asks for read-only calendar access."
-                          : "This release was published without Microsoft sign-in. Reinstalling the same version will not fix it. Check for a newer release that lists Outlook calendar support."}
+                          ? t("Click Connect Outlook below. Microsoft opens in your browser and asks for read-only calendar access.")
+                          : t("This release was published without Microsoft sign-in. Reinstalling the same version will not fix it. Check for a newer release that lists Outlook calendar support.")}
                   </p>
                   {outlookQuery.data?.connected && !outlookQuery.data.authorizationPending && outlookQuery.data.account && (
                     <p className="mt-1.5 truncate text-[10.5px] text-slate-500">
-                      Connected as {outlookQuery.data.account.name || outlookQuery.data.account.address} · {outlookQuery.data.account.address}
+                      {t("Connected as")} {outlookQuery.data.account.name || outlookQuery.data.account.address} · {outlookQuery.data.account.address}
                     </p>
                   )}
-                  {outlookQuery.data?.lastSyncAt && <p className="mt-1.5 font-mono text-[10.5px] text-slate-500">Last sync · {formatUpdateTimestamp(outlookQuery.data.lastSyncAt)}</p>}
-                  {outlookQuery.data?.lastError && <p className="mt-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">{outlookSyncErrorMessage(outlookQuery.data.lastError)}</p>}
+                  {outlookQuery.data?.lastSyncAt && <p className="mt-1.5 font-mono text-[10.5px] text-slate-500">{t("Last sync ·")} {formatUpdateTimestamp(outlookQuery.data.lastSyncAt, formatDate, t)}</p>}
+                  {outlookQuery.data?.lastError && <p className="mt-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">{outlookSyncErrorMessage(outlookQuery.data.lastError, t)}</p>}
                 </div>
                 {!outlookQuery.isLoading && (!outlookQuery.data?.connected || outlookQuery.data.authorizationPending) && (
                   <ol className="grid gap-2 rounded-lg border border-slate-200/80 p-3 text-[11px] leading-4 text-slate-600 dark:border-[var(--workspace-border)] dark:text-slate-300">
@@ -4403,48 +4539,48 @@ export default function Settings() {
                           ]).map((step, index) => (
                           <li key={step} className="flex items-start gap-2">
                             <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-blue-600 text-[10px] font-semibold text-white">{index + 1}</span>
-                            <span className="pt-0.5">{step}</span>
+                            <span className="pt-0.5">{t(step)}</span>
                           </li>
                         ))}
                   </ol>
                 )}
                 {!outlookQuery.isLoading && !outlookQuery.isError && !outlookQuery.data?.configured && (
                   <details className="rounded-lg border border-slate-200/80 px-3 py-2 dark:border-[var(--workspace-border)]">
-                    <summary className="cursor-pointer text-[11px] font-semibold text-slate-700 dark:text-slate-200">Help for self-built copies</summary>
+                    <summary className="cursor-pointer text-[11px] font-semibold text-slate-700 dark:text-slate-200">{t("Help for self-built copies")}</summary>
                     <p className="mt-2 text-[10.5px] leading-4 text-slate-500 dark:text-slate-400">
-                      Before starting Scriber, set <code className="rounded bg-slate-100 px-1 py-0.5 font-mono dark:bg-[var(--live-well)]">SCRIBER_OUTLOOK_CLIENT_ID</code> to the application ID from your Microsoft Entra public-client registration.
+                      {t("Before starting Scriber, set")} <code className="rounded bg-slate-100 px-1 py-0.5 font-mono dark:bg-[var(--live-well)]">SCRIBER_OUTLOOK_CLIENT_ID</code> {t("to the application ID from your Microsoft Entra public-client registration.")}
                     </p>
                   </details>
                 )}
                 {outlookQuery.data?.nextEvent && (
                   <div className="rounded-lg border border-slate-200/80 px-3 py-2.5 dark:border-[var(--workspace-border)]">
                     <p className="truncate text-xs font-semibold text-slate-950 dark:text-slate-100">{outlookQuery.data.nextEvent.subject}</p>
-                    <p className="mt-1 text-[10.5px] text-slate-500">Next event, {formatUpdateTimestamp(outlookQuery.data.nextEvent.start_at)}, {outlookQuery.data.nextEvent.participants.length} participants</p>
+                    <p className="mt-1 text-[10.5px] text-slate-500">{t("Next event,")} {formatUpdateTimestamp(outlookQuery.data.nextEvent.start_at, formatDate, t)}, {formatNumber(outlookQuery.data.nextEvent.participants.length)} {t("participants")}</p>
                   </div>
                 )}
                 <div className="flex flex-wrap justify-end gap-2">
                   {outlookQuery.isError || outlookCredentialStatusUnavailable ? (
                     <Button size="sm" variant="outline" disabled={outlookQuery.isFetching} onClick={() => void outlookQuery.refetch()}>
                       <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", outlookQuery.isFetching && "animate-spin motion-reduce:animate-none")} />
-                      Check again
+                      {t("Check again")}
                     </Button>
                   ) : outlookQuery.data?.authorizationPending ? (
                     <Button size="sm" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("connect")}>
                       {outlookMutation.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <ExternalLink className="mr-1.5 h-3.5 w-3.5" />}
-                      Reopen Microsoft sign-in
+                      {t("Reopen Microsoft sign-in")}
                     </Button>
                   ) : outlookQuery.data?.connected ? (
                     <>
                       <Button size="sm" variant="outline" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("sync")}>
                         <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", outlookMutation.isPending && "animate-spin motion-reduce:animate-none")} />
-                        Sync now
+                        {t("Sync now")}
                       </Button>
-                      <Button size="sm" variant="outline" className="border-destructive/45 text-destructive hover:bg-destructive/10" disabled={outlookMutation.isPending} onClick={() => setOutlookDisconnectOpen(true)}>Disconnect Outlook</Button>
+                      <Button size="sm" variant="outline" className="border-destructive/45 text-destructive hover:bg-destructive/10" disabled={outlookMutation.isPending} onClick={() => setOutlookDisconnectOpen(true)}>{t("Disconnect Outlook")}</Button>
                     </>
                   ) : outlookQuery.data?.configured ? (
                     <Button size="sm" disabled={outlookMutation.isPending} onClick={() => outlookMutation.mutate("connect")}>
                       {outlookMutation.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <ExternalLink className="mr-1.5 h-3.5 w-3.5" />}
-                      {outlookQuery.data.lastError ? "Reconnect Outlook" : "Connect Outlook"}
+                      {outlookQuery.data.lastError ? t("Reconnect Outlook") : t("Connect Outlook")}
                     </Button>
                   ) : null}
                 </div>
@@ -4455,8 +4591,8 @@ export default function Settings() {
 
         <SectionPanel
           id="settings-api-keys"
-          title="API keys"
-          description="Manage provider credentials without expanding the whole page."
+          title={t("API keys")}
+          description={t("Manage provider credentials without expanding the whole page.")}
           icon={Key}
           className="flex h-full self-stretch flex-col"
         >
@@ -4466,9 +4602,9 @@ export default function Settings() {
                 <div className="flex gap-2">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
                   <div>
-                    <p className="font-semibold">Credential required before model selection.</p>
+                    <p className="font-semibold">{t("Credential required before model selection.")}</p>
                     <p className="mt-1">
-                      Save{" "}
+                      {t("Save")}{" "}
                       {missingActiveCredentialRequirements.map((requirement, index) => (
                         <span key={requirement.provider}>
                           {index > 0 ? ", " : ""}
@@ -4477,11 +4613,11 @@ export default function Settings() {
                             onClick={() => openCredentialDialog(requirement)}
                             className="rounded-md px-1.5 py-0.5 font-semibold text-amber-950 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 dark:text-amber-100"
                           >
-                            {requirement.label}
+                            {t(requirement.label)}
                           </button>
                         </span>
                       ))}{" "}
-                      below, or choose a model that already has credentials.
+                      {t("below, or choose a model that already has credentials.")}
                     </p>
                   </div>
                 </div>
@@ -4490,17 +4626,17 @@ export default function Settings() {
 
             {!hasAnyManagedCloudSttCredential && (
               <div className="rounded-xl bg-slate-50 p-2.5 text-[11px] leading-[15px] text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
-                No cloud STT credentials are saved yet.
+                {t("No cloud STT credentials are saved yet.")}
               </div>
             )}
 
             <div className="grid flex-1 content-between gap-x-2 gap-y-2.5 sm:grid-cols-2 sm:gap-y-3 xl:gap-y-3.5">
-              <ApiCredentialRow provider="OpenAI" icon="openai" value={openAIKey} onValueChange={markCredentialChanged("OpenAI", setOpenAIKey)} show={showOpenAIKey} onShowChange={setShowOpenAIKey} helpKey="openai" saved={savedKeys.OpenAI === true} onSave={() => handleSaveApiKey("OpenAI")} note="Used for OpenAI STT and summarization." {...credentialDialogProps("OpenAI")} />
-              <ApiCredentialRow provider="Gemini" icon="gemini" value={geminiKey} onValueChange={markCredentialChanged("Gemini", setGeminiKey)} show={showGeminiKey} onShowChange={setShowGeminiKey} helpKey="gemini" saved={savedKeys.Gemini === true} onSave={() => handleSaveApiKey("Gemini")} note="One key unlocks Gemini STT, summaries, and cleanup." {...credentialDialogProps("Gemini")} />
+              <ApiCredentialRow provider="OpenAI" icon="openai" value={openAIKey} onValueChange={markCredentialChanged("OpenAI", setOpenAIKey)} show={showOpenAIKey} onShowChange={setShowOpenAIKey} helpKey="openai" saved={savedKeys.OpenAI === true} onSave={() => handleSaveApiKey("OpenAI")} note={t("Used for OpenAI STT and summarization.")} {...credentialDialogProps("OpenAI")} />
+              <ApiCredentialRow provider="Gemini" icon="gemini" value={geminiKey} onValueChange={markCredentialChanged("Gemini", setGeminiKey)} show={showGeminiKey} onShowChange={setShowGeminiKey} helpKey="gemini" saved={savedKeys.Gemini === true} onSave={() => handleSaveApiKey("Gemini")} note={t("One key unlocks Gemini STT, summaries, and cleanup.")} {...credentialDialogProps("Gemini")} />
               <ApiCredentialRow provider="OpenRouter" icon="openrouter" value={openRouterKey} onValueChange={markCredentialChanged("OpenRouter", setOpenRouterKey)} show={showOpenRouterKey} onShowChange={setShowOpenRouterKey} helpKey="openrouter" saved={savedKeys.OpenRouter === true} onSave={() => handleSaveApiKey("OpenRouter")} {...credentialDialogProps("OpenRouter")} />
-              <ApiCredentialRow provider="Cerebras" icon="cerebras" value={cerebrasKey} onValueChange={markCredentialChanged("Cerebras", setCerebrasKey)} show={showCerebrasKey} onShowChange={setShowCerebrasKey} helpKey="cerebras" saved={savedKeys.Cerebras === true} onSave={() => handleSaveApiKey("Cerebras")} note="Used for direct Cerebras summary and cleanup models." {...credentialDialogProps("Cerebras")} />
-              <ApiCredentialRow provider="YouTube" icon="youtube" value={youtubeKey} onValueChange={markCredentialChanged("YouTube", setYoutubeKey)} show={showYoutubeKey} onShowChange={setShowYoutubeKey} helpKey="youtube" saved={savedKeys.YouTube === true} onSave={() => handleSaveApiKey("YouTube")} note="Used for search and metadata in the YouTube tab." {...credentialDialogProps("YouTube")} />
-              <ApiCredentialRow provider="Soniox" icon="soniox" value={sonioxKey} onValueChange={markCredentialChanged("Soniox", setSonioxKey)} show={showSonioxKey} onShowChange={setShowSonioxKey} helpKey="soniox" saved={savedKeys.Soniox === true} onSave={() => handleSaveApiKey("Soniox")} note="Use one Soniox API key and choose where Soniox processes your audio." {...credentialDialogProps("Soniox")}>
+              <ApiCredentialRow provider="Cerebras" icon="cerebras" value={cerebrasKey} onValueChange={markCredentialChanged("Cerebras", setCerebrasKey)} show={showCerebrasKey} onShowChange={setShowCerebrasKey} helpKey="cerebras" saved={savedKeys.Cerebras === true} onSave={() => handleSaveApiKey("Cerebras")} note={t("Used for direct Cerebras summary and cleanup models.")} {...credentialDialogProps("Cerebras")} />
+              <ApiCredentialRow provider="YouTube" icon="youtube" value={youtubeKey} onValueChange={markCredentialChanged("YouTube", setYoutubeKey)} show={showYoutubeKey} onShowChange={setShowYoutubeKey} helpKey="youtube" saved={savedKeys.YouTube === true} onSave={() => handleSaveApiKey("YouTube")} note={t("Used for search and metadata in the YouTube tab.")} {...credentialDialogProps("YouTube")} />
+              <ApiCredentialRow provider="Soniox" icon="soniox" value={sonioxKey} onValueChange={markCredentialChanged("Soniox", setSonioxKey)} show={showSonioxKey} onShowChange={setShowSonioxKey} helpKey="soniox" saved={savedKeys.Soniox === true} onSave={() => handleSaveApiKey("Soniox")} note={t("Use one Soniox API key and choose where Soniox processes your audio.")} {...credentialDialogProps("Soniox")}>
                 <SonioxRegionPicker
                   value={sonioxRegion}
                   onValueChange={(nextRegion) => {
@@ -4510,7 +4646,7 @@ export default function Settings() {
                   }}
                 />
               </ApiCredentialRow>
-              <ApiCredentialRow provider="Modulate.AI" icon="modulate" value={modulateKey} onValueChange={markCredentialChanged("Modulate.AI", setModulateKey)} show={showModulateKey} onShowChange={setShowModulateKey} helpKey="modulate" saved={savedKeys["Modulate.AI"] === true} onSave={() => handleSaveApiKey("Modulate.AI")} note="One key enables multilingual realtime and batch transcription. Scriber requests final transcript text only and leaves enrichment signals off." placeholder="Enter Modulate.AI API key" {...credentialDialogProps("Modulate.AI")} />
+              <ApiCredentialRow provider="Modulate.AI" icon="modulate" value={modulateKey} onValueChange={markCredentialChanged("Modulate.AI", setModulateKey)} show={showModulateKey} onShowChange={setShowModulateKey} helpKey="modulate" saved={savedKeys["Modulate.AI"] === true} onSave={() => handleSaveApiKey("Modulate.AI")} note={t("One key enables multilingual realtime and batch transcription. Scriber requests final transcript text only and leaves enrichment signals off.")} placeholder={t("Enter Modulate.AI API key")} {...credentialDialogProps("Modulate.AI")} />
               <ApiCredentialRow provider="Mistral" icon="mistral" value={mistralKey} onValueChange={markCredentialChanged("Mistral", setMistralKey)} show={showMistralKey} onShowChange={setShowMistralKey} helpKey="mistral" saved={savedKeys.Mistral === true} onSave={() => handleSaveApiKey("Mistral")} {...credentialDialogProps("Mistral")} />
               <ApiCredentialRow provider="Smallest AI" icon="smallest" value={smallestKey} onValueChange={markCredentialChanged("Smallest AI", setSmallestKey)} show={showSmallestKey} onShowChange={setShowSmallestKey} helpKey="smallest" saved={savedKeys["Smallest AI"] === true} onSave={() => handleSaveApiKey("Smallest AI")} {...credentialDialogProps("Smallest AI")} />
               <ApiCredentialRow provider="AssemblyAI" icon="assemblyai" value={assemblyAIKey} onValueChange={markCredentialChanged("AssemblyAI", setAssemblyAIKey)} show={showAssemblyAIKey} onShowChange={setShowAssemblyAIKey} helpKey="assemblyai" saved={savedKeys.AssemblyAI === true} onSave={() => handleSaveApiKey("AssemblyAI")} {...credentialDialogProps("AssemblyAI")} />
@@ -4519,13 +4655,13 @@ export default function Settings() {
               <ApiCredentialRow provider="Groq" icon="groq" value={groqKey} onValueChange={markCredentialChanged("Groq", setGroqKey)} show={showGroqKey} onShowChange={setShowGroqKey} helpKey="groq" saved={savedKeys.Groq === true} onSave={() => handleSaveApiKey("Groq")} {...credentialDialogProps("Groq")} />
               <ApiCredentialRow provider="Speechmatics" icon="speechmatics" value={speechmaticsKey} onValueChange={markCredentialChanged("Speechmatics", setSpeechmaticsKey)} show={showSpeechmaticsKey} onShowChange={setShowSpeechmaticsKey} helpKey="speechmatics" saved={savedKeys.Speechmatics === true} onSave={() => handleSaveApiKey("Speechmatics")} {...credentialDialogProps("Speechmatics")} />
               <ApiCredentialRow provider="ElevenLabs" icon="elevenlabs" value={elevenLabsKey} onValueChange={markCredentialChanged("ElevenLabs", setElevenLabsKey)} show={showElevenLabsKey} onShowChange={setShowElevenLabsKey} helpKey="elevenlabs" saved={savedKeys.ElevenLabs === true} onSave={() => handleSaveApiKey("ElevenLabs")} {...credentialDialogProps("ElevenLabs")} />
-              <ApiCredentialRow provider="Google Cloud" icon="googlecloud" value={googleApplicationCredentials} onValueChange={markCredentialChanged("Google Cloud", setGoogleApplicationCredentials)} helpKey="googleCloud" saved={savedKeys["Google Cloud"] === true} onSave={() => handleSaveApiKey("Google Cloud")} inputType="text" placeholder="C:\\path\\to\\service-account.json" note="Google Cloud STT uses Cloud credentials, not the Gemini API key. Enter the service account JSON path for the speech.googleapis.com project." {...credentialDialogProps("Google Cloud")} />
-              <ApiCredentialRow provider="Azure MAI" credentialId="Azure" icon="azure" value={azureMaiKey} onValueChange={markCredentialChanged("Azure", setAzureMaiKey)} show={showAzureMaiKey} onShowChange={setShowAzureMaiKey} helpKey="azure" saved={savedKeys.Azure === true} onSave={() => handleSaveApiKey("Azure")} note="The key must belong to a region that supports the configured model." {...credentialDialogProps("Azure")}>
+              <ApiCredentialRow provider="Google Cloud" icon="googlecloud" value={googleApplicationCredentials} onValueChange={markCredentialChanged("Google Cloud", setGoogleApplicationCredentials)} helpKey="googleCloud" saved={savedKeys["Google Cloud"] === true} onSave={() => handleSaveApiKey("Google Cloud")} inputType="text" placeholder={"C:\\\\path\\\\to\\\\service-account.json"} note={t("Google Cloud STT uses Cloud credentials, not the Gemini API key. Enter the service account JSON path for the speech.googleapis.com project.")} {...credentialDialogProps("Google Cloud")} />
+              <ApiCredentialRow provider="Azure MAI" credentialId="Azure" icon="azure" value={azureMaiKey} onValueChange={markCredentialChanged("Azure", setAzureMaiKey)} show={showAzureMaiKey} onShowChange={setShowAzureMaiKey} helpKey="azure" saved={savedKeys.Azure === true} onSave={() => handleSaveApiKey("Azure")} note={t("The key must belong to a region that supports the configured model.")} {...credentialDialogProps("Azure")}>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <FieldShell label="Region">
+                  <FieldShell label={t("Region")}>
                     <Input value={azureMaiRegion} onChange={(event) => markCredentialChanged("Azure", setAzureMaiRegion)(event.target.value)} placeholder="northeurope" className="font-mono text-sm" />
                   </FieldShell>
-                  <FieldShell label="Model">
+                  <FieldShell label={t("Model")}>
                     <Input value={azureMaiModel} onChange={(event) => markCredentialChanged("Azure", setAzureMaiModel)(event.target.value)} placeholder="mai-transcribe-1.5" className="font-mono text-sm" />
                   </FieldShell>
                 </div>
@@ -4536,15 +4672,15 @@ export default function Settings() {
 
         <SectionPanel
           id="settings-summaries"
-          title="Summarization"
-          description="Choose the model and automatic summary behavior."
+          title={t("Summarization")}
+          description={t("Choose the model and automatic summary behavior.")}
           icon={Sparkles}
           className="flex h-full self-stretch flex-col"
         >
           <div className="flex flex-1 flex-col justify-between gap-3">
             <div
               role="radiogroup"
-              aria-label="Summary models"
+              aria-label={t("Summary models")}
               className="space-y-1.5"
             >
               {summaryModelGroups.map((group) => (
@@ -4580,21 +4716,21 @@ export default function Settings() {
 
             <div className="grid gap-x-4 border-t border-slate-200/80 pt-2 dark:border-[var(--workspace-border)] sm:grid-cols-2">
               <SettingLine
-                label="Auto-summarize"
-                description="Summarize new transcripts automatically."
+                label={t("Auto-summarize")}
+                description={t("Summarize new transcripts automatically.")}
                 className="py-1.5 sm:grid-cols-[minmax(0,1fr)_auto]"
               >
                 <Switch checked={autoSummarize} onCheckedChange={handleAutoSummarizeChange} />
               </SettingLine>
               <SettingLine
-                label="YouTube captions first"
-                description="Prefer available captions, then fall back to audio."
+                label={t("YouTube captions first")}
+                description={t("Prefer available captions, then fall back to audio.")}
                 className="border-t border-slate-200/80 py-1.5 pt-2 dark:border-[var(--workspace-border)] sm:grid-cols-[minmax(0,1fr)_auto] sm:border-l sm:border-t-0 sm:pl-4 sm:pt-1.5"
               >
                 <Switch
                   checked={youtubePreferCaptions}
                   onCheckedChange={handleYoutubePreferCaptionsChange}
-                  aria-label="Use YouTube captions before audio transcription"
+                  aria-label={t("Use YouTube captions before audio transcription")}
                 />
               </SettingLine>
             </div>
@@ -4603,8 +4739,8 @@ export default function Settings() {
 
         <SectionPanel
           id="settings-updates"
-          title="Update app"
-          description="Keep Scriber current without interrupting recordings."
+          title={t("Update app")}
+          description={t("Keep Scriber current without interrupting recordings.")}
           icon={Shield}
           className="flex h-full self-stretch flex-col"
         >
@@ -4612,15 +4748,15 @@ export default function Settings() {
             <div className="grid gap-2 sm:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] sm:items-stretch">
               <div className="grid gap-2 rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                 <div>
-                  <p className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Update status</p>
-                  <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">{desktopUpdate.message}</p>
+                  <p className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">{t("Update status")}</p>
+                  <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">{t(desktopUpdate.message, desktopUpdate.messageValues)}</p>
                 </div>
                 <Badge variant={desktopUpdateBadgeVariant}>{desktopUpdateBadgeLabel}</Badge>
               </div>
               <div className="grid gap-2 rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center dark:bg-[var(--live-card)]">
                 <div>
-                  <p className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">Automatic checks</p>
-                  <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">Weekly background checks via GitHub.</p>
+                  <p className="text-[12px] font-semibold leading-4 text-slate-950 dark:text-slate-100">{t("Automatic checks")}</p>
+                  <p className="mt-0.5 text-[10.5px] leading-[14px] text-slate-500 dark:text-slate-400">{t("Weekly background checks via GitHub.")}</p>
                 </div>
                 <Switch checked={desktopUpdate.autoCheckEnabled} onCheckedChange={handleDesktopAutoCheckChange} disabled={isInstallingDesktopUpdate} />
               </div>
@@ -4628,19 +4764,19 @@ export default function Settings() {
 
             <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
               <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
-                <p className="text-[10px] leading-3 text-slate-500">Current</p>
-                <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">{desktopUpdate.currentVersion || "Unknown"}</p>
+                <p className="text-[10px] leading-3 text-slate-500">{t("Current")}</p>
+                <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">{desktopUpdate.currentVersion || t("Unknown")}</p>
               </div>
               <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
-                <p className="text-[10px] leading-3 text-slate-500">Available</p>
+                <p className="text-[10px] leading-3 text-slate-500">{t("Available")}</p>
                 <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">{desktopUpdateAvailableVersionLabel}</p>
               </div>
               <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
-                <p className="text-[10px] leading-3 text-slate-500">Last check</p>
+                <p className="text-[10px] leading-3 text-slate-500">{t("Last check")}</p>
                 <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">{desktopUpdateLastCheckedLabel}</p>
               </div>
               <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
-                <p className="text-[10px] leading-3 text-slate-500">Next check</p>
+                <p className="text-[10px] leading-3 text-slate-500">{t("Next check")}</p>
                 <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">{desktopUpdateNextCheckLabel}</p>
               </div>
             </div>
@@ -4648,8 +4784,8 @@ export default function Settings() {
             {desktopUpdateProgress && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3 text-[11px] text-slate-500">
-                  <span>{desktopUpdateProgress.message}</span>
-                  {typeof desktopUpdateProgress.percent === "number" && <span>{desktopUpdateProgress.percent}%</span>}
+                  <span>{t(desktopUpdateProgress.message)}</span>
+                  {typeof desktopUpdateProgress.percent === "number" && <span>{formatNumber(desktopUpdateProgress.percent)}%</span>}
                 </div>
                 <Progress value={desktopUpdateProgress.percent ?? 0} />
               </div>
@@ -4659,26 +4795,26 @@ export default function Settings() {
               <div className="grid gap-2 sm:grid-cols-2">
                 <Button variant="outline" className="h-8 text-[12px]" onClick={handleCheckDesktopUpdate} disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
                   {isCheckingDesktopUpdate ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                  Check for updates
+                  {t("Check for updates")}
                 </Button>
                 <Button className="h-8 text-[12px]" onClick={handleInstallDesktopUpdate} disabled={!desktopUpdate.available || isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
                   {isInstallingDesktopUpdate ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
-                  Install and restart
+                  {t("Install and restart")}
                 </Button>
               </div>
               {desktopUpdate.available && (
                 <div className="grid grid-cols-2 gap-2">
                   <Button variant="outline" className="h-8 text-[12px]" onClick={handleRemindDesktopUpdateLater} disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
-                    Remind tomorrow
+                    {t("Remind tomorrow")}
                   </Button>
                   <Button variant="outline" className="h-8 text-[12px]" onClick={handleSkipDesktopUpdateVersion} disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}>
-                    Skip version
+                    {t("Skip version")}
                   </Button>
                 </div>
               )}
               <Button variant="ghost" size="sm" className="h-8 justify-start px-1 text-[12px]" onClick={handleOpenDesktopUpdateReleaseNotes} disabled={isInstallingDesktopUpdate}>
                 <ExternalLink className="mr-2 h-4 w-4" />
-                Release notes
+                {t("Release notes")}
               </Button>
             </div>
           </div>
@@ -4686,33 +4822,55 @@ export default function Settings() {
 
         <SectionPanel
           id="settings-language"
-          title="Language"
-          description="Auto-detect or choose a preferred transcription language."
+          title={t("Language")}
+          description={t("Auto-detect or choose a preferred transcription language.")}
           icon={Languages}
           className="flex h-full self-stretch flex-col"
         >
           <div className="flex flex-1 flex-col justify-evenly gap-4">
-            <SettingLine label="Auto-detect language" description="Let the provider infer spoken language.">
+            <SettingLine
+              label={t("Interface language")}
+              description={t("The interface language applies immediately and is saved on this device.")}
+            >
+              <ToggleGroup
+                type="single"
+                value={locale}
+                onValueChange={(value) => {
+                  if (value === "de" || value === "en") setLocale(value);
+                }}
+                aria-label={t("Interface language")}
+                className="grid w-full grid-cols-2"
+              >
+                <ToggleGroupItem value="de" aria-label={t("Switch interface to German")} className="h-9 px-3 text-xs">
+                  Deutsch
+                </ToggleGroupItem>
+                <ToggleGroupItem value="en" aria-label={t("Switch interface to English")} className="h-9 px-3 text-xs">
+                  English
+                </ToggleGroupItem>
+              </ToggleGroup>
+            </SettingLine>
+
+            <SettingLine label={t("Auto-detect language")} description={t("Let the provider infer spoken language.")}>
               <Switch
                 checked={language === "auto"}
                 onCheckedChange={(enabled) => void handleLanguageChange(enabled ? "auto" : "en")}
               />
             </SettingLine>
 
-            <SettingLine label="Preferred language" description="Used when auto-detect is off.">
+            <SettingLine label={t("Preferred language")} description={t("Used when auto-detect is off.")}>
               <div className={cn("language-dropdown w-full", isLanguageDropdownOpen && "is-open")}>
                 <button
                   type="button"
                   className="language-dropdown-header"
                   onClick={() => setIsLanguageDropdownOpen((prev) => !prev)}
-                  aria-label="Select default transcription language"
+                  aria-label={t("Select default transcription language")}
                   aria-expanded={isLanguageDropdownOpen}
                   aria-controls="language-dropdown-tray"
                 >
                   <span className="language-dropdown-header-info">
                     <span className="language-dropdown-selected-value-wrapper">
                       <LanguageFlag value={selectedLanguage.value} className="language-header-flag" />
-                      <span className="language-dropdown-selected-text is-selected">{selectedLanguage.label}</span>
+                      <span className="language-dropdown-selected-text is-selected">{t(selectedLanguage.label)}</span>
                     </span>
                   </span>
                   <ChevronDown className="language-dropdown-chevron" />
@@ -4737,11 +4895,11 @@ export default function Settings() {
                                 className="language-radio sr-only"
                                 checked={isSelected}
                                 onChange={() => handleLanguageSelectFromDropdown(option.value)}
-                                aria-label={`Select ${option.label} as default transcription language`}
+                                aria-label={t("Select {{language}} as default transcription language", { language: t(option.label) })}
                               />
                               <label htmlFor={inputId} className="language-option-label">
                                 <LanguageFlag value={option.value} />
-                                <span className="language-name">{option.label}</span>
+                                <span className="language-name">{t(option.label)}</span>
                                 <svg className="language-check" viewBox="0 0 24 24" aria-hidden="true">
                                   <path d="M 4 12 L 10 18 L 20 6" />
                                 </svg>
@@ -4772,9 +4930,9 @@ export default function Settings() {
           }}
         >
           <DialogHeader>
-            <DialogTitle>Teach Scriber a voice</DialogTitle>
+            <DialogTitle>{t("Teach Scriber a voice")}</DialogTitle>
             <DialogDescription>
-              Record one short sample so Scriber can show this person's name in future meeting transcripts.
+              {t("Record one short sample so Scriber can show this person's name in future meeting transcripts.")}
             </DialogDescription>
           </DialogHeader>
 
@@ -4785,24 +4943,24 @@ export default function Settings() {
                   <Check className="h-5 w-5" aria-hidden="true" />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold text-emerald-950 dark:text-emerald-100">{voiceEnrollmentResult.profile.displayName} is ready</p>
+                  <p className="text-sm font-semibold text-emerald-950 dark:text-emerald-100">{voiceEnrollmentResult.profile.displayName} {t("is ready")}</p>
                   <p className="mt-1 text-xs leading-5 text-emerald-900/80 dark:text-emerald-100/80">
-                    Scriber can now match this voice in future meetings. You can rename or delete it from the list at any time.
+                    {t("Scriber can now match this voice in future meetings. You can rename or delete it from the list at any time.")}
                   </p>
                 </div>
               </div>
               <div className="flex items-start gap-2.5 rounded-lg bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-600 dark:bg-slate-900/60 dark:text-slate-300">
                 <Shield className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-300" aria-hidden="true" />
-                <p>The recording was not saved or uploaded. Only the local voice profile remains on this device.</p>
+                <p>{t("The recording was not saved or uploaded. Only the local voice profile remains on this device.")}</p>
               </div>
               <div className="flex justify-end">
-                <Button type="button" onClick={() => handleVoiceEnrollmentOpenChange(false)}>Done</Button>
+                <Button type="button" onClick={() => handleVoiceEnrollmentOpenChange(false)}>{t("Done")}</Button>
               </div>
             </div>
           ) : (
             <div className="space-y-4">
               <div className="grid gap-2">
-                <Label htmlFor="voice-enrollment-name">Person's name</Label>
+                <Label htmlFor="voice-enrollment-name">{t("Person's name")}</Label>
                 <Input
                   id="voice-enrollment-name"
                   autoFocus
@@ -4810,39 +4968,44 @@ export default function Settings() {
                   value={voiceEnrollmentName}
                   disabled={voiceEnrollmentMutation.isPending}
                   onChange={(event) => setVoiceEnrollmentName(event.target.value)}
-                  placeholder="For example, Alex"
+                  placeholder={t("For example, Alex")}
                   aria-describedby="voice-enrollment-name-help"
                 />
-                <p id="voice-enrollment-name-help" className="text-[11px] leading-4 text-muted-foreground">This name appears beside matching transcript segments.</p>
+                <p id="voice-enrollment-name-help" className="text-[11px] leading-4 text-muted-foreground">{t("This name appears beside matching transcript segments.")}</p>
               </div>
 
               <div className="grid gap-2">
-                <Label htmlFor="voice-enrollment-microphone">Microphone</Label>
+                <Label htmlFor="voice-enrollment-microphone">{t("Microphone")}</Label>
                 <Select value={voiceEnrollmentDevice} disabled={voiceEnrollmentMutation.isPending} onValueChange={setVoiceEnrollmentDevice}>
                   <SelectTrigger id="voice-enrollment-microphone" className="w-full" aria-describedby="voice-enrollment-microphone-help">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={DEFAULT_VOICE_ENROLLMENT_DEVICE}>Windows default microphone</SelectItem>
+                    <SelectItem value={DEFAULT_VOICE_ENROLLMENT_DEVICE}>{t("Windows default microphone")}</SelectItem>
                     {voiceEnrollmentDevicesQuery.data?.capture.map((endpoint) => (
                       <SelectItem key={endpoint.endpointIdHash} value={endpoint.endpointIdHash}>
-                        {endpoint.friendlyName}{endpoint.isDefault ? " (currently default)" : ""}
+                        {endpoint.friendlyName}{endpoint.isDefault ? t(" (currently default)") : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
                 <div id="voice-enrollment-microphone-help" className="min-h-4 text-[11px] leading-4 text-muted-foreground">
                   {voiceEnrollmentDevicesQuery.isLoading ? (
-                    <span className="inline-block h-3 w-44 animate-pulse rounded bg-slate-200 motion-reduce:animate-none dark:bg-slate-800" aria-label="Looking for microphones" />
+                    <span className="inline-block h-3 w-44 animate-pulse rounded bg-slate-200 motion-reduce:animate-none dark:bg-slate-800" aria-label={t("Looking for microphones")} />
                   ) : voiceEnrollmentDevicesQuery.isError ? (
                     <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-amber-700 dark:text-amber-300">
-                      Microphone choices could not be loaded. Windows default can still be used.
-                      <button type="button" className="font-semibold underline underline-offset-2" onClick={() => void voiceEnrollmentDevicesQuery.refetch()}>Try again</button>
+                      {t("Microphone choices could not be loaded. Windows default can still be used.")}
+                      <button type="button" className="font-semibold underline underline-offset-2" onClick={() => void voiceEnrollmentDevicesQuery.refetch()}>{t("Try again")}</button>
                     </span>
                   ) : voiceEnrollmentDevicesQuery.data?.available ? (
-                    `${voiceEnrollmentDevicesQuery.data.capture.length} microphone ${voiceEnrollmentDevicesQuery.data.capture.length === 1 ? "choice" : "choices"} found.`
+                    t(
+                      voiceEnrollmentDevicesQuery.data.capture.length === 1
+                        ? "{{count}} microphone choice found."
+                        : "{{count}} microphone choices found.",
+                      { count: formatNumber(voiceEnrollmentDevicesQuery.data.capture.length) },
+                    )
                   ) : (
-                    "Windows default will be used."
+                    t("Windows default will be used.")
                   )}
                 </div>
               </div>
@@ -4854,17 +5017,17 @@ export default function Settings() {
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-semibold text-blue-950 dark:text-blue-100">
                         {voiceEnrollmentStage === "preparing"
-                          ? "Starting the microphone"
+                          ? t("Starting the microphone")
                           : voiceEnrollmentStage === "processing"
-                            ? "Creating the voice profile"
-                            : `Listening to ${voiceEnrollmentName.trim()}`}
+                            ? t("Creating the voice profile")
+                            : t("Listening to {{name}}", { name: voiceEnrollmentName.trim() })}
                       </p>
                       <p className="mt-1 text-xs leading-5 text-blue-900/80 dark:text-blue-100/80">
                         {voiceEnrollmentStage === "processing"
-                          ? "Scriber is finishing the sample on this device. Keep the app open."
-                          : "Speak naturally in a quiet room until the recording finishes. Keep Scriber open."}
+                          ? t("Scriber is finishing the sample on this device. Keep the app open.")
+                          : t("Speak naturally in a quiet room until the recording finishes. Keep Scriber open.")}
                       </p>
-                      <Progress value={voiceEnrollmentProgress} className="mt-3 h-1.5" aria-label="Voice sample progress" />
+                      <Progress value={voiceEnrollmentProgress} className="mt-3 h-1.5" aria-label={t("Voice sample progress")} />
                     </div>
                   </div>
                 </div>
@@ -4874,8 +5037,13 @@ export default function Settings() {
                 <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/35 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-900 dark:bg-amber-950/30 dark:text-amber-100" role="alert">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
                   <div>
-                    <p className="font-semibold">The voice sample was not saved.</p>
-                    <p className="mt-0.5">{voiceEnrollmentMutation.error instanceof Error ? voiceEnrollmentMutation.error.message : "Check the microphone and try again."}</p>
+                    <p className="font-semibold">{t("The voice sample was not saved.")}</p>
+                    <p className="mt-0.5">{localizedSettingsError(
+                      voiceEnrollmentMutation.error,
+                      "Check the microphone and try again.",
+                      locale,
+                      t,
+                    )}</p>
                   </div>
                 </div>
               )}
@@ -4883,12 +5051,12 @@ export default function Settings() {
               {!voiceEnrollmentMutation.isPending && (
                 <div className="flex items-start gap-2.5 rounded-lg bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-600 dark:bg-slate-900/60 dark:text-slate-300">
                   <Shield className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-300" aria-hidden="true" />
-                  <p>Scriber listens for about 8 seconds. The recording is not saved or uploaded. The local voice profile remains until you delete it.</p>
+                  <p>{t("Scriber listens for about 8 seconds. The recording is not saved or uploaded. The local voice profile remains until you delete it.")}</p>
                 </div>
               )}
 
               <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                <Button type="button" variant="ghost" disabled={voiceEnrollmentMutation.isPending} onClick={() => handleVoiceEnrollmentOpenChange(false)}>Cancel</Button>
+                <Button type="button" variant="ghost" disabled={voiceEnrollmentMutation.isPending} onClick={() => handleVoiceEnrollmentOpenChange(false)}>{t("Cancel")}</Button>
                 <Button
                   type="button"
                   className="whitespace-nowrap active:scale-[0.98]"
@@ -4897,8 +5065,8 @@ export default function Settings() {
                 >
                   {voiceEnrollmentMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" /> : <Mic className="mr-2 h-4 w-4" />}
                   {voiceEnrollmentMutation.isPending
-                    ? voiceEnrollmentStage === "processing" ? "Saving voice" : "Recording voice"
-                    : voiceEnrollmentStage === "error" ? "Try sample again" : "Record 8-second sample"}
+                    ? voiceEnrollmentStage === "processing" ? t("Saving voice") : t("Recording voice")
+                    : voiceEnrollmentStage === "error" ? t("Try sample again") : t("Record 8-second sample")}
                 </Button>
               </div>
             </div>
@@ -4908,13 +5076,13 @@ export default function Settings() {
       <AlertDialog open={Boolean(speakerProfilePendingDelete)} onOpenChange={(open) => { if (!open) setSpeakerProfilePendingDelete(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete this saved speaker?</AlertDialogTitle>
+            <AlertDialogTitle>{t("Delete this saved speaker?")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {speakerProfilePendingDelete?.name || "This speaker"} will no longer be recognized automatically in future meetings. Existing transcripts stay intact.
+              {speakerProfilePendingDelete?.name || t("This speaker")} {t("will no longer be recognized automatically in future meetings. Existing transcripts stay intact.")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("Cancel")}</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={speakerProfileMutation.isPending}
@@ -4923,7 +5091,7 @@ export default function Settings() {
                 if (speakerProfilePendingDelete) speakerProfileMutation.mutate({ action: "delete", id: speakerProfilePendingDelete.id });
               }}
             >
-              Delete speaker
+              {t("Delete speaker")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -4931,9 +5099,9 @@ export default function Settings() {
       <AlertDialog open={outlookDisconnectOpen} onOpenChange={(open) => { if (!outlookMutation.isPending) setOutlookDisconnectOpen(open); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Disconnect Outlook?</AlertDialogTitle>
+            <AlertDialogTitle>{t("Disconnect Outlook?")}</AlertDialogTitle>
             <AlertDialogDescription>
-              Scriber will remove the protected Microsoft sign-in and its locally synchronized calendar entries. Existing meetings, transcripts, and exports stay available. You can connect this or another Microsoft account again later.
+              {t("Scriber will remove the protected Microsoft sign-in and its locally synchronized calendar entries. Existing meetings, transcripts, and exports stay available. You can connect this or another Microsoft account again later.")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           {outlookQuery.data?.account && (
@@ -4943,7 +5111,7 @@ export default function Settings() {
             </div>
           )}
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={outlookMutation.isPending}>Keep connected</AlertDialogCancel>
+            <AlertDialogCancel disabled={outlookMutation.isPending}>{t("Keep connected")}</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={outlookMutation.isPending}
@@ -4953,7 +5121,7 @@ export default function Settings() {
               }}
             >
               {outlookMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Disconnect Outlook
+              {t("Disconnect Outlook")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -4961,20 +5129,20 @@ export default function Settings() {
       <AlertDialog open={voiceLibraryDeleteOpen} onOpenChange={(open) => { if (!voiceLibraryDeletePending) setVoiceLibraryDeleteOpen(open); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete all saved voice data?</AlertDialogTitle>
+            <AlertDialogTitle>{t("Delete all saved voice data?")}</AlertDialogTitle>
             <AlertDialogDescription>
-              This removes every saved speaker and the local voice-recognition download, then turns off future recognition. Existing meetings and transcripts remain available.
+              {t("This removes every saved speaker and the local voice-recognition download, then turns off future recognition. Existing meetings and transcripts remain available.")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={voiceLibraryDeletePending}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={voiceLibraryDeletePending}>{t("Cancel")}</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={voiceLibraryDeletePending}
               onClick={(event) => { event.preventDefault(); void handleDeleteVoiceprintLibrary(); }}
             >
               {voiceLibraryDeletePending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Delete voice data
+              {t("Delete voice data")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

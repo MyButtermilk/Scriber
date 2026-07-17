@@ -45,9 +45,29 @@ import type {
   RuntimeLogsClearResponse,
   RuntimeLogsResponse,
 } from "@/lib/api-types";
+import { useI18n, type TranslationValues } from "@/i18n";
 
 const LEVELS = ["ALL", "CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "TRACE"] as const;
 const ALL_DATES_VALUE = "all";
+
+interface LocalizedMessageState {
+  source: string;
+  values?: TranslationValues;
+}
+
+function renderLocalizedMessage(
+  message: LocalizedMessageState,
+  t: ReturnType<typeof useI18n>["t"],
+  formatNumber: ReturnType<typeof useI18n>["formatNumber"],
+): string {
+  const values = message.values
+    ? Object.fromEntries(Object.entries(message.values).map(([key, value]) => [
+        key,
+        typeof value === "number" ? formatNumber(value) : value,
+      ]))
+    : undefined;
+  return t(message.source, values);
+}
 
 const levelStyles: Record<string, string> = {
   TRACE: "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300",
@@ -83,9 +103,9 @@ function normalizeLevel(level: string) {
   return value;
 }
 
-function formatEntryTime(entry: RuntimeLogEntry) {
+function formatEntryTime(entry: RuntimeLogEntry, localeTag: string) {
   if (entry.timestampMs) {
-    return new Date(entry.timestampMs).toLocaleTimeString("de-DE", {
+    return new Date(entry.timestampMs).toLocaleTimeString(localeTag, {
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
@@ -93,7 +113,7 @@ function formatEntryTime(entry: RuntimeLogEntry) {
   }
   const parsed = timestampToDate(entry.timestamp);
   if (parsed) {
-    return parsed.toLocaleTimeString("de-DE", {
+    return parsed.toLocaleTimeString(localeTag, {
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
@@ -102,10 +122,10 @@ function formatEntryTime(entry: RuntimeLogEntry) {
   return entry.timestamp || "";
 }
 
-function formatLogLine(entry: RuntimeLogEntry) {
+function formatLogLine(entry: RuntimeLogEntry, localeTag: string) {
   const level = normalizeLevel(entry.level);
   const component = entry.component ? ` [${entry.component}]` : "";
-  return `${formatEntryTime(entry).padEnd(12)} ${level.padEnd(8)} ${entry.source}:${entry.line}${component} ${entry.message}`;
+  return `${formatEntryTime(entry, localeTag).padEnd(12)} ${level.padEnd(8)} ${entry.source}:${entry.line}${component} ${entry.message}`;
 }
 
 function dateInputValue(date: Date) {
@@ -176,10 +196,15 @@ function filenameFromDisposition(disposition: string | null) {
   return match?.[1] || `scriber-support-bundle-${Date.now()}.zip`;
 }
 
-function formatMs(value: number | null | undefined) {
+function formatMs(
+  value: number | null | undefined,
+  formatNumber: ReturnType<typeof useI18n>["formatNumber"],
+) {
   if (typeof value !== "number" || !Number.isFinite(value)) return "--";
-  if (value >= 1000) return `${(value / 1000).toFixed(2)} s`;
-  return `${Math.round(value)} ms`;
+  if (value >= 1000) {
+    return `${formatNumber(value / 1000, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} s`;
+  }
+  return `${formatNumber(Math.round(value))} ms`;
 }
 
 function postProcessingStatusLabel(item: PostProcessingDiagnostic | null | undefined) {
@@ -193,6 +218,7 @@ function postProcessingStatusLabel(item: PostProcessingDiagnostic | null | undef
 
 export default function DebugConsole() {
   const { toast } = useToast();
+  const { formatDate, formatNumber, localeTag, t } = useI18n();
   const defaultDateFilter = useMemo(() => dateInputValue(new Date()), []);
   const [logs, setLogs] = useState<RuntimeLogEntry[]>([]);
   const [sources, setSources] = useState<string[]>([]);
@@ -209,8 +235,8 @@ export default function DebugConsole() {
   const [supportBundleLoading, setSupportBundleLoading] = useState(false);
   const [logFileClearLoading, setLogFileClearLoading] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [error, setError] = useState("");
-  const [actionStatus, setActionStatus] = useState("");
+  const [error, setError] = useState<LocalizedMessageState | null>(null);
+  const [actionStatus, setActionStatus] = useState<LocalizedMessageState | null>(null);
   const [copiedLogDetailKey, setCopiedLogDetailKey] = useState("");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [truncated, setTruncated] = useState(false);
@@ -225,7 +251,7 @@ export default function DebugConsole() {
     const loadGeneration = logLoadGenerationRef.current + 1;
     logLoadGenerationRef.current = loadGeneration;
     setLoading(true);
-    setError("");
+    setError(null);
     try {
       const res = await fetchWithTimeout(
         apiUrl("/api/runtime/logs?limit=1200"),
@@ -259,7 +285,7 @@ export default function DebugConsole() {
       setLastUpdated(new Date());
     } catch (err: any) {
       if (loadGeneration !== logLoadGenerationRef.current) return;
-      setError(String(err?.message || err));
+      setError({ source: String(err?.message || err) });
     } finally {
       logLoadInFlightRef.current = false;
       if (loadGeneration === logLoadGenerationRef.current) {
@@ -346,6 +372,13 @@ export default function DebugConsole() {
   const debugCount = logs.filter((entry) => ["DEBUG", "TRACE"].includes(normalizeLevel(entry.level))).length;
   const latestPostProcessing = postProcessingDiagnostics[0] || null;
   const postProcessingFailures = postProcessingDiagnostics.filter((item) => item.status === "failure").length;
+  const dateFilterDisplay = useMemo(() => {
+    if (dateFilter === ALL_DATES_VALUE) return t("All dates");
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateFilter);
+    if (!match) return dateFilter;
+    const localDate = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    return formatDate(localDate, { dateStyle: "medium" });
+  }, [dateFilter, formatDate, t]);
   const hasActiveFilters =
     selectedLevel !== "ALL" ||
     selectedSource !== "all" ||
@@ -366,7 +399,10 @@ export default function DebugConsole() {
       displayedLogs.forEach((entry) => next.add(logEntryKey(entry)));
       return next;
     });
-    setActionStatus(`Cleared ${displayedLogs.length} visible log entries from this view.`);
+    setActionStatus({
+      source: "Cleared {{count}} visible log entries from this view.",
+      values: { count: displayedLogs.length },
+    });
   };
 
   const deleteRuntimeLogs = async () => {
@@ -374,8 +410,8 @@ export default function DebugConsole() {
 
     setDeleteDialogOpen(false);
     setLogFileClearLoading(true);
-    setError("");
-    setActionStatus("");
+    setError(null);
+    setActionStatus(null);
     try {
       const res = await fetchWithTimeout(apiUrl("/api/runtime/logs"), {
         method: "DELETE",
@@ -402,9 +438,17 @@ export default function DebugConsole() {
       setTruncated(false);
       setLastUpdated(new Date());
       setLoading(false);
-      setActionStatus(`Cleared ${payload.cleared} runtime log source${payload.cleared === 1 ? "" : "s"}.`);
+      setActionStatus(payload.cleared === 1
+        ? { source: "Cleared one runtime log source." }
+        : {
+            source: "Cleared {{count}} runtime log sources.",
+            values: { count: payload.cleared },
+          });
     } catch (err: any) {
-      setError(`Clear logs failed: ${String(err?.message || err)}`);
+      setError({
+        source: "Clear logs failed: {{error}}",
+        values: { error: String(err?.message || err) },
+      });
     } finally {
       setDeleteDialogOpen(false);
       setLogFileClearLoading(false);
@@ -418,13 +462,16 @@ export default function DebugConsole() {
   };
 
   const copyVisibleLogs = async () => {
-    const text = displayedLogs.map(formatLogLine).join("\n");
+    const text = displayedLogs.map((entry) => formatLogLine(entry, localeTag)).join("\n");
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
-      setActionStatus(`Copied ${displayedLogs.length} visible log entries.`);
+      setActionStatus({
+        source: "Copied {{count}} visible log entries.",
+        values: { count: displayedLogs.length },
+      });
     } catch (err: any) {
-      setError(`Copy failed: ${String(err?.message || err)}`);
+      setError({ source: "Copy failed: {{error}}", values: { error: String(err?.message || err) } });
     }
   };
 
@@ -441,13 +488,13 @@ export default function DebugConsole() {
         copyResetTimerRef.current = null;
       }, 1_600);
     } catch (err: any) {
-      setError(`Copy failed: ${String(err?.message || err)}`);
+      setError({ source: "Copy failed: {{error}}", values: { error: String(err?.message || err) } });
     }
   };
 
   const downloadSupportBundle = async () => {
     setSupportBundleLoading(true);
-    setError("");
+    setError(null);
     try {
       const res = await fetchWithTimeout(apiUrl("/api/runtime/support-bundle"), {
         method: "POST",
@@ -466,17 +513,22 @@ export default function DebugConsole() {
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      const message = `Support bundle downloaded as ${filename}. Check your Downloads folder.`;
-      setActionStatus(message);
+      setActionStatus({
+        source: "Support bundle downloaded as {{filename}}. Check your Downloads folder.",
+        values: { filename },
+      });
       toast({
-        title: "Support bundle downloaded",
-        description: `${filename} was saved by the browser download manager.`,
+        title: t("Support bundle downloaded"),
+        description: t("{{filename}} was saved by the browser download manager.", { filename }),
       });
     } catch (err: any) {
-      setError(`Support bundle failed: ${String(err?.message || err)}`);
+      setError({
+        source: "Support bundle failed: {{error}}",
+        values: { error: String(err?.message || err) },
+      });
       toast({
-        title: "Support bundle failed",
-        description: String(err?.message || err),
+        title: t("Support bundle failed"),
+        description: t(String(err?.message || err)),
         variant: "destructive",
       });
     } finally {
@@ -491,31 +543,34 @@ export default function DebugConsole() {
           <div className="debug-console-intro">
             <div className="debug-console-eyebrow">
               <span className="debug-console-eyebrow-line" />
-              System observability · 05
+              {t("System observability · 05")}
             </div>
             <div className="debug-console-title-row">
               <div>
-                <h1>Debug console</h1>
-                <p>Inspect runtime events, isolate failures, and package diagnostics without leaving Scriber.</p>
+                <h1>{t("Debug console")}</h1>
+                <p>{t("Inspect runtime events, isolate failures, and package diagnostics without leaving Scriber.")}</p>
               </div>
             </div>
           </div>
 
           <div className="debug-console-overview">
-            <div className="debug-console-stats" aria-label="Runtime log summary">
-              <div className="debug-console-stat" aria-label={`${filteredLogs.length} of ${logs.length} logs visible`}>
-                <strong>{filteredLogs.length}</strong>
+            <div className="debug-console-stats" aria-label={t("Runtime log summary")}>
+              <div className="debug-console-stat" aria-label={t("{{visible}} of {{total}} logs visible", {
+                visible: formatNumber(filteredLogs.length),
+                total: formatNumber(logs.length),
+              })}>
+                <strong>{formatNumber(filteredLogs.length)}</strong>
                 <div className="debug-console-stat-copy">
-                  <span>Visible</span>
-                  <small>of {logs.length} logs</small>
+                  <span>{t("Visible")}</span>
+                  <small>{t("of {{count}} logs", { count: formatNumber(logs.length) })}</small>
                 </div>
                 <Eye className="debug-console-stat-icon" aria-hidden="true" />
               </div>
-              <div className="debug-console-stat" data-tone={errorCount ? "danger" : "quiet"} aria-label={`${errorCount} errors including critical events`}>
-                <strong>{errorCount}</strong>
+              <div className="debug-console-stat" data-tone={errorCount ? "danger" : "quiet"} aria-label={t("{{count}} errors including critical events", { count: formatNumber(errorCount) })}>
+                <strong>{formatNumber(errorCount)}</strong>
                 <div className="debug-console-stat-copy">
-                  <span>Errors</span>
-                  <small>critical included</small>
+                  <span>{t("Errors")}</span>
+                  <small>{t("critical included")}</small>
                 </div>
                 {errorCount ? (
                   <AlertTriangle className="debug-console-stat-icon" aria-hidden="true" />
@@ -523,11 +578,11 @@ export default function DebugConsole() {
                   <CheckCircle2 className="debug-console-stat-icon" aria-hidden="true" />
                 )}
               </div>
-              <div className="debug-console-stat" data-tone={warningCount ? "warning" : "quiet"} aria-label={`${warningCount} warnings`}>
-                <strong>{warningCount}</strong>
+              <div className="debug-console-stat" data-tone={warningCount ? "warning" : "quiet"} aria-label={t("{{count}} warnings", { count: formatNumber(warningCount) })}>
+                <strong>{formatNumber(warningCount)}</strong>
                 <div className="debug-console-stat-copy">
-                  <span>Warnings</span>
-                  <small>needs review</small>
+                  <span>{t("Warnings")}</span>
+                  <small>{t("needs review")}</small>
                 </div>
                 {warningCount ? (
                   <AlertTriangle className="debug-console-stat-icon" aria-hidden="true" />
@@ -535,25 +590,25 @@ export default function DebugConsole() {
                   <CheckCircle2 className="debug-console-stat-icon" aria-hidden="true" />
                 )}
               </div>
-              <div className="debug-console-stat" aria-label={`${sources.length} log sources`}>
-                <strong>{sources.length}</strong>
+              <div className="debug-console-stat" aria-label={t("{{count}} log sources", { count: formatNumber(sources.length) })}>
+                <strong>{formatNumber(sources.length)}</strong>
                 <div className="debug-console-stat-copy">
-                  <span>Sources</span>
-                  <small>{truncated ? "tail view" : "full view"}</small>
+                  <span>{t("Sources")}</span>
+                  <small>{truncated ? t("tail view") : t("full view")}</small>
                 </div>
                 <Layers3 className="debug-console-stat-icon" aria-hidden="true" />
               </div>
             </div>
 
-            <div className="debug-console-actions" aria-label="Console actions">
-              <Button className="debug-console-action-button" title="Clear view" aria-label="Clear view" type="button" variant="outline" size="sm" onClick={clearConsoleView} disabled={!displayedLogs.length}>
+            <div className="debug-console-actions" aria-label={t("Console actions")}>
+              <Button className="debug-console-action-button" title={t("Clear view")} aria-label={t("Clear view")} type="button" variant="outline" size="sm" onClick={clearConsoleView} disabled={!displayedLogs.length}>
                 <Eraser className="h-4 w-4" />
-                <span className="debug-console-action-label">Clear view</span>
+                <span className="debug-console-action-label">{t("Clear view")}</span>
               </Button>
               <Button
                 className="debug-console-action-button"
-                title="Clear logs"
-                aria-label="Clear logs"
+                title={t("Clear logs")}
+                aria-label={t("Clear logs")}
                 type="button"
                 variant="outline"
                 size="sm"
@@ -561,42 +616,42 @@ export default function DebugConsole() {
                 disabled={logFileClearLoading || (!logs.length && !sources.length)}
               >
                 <Trash2 className={cn("h-4 w-4", logFileClearLoading && "animate-pulse")} />
-                <span className="debug-console-action-label">Clear logs</span>
+                <span className="debug-console-action-label">{t("Clear logs")}</span>
               </Button>
-              <Button className="debug-console-action-button" title="Copy visible logs" aria-label="Copy visible logs" type="button" variant="outline" size="sm" onClick={() => void copyVisibleLogs()} disabled={!displayedLogs.length}>
+              <Button className="debug-console-action-button" title={t("Copy visible logs")} aria-label={t("Copy visible logs")} type="button" variant="outline" size="sm" onClick={() => void copyVisibleLogs()} disabled={!displayedLogs.length}>
                 <Clipboard className="h-4 w-4" />
-                <span className="debug-console-action-label">Copy</span>
+                <span className="debug-console-action-label">{t("Copy")}</span>
               </Button>
-              <Button className="debug-console-action-button" title="Download support bundle" aria-label="Download support bundle" type="button" variant="outline" size="sm" onClick={() => void downloadSupportBundle()} disabled={supportBundleLoading}>
+              <Button className="debug-console-action-button" title={t("Download support bundle")} aria-label={t("Download support bundle")} type="button" variant="outline" size="sm" onClick={() => void downloadSupportBundle()} disabled={supportBundleLoading}>
                 <Download className={cn("h-4 w-4", supportBundleLoading && "animate-pulse")} />
-                <span className="debug-console-action-label">Support</span>
+                <span className="debug-console-action-label">{t("Support")}</span>
               </Button>
-              <Button className="debug-console-action-button debug-console-refresh-button" title="Refresh logs" aria-label="Refresh logs" type="button" size="sm" onClick={() => void loadLogs()} disabled={loading}>
+              <Button className="debug-console-action-button debug-console-refresh-button" title={t("Refresh logs")} aria-label={t("Refresh logs")} type="button" size="sm" onClick={() => void loadLogs()} disabled={loading}>
                 <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-                <span className="debug-console-action-label">Refresh</span>
+                <span className="debug-console-action-label">{t("Refresh")}</span>
               </Button>
             </div>
           </div>
         </header>
 
-        <section className="debug-command-deck" aria-label="Log controls">
+        <section className="debug-command-deck" aria-label={t("Log controls")}>
           <div className="debug-command-primary">
             <div className="debug-search-field">
               <Search className="pointer-events-none h-4 w-4" />
               <Input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search messages, sources, or components"
-                aria-label="Filter logs"
+                placeholder={t("Search messages, sources, or components")}
+                aria-label={t("Filter logs")}
               />
-              <span className="debug-search-hint">live filter</span>
+              <span className="debug-search-hint">{t("live filter")}</span>
             </div>
             <Select value={selectedSource} onValueChange={setSelectedSource}>
-              <SelectTrigger className="debug-source-select" aria-label="Filter source">
-                <SelectValue placeholder="Source" />
+              <SelectTrigger className="debug-source-select" aria-label={t("Filter source")}>
+                <SelectValue placeholder={t("Source")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All sources</SelectItem>
+                <SelectItem value="all">{t("All sources")}</SelectItem>
                 {sources.map((source) => (
                   <SelectItem key={source} value={source}>{source}</SelectItem>
                 ))}
@@ -608,16 +663,16 @@ export default function DebugConsole() {
                 type="date"
                 value={dateFilter === ALL_DATES_VALUE ? "" : dateFilter}
                 onChange={(event) => setDateFilter(event.target.value || ALL_DATES_VALUE)}
-                aria-label="Filter log date"
+                aria-label={t("Filter log date")}
               />
             </div>
           </div>
 
           <div className="debug-command-secondary">
-            <div className="debug-level-filter" aria-label="Filter by severity">
+            <div className="debug-level-filter" aria-label={t("Filter by severity")}>
               <div className="debug-level-label">
                 <Filter className="h-4 w-4" />
-                Severity
+                {t("Severity")}
               </div>
               <div className="debug-level-options">
                 {LEVELS.map((level) => (
@@ -625,13 +680,13 @@ export default function DebugConsole() {
                     key={level}
                     type="button"
                     aria-pressed={selectedLevel === level}
-                    aria-label={level === "ALL" ? "Show all severity levels" : `Show ${level.toLowerCase()} logs`}
-                    title={level === "ALL" ? "Show all severity levels" : `Show ${level.toLowerCase()} logs`}
+                    aria-label={level === "ALL" ? t("Show all severity levels") : t("Show {{level}} logs", { level: level.toLowerCase() })}
+                    title={level === "ALL" ? t("Show all severity levels") : t("Show {{level}} logs", { level: level.toLowerCase() })}
                     data-level={level.toLowerCase()}
                     onClick={() => setSelectedLevel(level)}
                     className={cn("debug-level-button", selectedLevel === level && "is-active")}
                   >
-                    <span>{level}</span>
+                    <span>{level === "ALL" ? t("All") : level}</span>
                     {selectedLevel === level && <Check className="debug-level-selected-icon" aria-hidden="true" />}
                   </button>
                 ))}
@@ -639,53 +694,63 @@ export default function DebugConsole() {
             </div>
             <Button className="debug-reset-button" type="button" variant="ghost" onClick={resetFilters} disabled={!hasActiveFilters}>
               <Eraser className="h-4 w-4" />
-              Reset
+              {t("Reset")}
             </Button>
           </div>
 
           <div className="debug-runtime-controls">
             <div className="debug-toggle-group">
               <label className="debug-toggle-control">
-                <span>Auto refresh</span>
-                <Switch className="compact-impact-switch" checked={autoRefresh} onCheckedChange={setAutoRefresh} aria-label="Toggle auto refresh" />
+                <span>{t("Auto refresh")}</span>
+                <Switch className="compact-impact-switch" checked={autoRefresh} onCheckedChange={setAutoRefresh} aria-label={t("Toggle auto refresh")} />
               </label>
               <label className="debug-toggle-control">
-                <span>Auto scroll</span>
-                <Switch className="compact-impact-switch" checked={autoScroll} onCheckedChange={setAutoScroll} aria-label="Toggle auto scroll" />
+                <span>{t("Auto scroll")}</span>
+                <Switch className="compact-impact-switch" checked={autoScroll} onCheckedChange={setAutoScroll} aria-label={t("Toggle auto scroll")} />
               </label>
               <label className="debug-toggle-control">
-                <span>Newest first</span>
-                <Switch className="compact-impact-switch" checked={newestFirst} onCheckedChange={setNewestFirst} aria-label="Show newest logs first" />
+                <span>{t("Newest first")}</span>
+                <Switch className="compact-impact-switch" checked={newestFirst} onCheckedChange={setNewestFirst} aria-label={t("Show newest logs first")} />
               </label>
             </div>
             <Button className="debug-edge-button" type="button" variant="ghost" size="sm" onClick={jumpToLogEdge} disabled={!displayedLogs.length}>
               <ArrowDownToLine className="h-4 w-4" />
-              {newestFirst ? "Jump to top" : "Jump to bottom"}
+              {newestFirst ? t("Jump to top") : t("Jump to bottom")}
             </Button>
             <div className="debug-updated-status">
               <span className={cn("debug-live-dot", autoRefresh && "is-live")} />
-              <span>{autoRefresh ? "Live" : "Paused"}</span>
-              <span className="debug-updated-time">{lastUpdated ? lastUpdated.toLocaleTimeString("de-DE") : "--:--:--"}</span>
+              <span>{autoRefresh ? t("Live") : t("Paused")}</span>
+              <span className="debug-updated-time">{lastUpdated ? formatDate(lastUpdated, { timeStyle: "medium" }) : "--:--:--"}</span>
             </div>
           </div>
 
           {actionStatus && (
-            <div className="debug-action-status" aria-live="polite" title={actionStatus}>{actionStatus}</div>
+            <div
+              className="debug-action-status"
+              aria-live="polite"
+              title={renderLocalizedMessage(actionStatus, t, formatNumber)}
+            >
+              {renderLocalizedMessage(actionStatus, t, formatNumber)}
+            </div>
           )}
-          {error && <div className="debug-error-banner">{error}</div>}
+          {error && (
+            <div className="debug-error-banner">
+              {renderLocalizedMessage(error, t, formatNumber)}
+            </div>
+          )}
         </section>
 
         <div className="debug-console-workspace">
-          <section className="debug-log-panel" aria-label="Runtime log stream">
+          <section className="debug-log-panel" aria-label={t("Runtime log stream")}>
             <header className="debug-log-header">
               <div>
-                <span className="debug-log-kicker">Runtime stream</span>
-                <h2>Live event feed</h2>
+                <span className="debug-log-kicker">{t("Runtime stream")}</span>
+                <h2>{t("Live event feed")}</h2>
               </div>
               <div className="debug-log-meta">
-                <span>{displayedLogs.length} visible</span>
-                <span>{debugCount} debug</span>
-                <span>{dateFilter === ALL_DATES_VALUE ? "All dates" : dateFilter}</span>
+                <span>{t("{{count}} visible", { count: formatNumber(displayedLogs.length) })}</span>
+                <span>{t("{{count}} debug", { count: formatNumber(debugCount) })}</span>
+                <span>{dateFilterDisplay}</span>
               </div>
             </header>
 
@@ -693,10 +758,10 @@ export default function DebugConsole() {
               {displayedLogs.length === 0 ? (
                 <div className="debug-empty-state">
                   <div className="debug-empty-mark"><Terminal className="h-5 w-5" /></div>
-                  <strong>No matching events</strong>
-                  <span>Adjust the active filters or refresh the runtime stream.</span>
+                  <strong>{t("No matching events")}</strong>
+                  <span>{t("Adjust the active filters or refresh the runtime stream.")}</span>
                   {hasActiveFilters && (
-                    <Button type="button" variant="outline" size="sm" onClick={resetFilters}>Reset filters</Button>
+                    <Button type="button" variant="outline" size="sm" onClick={resetFilters}>{t("Reset filters")}</Button>
                   )}
                 </div>
               ) : (
@@ -710,7 +775,7 @@ export default function DebugConsole() {
                         className={cn("debug-log-row", rowStyles[level] || rowStyles.INFO)}
                         data-level={level.toLowerCase()}
                       >
-                        <time className="debug-log-time" title={entry.timestamp || ""}>{formatEntryTime(entry)}</time>
+                        <time className="debug-log-time" title={entry.timestamp || ""}>{formatEntryTime(entry, localeTag)}</time>
                         <span className="debug-log-source" title={`${entry.source}:${entry.line}`}>{entry.source}:{entry.line}</span>
                         <span className={cn("debug-log-level", levelStyles[level] || levelStyles.INFO)}>
                           <Icon className="h-3 w-3" />
@@ -734,43 +799,43 @@ export default function DebugConsole() {
             </section>
           </section>
 
-          <aside className="debug-diagnostics-panel" aria-label="Post-processing diagnostics">
+          <aside className="debug-diagnostics-panel" aria-label={t("Post-processing diagnostics")}>
             <div className="debug-diagnostics-heading">
               <div className="debug-diagnostics-mark"><Bug className="h-4 w-4" /></div>
               <div>
-                <span>Pipeline</span>
-                <h2>Post-processing</h2>
+                <span>{t("Pipeline")}</span>
+                <h2>{t("Post-processing")}</h2>
               </div>
               <Badge className="debug-failure-badge" variant={postProcessingFailures ? "destructive" : "outline"}>
-                {postProcessingFailures} failed
+                {t("{{count}} failed", { count: formatNumber(postProcessingFailures) })}
               </Badge>
             </div>
 
             <div className="debug-diagnostic-state" data-state={latestPostProcessing?.status || "idle"}>
               <span className="debug-diagnostic-state-dot" />
               <div>
-                <strong>{postProcessingStatusLabel(latestPostProcessing)}</strong>
-                <span>{latestPostProcessing?.durationMs != null ? formatMs(latestPostProcessing.durationMs) : "Waiting for a run"}</span>
+                <strong>{t(postProcessingStatusLabel(latestPostProcessing))}</strong>
+                <span>{latestPostProcessing?.durationMs != null ? formatMs(latestPostProcessing.durationMs, formatNumber) : t("Waiting for a run")}</span>
               </div>
             </div>
 
             <dl className="debug-diagnostic-list">
-              <div><dt>Model</dt><dd title={latestPostProcessing?.model || ""}>{latestPostProcessing?.model || "--"}</dd></div>
-              <div><dt>Input</dt><dd>{latestPostProcessing?.rawChars ?? "--"} chars</dd></div>
-              <div><dt>Output</dt><dd>{latestPostProcessing?.processedChars ?? latestPostProcessing?.providerResponseChars ?? "--"} chars</dd></div>
-              <div><dt>Token cap</dt><dd>{latestPostProcessing?.maxOutputTokens ?? "--"}</dd></div>
-              <div><dt>Prompt</dt><dd>{latestPostProcessing?.promptChars ?? "--"} chars</dd></div>
+              <div><dt>{t("Model")}</dt><dd title={latestPostProcessing?.model || ""}>{latestPostProcessing?.model || "--"}</dd></div>
+              <div><dt>{t("Input")}</dt><dd>{latestPostProcessing?.rawChars != null ? t("{{count}} chars", { count: formatNumber(latestPostProcessing.rawChars) }) : "--"}</dd></div>
+              <div><dt>{t("Output")}</dt><dd>{latestPostProcessing?.processedChars != null || latestPostProcessing?.providerResponseChars != null ? t("{{count}} chars", { count: formatNumber(latestPostProcessing.processedChars ?? latestPostProcessing.providerResponseChars ?? 0) }) : "--"}</dd></div>
+              <div><dt>{t("Token cap")}</dt><dd>{latestPostProcessing?.maxOutputTokens != null ? formatNumber(latestPostProcessing.maxOutputTokens) : "--"}</dd></div>
+              <div><dt>{t("Prompt")}</dt><dd>{latestPostProcessing?.promptChars != null ? t("{{count}} chars", { count: formatNumber(latestPostProcessing.promptChars) }) : "--"}</dd></div>
             </dl>
 
             {latestPostProcessing?.fallbackToRaw ? (
               <div className="debug-fallback-note" title={latestPostProcessing.error || ""}>
-                Raw fallback · {latestPostProcessing.errorType || latestPostProcessing.error || "active"}
+                {t("Raw fallback")} · {latestPostProcessing.errorType || latestPostProcessing.error || t("active")}
               </div>
             ) : null}
 
             <div className="debug-diagnostics-foot">
-              <span>Diagnostics are redacted</span>
-              <span>{postProcessingDiagnostics.length} recent runs</span>
+              <span>{t("Diagnostics are redacted")}</span>
+              <span>{t("{{count}} recent runs", { count: formatNumber(postProcessingDiagnostics.length) })}</span>
             </div>
           </aside>
         </div>
@@ -779,16 +844,16 @@ export default function DebugConsole() {
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Clear runtime logs?</AlertDialogTitle>
+            <AlertDialogTitle>{t("Clear runtime logs?")}</AlertDialogTitle>
             <AlertDialogDescription>
-              This clears the backend and shell logs for the debug console and for new support bundles. Existing support bundles are not changed.
+              {t("This clears the backend and shell logs for the debug console and for new support bundles. Existing support bundles are not changed.")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("Cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={() => void deleteRuntimeLogs()} disabled={logFileClearLoading}>
               <Trash2 className="h-4 w-4" />
-              Clear logs
+              {t("Clear logs")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

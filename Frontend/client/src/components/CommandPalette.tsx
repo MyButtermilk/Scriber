@@ -25,9 +25,14 @@ import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
-import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
-import { requestLiveMicStop } from "@/lib/live-mic-control";
+import {
+  presentLiveMicControlFailure,
+  requestLiveMicStart,
+  requestLiveMicStop,
+} from "@/lib/live-mic-control";
 import type { SettingsResponse } from "@/lib/api-types";
+import { useBackendStatus } from "@/hooks/use-backend-status";
+import { useI18n } from "@/i18n";
 
 interface CommandPaletteProps {
   open: boolean;
@@ -46,6 +51,8 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const [, setLocation] = useLocation();
   const [isRecording, setIsRecording] = useState(false);
   const { toast } = useToast();
+  const { checkNow: checkBackendStatus } = useBackendStatus();
+  const { formatDate: formatLocalizedDate, t } = useI18n();
 
   // Track recording state via WebSocket
   const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
@@ -75,7 +82,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         credentials: "include",
         signal,
       }, 10_000);
-      if (!res.ok) throw new Error("Failed to load settings");
+      if (!res.ok) throw new Error(t("Failed to load settings"));
       return (await res.json()) as SettingsResponse;
     },
     staleTime: 60000, // Cache for 1 minute
@@ -92,7 +99,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         credentials: "include",
         signal,
       }, 10_000);
-      if (!res.ok) throw new Error("Failed to load transcripts");
+      if (!res.ok) throw new Error(t("Failed to load transcripts"));
       return res.json();
     },
     enabled: open, // Only fetch when palette is open
@@ -110,33 +117,16 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   // Toggle recording
   const handleToggleRecording = async () => {
     try {
-      const res = isRecording
-        ? await requestLiveMicStop()
-        : await fetchWithTimeout(apiUrl("/api/live-mic/start"), {
-            method: "POST",
-            credentials: "include",
-          }, 15_000);
-      if (!res.ok) {
-        const text = await res.text();
-        let payload: unknown = null;
-        try {
-          payload = text ? JSON.parse(text) : null;
-        } catch {
-          payload = null;
-        }
-        const recordingError = recordingErrorToastMessageFromPayload(payload, text || res.statusText);
-        if (recordingError) {
-          showRecordingErrorToast(toast, recordingError);
-          return;
-        }
-        throw new Error(text || res.statusText);
+      if (isRecording) {
+        await requestLiveMicStop();
+      } else {
+        await requestLiveMicStart();
       }
       onOpenChange(false);
-    } catch (e: any) {
-      toast({
-        title: "Action failed",
-        description: String(e?.message || e),
-        duration: 4000,
+    } catch (error) {
+      presentLiveMicControlFailure(error, {
+        toast,
+        checkBackendStatus,
       });
     }
   };
@@ -146,7 +136,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     if (!dateStr) return "";
     const date = new Date(dateStr);
     if (isNaN(date.getTime())) return "";
-    return date.toLocaleDateString("de-DE", {
+    return formatLocalizedDate(date, {
       day: "2-digit",
       month: "2-digit",
       year: "numeric",
@@ -172,27 +162,27 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       const preview = transcript.content.slice(0, 50);
       return preview + (transcript.content.length > 50 ? "..." : "");
     }
-    return `Transkript #${transcript.id}`;
+    return t("Transcript #{{id}}", { id: transcript.id });
   };
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>
-      <CommandInput placeholder="Befehl eingeben oder Transkript suchen..." />
+      <CommandInput placeholder={t("Type a command or search transcripts...")} />
       <CommandList>
-        <CommandEmpty>Keine Ergebnisse gefunden.</CommandEmpty>
+        <CommandEmpty>{t("No results found.")}</CommandEmpty>
 
         {/* Actions */}
-        <CommandGroup heading="Aktionen">
+        <CommandGroup heading={t("Actions")}>
           {isRecording ? (
             <CommandItem onSelect={handleToggleRecording}>
               <Square className="mr-2 h-4 w-4 text-red-500" />
-              <span>Aufnahme stoppen</span>
+              <span>{t("Stop recording")}</span>
               {recordingHotkey && <CommandShortcut>{recordingHotkey}</CommandShortcut>}
             </CommandItem>
           ) : (
             <CommandItem onSelect={handleToggleRecording}>
               <Mic className="mr-2 h-4 w-4" />
-              <span>Aufnahme starten</span>
+              <span>{t("Start recording")}</span>
               {recordingHotkey && <CommandShortcut>{recordingHotkey}</CommandShortcut>}
             </CommandItem>
           )}
@@ -201,10 +191,10 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         <CommandSeparator />
 
         {/* Navigation */}
-        <CommandGroup heading="Navigation">
+        <CommandGroup heading={t("Navigation")}>
           <CommandItem onSelect={() => navigate("/")}>
             <Home className="mr-2 h-4 w-4" />
-            <span>Live Mikrofon</span>
+            <span>{t("Live Mic")}</span>
           </CommandItem>
           <CommandItem onSelect={() => navigate("/youtube")}>
             <Youtube className="mr-2 h-4 w-4" />
@@ -212,19 +202,19 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           </CommandItem>
           <CommandItem onSelect={() => navigate("/file")}>
             <FolderOpen className="mr-2 h-4 w-4" />
-            <span>Datei-Upload</span>
+            <span>{t("File upload")}</span>
           </CommandItem>
           <CommandItem onSelect={() => navigate("/meetings")}>
             <CalendarClock className="mr-2 h-4 w-4" />
-            <span>Meetings</span>
+            <span>{t("Meetings")}</span>
           </CommandItem>
           <CommandItem onSelect={() => navigate("/debug")}>
             <Terminal className="mr-2 h-4 w-4" />
-            <span>Debug-Konsole</span>
+            <span>{t("Debug Console")}</span>
           </CommandItem>
           <CommandItem onSelect={() => navigate("/settings")}>
             <Settings className="mr-2 h-4 w-4" />
-            <span>Einstellungen</span>
+            <span>{t("Settings")}</span>
           </CommandItem>
         </CommandGroup>
 
@@ -232,7 +222,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         {transcripts.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Transkripte">
+            <CommandGroup heading={t("Transcripts")}>
               {transcripts.map((transcript) => {
                 const Icon = getTranscriptIcon(transcript.type);
                 const displayTitle = getDisplayTitle(transcript);

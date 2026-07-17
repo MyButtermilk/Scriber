@@ -184,6 +184,40 @@ where
 }
 
 fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
+    contain_shell_ipc_request_panic(raw, || {
+        handle_shell_ipc_request_unchecked(raw, expected_token)
+    })
+}
+
+fn contain_shell_ipc_request_panic<F>(raw: &str, dispatch: F) -> String
+where
+    F: FnOnce() -> String,
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(dispatch)) {
+        Ok(response) => response,
+        Err(_) => {
+            let request_id = serde_json::from_str::<Value>(raw)
+                .ok()
+                .and_then(|request| {
+                    request
+                        .get("requestId")
+                        .and_then(Value::as_str)
+                        .map(|value| value.chars().take(128).collect::<String>())
+                })
+                .unwrap_or_default();
+            response_line(
+                &request_id,
+                false,
+                "internalCommandPanic",
+                "shell command failed internally",
+                Instant::now(),
+                json!({}),
+            )
+        }
+    }
+}
+
+fn handle_shell_ipc_request_unchecked(raw: &str, expected_token: &str) -> String {
     let started = Instant::now();
     let parsed = serde_json::from_str::<Value>(raw);
     let request = match parsed {
@@ -377,20 +411,22 @@ fn handle_shell_ipc_request(raw: &str, expected_token: &str) -> String {
             ),
         },
         "overlayPrepare" | "overlayShow" | "overlayHide" | "overlayAudioLevel"
-        | "overlayStatus" => match crate::native_overlay::handle_shell_command(command, payload) {
-            Ok(payload) => response_line(request_id, true, "", "", started, payload),
-            Err(err) => response_line(
-                request_id,
-                false,
-                "overlayUnavailable",
-                &err,
-                started,
-                json!({
-                    "renderer": "tauri-webview",
-                    "windowLabel": crate::native_overlay::OVERLAY_WINDOW_LABEL,
-                }),
-            ),
-        },
+        | "overlayStatus" => {
+            match crate::native_overlay::handle_shell_command_on_ui_thread(command, payload) {
+                Ok(payload) => response_line(request_id, true, "", "", started, payload),
+                Err(err) => response_line(
+                    request_id,
+                    false,
+                    "overlayUnavailable",
+                    &err,
+                    started,
+                    json!({
+                        "renderer": "tauri-webview",
+                        "windowLabel": crate::native_overlay::OVERLAY_WINDOW_LABEL,
+                    }),
+                ),
+            }
+        }
         "audioCaptureStart" => match parse_audio_capture_start_options(payload) {
             Ok(options) => {
                 let result = call_audio_sidecar_command(
@@ -2785,8 +2821,8 @@ enum LifecycleStartResource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct LifecycleStartDelivery {
-    resource: LifecycleStartResource,
+struct ResponseDelivery {
+    lifecycle_start: Option<LifecycleStartResource>,
     api_version: String,
     request_id: String,
 }
@@ -2838,11 +2874,7 @@ fn lifecycle_start_resource(
     }
 }
 
-fn lifecycle_start_delivery(
-    request_raw: &str,
-    response_raw: &str,
-) -> Option<LifecycleStartDelivery> {
-    let resource = lifecycle_start_resource(request_raw, response_raw)?;
+fn response_delivery(request_raw: &str, response_raw: &str) -> Option<ResponseDelivery> {
     let request: Value = serde_json::from_str(request_raw).ok()?;
     let response: Value = serde_json::from_str(response_raw.trim()).ok()?;
     let api_version = request.get("apiVersion").and_then(Value::as_str)?.trim();
@@ -2851,19 +2883,20 @@ fn lifecycle_start_delivery(
         || api_version.len() > 16
         || request_id.is_empty()
         || request_id.len() > 128
+        || !response.get("success").is_some_and(Value::is_boolean)
         || response.get("apiVersion").and_then(Value::as_str) != Some(api_version)
         || response.get("requestId").and_then(Value::as_str) != Some(request_id)
     {
         return None;
     }
-    Some(LifecycleStartDelivery {
-        resource,
+    Some(ResponseDelivery {
+        lifecycle_start: lifecycle_start_resource(request_raw, response_raw),
         api_version: api_version.to_string(),
         request_id: request_id.to_string(),
     })
 }
 
-fn lifecycle_start_ack_matches(raw: &str, delivery: &LifecycleStartDelivery) -> bool {
+fn response_ack_matches(raw: &str, delivery: &ResponseDelivery) -> bool {
     let acknowledgement: Value = match serde_json::from_str(raw.trim()) {
         Ok(value) => value,
         Err(_) => return false,
@@ -2906,7 +2939,13 @@ where
                     .name("shell-ipc-client".to_string())
                     .spawn(move || {
                         let pipe = pipe_value as windows_sys::Win32::Foundation::HANDLE;
-                        serve_connected_client(pipe, &expected_token, &stop_for_worker)
+                        let _pipe_guard = ConnectedPipeGuard::new(pipe);
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            serve_connected_client(pipe, &expected_token, &stop_for_worker)
+                        })) {
+                            Ok(result) => result,
+                            Err(_) => Err("shell IPC client command panicked".to_string()),
+                        }
                     }) {
                     Ok(worker) => workers.push(worker),
                     Err(err) => {
@@ -3023,47 +3062,50 @@ fn serve_connected_client(
 ) -> Result<(), String> {
     let result = match handle_connected_client(pipe, expected_token, stop) {
         Ok(ClientServiceOutcome::ResponseWritten {
-            lifecycle_start: Some(delivery),
+            delivery: Some(delivery),
         }) => {
-            let acknowledgement = wait_for_lifecycle_start_ack(pipe, stop, &delivery);
-            if !acknowledgement.requires_rollback() {
+            let acknowledgement = wait_for_response_ack(pipe, stop, &delivery);
+            if acknowledgement.was_acknowledged() {
                 Ok(())
-            } else {
-                let cleanup_succeeded = delivery.resource.cleanup();
+            } else if let Some(resource) = delivery.lifecycle_start {
+                let cleanup_succeeded = resource.cleanup();
                 Err(format!(
                     "shell IPC lifecycle response acknowledgement failed: outcome={}; cleanup_success={cleanup_succeeded}",
                     acknowledgement.diagnostic_code()
                 ))
+            } else {
+                Err(format!(
+                    "shell IPC response acknowledgement failed: outcome={}",
+                    acknowledgement.diagnostic_code()
+                ))
             }
         }
-        Ok(ClientServiceOutcome::ResponseWritten {
-            lifecycle_start: None,
-        }) => Ok(()),
+        Ok(ClientServiceOutcome::ResponseWritten { delivery: None }) => Ok(()),
         Ok(ClientServiceOutcome::ClosedWithoutResponse) => Ok(()),
         Err(err) => Err(err),
     };
-    disconnect_and_close_pipe(pipe);
     result
 }
 
 #[cfg(windows)]
-fn wait_for_lifecycle_start_ack(
+fn wait_for_response_ack(
     pipe: windows_sys::Win32::Foundation::HANDLE,
     stop: &AtomicBool,
-    delivery: &LifecycleStartDelivery,
-) -> LifecycleAckOutcome {
+    delivery: &ResponseDelivery,
+) -> ResponseAckOutcome {
     use std::ptr;
     use windows_sys::Win32::{
         Foundation::GetLastError, Storage::FileSystem::ReadFile, System::Pipes::PeekNamedPipe,
     };
 
     // Client disconnect is not proof of delivery: a Python ReadFile timeout also cancels and
-    // closes the pipe. Keep cleanup ownership until a bounded, request-bound ACK is read.
+    // closes the pipe. Every complete response waits for a bounded, request-bound ACK. Only a
+    // successful audio lifecycle start attaches cleanup ownership to that delivery record.
     let deadline = Instant::now() + Duration::from_millis(CLIENT_RESPONSE_ACK_TIMEOUT_MS);
     let mut acknowledgement = Vec::<u8>::new();
     while Instant::now() < deadline {
         if stop.load(Ordering::SeqCst) {
-            return LifecycleAckOutcome::ServerStopping;
+            return ResponseAckOutcome::ServerStopping;
         }
         let mut available = 0u32;
         let connected = unsafe {
@@ -3077,7 +3119,7 @@ fn wait_for_lifecycle_start_ack(
             )
         } != 0;
         if !connected {
-            return LifecycleAckOutcome::Disconnected;
+            return ResponseAckOutcome::Disconnected;
         }
         if available == 0 {
             thread::sleep(Duration::from_millis(2));
@@ -3103,26 +3145,26 @@ fn wait_for_lifecycle_start_ack(
         };
         let read_status = match pipe_read_chunk_status(ok, bytes_read, read_error) {
             Ok(status) => status,
-            Err(_) => return LifecycleAckOutcome::Disconnected,
+            Err(_) => return ResponseAckOutcome::Disconnected,
         };
         if matches!(read_status, PipeReadChunkStatus::Finished) {
-            return LifecycleAckOutcome::Disconnected;
+            return ResponseAckOutcome::Disconnected;
         }
         acknowledgement.extend_from_slice(&buffer[..bytes_read as usize]);
         if acknowledgement.len() > MAX_RESPONSE_ACK_BYTES {
-            return LifecycleAckOutcome::Invalid;
+            return ResponseAckOutcome::Invalid;
         }
         if let Some(newline_at) = acknowledgement.iter().position(|byte| *byte == b'\n') {
             let first_line = &acknowledgement[..newline_at];
             let raw = String::from_utf8_lossy(first_line);
-            return if lifecycle_start_ack_matches(raw.as_ref(), delivery) {
-                LifecycleAckOutcome::Acknowledged
+            return if response_ack_matches(raw.as_ref(), delivery) {
+                ResponseAckOutcome::Acknowledged
             } else {
-                LifecycleAckOutcome::Invalid
+                ResponseAckOutcome::Invalid
             };
         }
     }
-    LifecycleAckOutcome::TimedOut
+    ResponseAckOutcome::TimedOut
 }
 
 #[cfg(windows)]
@@ -3136,8 +3178,27 @@ fn disconnect_and_close_pipe(pipe: windows_sys::Win32::Foundation::HANDLE) {
 }
 
 #[cfg(windows)]
+struct ConnectedPipeGuard {
+    pipe: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl ConnectedPipeGuard {
+    fn new(pipe: windows_sys::Win32::Foundation::HANDLE) -> Self {
+        Self { pipe }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ConnectedPipeGuard {
+    fn drop(&mut self) {
+        disconnect_and_close_pipe(self.pipe);
+    }
+}
+
+#[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LifecycleAckOutcome {
+enum ResponseAckOutcome {
     Acknowledged,
     Invalid,
     Disconnected,
@@ -3146,9 +3207,9 @@ enum LifecycleAckOutcome {
 }
 
 #[cfg(windows)]
-impl LifecycleAckOutcome {
-    fn requires_rollback(self) -> bool {
-        self != Self::Acknowledged
+impl ResponseAckOutcome {
+    fn was_acknowledged(self) -> bool {
+        self == Self::Acknowledged
     }
 
     fn diagnostic_code(self) -> &'static str {
@@ -3165,9 +3226,7 @@ impl LifecycleAckOutcome {
 #[cfg(windows)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ClientServiceOutcome {
-    ResponseWritten {
-        lifecycle_start: Option<LifecycleStartDelivery>,
-    },
+    ResponseWritten { delivery: Option<ResponseDelivery> },
     ClosedWithoutResponse,
 }
 
@@ -3200,9 +3259,7 @@ fn handle_connected_client(
                     json!({}),
                 ),
             )
-            .map(|_| ClientServiceOutcome::ResponseWritten {
-                lifecycle_start: None,
-            });
+            .map(|_| ClientServiceOutcome::ResponseWritten { delivery: None });
         }
 
         let mut available = 0u32;
@@ -3260,9 +3317,7 @@ fn handle_connected_client(
                     json!({}),
                 ),
             )
-            .map(|_| ClientServiceOutcome::ResponseWritten {
-                lifecycle_start: None,
-            });
+            .map(|_| ClientServiceOutcome::ResponseWritten { delivery: None });
         }
         if request.contains(&b'\n') {
             break;
@@ -3275,12 +3330,12 @@ fn handle_connected_client(
         .unwrap_or_default();
     let raw = String::from_utf8_lossy(first_line);
     let response = handle_shell_ipc_request(raw.trim(), expected_token);
-    let lifecycle_start = lifecycle_start_delivery(raw.trim(), &response);
+    let delivery = response_delivery(raw.trim(), &response);
     match write_response(pipe, &response) {
-        Ok(()) => Ok(ClientServiceOutcome::ResponseWritten { lifecycle_start }),
+        Ok(()) => Ok(ClientServiceOutcome::ResponseWritten { delivery }),
         Err(err) => {
-            if let Some(delivery) = lifecycle_start {
-                let cleanup_succeeded = delivery.resource.cleanup();
+            if let Some(resource) = delivery.and_then(|value| value.lifecycle_start) {
+                let cleanup_succeeded = resource.cleanup();
                 Err(format!(
                     "{err}; lifecycle start cleanup_success={cleanup_succeeded}"
                 ))
@@ -3483,11 +3538,15 @@ mod tests {
             "payload": {"streamId": "stream-1"}
         })
         .to_string();
-        let delivery = super::lifecycle_start_delivery(&delivery_request, &delivery_response)
-            .expect("successful starts retain request-bound delivery ownership");
+        let delivery = super::response_delivery(&delivery_request, &delivery_response)
+            .expect("complete responses retain request-bound delivery ownership");
         assert_eq!(delivery.request_id, "delivery-1");
         assert_eq!(delivery.api_version, API_VERSION);
-        assert!(super::lifecycle_start_ack_matches(
+        assert_eq!(
+            delivery.lifecycle_start,
+            Some(LifecycleStartResource::Capture("stream-1".to_string()))
+        );
+        assert!(super::response_ack_matches(
             &json!({
                 "apiVersion": API_VERSION,
                 "requestId": "delivery-1",
@@ -3496,7 +3555,7 @@ mod tests {
             .to_string(),
             &delivery
         ));
-        assert!(!super::lifecycle_start_ack_matches(
+        assert!(!super::response_ack_matches(
             &json!({
                 "apiVersion": API_VERSION,
                 "requestId": "another-request",
@@ -3505,23 +3564,66 @@ mod tests {
             .to_string(),
             &delivery
         ));
-        assert!(super::lifecycle_start_delivery(
+        assert!(super::response_delivery(
             &delivery_request,
             &delivery_response.replace("delivery-1", "mismatched-response")
         )
         .is_none());
+
+        let failure_delivery = super::response_delivery(
+            &delivery_request,
+            &delivery_response.replace("\"success\":true", "\"success\":false"),
+        )
+        .expect("failed responses are acknowledged too");
+        assert_eq!(failure_delivery.lifecycle_start, None);
     }
 
     #[cfg(windows)]
     #[test]
-    fn lifecycle_ack_timeout_disconnect_and_invalid_data_require_rollback() {
-        use super::LifecycleAckOutcome;
+    fn response_ack_outcomes_distinguish_complete_delivery() {
+        use super::ResponseAckOutcome;
 
-        assert!(!LifecycleAckOutcome::Acknowledged.requires_rollback());
-        assert!(LifecycleAckOutcome::TimedOut.requires_rollback());
-        assert!(LifecycleAckOutcome::Disconnected.requires_rollback());
-        assert!(LifecycleAckOutcome::Invalid.requires_rollback());
-        assert!(LifecycleAckOutcome::ServerStopping.requires_rollback());
+        assert!(ResponseAckOutcome::Acknowledged.was_acknowledged());
+        assert!(!ResponseAckOutcome::TimedOut.was_acknowledged());
+        assert!(!ResponseAckOutcome::Disconnected.was_acknowledged());
+        assert!(!ResponseAckOutcome::Invalid.was_acknowledged());
+        assert!(!ResponseAckOutcome::ServerStopping.was_acknowledged());
+    }
+
+    #[test]
+    fn shell_command_panics_become_sanitized_responses() {
+        let request = json!({
+            "apiVersion": API_VERSION,
+            "requestId": "panic-request",
+            "command": "ping"
+        })
+        .to_string();
+        let response =
+            super::contain_shell_ipc_request_panic(&request, || panic!("secret panic detail"));
+        let response: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(response["requestId"], "panic-request");
+        assert_eq!(response["success"], false);
+        assert_eq!(response["errorCode"], "internalCommandPanic");
+        assert!(!response.to_string().contains("secret panic detail"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn connected_pipe_guard_closes_its_handle_during_unwind() {
+        use std::ptr;
+        use windows_sys::Win32::{
+            Foundation::WAIT_FAILED,
+            System::Threading::{CreateEventW, WaitForSingleObject},
+        };
+
+        let handle = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+        assert!(!handle.is_null());
+        let unwind = std::panic::catch_unwind(|| {
+            let _guard = super::ConnectedPipeGuard::new(handle);
+            panic!("test unwind");
+        });
+        assert!(unwind.is_err());
+        assert_eq!(unsafe { WaitForSingleObject(handle, 0) }, WAIT_FAILED);
     }
 
     #[cfg(windows)]
@@ -3588,7 +3690,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn non_lifecycle_response_does_not_wait_for_client_close() {
+    fn non_lifecycle_response_waits_for_request_bound_ack_not_client_close() {
         use std::{
             io::{BufRead, BufReader, Write},
             time::Duration,
@@ -3618,7 +3720,16 @@ mod tests {
         assert_eq!(response["requestId"], "slow-reader-ping");
         assert_eq!(response["success"], true);
 
-        // Keeping this client handle open must not keep the server worker alive.
+        let acknowledgement = json!({
+            "apiVersion": API_VERSION,
+            "requestId": "slow-reader-ping",
+            "type": "responseAck"
+        });
+        client
+            .write_all(format!("{acknowledgement}\n").as_bytes())
+            .expect("response acknowledgement should be written");
+
+        // Keeping this client handle open after ACK must not keep the server worker alive.
         let next_client = open_test_pipe(&config.pipe_name, Duration::from_millis(250));
         drop(next_client);
         drop(server);

@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useBackendStatus } from "@/hooks/use-backend-status";
 import { AlertCircle, RefreshCw, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/i18n";
+import type { TranslationValues } from "@/i18n";
 
 const STARTUP_GRACE_MS = 9000;
 const STARTUP_RECOVERABLE_ERRORS = new Set([
@@ -13,7 +15,40 @@ const STARTUP_RECOVERABLE_ERRORS = new Set([
     "Connection failed",
 ]);
 
+type Translate = (source: string, values?: TranslationValues) => string;
+
+function localizedBackendStatus(message: string, t: Translate): string {
+    const serverStatus = message.match(/^Server returned\s+(\d+)$/);
+    if (serverStatus) {
+        return t("Server returned {{status}}", { status: serverStatus[1] });
+    }
+    const timeout = message.match(/^(.+) timed out$/);
+    if (timeout) {
+        return t("{{label}} timed out", { label: t(timeout[1]) });
+    }
+    if (message.startsWith("Managed backend process started")) {
+        return t("Managed backend process started");
+    }
+    if (message.startsWith("Managed backend restarted")) {
+        return t("Managed backend restarted");
+    }
+    const startFailure = message.match(/^Failed to start backend:\s*(.+)$/);
+    if (startFailure) {
+        return t("Failed to start backend: {{error}}", { error: startFailure[1] });
+    }
+    const exited = message.match(/^Managed backend exited with\s+(.+)$/);
+    if (exited) {
+        return t("Managed backend exited with {{status}}", { status: exited[1] });
+    }
+    const inspectionFailure = message.match(/^Failed to inspect backend process:\s*(.+)$/);
+    if (inspectionFailure) {
+        return t("Failed to inspect backend process: {{error}}", { error: inspectionFailure[1] });
+    }
+    return t(message);
+}
+
 export function BackendOfflineBanner() {
+    const { t } = useI18n();
     const {
         isOnline,
         isChecking,
@@ -46,8 +81,8 @@ export function BackendOfflineBanner() {
     const isStartupRecoverable = !error || STARTUP_RECOVERABLE_ERRORS.has(error);
     const showStartup = !hasConnected && (backendStarting || (!startupGraceElapsed && isStartupRecoverable));
     const startupDetail = backendStarting
-        ? (backendMessage || "Managed backend is starting")
-        : "Connecting to the local API";
+        ? localizedBackendStatus(backendMessage || "Managed backend is starting", t)
+        : t("Connecting to the local API");
 
     if (showStartup) {
         return (
@@ -68,13 +103,13 @@ export function BackendOfflineBanner() {
                         </div>
 
                         <p className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                            Local service
+                            {t("Local service")}
                         </p>
                         <h2 className="mb-3 text-2xl font-semibold tracking-tight text-foreground">
-                            Starting Scriber
+                            {t("Starting Scriber")}
                         </h2>
                         <p className="max-w-sm text-sm leading-6 text-muted-foreground">
-                            The desktop backend is coming online. This usually takes a few seconds after launch.
+                            {t("The desktop backend is coming online. This usually takes a few seconds after launch.")}
                         </p>
 
                         <div className="mt-7 w-full max-w-sm">
@@ -101,28 +136,25 @@ export function BackendOfflineBanner() {
                     </div>
 
                     <h2 className="mb-3 text-xl font-semibold tracking-tight text-foreground">
-                        Backend Not Available
+                        {t("Backend Not Available")}
                     </h2>
 
                     <p className="mb-6 leading-6 text-muted-foreground">
                         {error === "Backend is not running" ? (
                             <>
-                                Scriber tried to start the local backend, but it is not ready yet.
-                                Restart the backend from the tray icon or try again.
+                                {t("Scriber tried to start the local backend, but it is not ready yet. Restart the backend from the tray icon or try again.")}
                             </>
                         ) : error === "Connection timed out" ? (
                             <>
-                                The backend is taking too long to respond. It may be starting up or
-                                experiencing issues.
+                                {t("The backend is taking too long to respond. It may be starting up or experiencing issues.")}
                             </>
                         ) : (
                             <>
-                                Unable to connect to the backend service. Please ensure the application
-                                is running properly.
+                                {t("Unable to connect to the backend service. Please ensure the application is running properly.")}
                             </>
                         )}
                         {error && !["Backend is not running", "Connection timed out"].includes(error) && (
-                            <span className="mt-3 block text-sm">{error}</span>
+                            <span className="mt-3 block text-sm">{localizedBackendStatus(error, t)}</span>
                         )}
                     </p>
 
@@ -136,19 +168,19 @@ export function BackendOfflineBanner() {
                             {isChecking ? (
                                 <>
                                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    Checking...
+                                    {t("Checking...")}
                                 </>
                             ) : (
                                 <>
                                     <RefreshCw className="mr-2 h-4 w-4" />
-                                    Retry Connection
+                                    {t("Retry Connection")}
                                 </>
                             )}
                         </Button>
                     </div>
 
                     <p className="mt-6 text-xs text-muted-foreground/70">
-                        The app will automatically reconnect when the backend becomes available.
+                        {t("The app will automatically reconnect when the backend becomes available.")}
                     </p>
                 </div>
             </div>

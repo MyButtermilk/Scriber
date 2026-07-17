@@ -3,7 +3,7 @@ import os
 import sys
 import time
 import types
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import FormData, WSServerHandshakeError
@@ -262,6 +262,98 @@ async def test_live_mic_start_binds_explicit_tauri_hotkey_marker_to_request(
         ctl.start_listening.assert_awaited_once_with(
             tauri_hotkey_marker=marker,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/live-mic/start",
+        "/api/live-mic/start-post-processing",
+        "/api/live-mic/toggle",
+        "/api/live-mic/toggle-post-processing",
+    ],
+)
+@pytest.mark.parametrize("exception_type", [ModuleNotFoundError, RuntimeError])
+async def test_live_mic_start_runtime_failures_are_structured_and_cors_safe(
+    monkeypatch,
+    tmp_path,
+    path: str,
+    exception_type: type[Exception],
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl.start_listening = AsyncMock(  # type: ignore[method-assign]
+        side_effect=exception_type(
+            "No module named 'pipecat.transports.base_input' in C:\\private\\runtime"
+        )
+    )
+    client = TestClient(TestServer(web_api.create_app(ctl)))
+    await client.start_server()
+    try:
+        response = await client.post(
+            path,
+            headers={"Origin": "http://tauri.localhost"},
+        )
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 503
+    assert response.headers["Access-Control-Allow-Origin"] == "http://tauri.localhost"
+    assert payload == {
+        "apiVersion": web_api.REST_API_VERSION,
+        "type": "error",
+        "title": "Live microphone unavailable",
+        "message": (
+            "Scriber could not load the live microphone runtime. Restart or "
+            "reinstall Scriber, then try again."
+        ),
+        "category": "runtime_unavailable",
+        "code": "live_mic_runtime_unavailable",
+        "retryable": False,
+    }
+    assert "pipecat" not in str(payload).lower()
+    assert "private" not in str(payload).lower()
+    ctl.start_listening.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_api_failures_are_json_and_keep_cors_headers(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl.get_settings = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("C:\\private\\secret runtime detail")
+    )
+    app = web_api.create_app(ctl)
+    assert tuple(app.middlewares)[0] is web_api.cors_middleware
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        response = await client.get(
+            "/api/settings",
+            headers={"Origin": "http://tauri.localhost"},
+        )
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 500
+    assert response.headers["Access-Control-Allow-Origin"] == "http://tauri.localhost"
+    assert response.content_type == "application/json"
+    assert payload == {
+        "apiVersion": web_api.REST_API_VERSION,
+        "type": "error",
+        "title": "Request failed",
+        "message": "Scriber could not complete this request. Please try again.",
+        "category": "internal_error",
+        "code": "internal_server_error",
+        "retryable": True,
+    }
+    assert "private" not in str(payload).lower()
 
 
 @pytest.mark.asyncio

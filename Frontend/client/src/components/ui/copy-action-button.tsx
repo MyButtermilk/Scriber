@@ -1,6 +1,7 @@
 import type { MouseEvent } from "react";
 import { Check, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 
 type CopyActionButtonProps = {
   onClick: (e: MouseEvent<HTMLButtonElement>) => void;
@@ -24,7 +25,8 @@ export function CopyActionButton({
   size = "md",
   className,
 }: CopyActionButtonProps) {
-  const hoverLabel = copied ? copiedLabel : label;
+  const { t } = useI18n();
+  const hoverLabel = t(copied ? copiedLabel : label);
 
   return (
     <button

@@ -29,6 +29,7 @@ CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pipecat.services.settings", "Pipecat STT settings dependency"),
     ("pipecat.services.stt_service", "Pipecat STT base dependency"),
     ("pipecat.transcriptions.language", "Pipecat language dependency"),
+    ("pipecat.transports.base_input", "Pipecat audio input transport dependency"),
     ("pipecat.transports.base_transport", "Pipecat transport dependency"),
     ("pipecat.utils.time", "Pipecat timestamp dependency"),
     ("pipecat.audio.vad.vad_analyzer", "Pipecat VAD startup dependency"),
@@ -42,6 +43,9 @@ CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
         "pipecat.audio.turn.smart_turn.local_smart_turn_v3",
         "Pipecat 1.5 local Smart Turn startup dependency",
     ),
+    ("src.microphone", "live microphone application runtime"),
+    ("src.audio_file_input", "file audio application runtime"),
+    ("src.pipeline", "transcription pipeline application runtime"),
     ("src.web_api", "backend API entry point"),
 )
 REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (

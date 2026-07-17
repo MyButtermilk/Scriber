@@ -15,6 +15,7 @@ from backend_runtime.contract import (
     APPLICATION_OPTIONAL_IMPORT_EXEMPTIONS,
     RUNTIME_CONTRACT_NAME,
     RUNTIME_CONTRACT_REVISION,
+    RUNTIME_REQUIRED_IMPORTS,
 )
 from backend_runtime.launcher import (
     LayerValidationError,
@@ -181,6 +182,41 @@ def test_src_external_imports_are_explicit_runtime_or_optional_exclusions() -> N
         "google.generativeai",
     ) in APPLICATION_OPTIONAL_IMPORT_EXEMPTIONS
     assert all(root != "google" for root in APPLICATION_EXTERNAL_IMPORT_ROOTS)
+
+
+def test_direct_pipecat_imports_use_exact_frozen_runtime_modules() -> None:
+    """Every direct Pipecat module import must exist in the frozen boundary.
+
+    The broader external-root test intentionally sees only ``pipecat``.  This
+    exact-module parity check prevents a valid application import such as
+    ``pipecat.transports.base_input`` from being absent in the PyInstaller
+    runtime while a nearby module happens to be frozen.
+    """
+
+    direct_modules: set[str] = set()
+    for source in (REPO_ROOT / "src").rglob("*.py"):
+        tree = ast.parse(source.read_text(encoding="utf-8-sig"), filename=str(source))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                direct_modules.update(
+                    alias.name
+                    for alias in node.names
+                    if alias.name.startswith("pipecat.")
+                )
+            elif (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and node.module
+                and node.module.startswith("pipecat.")
+            ):
+                direct_modules.add(node.module)
+
+    frozen_modules = {module for module, _reason in RUNTIME_REQUIRED_IMPORTS}
+    missing = direct_modules - frozen_modules
+    assert not missing, (
+        f"Direct Pipecat imports absent from frozen runtime: {sorted(missing)}"
+    )
+    assert "pipecat.transports.base_input" in direct_modules
 
 
 def test_application_layer_stages_only_tracked_files(tmp_path: Path) -> None:

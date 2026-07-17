@@ -18,6 +18,20 @@ from src.runtime.shell_ipc import available as shell_ipc_available, call_shell_i
 
 _DISABLE_TAURI_OVERLAY_ENV = "SCRIBER_DISABLE_TAURI_OVERLAY"
 _OVERLAY_AUDIO_INTERVAL_SECONDS = 1.0 / 20.0
+# Rust bounds UI-thread overlay mutations at two seconds. Leave enough client-side
+# headroom for scheduling, response serialization, and the request-bound ACK so a
+# successful transition is not cancelled while Tauri is still completing it.
+_OVERLAY_TRANSITION_TIMEOUT_SECONDS = 2.75
+_OVERLAY_STATUS_TIMEOUT_SECONDS = 0.75
+_OVERLAY_AUDIO_TIMEOUT_SECONDS = 0.35
+
+
+def _overlay_command_timeout_seconds(command: str) -> float:
+    if command in {"overlayPrepare", "overlayShow", "overlayHide"}:
+        return _OVERLAY_TRANSITION_TIMEOUT_SECONDS
+    if command == "overlayAudioLevel":
+        return _OVERLAY_AUDIO_TIMEOUT_SECONDS
+    return _OVERLAY_STATUS_TIMEOUT_SECONDS
 
 
 def _tauri_overlay_enabled() -> bool:
@@ -31,7 +45,11 @@ def _call_overlay_response(
     *,
     log_failure: bool = True,
 ) -> dict[str, Any]:
-    response = call_shell_ipc(command, payload or {}, timeout_seconds=0.35)
+    response = call_shell_ipc(
+        command,
+        payload or {},
+        timeout_seconds=_overlay_command_timeout_seconds(command),
+    )
     if log_failure and response.get("success") is not True:
         logger.debug(
             "Tauri overlay command {} failed: {} {}",

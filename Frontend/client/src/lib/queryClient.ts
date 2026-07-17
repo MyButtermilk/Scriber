@@ -2,6 +2,7 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import { apiUrl } from "./backend";
 import { fetchWithTimeout } from "./fetch-with-timeout";
 import { friendlyError, responseErrorMessage } from "./request-errors";
+import { translateNow } from "@/i18n";
 
 const DEFAULT_API_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -69,7 +70,7 @@ export const getQueryFn = <T,>({
       return null as T;
     }
     // In strict mode surface the failure to React Query instead of silently returning null.
-    throw error instanceof Error ? error : new Error("Query failed");
+    throw error instanceof Error ? error : new Error(translateNow("Query failed"));
   }
 };
 

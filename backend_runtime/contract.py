@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 RUNTIME_CONTRACT_NAME = "scriber-frozen-python-runtime"
-RUNTIME_CONTRACT_REVISION = 2
+RUNTIME_CONTRACT_REVISION = 3
 APPLICATION_LAYER_SCHEMA_VERSION = 1
 RUNTIME_LAYER_SCHEMA_VERSION = 1
 APPLICATION_ENTRY_POINT = "src.backend_worker:main"
@@ -36,6 +36,7 @@ RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pipecat.services.settings", "Pipecat STT settings runtime"),
     ("pipecat.services.stt_service", "Pipecat STT base runtime"),
     ("pipecat.transcriptions.language", "Pipecat transcription language runtime"),
+    ("pipecat.transports.base_input", "Pipecat audio input transport runtime"),
     ("pipecat.transports.base_transport", "Pipecat audio transport runtime"),
     ("pipecat.utils.time", "Pipecat timestamp runtime"),
     ("pipecat.audio.vad.vad_analyzer", "Pipecat VAD analyzer runtime"),

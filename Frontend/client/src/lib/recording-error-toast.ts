@@ -1,4 +1,5 @@
 import type { ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
+import { translateNow } from "@/i18n";
 
 type RecordingErrorMessage = Extract<ScriberWebSocketMessage, { type: "error" }>;
 export type RecordingErrorToastMessage = Partial<Omit<RecordingErrorMessage, "message">> & {
@@ -49,12 +50,16 @@ export function recordingErrorToastMessageFromPayload(
 }
 
 export function showRecordingErrorToast(toast: ToastFn, msg: RecordingErrorToastMessage): void {
-    const baseDescription = cleanText(msg.message) || "An error occurred during recording.";
+    const baseDescription = translateNow(cleanText(msg.message) || "An error occurred during recording.");
     const title =
-        cleanText(msg.title) ||
-        (cleanText(msg.providerLabel) ? `${cleanText(msg.providerLabel)} error` : "Recording Error");
+        (cleanText(msg.title) ? translateNow(cleanText(msg.title)) : "") ||
+        (cleanText(msg.providerLabel)
+            ? translateNow("{{provider}} error", { provider: cleanText(msg.providerLabel) })
+            : translateNow("Recording Error"));
     const code = cleanText(msg.code);
-    const description = code ? `${baseDescription} Code: ${code}.` : baseDescription;
+    const description = code
+        ? translateNow("{{description}} Code: {{code}}.", { description: baseDescription, code })
+        : baseDescription;
     const key = [
         cleanText(msg.sessionId),
         cleanText(msg.provider),

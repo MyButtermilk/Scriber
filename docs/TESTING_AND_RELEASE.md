@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-07-14
+Last verified: 2026-07-16
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -89,6 +89,22 @@ Frontend browser smoke:
 ```powershell
 scripts\project-python.cmd scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json --fast-tab-switch
 ```
+
+Frontend localization gates:
+
+```powershell
+cd Frontend
+npm run check
+npm run test:i18n
+npm run build:webview
+```
+
+The i18n gate validates German catalog coverage for every literal `t(...)`
+call, rejects empty translations and placeholder drift, and keeps the boot and
+runtime locale storage keys aligned. The full frontend type-gate suite keeps
+localized ARIA labels, internal routes, retry controls, credential links, and
+Meeting safety contracts structural instead of depending on rendered English
+copy.
 
 To retain settled screenshots of the primary transcription workspaces alongside
 the JSON evidence:
@@ -181,7 +197,10 @@ scripts\project-python.cmd scripts\smoke_diarization_worker_resource.py `
   `transformers`/HuggingFace into the standard installer.
 - The frozen runtime import gate also covers the AssemblyAI realtime Pipecat
   module and `onnx_asr`. This protects the installed AssemblyAI Universal-3.5
-  realtime path and the bundled ONNX local-ASR path.
+  realtime path and the bundled ONNX local-ASR path. The exact-module AST gate
+  additionally requires every direct `pipecat.*` import under `src` to be in the
+  frozen contract; revision 3 specifically protects
+  `pipecat.transports.base_input` used by microphone and audio-file transports.
 - Provider tests for custom Pipecat services must run with deprecation warnings
   promoted to errors and assert complete Pipecat 1.5 `STTSettings`. Lifecycle
   coverage also verifies that only the expected Windows Proactor WinError 10054
@@ -1401,10 +1420,10 @@ into permanent Markdown unless a concise current result belongs in
 Run the focused deterministic gates before the full suite:
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests/test_provider_transcript.py tests/test_meeting_finalizer.py tests/test_meeting_analysis.py tests/test_pipeline_stop.py tests/test_outlook_calendar.py tests/test_speaker_intelligence.py tests/data/test_meeting_store.py tests/data/test_audio_admission_store.py tests/test_meeting_api.py tests/test_web_api_lifecycle.py -q
+.\venv\Scripts\python.exe -m pytest tests/test_provider_transcript.py tests/test_meeting_finalizer.py tests/test_meeting_analysis.py tests/test_pipeline_stop.py tests/test_outlook_calendar.py tests/test_speaker_intelligence.py tests/data/test_meeting_store.py tests/data/test_audio_admission_store.py tests/test_meeting_api.py tests/test_web_api_lifecycle.py tests/test_meeting_capture.py tests/test_meeting_tts_puppeteer_smoke.py -q
 cd Frontend
 npm run check
-npx tsx --test client/src/lib/meeting-playback.test.ts
+npx tsx --test client/src/lib/meeting-playback.test.ts client/src/lib/meeting-controls.test.ts client/src/lib/meeting-cache.test.ts
 cd src-tauri
 cargo test --bin scriber-audio-sidecar
 cargo test --lib
@@ -1464,6 +1483,35 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.
 
 For an installed-package build, add
 `-RunInstallerMeetingAudioDeviceTestSmoke` to `scripts\build_windows.ps1`.
+
+The local speech Meeting E2E goes beyond level statistics: Piper generates a
+bounded German 48 kHz mono PCM fixture, the test-only Rust microphone source
+replays it through the real three-pipe Meeting path, and Puppeteer Core drives
+the actual Tauri WebView2 start, pause, resume, and stop controls. Final
+transcription stays on the local ONNX provider. Provision Piper and its voice
+only below ignored `tmp/` paths, then run:
+
+```powershell
+.\venv\Scripts\python.exe -m pip install --target tmp\meeting-tts\piper-runtime piper-tts==1.4.2
+$env:PYTHONPATH = (Resolve-Path tmp\meeting-tts\piper-runtime).Path
+.\venv\Scripts\python.exe -m piper.download_voices `
+  --download-dir tmp\meeting-tts\voices de_DE-thorsten-medium
+Remove-Item Env:PYTHONPATH
+
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File scripts\smoke_meeting_tts_puppeteer.ps1 `
+  -FfmpegPath "C:\Program Files\FFmpeg\bin\ffmpeg.exe" `
+  -ModelCachePath "$HOME\.cache\huggingface\hub"
+```
+
+The runner pins Puppeteer Core in an isolated ignored directory, requires the
+Tauri-supervised runtime, validates the `recording -> paused -> recording ->
+ready` lifecycle plus canonical transcript segments and the persisted pause
+gap, and proves bounded descendant cleanup. Its retained JSON contains hashes,
+counts, states, and timings only—never audio, transcript text, credentials,
+URLs, screenshots, personal paths, or raw process logs. Synthetic speech is a
+deterministic regression gate; it does not replace physical microphone,
+loopback, AEC/double-talk, conferencing-app, or long-soak evidence.
 
 The desktop single-instance smoke also proves restore behavior, not merely
 process exclusion. `-VerifySingleInstance` requires the second process to exit

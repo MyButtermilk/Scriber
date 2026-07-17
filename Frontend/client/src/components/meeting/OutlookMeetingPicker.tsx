@@ -11,21 +11,46 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useI18n, type TranslationValues } from "@/i18n";
 import type {
   OutlookCalendarContact,
   OutlookCalendarEvent,
   OutlookCalendarEventsResponse,
   OutlookCalendarStatus,
 } from "@/lib/api-types";
-import { formatOutlookSyncMoment } from "@/lib/outlook-calendar-display";
 import { cn } from "@/lib/utils";
 
-function formatEventTime(startAt: string, endAt: string): string {
+type Translate = (source: string, values?: TranslationValues) => string;
+type FormatDate = (value: Date | number | string, options?: Intl.DateTimeFormatOptions) => string;
+
+function formatEventTime(startAt: string, endAt: string, formatDate: FormatDate, t: Translate): string {
   const start = new Date(startAt);
   const end = new Date(endAt);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return "Time unavailable";
-  const formatter = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
-  return `${formatter.format(start)}–${formatter.format(end)}`;
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return t("Time unavailable");
+  const options: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
+  return `${formatDate(start, options)}–${formatDate(end, options)}`;
+}
+
+function sameLocalDate(left: Date, right: Date): boolean {
+  return left.getFullYear() === right.getFullYear()
+    && left.getMonth() === right.getMonth()
+    && left.getDate() === right.getDate();
+}
+
+function formatSyncMoment(value: string, formatDate: FormatDate, t: Translate, now = new Date()): string | null {
+  const syncedAt = new Date(value);
+  if (!value || Number.isNaN(syncedAt.getTime())) return null;
+  const time = formatDate(syncedAt, { hour: "2-digit", minute: "2-digit" });
+  if (sameLocalDate(syncedAt, now)) return t("today at {{time}}", { time });
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (sameLocalDate(syncedAt, yesterday)) return t("yesterday at {{time}}", { time });
+  const date = formatDate(syncedAt, {
+    day: "numeric",
+    month: "short",
+    ...(syncedAt.getFullYear() === now.getFullYear() ? {} : { year: "numeric" as const }),
+  });
+  return t("{{date}} at {{time}}", { date, time });
 }
 
 async function openMeetingUrl(rawUrl: string): Promise<void> {
@@ -64,13 +89,13 @@ function eventContactCount(event: OutlookCalendarEvent): number {
   return people;
 }
 
-function participantLabel(participant: OutlookCalendarEvent["participants"][number]): string | undefined {
+function participantLabel(participant: OutlookCalendarEvent["participants"][number], t: Translate): string | undefined {
   const labels: string[] = [];
-  if (participant.isCurrentUser) labels.push("You");
-  if (participant.type === "optional") labels.push("Optional");
-  if (participant.type === "resource") labels.push("Room or resource");
-  if (participant.response === "declined") labels.push("Declined");
-  else if (participant.response === "tentativelyAccepted") labels.push("Tentative");
+  if (participant.isCurrentUser) labels.push(t("You"));
+  if (participant.type === "optional") labels.push(t("Optional"));
+  if (participant.type === "resource") labels.push(t("Room or resource"));
+  if (participant.response === "declined") labels.push(t("Declined"));
+  else if (participant.response === "tentativelyAccepted") labels.push(t("Tentative"));
   return labels.length > 0 ? labels.join(" · ") : undefined;
 }
 
@@ -127,8 +152,9 @@ export function OutlookMeetingPicker({
   onRefresh: () => void;
   onOpenSettings: () => void;
 }) {
+  const { t, formatDate, formatNumber } = useI18n();
   const selectedEvent = events?.items.find((event) => event.id === selectedEventId) ?? null;
-  const lastSyncMoment = formatOutlookSyncMoment(events?.lastSyncAt || status?.lastSyncAt || "");
+  const lastSyncMoment = formatSyncMoment(events?.lastSyncAt || status?.lastSyncAt || "", formatDate, t);
   const showSavedCalendarWarning = Boolean(
     status?.connected && events && (status.lastError || eventsError),
   );
@@ -144,16 +170,16 @@ export function OutlookMeetingPicker({
             <CalendarClock className="h-4 w-4" aria-hidden="true" />
           </span>
           <div className="min-w-0">
-            <h3 id="outlook-meeting-picker-title" className="text-sm font-semibold">Today in Outlook</h3>
+            <h3 id="outlook-meeting-picker-title" className="text-sm font-semibold">{t("Today in Outlook")}</h3>
             <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
               {events?.account?.address
-                ? `Pick the calendar event for ${events.account.name ? `${events.account.name} (${events.account.address})` : events.account.address}.`
-                : "Pick the calendar event that belongs to this recording."}
+                ? t("Pick the calendar event for {{account}}.", { account: events.account.name ? `${events.account.name} (${events.account.address})` : events.account.address })
+                : t("Pick the calendar event that belongs to this recording.")}
             </p>
             {status?.connected && lastSyncMoment && (
               <p className="mt-1 inline-flex items-center gap-1.5 text-[11px] leading-4 text-muted-foreground">
                 <Clock3 className="h-3 w-3" aria-hidden="true" />
-                Calendar updated {lastSyncMoment}.
+                {t("Calendar updated {{moment}}.", { moment: lastSyncMoment })}
               </p>
             )}
           </div>
@@ -161,7 +187,7 @@ export function OutlookMeetingPicker({
         {status?.connected && (
           <Button type="button" size="sm" variant="ghost" disabled={refreshing} onClick={onRefresh}>
             <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", refreshing && "animate-spin motion-reduce:animate-none")} />
-            {refreshing ? "Refreshing" : "Refresh calendar"}
+            {refreshing ? t("Refreshing") : t("Refresh calendar")}
           </Button>
         )}
       </div>
@@ -170,11 +196,11 @@ export function OutlookMeetingPicker({
         <div className="mx-3 mt-3 flex items-start gap-2.5 rounded-xl border border-amber-300/60 bg-amber-500/10 px-3 py-2.5 text-amber-950 dark:text-amber-100" role="alert">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <div className="min-w-0">
-            <p className="text-xs font-semibold">Outlook may be out of date.</p>
+            <p className="text-xs font-semibold">{t("Outlook may be out of date.")}</p>
             <p className="mt-0.5 text-[11px] leading-4">
               {lastSyncMoment
-                ? `Scriber is showing saved meetings from ${lastSyncMoment}. Changes made in Outlook since then may be missing.`
-                : "Scriber is showing the last saved calendar. Recent Outlook changes may be missing."}
+                ? t("Scriber is showing saved meetings from {{moment}}. Changes made in Outlook since then may be missing.", { moment: lastSyncMoment })
+                : t("Scriber is showing the last saved calendar. Recent Outlook changes may be missing.")}
             </p>
           </div>
         </div>
@@ -184,74 +210,74 @@ export function OutlookMeetingPicker({
         <div className="mx-3 mt-3 flex items-start gap-2.5 rounded-xl border border-amber-300/60 bg-amber-500/10 px-3 py-2.5 text-amber-950 dark:text-amber-100" role="alert">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <div className="min-w-0">
-            <p className="text-xs font-semibold">Choose the Outlook meeting again.</p>
+            <p className="text-xs font-semibold">{t("Choose the Outlook meeting again.")}</p>
             <p className="mt-0.5 text-[11px] leading-4">
-              The event you selected is no longer in today&apos;s calendar. It may have moved or been cancelled. Your title was kept, but participants are no longer attached.
+              {t("The event you selected is no longer in today's calendar. It may have moved or been cancelled. Your title was kept, but participants are no longer attached.")}
             </p>
             <button
               type="button"
               className="mt-1.5 text-[11px] font-semibold underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-700"
               onClick={() => onSelect(null)}
             >
-              Continue without Outlook
+              {t("Continue without Outlook")}
             </button>
           </div>
         </div>
       )}
 
       {statusLoading ? (
-        <div className="grid gap-2 p-4" role="status" aria-label="Checking Outlook calendar">
+        <div className="grid gap-2 p-4" role="status" aria-label={t("Checking Outlook calendar")}>
           <div className="h-4 w-40 animate-pulse rounded bg-muted motion-reduce:animate-none" />
           <div className="h-16 animate-pulse rounded-xl bg-muted/70 motion-reduce:animate-none" />
         </div>
       ) : statusError ? (
         <div className="p-4">
-          <p className="text-sm font-medium text-destructive">Outlook could not be checked.</p>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">Restart Scriber or try the connection again in Settings.</p>
-          <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onRefresh}>Try again</Button>
+          <p className="text-sm font-medium text-destructive">{t("Outlook could not be checked.")}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("Restart Scriber or try the connection again in Settings.")}</p>
+          <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onRefresh}>{t("Try again")}</Button>
         </div>
       ) : !status?.configured ? (
         <div className="p-4">
-          <p className="text-sm font-medium">Outlook is not available in this release.</p>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">Open Meeting settings for simple setup help.</p>
-          <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onOpenSettings}>Open settings</Button>
+          <p className="text-sm font-medium">{t("Outlook is not available in this release.")}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("Open Meeting settings for simple setup help.")}</p>
+          <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onOpenSettings}>{t("Open settings")}</Button>
         </div>
       ) : status.authorizationPending ? (
         <div className="p-4">
-          <p className="text-sm font-medium">Finish Outlook sign-in in your browser.</p>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">Today&apos;s events stay hidden until Microsoft confirms which account is connected.</p>
-          <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onOpenSettings}>View connection status</Button>
+          <p className="text-sm font-medium">{t("Finish Outlook sign-in in your browser.")}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("Today's events stay hidden until Microsoft confirms which account is connected.")}</p>
+          <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onOpenSettings}>{t("View connection status")}</Button>
         </div>
       ) : status.reauthRequired ? (
         <div className="p-4" role="alert">
-          <p className="text-sm font-medium">Reconnect Outlook to continue.</p>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">Microsoft needs you to sign in again. Your saved meetings remain unchanged.</p>
-          <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onOpenSettings}>Reconnect in Settings</Button>
+          <p className="text-sm font-medium">{t("Reconnect Outlook to continue.")}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("Microsoft needs you to sign in again. Your saved meetings remain unchanged.")}</p>
+          <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onOpenSettings}>{t("Reconnect in Settings")}</Button>
         </div>
       ) : !status.connected ? (
         <div className="p-4">
-          <p className="text-sm font-medium">Connect Outlook to use meeting details.</p>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">Scriber requests read-only calendar access and never receives your Microsoft password.</p>
-          <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onOpenSettings}>Connect in Settings</Button>
+          <p className="text-sm font-medium">{t("Connect Outlook to use meeting details.")}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("Scriber requests read-only calendar access and never receives your Microsoft password.")}</p>
+          <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onOpenSettings}>{t("Connect in Settings")}</Button>
         </div>
       ) : eventsLoading ? (
-        <div className="grid gap-2 p-4" role="status" aria-label="Loading today's Outlook meetings">
+        <div className="grid gap-2 p-4" role="status" aria-label={t("Loading today's Outlook meetings")}>
           {[0, 1].map((item) => <div key={item} className="h-[70px] animate-pulse rounded-xl bg-muted/70 motion-reduce:animate-none" />)}
         </div>
       ) : eventsError && !events ? (
         <div className="p-4" role="alert">
-          <p className="text-sm font-medium text-destructive">Today&apos;s meetings could not be loaded.</p>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">Your existing meeting setup is unchanged. Refresh the calendar to try again.</p>
-          <Button type="button" size="sm" variant="outline" className="mt-3" disabled={refreshing} onClick={onRefresh}>Refresh calendar</Button>
+          <p className="text-sm font-medium text-destructive">{t("Today's meetings could not be loaded.")}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("Your existing meeting setup is unchanged. Refresh the calendar to try again.")}</p>
+          <Button type="button" size="sm" variant="outline" className="mt-3" disabled={refreshing} onClick={onRefresh}>{t("Refresh calendar")}</Button>
         </div>
       ) : (events?.items.length ?? 0) === 0 ? (
         <div className="p-4">
-          <p className="text-sm font-medium">No Outlook meetings today.</p>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">You can still start an unlinked meeting and enter its title yourself.</p>
+          <p className="text-sm font-medium">{t("No Outlook meetings today.")}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("You can still start an unlinked meeting and enter its title yourself.")}</p>
         </div>
       ) : (
         <div className="p-3">
-          <div className="max-h-72 space-y-2 overflow-y-auto pr-1" role="list" aria-label="Today's Outlook meetings">
+          <div className="max-h-72 space-y-2 overflow-y-auto pr-1" role="list" aria-label={t("Today's Outlook meetings")}>
             {events?.items.map((event) => {
               const selected = event.id === selectedEventId;
               return (
@@ -276,27 +302,27 @@ export function OutlookMeetingPicker({
                       {selected && <Check className="h-3 w-3" aria-hidden="true" />}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-semibold">{event.subject || "Untitled Outlook meeting"}</span>
+                      <span className="block truncate text-sm font-semibold">{event.subject || t("Untitled Outlook meeting")}</span>
                       <span className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                        <span className="inline-flex items-center gap-1"><Clock3 className="h-3.5 w-3.5" />{event.isAllDay ? "All day" : formatEventTime(event.start_at, event.end_at)}</span>
-                        <span className="inline-flex items-center gap-1"><Users className="h-3.5 w-3.5" />{eventContactCount(event)} people</span>
+                        <span className="inline-flex items-center gap-1"><Clock3 className="h-3.5 w-3.5" />{event.isAllDay ? t("All day") : formatEventTime(event.start_at, event.end_at, formatDate, t)}</span>
+                        <span className="inline-flex items-center gap-1"><Users className="h-3.5 w-3.5" />{t("{{count}} people", { count: formatNumber(eventContactCount(event)) })}</span>
                       </span>
                     </span>
                   </button>
                   {selected && (
                     <div className="border-t border-border/60 px-3 pb-3 pt-2.5">
                       <div className="flex items-center justify-between gap-3">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Participants</p>
-                        <button type="button" className="text-[11px] font-medium text-muted-foreground hover:text-foreground" onClick={() => onSelect(null)}>Use no calendar event</button>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{t("Participants")}</p>
+                        <button type="button" className="text-[11px] font-medium text-muted-foreground hover:text-foreground" onClick={() => onSelect(null)}>{t("Use no calendar event")}</button>
                       </div>
                       <div className="mt-1 max-h-48 divide-y divide-border/50 overflow-y-auto pr-1">
-                        {event.organizer && <ContactLine name={event.organizer.name} address={event.organizer.address} label={event.organizer.isCurrentUser ? "You · organizer" : "Organizer"} />}
+                        {event.organizer && <ContactLine name={event.organizer.name} address={event.organizer.address} label={event.organizer.isCurrentUser ? t("You · organizer") : t("Organizer")} />}
                         {visibleParticipants(event).map((participant) => (
                           <ContactLine
                             key={participant.participantId || participant.address}
                             name={participant.name}
                             address={participant.address}
-                            label={participantLabel(participant)}
+                            label={participantLabel(participant, t)}
                           />
                         ))}
                       </div>
@@ -305,13 +331,13 @@ export function OutlookMeetingPicker({
                           {event.location && <span className="inline-flex min-w-0 items-center gap-1.5"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{event.location}</span></span>}
                           {event.join_url && (
                             <button type="button" className="inline-flex items-center gap-1.5 font-medium text-primary hover:underline" onClick={() => void openMeetingUrl(event.join_url)}>
-                              <ExternalLink className="h-3.5 w-3.5" />Open online meeting
+                              <ExternalLink className="h-3.5 w-3.5" />{t("Open online meeting")}
                             </button>
                           )}
                         </div>
                       )}
                       {event.participants.length === 0 && !event.organizer && (
-                        <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground"><Mail className="h-3.5 w-3.5" />No participant addresses are stored for this event.</p>
+                        <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground"><Mail className="h-3.5 w-3.5" />{t("No participant addresses are stored for this event.")}</p>
                       )}
                     </div>
                   )}
@@ -319,8 +345,8 @@ export function OutlookMeetingPicker({
               );
             })}
           </div>
-          {events?.truncated && <p className="px-1 pt-2 text-[11px] leading-4 text-muted-foreground">Only the first calendar entries for today are shown. Refresh after Outlook changes to get the latest list.</p>}
-          {!selectedEvent && <p className="px-1 pt-2 text-[11px] leading-4 text-muted-foreground">Select an event to copy its title and keep its participants with the meeting.</p>}
+          {events?.truncated && <p className="px-1 pt-2 text-[11px] leading-4 text-muted-foreground">{t("Only the first calendar entries for today are shown. Refresh after Outlook changes to get the latest list.")}</p>}
+          {!selectedEvent && <p className="px-1 pt-2 text-[11px] leading-4 text-muted-foreground">{t("Select an event to copy its title and keep its participants with the meeting.")}</p>}
         </div>
       )}
     </section>
