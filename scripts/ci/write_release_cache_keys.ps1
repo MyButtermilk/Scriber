@@ -42,7 +42,7 @@ function Get-FileSha256 {
     foreach ($extension in @(
         ".c", ".cc", ".cmake", ".conf", ".cpp", ".css", ".csv", ".h", ".hpp",
         ".html", ".ini", ".js", ".json", ".jsx", ".md", ".mjs", ".ps1",
-        ".psd1", ".psm1", ".py", ".rs", ".scss", ".svg", ".toml", ".ts",
+        ".psd1", ".psm1", ".py", ".rs", ".scss", ".spec", ".svg", ".toml", ".ts",
         ".tsx", ".txt", ".xml", ".yaml", ".yml"
     )) {
         [void]$textExtensions.Add($extension)

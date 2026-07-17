@@ -233,6 +233,50 @@ def test_release_cache_key_files_are_lf_utf8_without_bom(tmp_path: Path) -> None
     assert "MakeRelativeUri" not in writer
 
 
+def test_backend_cache_keys_ignore_spec_checkout_line_endings() -> None:
+    if shutil.which("pwsh") is None:
+        pytest.skip("PowerShell 7 is required for release-script validation")
+
+    spec_path = REPO_ROOT / "packaging/scriber-backend.spec"
+    original = spec_path.read_bytes()
+    normalized = original.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    output_lf = REPO_ROOT / "build" / f"test-cache-keys-lf-{uuid.uuid4().hex}"
+    output_crlf = REPO_ROOT / "build" / f"test-cache-keys-crlf-{uuid.uuid4().hex}"
+
+    def write_keys(output: Path) -> None:
+        subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-File",
+                str(REPO_ROOT / "scripts/ci/write_release_cache_keys.ps1"),
+                "-OutputDir",
+                str(output.relative_to(REPO_ROOT)),
+            ],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    try:
+        spec_path.write_bytes(normalized.encode("utf-8"))
+        write_keys(output_lf)
+        spec_path.write_bytes(normalized.replace("\n", "\r\n").encode("utf-8"))
+        write_keys(output_crlf)
+
+        lf_manifests = {path.name: path.read_bytes() for path in output_lf.glob("*.txt")}
+        crlf_manifests = {path.name: path.read_bytes() for path in output_crlf.glob("*.txt")}
+        assert lf_manifests == crlf_manifests
+        assert b"packaging/scriber-backend.spec" in lf_manifests["backend-runtime.txt"]
+        assert lf_manifests["backend-runtime.txt"] == crlf_manifests["backend-runtime.txt"]
+        assert lf_manifests["backend-sidecar.txt"] == crlf_manifests["backend-sidecar.txt"]
+    finally:
+        spec_path.write_bytes(original)
+        shutil.rmtree(output_lf, ignore_errors=True)
+        shutil.rmtree(output_crlf, ignore_errors=True)
+
+
 def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
     if shutil.which("pwsh") is None:
         pytest.skip("PowerShell 7 is required for release-script validation")
