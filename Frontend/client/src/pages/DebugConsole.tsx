@@ -50,6 +50,23 @@ import { useI18n, type TranslationValues } from "@/i18n";
 const LEVELS = ["ALL", "CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "TRACE"] as const;
 const ALL_DATES_VALUE = "all";
 
+const DEBUG_LEVEL_LABELS: Record<(typeof LEVELS)[number], string> = {
+  ALL: "All",
+  CRITICAL: "Critical",
+  ERROR: "Error",
+  WARNING: "Warning",
+  INFO: "Info",
+  DEBUG: "Debug",
+  TRACE: "Trace",
+};
+
+function debugLevelLabel(
+  level: string,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  return t(DEBUG_LEVEL_LABELS[level as (typeof LEVELS)[number]] || level);
+}
+
 interface LocalizedMessageState {
   source: string;
   values?: TranslationValues;
@@ -675,21 +692,24 @@ export default function DebugConsole() {
                 {t("Severity")}
               </div>
               <div className="debug-level-options">
-                {LEVELS.map((level) => (
-                  <button
-                    key={level}
-                    type="button"
-                    aria-pressed={selectedLevel === level}
-                    aria-label={level === "ALL" ? t("Show all severity levels") : t("Show {{level}} logs", { level: level.toLowerCase() })}
-                    title={level === "ALL" ? t("Show all severity levels") : t("Show {{level}} logs", { level: level.toLowerCase() })}
-                    data-level={level.toLowerCase()}
-                    onClick={() => setSelectedLevel(level)}
-                    className={cn("debug-level-button", selectedLevel === level && "is-active")}
-                  >
-                    <span>{level === "ALL" ? t("All") : level}</span>
-                    {selectedLevel === level && <Check className="debug-level-selected-icon" aria-hidden="true" />}
-                  </button>
-                ))}
+                {LEVELS.map((level) => {
+                  const levelLabel = debugLevelLabel(level, t);
+                  return (
+                    <button
+                      key={level}
+                      type="button"
+                      aria-pressed={selectedLevel === level}
+                      aria-label={level === "ALL" ? t("Show all severity levels") : t("Show {{level}} logs", { level: levelLabel })}
+                      title={level === "ALL" ? t("Show all severity levels") : t("Show {{level}} logs", { level: levelLabel })}
+                      data-level={level.toLowerCase()}
+                      onClick={() => setSelectedLevel(level)}
+                      className={cn("debug-level-button", selectedLevel === level && "is-active")}
+                    >
+                      <span>{levelLabel}</span>
+                      {selectedLevel === level && <Check className="debug-level-selected-icon" aria-hidden="true" />}
+                    </button>
+                  );
+                })}
               </div>
             </div>
             <Button className="debug-reset-button" type="button" variant="ghost" onClick={resetFilters} disabled={!hasActiveFilters}>
@@ -779,7 +799,7 @@ export default function DebugConsole() {
                         <span className="debug-log-source" title={`${entry.source}:${entry.line}`}>{entry.source}:{entry.line}</span>
                         <span className={cn("debug-log-level", levelStyles[level] || levelStyles.INFO)}>
                           <Icon className="h-3 w-3" />
-                          {level}
+                          {debugLevelLabel(level, t)}
                         </span>
                         <div className="debug-log-message-cell">
                           {entry.component && <span className="debug-log-component">{entry.component}</span>}

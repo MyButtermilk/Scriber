@@ -23,7 +23,7 @@ export function TranscriptHistorySearch({
   return (
     <div
       className={cn(
-        "transcript-history-search neu-search-inset group relative min-w-0 flex-1 sm:flex-none",
+        "transcript-history-search neu-search-inset group relative min-w-0 flex-1 lg:flex-none",
         className,
       )}
     >

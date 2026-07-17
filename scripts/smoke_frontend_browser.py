@@ -149,7 +149,7 @@ class FrontendSmokeBackend:
         self.outlook_connected = False
         self.outlook_synced = False
         self.meeting_detection_candidate: dict[str, Any] | None = {
-            "detectionId": "detection-smoke-1", "label": "Zoom meeting detected",
+            "detectionId": "detection-smoke-1", "label": "Zoom",
             "source": "windowAndRenderSession", "detectedAt": datetime.now(timezone.utc).isoformat(),
             "calendarEvent": None,
         }
@@ -2357,11 +2357,11 @@ async def exercise_meeting_end_to_end(
 
     await wait_text("meeting-five-hour-readiness", "Ready for a long meeting")
     await wait_text("meeting-final-stt-five-hour", "Up to 5:00:00")
-    await wait_text("meeting-detection-visible", "Zoom meeting detected")
+    await wait_text("meeting-detection-visible", "Zoom")
     await click_button("Dismiss")
     await wait_for_interaction_state(
         cdp, label="meeting-detection-dismissed", timeout_sec=timeout_sec,
-        expression="(() => ({ ok: !document.body.innerText.includes('Zoom meeting detected') }))()",
+        expression="(() => ({ ok: !document.body.innerText.includes('Zoom') }))()",
     )
     await wait_button("Test microphone and playback")
     await click_button("Test microphone and playback")

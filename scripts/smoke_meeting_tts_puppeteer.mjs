@@ -5,6 +5,35 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 let activePhase = "bootstrap";
+const diagnostics = {
+  consoleErrorCount: 0,
+  pageErrorCount: 0,
+  requestFailureCount: 0,
+};
+const observedStates = [];
+const meetingStates = new Set([
+  "starting",
+  "recording",
+  "paused",
+  "stopping",
+  "finalizing",
+  "analyzing",
+  "ready",
+  "capture_failed",
+  "finalization_failed",
+  "analysis_failed",
+  "interrupted",
+  "discarded",
+]);
+const meetingDebug = {
+  providerPhase: "not_started",
+  meetingIdHash: null,
+  captureIdHash: null,
+  meetingState: null,
+  finalProvider: null,
+  segmentCount: null,
+  errorCode: "",
+};
 
 function parseArguments(argv) {
   const options = {
@@ -105,6 +134,116 @@ function hashHint(value) {
     .update(String(value ?? ""), "utf8")
     .digest("hex")
     .slice(0, 16);
+}
+
+function safeToken(value) {
+  const token = String(value ?? "").trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(token) ? token : null;
+}
+
+function providerPhaseForState(state, previousPhase) {
+  if (
+    ["starting", "recording", "paused", "stopping", "capture_failed"].includes(
+      state,
+    )
+  ) {
+    return "capture";
+  }
+  if (["finalizing", "finalization_failed"].includes(state)) {
+    return "final_transcription";
+  }
+  if (["analyzing", "analysis_failed"].includes(state)) return "analysis";
+  if (state === "ready") return "complete";
+  if (
+    state === "interrupted" &&
+    ["capture", "final_transcription", "analysis"].includes(previousPhase)
+  ) {
+    return previousPhase;
+  }
+  return "unknown";
+}
+
+function updateMeetingDebug(payload, meetingIdHint = "") {
+  const nestedMeeting =
+    payload?.meeting && typeof payload.meeting === "object"
+      ? payload.meeting
+      : null;
+  const meeting =
+    nestedMeeting ??
+    (payload && typeof payload === "object" ? payload : null);
+  if (!meeting) return;
+
+  const meetingId =
+    String(meeting.id ?? "").trim() || String(meetingIdHint ?? "").trim();
+  if (meetingId) meetingDebug.meetingIdHash = hashHint(meetingId);
+
+  const stateCandidate = String(meeting.state ?? "").trim();
+  if (meetingStates.has(stateCandidate)) {
+    meetingDebug.meetingState = stateCandidate;
+    meetingDebug.providerPhase = providerPhaseForState(
+      stateCandidate,
+      meetingDebug.providerPhase,
+    );
+  }
+
+  if (Object.prototype.hasOwnProperty.call(meeting, "finalProvider")) {
+    meetingDebug.finalProvider = safeToken(meeting.finalProvider);
+  }
+  const captureMetadata =
+    meeting.captureMetadata && typeof meeting.captureMetadata === "object"
+      ? meeting.captureMetadata
+      : null;
+  const captureId = String(captureMetadata?.captureId ?? "").trim();
+  if (captureId) meetingDebug.captureIdHash = hashHint(captureId);
+
+  if (Array.isArray(meeting.segments)) {
+    meetingDebug.segmentCount = meeting.segments.length;
+  }
+  if (Object.prototype.hasOwnProperty.call(meeting, "errorCode")) {
+    const rawErrorCode = String(meeting.errorCode ?? "").trim();
+    meetingDebug.errorCode = rawErrorCode
+      ? (safeToken(rawErrorCode) ?? "meeting_error_code_redacted")
+      : "";
+  }
+}
+
+function harnessErrorCodeForPhase(phase) {
+  const codes = {
+    bootstrap: "harness_configuration_invalid",
+    "connect-webview2": "webview_connection_failed",
+    "select-main-webview": "webview_target_missing",
+    "navigate-meetings": "meeting_page_navigation_failed",
+    "resolve-backend-access": "backend_access_unavailable",
+    "verify-managed-backend": "backend_not_ready",
+    "prepare-meeting-form": "meeting_start_control_unavailable",
+    "wait-meeting-start-enabled": "meeting_start_control_unavailable",
+    "start-meeting": "meeting_start_failed",
+    "wait-recording": "meeting_recording_state_failed",
+    "pause-meeting": "meeting_pause_control_failed",
+    "wait-paused": "meeting_pause_state_failed",
+    "resume-meeting": "meeting_resume_control_failed",
+    "wait-resumed-recording": "meeting_resume_state_failed",
+    "stop-meeting": "meeting_stop_control_failed",
+    "wait-finalization": "meeting_finalization_failed",
+    "validate-transcript-content": "meeting_transcript_empty",
+    "validate-transcript-marker": "meeting_marker_missing",
+    "validate-audio-gap": "meeting_audio_gap_missing",
+    "validate-page-errors": "webview_page_error",
+  };
+  return codes[phase] ?? "harness_unexpected_error";
+}
+
+function meetingDebugSnapshot(failureCode = "") {
+  const fallback = safeToken(failureCode) ?? "harness_unexpected_error";
+  return {
+    providerPhase: meetingDebug.providerPhase,
+    meetingIdHash: meetingDebug.meetingIdHash,
+    captureIdHash: meetingDebug.captureIdHash,
+    meetingState: meetingDebug.meetingState,
+    finalProvider: meetingDebug.finalProvider,
+    segmentCount: meetingDebug.segmentCount,
+    errorCode: meetingDebug.errorCode || (failureCode ? fallback : ""),
+  };
 }
 
 function sanitizeMessage(error) {
@@ -217,6 +356,7 @@ async function waitForMeetingState(
       access,
       `/api/meetings/${encodeURIComponent(meetingId)}`,
     );
+    updateMeetingDebug(detail, meetingId);
     lastState = String(detail?.state ?? "unknown");
     if (observedStates.at(-1) !== lastState) observedStates.push(lastState);
     if (accepted.has(lastState)) return detail;
@@ -276,11 +416,6 @@ async function run(options) {
   const puppeteer = require(puppeteerModule);
   let browser;
   const startedAt = Date.now();
-  const diagnostics = {
-    consoleErrorCount: 0,
-    pageErrorCount: 0,
-    requestFailureCount: 0,
-  };
   let firstPageErrorHint = "";
   try {
     browser = await puppeteer.connect({
@@ -380,18 +515,22 @@ async function run(options) {
       button.click();
     });
     const startResponse = await startResponsePromise;
+    const startPayload = await startResponse.json().catch(() => null);
+    updateMeetingDebug(startPayload);
     if (!startResponse.ok()) {
       throw new Error(
         `meeting start failed with HTTP ${startResponse.status()}`,
       );
     }
-    const startedMeeting = await startResponse.json();
+    const startedMeeting =
+      startPayload?.meeting && typeof startPayload.meeting === "object"
+        ? startPayload.meeting
+        : startPayload;
     const meetingId = String(startedMeeting?.id ?? "");
     if (!meetingId)
       throw new Error("meeting start response omitted its identifier");
 
     activePhase = "wait-recording";
-    const observedStates = [];
     await waitForMeetingState(
       access,
       meetingId,
@@ -450,7 +589,7 @@ async function run(options) {
       observedStates,
     );
 
-    activePhase = "validate-transcript";
+    activePhase = "validate-transcript-content";
     const segments = Array.isArray(finalDetail?.segments)
       ? finalDetail.segments
       : [];
@@ -467,6 +606,7 @@ async function run(options) {
     const matchedExpectedTokens = options.expectedTokens.filter((token) =>
       normalizedTranscript.includes(token),
     );
+    activePhase = "validate-transcript-marker";
     if (
       options.expectedTokens.length > 0 &&
       matchedExpectedTokens.length === 0
@@ -478,6 +618,7 @@ async function run(options) {
     const audioGaps = Array.isArray(finalDetail?.audioGaps)
       ? finalDetail.audioGaps
       : [];
+    activePhase = "validate-audio-gap";
     if (audioGaps.length === 0) {
       throw new Error("pause/resume flow did not persist an audio gap");
     }
@@ -489,6 +630,7 @@ async function run(options) {
           : "WebView page error gate failed after Meeting validation",
       );
     }
+    activePhase = "complete";
 
     return {
       schemaVersion: 1,
@@ -506,7 +648,8 @@ async function run(options) {
       audioGapCount: audioGaps.length,
       fixtureDurationMs: options.fixtureDurationMs,
       elapsedMs: Date.now() - startedAt,
-      diagnostics,
+      diagnostics: { ...diagnostics },
+      meetingDebug: meetingDebugSnapshot(),
     };
   } finally {
     if (browser) await browser.disconnect();
@@ -528,6 +671,9 @@ try {
     phase: activePhase,
     errorType: error?.constructor?.name ?? "Error",
     message: sanitizeMessage(error),
+    observedStates: [...observedStates],
+    diagnostics: { ...diagnostics },
+    meetingDebug: meetingDebugSnapshot(harnessErrorCodeForPhase(activePhase)),
   };
   if (options?.output) {
     await writeResult(options.output, result).catch(() => {});

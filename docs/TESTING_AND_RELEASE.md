@@ -1513,6 +1513,17 @@ URLs, screenshots, personal paths, or raw process logs. Synthetic speech is a
 deterministic regression gate; it does not replace physical microphone,
 loopback, AEC/double-talk, conferencing-app, or long-soak evidence.
 
+A failed run automatically retains its isolated `runtime-data` and raw
+Vite/Tauri process logs under that ignored run directory; successful runs still
+remove them unless `-KeepRuntimeData` is explicit. `failure-debug.json` is the
+shareable, privacy-minimal diagnosis boundary: it contains only allowlisted
+phases/states/error codes, counts, timings, and hashed Meeting/capture ids. The
+retained runtime directory itself may contain the synthetic audio, transcript,
+SQLite state, configuration, local paths, and raw logs. Keep it local, never
+attach it as release evidence, and delete the failed run directory after the
+investigation. The generated PCM fixture remains independently controlled by
+`-KeepFixture` and is removed by default even after failure.
+
 The desktop single-instance smoke also proves restore behavior, not merely
 process exclusion. `-VerifySingleInstance` requires the second process to exit
 without a new backend and the primary process to log

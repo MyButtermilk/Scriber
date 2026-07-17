@@ -762,7 +762,7 @@ export default function FileTranscribe() {
                       {localizedProcessingStep(item.step, "Processing", t, formatNumber)}
                     </Badge>
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground">{item.channel || t("Preparing your transcript")}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{item.channel ? t(item.channel) : t("Preparing your transcript")}</p>
                 </div>
                 <Button
                   variant="ghost"

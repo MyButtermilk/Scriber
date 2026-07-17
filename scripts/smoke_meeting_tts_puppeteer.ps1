@@ -341,11 +341,116 @@ function Invoke-CheckedCommand {
 }
 
 
+function Write-AtomicJson {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+        [Parameter(Mandatory)]
+        [object]$Value
+    )
+    $temporaryPath = "$Path.$PID.$([System.Guid]::NewGuid().ToString('N')).tmp"
+    try {
+        $json = $Value | ConvertTo-Json -Depth 8 -Compress
+        [System.IO.File]::WriteAllText(
+            $temporaryPath,
+            "$json`n",
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        [System.IO.File]::Move($temporaryPath, $Path, $true)
+    } finally {
+        Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+
+function Convert-ToSafeDiagnosticToken {
+    param(
+        [object]$Value,
+        [int]$MaxLength = 80
+    )
+    if ($null -eq $Value) {
+        return $null
+    }
+    $text = [string]$Value
+    if (
+        $text.Length -lt 1 `
+        -or $text.Length -gt $MaxLength `
+        -or $text -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+    ) {
+        return $null
+    }
+    return $text
+}
+
+
+function Convert-ToBoundedDiagnosticCount {
+    param([object]$Value)
+    if ($null -eq $Value -or ([string]$Value).Length -eq 0) {
+        return $null
+    }
+    try {
+        $count = [int64]$Value
+        if ($count -lt 0 -or $count -gt [int]::MaxValue) {
+            return $null
+        }
+        return [int]$count
+    } catch {
+        return $null
+    }
+}
+
+
 $RepoRoot = Resolve-RequiredDirectory -Path $RepoRoot -Label "repository root"
 $FrontendRoot = Join-Path $RepoRoot "Frontend"
 $TauriRoot = Join-Path $FrontendRoot "src-tauri"
-$GeneratorScript = Resolve-RequiredFile -Path (Join-Path $PSScriptRoot "generate_meeting_tts_fixture.py") -Label "Piper fixture generator"
-$PuppeteerScript = Resolve-RequiredFile -Path (Join-Path $PSScriptRoot "smoke_meeting_tts_puppeteer.mjs") -Label "Puppeteer Meeting driver"
+
+if (-not $ArtifactDir) {
+    $runId = [System.Guid]::NewGuid().ToString("N")
+    $ArtifactDir = Join-Path $RepoRoot "tmp\meeting-e2e\runs\$runId"
+} else {
+    $ArtifactDir = Convert-ToFullPath -Path $ArtifactDir -BasePath $RepoRoot
+}
+[System.IO.Directory]::CreateDirectory($ArtifactDir) | Out-Null
+$ArtifactDir = (Resolve-Path -LiteralPath $ArtifactDir).Path
+$DataDir = Join-Path $ArtifactDir "runtime-data"
+[System.IO.Directory]::CreateDirectory($DataDir) | Out-Null
+$PcmPath = Join-Path $ArtifactDir "meeting-mic.pcm"
+$FixtureResultPath = Join-Path $ArtifactDir "fixture.json"
+$ResultPath = Join-Path $ArtifactDir "result.json"
+$FailureDebugPath = Join-Path $ArtifactDir "failure-debug.json"
+$TriggerPath = Join-Path $ArtifactDir "shell-quit.trigger"
+$ViteStdoutPath = Join-Path $ArtifactDir "vite.stdout.log"
+$ViteStderrPath = Join-Path $ArtifactDir "vite.stderr.log"
+$TauriStdoutPath = Join-Path $ArtifactDir "tauri.stdout.log"
+$TauriStderrPath = Join-Path $ArtifactDir "tauri.stderr.log"
+
+$viteProcess = $null
+$viteListenerProcess = $null
+$viteDescendantProcesses = @()
+$tauriProcess = $null
+$tauriDescendantProcesses = @()
+$driverSucceeded = $false
+$shutdownTriggered = $false
+$cleanupFailure = $false
+$cleanupVerified = $false
+$runPhase = "prepare-harness"
+$DriverResult = $null
+$Fixture = $null
+$runStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+try {
+    if ($env:SCRIBER_MEETING_E2E_TEST_PREPARATION_FAILURE -eq "1") {
+        throw "Deterministic Meeting E2E preparation failure requested by the test environment."
+    }
+
+    $testCleanupFailure = $env:SCRIBER_MEETING_E2E_TEST_CLEANUP_FAILURE -eq "1"
+    if ($testCleanupFailure) {
+        $driverSucceeded = $true
+        $runPhase = "complete"
+    } else {
+    $runPhase = "resolve-prerequisites"
+    $GeneratorScript = Resolve-RequiredFile -Path (Join-Path $PSScriptRoot "generate_meeting_tts_fixture.py") -Label "Piper fixture generator"
+    $PuppeteerScript = Resolve-RequiredFile -Path (Join-Path $PSScriptRoot "smoke_meeting_tts_puppeteer.mjs") -Label "Puppeteer Meeting driver"
 
 if (-not $PythonPath) {
     $venvPython = Join-Path $RepoRoot "venv\Scripts\python.exe"
@@ -397,25 +502,7 @@ if ((Test-LoopbackPortListening -Port $DevServerPort) -and -not $ReuseDevServer)
     throw "Port $DevServerPort is already in use. Use -ReuseDevServer only when that listener is the current Scriber Vite frontend."
 }
 
-if (-not $ArtifactDir) {
-    $runId = [System.Guid]::NewGuid().ToString("N")
-    $ArtifactDir = Join-Path $RepoRoot "tmp\meeting-e2e\runs\$runId"
-} else {
-    $ArtifactDir = Convert-ToFullPath -Path $ArtifactDir -BasePath $RepoRoot
-}
-[System.IO.Directory]::CreateDirectory($ArtifactDir) | Out-Null
-$ArtifactDir = (Resolve-Path -LiteralPath $ArtifactDir).Path
-$DataDir = Join-Path $ArtifactDir "runtime-data"
-[System.IO.Directory]::CreateDirectory($DataDir) | Out-Null
-$PcmPath = Join-Path $ArtifactDir "meeting-mic.pcm"
-$FixtureResultPath = Join-Path $ArtifactDir "fixture.json"
-$ResultPath = Join-Path $ArtifactDir "result.json"
-$TriggerPath = Join-Path $ArtifactDir "shell-quit.trigger"
-$ViteStdoutPath = Join-Path $ArtifactDir "vite.stdout.log"
-$ViteStderrPath = Join-Path $ArtifactDir "vite.stderr.log"
-$TauriStdoutPath = Join-Path $ArtifactDir "tauri.stdout.log"
-$TauriStderrPath = Join-Path $ArtifactDir "tauri.stderr.log"
-
+$runPhase = "prepare-puppeteer"
 if (-not $PuppeteerRuntimePath) {
     $PuppeteerRuntimePath = Join-Path $RepoRoot "tmp\meeting-e2e\puppeteer-$PuppeteerVersion"
 } else {
@@ -468,6 +555,7 @@ if ($ActualPuppeteerVersion -ne $PuppeteerVersion) {
     throw "Isolated Puppeteer Core version does not match the requested pinned version."
 }
 
+$runPhase = "build-binaries"
 if (-not $SkipBuild) {
     Invoke-CheckedCommand `
         -FilePath $CargoPath `
@@ -483,6 +571,7 @@ if (-not $SkipBuild) {
 $ExePath = Resolve-RequiredFile -Path $ExePath -Label "Tauri debug executable"
 $AudioSidecarPath = Resolve-RequiredFile -Path $AudioSidecarPath -Label "Rust audio sidecar"
 
+$runPhase = "generate-fixture"
 $fixtureOutput = & $PythonPath $GeneratorScript `
     --runtime-dir $PiperRuntimePath `
     --voice-model $PiperVoiceModelPath `
@@ -501,18 +590,10 @@ if ([int64]$Fixture.byteLength -le 0 -or [double]$Fixture.rms -le 0.0001) {
     throw "Piper fixture signal validation failed."
 }
 
-$viteProcess = $null
-$viteListenerProcess = $null
-$viteDescendantProcesses = @()
-$tauriProcess = $null
-$tauriDescendantProcesses = @()
-$driverSucceeded = $false
-$shutdownTriggered = $false
+$runPhase = "prepare-frontend"
 $remoteDebuggingPort = Get-FreeLoopbackPort
 $sessionToken = [System.Guid]::NewGuid().ToString("N")
 $meetingTitle = "Puppeteer Piper TTS E2E " + [DateTimeOffset]::UtcNow.ToString("yyyyMMddHHmmss")
-
-try {
     if (-not (Test-LoopbackPortListening -Port $DevServerPort)) {
         $viteProcess = Start-Process `
             -FilePath $NpmPath `
@@ -559,6 +640,7 @@ try {
         }
     }
 
+    $runPhase = "start-tauri"
     $appEnvironment = @{
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS" = "--remote-debugging-port=$remoteDebuggingPort --remote-debugging-address=127.0.0.1"
         "SCRIBER_REPO_ROOT" = $RepoRoot
@@ -603,6 +685,7 @@ try {
         -RedirectStandardOutput $TauriStdoutPath `
         -RedirectStandardError $TauriStderrPath `
         -PassThru
+    $runPhase = "connect-webview2"
     Wait-HttpReady `
         -Uri "http://127.0.0.1:$remoteDebuggingPort/json/version" `
         -OwnerProcess $tauriProcess `
@@ -626,10 +709,14 @@ try {
             $driverArguments += @("--expected-token", $token)
         }
     }
-    & $NodePath @driverArguments
-    if ($LASTEXITCODE -ne 0) {
+    $runPhase = "run-driver"
+    $driverStdout = @(& $NodePath @driverArguments)
+    $driverExitCode = $LASTEXITCODE
+    $driverStdout = $null
+    if ($driverExitCode -ne 0) {
         throw "Puppeteer Meeting driver failed."
     }
+    $runPhase = "read-driver-result"
     $DriverResult = Get-Content -LiteralPath $ResultPath -Raw | ConvertFrom-Json
     if ($DriverResult.ok -ne $true) {
         throw "Puppeteer Meeting result did not pass."
@@ -639,12 +726,15 @@ try {
         @(Get-ProcessDescendantHandles -RootProcess $tauriProcess)
     )
 
+    $runPhase = "request-shell-shutdown"
     [System.IO.File]::WriteAllText($TriggerPath, "quit`n", [System.Text.UTF8Encoding]::new($false))
     $shutdownTriggered = $true
+    $runPhase = "wait-shell-exit"
     if (-not (Wait-ProcessExit -Process $tauriProcess -TimeoutSec $CleanupTimeoutSec)) {
         throw "Tauri shell did not exit through the bounded smoke Quit path."
     }
 
+    $runPhase = "verify-shell-cleanup"
     $cleanupDeadline = [DateTimeOffset]::UtcNow.AddSeconds($CleanupTimeoutSec)
     do {
         $remainingDescendants = @($tauriDescendantProcesses | Where-Object {
@@ -665,21 +755,8 @@ try {
     }
 
     $driverSucceeded = $true
-    [pscustomobject]@{
-        ok = $true
-        automation = "puppeteer-core"
-        puppeteerVersion = $ActualPuppeteerVersion
-        browserTransport = "webview2-remote-debugging"
-        fixtureDurationMs = [int]$Fixture.durationMs
-        fixtureSha256 = [string]$Fixture.sha256
-        observedStates = @($DriverResult.observedStates)
-        segmentCount = [int]$DriverResult.segmentCount
-        transcriptCharacterCount = [int]$DriverResult.transcriptCharacterCount
-        matchedExpectedTokenCount = [int]$DriverResult.matchedExpectedTokenCount
-        audioGapCount = [int]$DriverResult.audioGapCount
-        cleanupVerified = $true
-        resultArtifact = "result.json"
-    } | ConvertTo-Json -Depth 5
+    $runPhase = "complete"
+    }
 } finally {
     if ($tauriProcess) {
         if ($tauriDescendantProcesses.Count -eq 0) {
@@ -728,6 +805,34 @@ try {
         Stop-OwnedProcess -Process $owned
     }
 
+    $cleanupVerified = $true
+    foreach ($owned in @(
+        $tauriProcess
+        $viteProcess
+        $viteListenerProcess
+        $tauriDescendantProcesses
+        $viteDescendantProcesses
+    )) {
+        if ($owned) {
+            try {
+                $owned.Refresh()
+                if (-not $owned.HasExited) {
+                    $cleanupVerified = $false
+                }
+            } catch {
+                # An unavailable exact process handle means the process already exited.
+            }
+        }
+    }
+    if ($env:SCRIBER_MEETING_E2E_TEST_CLEANUP_FAILURE -eq "1") {
+        $cleanupVerified = $false
+    }
+    if ($driverSucceeded -and -not $cleanupVerified) {
+        $driverSucceeded = $false
+        $cleanupFailure = $true
+        $runPhase = "verify-owned-process-cleanup"
+    }
+
     foreach ($redirectOwner in @(
         $tauriProcess
         $viteProcess
@@ -748,12 +853,208 @@ try {
         foreach ($logPath in @($ViteStdoutPath, $ViteStderrPath, $TauriStdoutPath, $TauriStderrPath)) {
             Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
         }
+        if (@(
+            $ViteStdoutPath, $ViteStderrPath, $TauriStdoutPath, $TauriStderrPath |
+                Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+        ).Count -gt 0) {
+            $driverSucceeded = $false
+            $cleanupFailure = $true
+            $runPhase = "remove-success-logs"
+        }
     }
     Remove-Item -LiteralPath $TriggerPath -Force -ErrorAction SilentlyContinue
     if (-not $KeepFixture) {
         Remove-Item -LiteralPath $PcmPath -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $PcmPath -PathType Leaf) {
+            $driverSucceeded = $false
+            $cleanupFailure = $true
+            $runPhase = "remove-fixture"
+        }
     }
-    if (-not $KeepRuntimeData) {
-        Remove-ContainedDirectory -Target $DataDir -AllowedRoot $ArtifactDir
+    if ($driverSucceeded -and -not $KeepRuntimeData) {
+        try {
+            Remove-ContainedDirectory -Target $DataDir -AllowedRoot $ArtifactDir
+        } catch {
+            $driverSucceeded = $false
+            $cleanupFailure = $true
+            $runPhase = "remove-runtime-data"
+        }
+        if (Test-Path -LiteralPath $DataDir -PathType Container) {
+            $driverSucceeded = $false
+            $cleanupFailure = $true
+            $runPhase = "remove-runtime-data"
+        }
+    }
+    if (-not $driverSucceeded) {
+        if (-not $DriverResult -and (Test-Path -LiteralPath $ResultPath -PathType Leaf)) {
+            try {
+                $DriverResult = Get-Content -LiteralPath $ResultPath -Raw | ConvertFrom-Json
+            } catch {
+                $DriverResult = $null
+            }
+        }
+
+        $meetingDebugSource = if ($DriverResult) { $DriverResult.meetingDebug } else { $null }
+        $providerPhase = Convert-ToSafeDiagnosticToken -Value $meetingDebugSource.providerPhase
+        if (-not $providerPhase) {
+            $providerPhase = "not_started"
+        } elseif ($providerPhase -notin @(
+            "not_started", "capture", "final_transcription", "analysis", "complete", "unknown"
+        )) {
+            $providerPhase = "unknown"
+        }
+        $meetingIdHash = [string]$meetingDebugSource.meetingIdHash
+        if ($meetingIdHash -notmatch '^[0-9a-f]{16}$') {
+            $meetingIdHash = $null
+        }
+        $captureIdHash = [string]$meetingDebugSource.captureIdHash
+        if ($captureIdHash -notmatch '^[0-9a-f]{16}$') {
+            $captureIdHash = $null
+        }
+        $allowedMeetingStates = @(
+            "starting", "recording", "paused", "stopping", "finalizing", "analyzing",
+            "ready", "capture_failed", "finalization_failed", "analysis_failed",
+            "interrupted", "discarded"
+        )
+        $meetingState = [string]$meetingDebugSource.meetingState
+        if ($meetingState -notin $allowedMeetingStates) {
+            $meetingState = $null
+        }
+        $safeObservedStates = @(
+            @($DriverResult.observedStates) |
+                ForEach-Object { [string]$_ } |
+                Where-Object { $_ -in $allowedMeetingStates } |
+                Select-Object -Last 16
+        )
+        $diagnosticsSource = if ($DriverResult) { $DriverResult.diagnostics } else { $null }
+        $safeDiagnostics = [ordered]@{
+            consoleErrorCount = Convert-ToBoundedDiagnosticCount -Value $diagnosticsSource.consoleErrorCount
+            pageErrorCount = Convert-ToBoundedDiagnosticCount -Value $diagnosticsSource.pageErrorCount
+            requestFailureCount = Convert-ToBoundedDiagnosticCount -Value $diagnosticsSource.requestFailureCount
+        }
+        $allowedOrchestratorPhases = @(
+            "prepare-harness", "resolve-prerequisites", "prepare-puppeteer", "build-binaries",
+            "generate-fixture", "prepare-frontend", "start-tauri", "connect-webview2",
+            "run-driver", "read-driver-result", "request-shell-shutdown", "wait-shell-exit",
+            "verify-shell-cleanup", "verify-owned-process-cleanup", "remove-success-logs",
+            "remove-fixture", "remove-runtime-data", "complete", "unknown"
+        )
+        $safeRunPhase = Convert-ToSafeDiagnosticToken -Value $runPhase
+        if ($safeRunPhase -notin $allowedOrchestratorPhases) {
+            $safeRunPhase = "unknown"
+        }
+        $driverFailed = $DriverResult -and $DriverResult.ok -eq $false
+        $allowedDriverPhases = @(
+            "bootstrap", "connect-webview2", "select-main-webview", "navigate-meetings",
+            "resolve-backend-access", "verify-managed-backend", "prepare-meeting-form",
+            "wait-meeting-start-enabled", "start-meeting", "wait-recording", "pause-meeting",
+            "wait-paused", "resume-meeting", "wait-resumed-recording", "stop-meeting",
+            "wait-finalization", "validate-transcript-content", "validate-transcript-marker",
+            "validate-audio-gap", "validate-page-errors", "complete"
+        )
+        $driverFailurePhase = Convert-ToSafeDiagnosticToken -Value $DriverResult.phase
+        if ($driverFailed -and $driverFailurePhase -in $allowedDriverPhases) {
+            $safeRunPhase = $driverFailurePhase
+        }
+        $failureLayer = if ($safeRunPhase -eq "run-driver" -or $driverFailed) {
+            "driver"
+        } else {
+            "orchestrator"
+        }
+        $allowedMeetingErrorCodes = @(
+            "harness_configuration_invalid", "webview_connection_failed", "webview_target_missing",
+            "meeting_page_navigation_failed", "backend_access_unavailable", "backend_not_ready",
+            "meeting_start_control_unavailable", "meeting_start_failed", "meeting_recording_state_failed",
+            "meeting_pause_control_failed", "meeting_pause_state_failed", "meeting_resume_control_failed",
+            "meeting_resume_state_failed", "meeting_stop_control_failed", "meeting_finalization_failed",
+            "meeting_transcript_empty", "meeting_marker_missing", "meeting_audio_gap_missing",
+            "webview_page_error", "harness_unexpected_error", "meeting_error_code_redacted",
+            "meeting_storage_full", "audio_admission_lost", "meeting_capture_status_unavailable",
+            "meeting_capture_inactive", "meeting_recorder_stop_timeout", "native_capture_contract_invalid",
+            "live_stt_start_failed", "live_stt_resume_failed", "meeting_start_canceled",
+            "meeting_resume_canceled", "meeting_start_failed", "meeting_resume_failed",
+            "meeting_device_changed", "meeting_device_stop_failed", "meeting_device_reconnect_failed",
+            "native_capture_unavailable", "frame_recorder_start_failed", "frame_recorder_resume_failed",
+            "meeting_recorder_failed", "meeting_capture_stop_failed",
+            "process_interrupted", "process_interrupted_during_analysis",
+            "process_interrupted_during_finalization", "meeting_analysis_failed", "provider_failed",
+            "source_audio_identity_changed"
+        )
+        $meetingErrorCode = Convert-ToSafeDiagnosticToken -Value $meetingDebugSource.errorCode
+        if ($meetingErrorCode -and $meetingErrorCode -notin $allowedMeetingErrorCodes) {
+            $meetingErrorCode = "meeting_error_code_redacted"
+        }
+        $finalProvider = Convert-ToSafeDiagnosticToken -Value $meetingDebugSource.finalProvider
+        if ($finalProvider -notin @("onnx_local")) {
+            $finalProvider = $null
+        }
+        $topLevelErrorCode = if ($meetingErrorCode) {
+            $meetingErrorCode
+        } else {
+            "meeting_e2e_$($safeRunPhase.Replace('-', '_'))_failed"
+        }
+        $rawLogsRetained = @(
+            $ViteStdoutPath, $ViteStderrPath, $TauriStdoutPath, $TauriStderrPath |
+                Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+        ).Count -gt 0
+        $runtimeDataRetained = Test-Path -LiteralPath $DataDir -PathType Container
+        $fixtureRetained = Test-Path -LiteralPath $PcmPath -PathType Leaf
+        $failureReport = [ordered]@{
+            schemaVersion = 1
+            kind = "scriber-meeting-tts-puppeteer-failure-debug"
+            ok = $false
+            failureLayer = $failureLayer
+            failurePhase = $safeRunPhase
+            errorCode = $topLevelErrorCode
+            meetingDebug = [ordered]@{
+                providerPhase = $providerPhase
+                meetingIdHash = $meetingIdHash
+                captureIdHash = $captureIdHash
+                meetingState = $meetingState
+                finalProvider = $finalProvider
+                segmentCount = Convert-ToBoundedDiagnosticCount -Value $meetingDebugSource.segmentCount
+                errorCode = $meetingErrorCode
+            }
+            observedStates = $safeObservedStates
+            diagnostics = $safeDiagnostics
+            timings = [ordered]@{
+                elapsedMs = Convert-ToBoundedDiagnosticCount -Value $runStopwatch.ElapsedMilliseconds
+            }
+            retention = [ordered]@{
+                runtimeDataRetained = [bool]$runtimeDataRetained
+                rawLogsRetained = [bool]$rawLogsRetained
+                fixtureRetained = [bool]$fixtureRetained
+                containsSensitiveLocalData = [bool]$runtimeDataRetained
+            }
+            cleanupVerified = [bool]$cleanupVerified
+        }
+        try {
+            Write-AtomicJson -Path $FailureDebugPath -Value $failureReport
+            [Console]::Error.WriteLine(($failureReport | ConvertTo-Json -Depth 8 -Compress))
+        } catch {
+            [Console]::Error.WriteLine(
+                '{"schemaVersion":1,"kind":"scriber-meeting-tts-puppeteer-failure-debug","ok":false,"errorCode":"failure_debug_write_failed"}'
+            )
+        }
+        if ($cleanupFailure) {
+            throw "Meeting E2E cleanup did not complete successfully."
+        }
     }
 }
+
+[pscustomobject]@{
+    ok = $true
+    automation = "puppeteer-core"
+    puppeteerVersion = $ActualPuppeteerVersion
+    browserTransport = "webview2-remote-debugging"
+    fixtureDurationMs = [int]$Fixture.durationMs
+    fixtureSha256 = [string]$Fixture.sha256
+    observedStates = @($DriverResult.observedStates)
+    segmentCount = [int]$DriverResult.segmentCount
+    transcriptCharacterCount = [int]$DriverResult.transcriptCharacterCount
+    matchedExpectedTokenCount = [int]$DriverResult.matchedExpectedTokenCount
+    audioGapCount = [int]$DriverResult.audioGapCount
+    cleanupVerified = [bool]$cleanupVerified
+    runtimeDataRetained = [bool](Test-Path -LiteralPath $DataDir -PathType Container)
+    resultArtifact = "result.json"
+} | ConvertTo-Json -Depth 5

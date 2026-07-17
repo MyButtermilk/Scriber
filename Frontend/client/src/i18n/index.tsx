@@ -110,6 +110,20 @@ export function localizeLegacyDateLabel(locale: AppLocale, value: string): strin
   if (todayMatch) {
     return translate(locale, "Today at {{time}}", { time: todayMatch[1] });
   }
+  const isoDateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(source);
+  if (isoDateMatch) {
+    const year = Number(isoDateMatch[1]);
+    const month = Number(isoDateMatch[2]);
+    const day = Number(isoDateMatch[3]);
+    const date = new Date(year, month - 1, day);
+    if (
+      date.getFullYear() === year
+      && date.getMonth() === month - 1
+      && date.getDate() === day
+    ) {
+      return new Intl.DateTimeFormat(LOCALE_TAGS[locale], { dateStyle: "medium" }).format(date);
+    }
+  }
   return translate(locale, source);
 }
 

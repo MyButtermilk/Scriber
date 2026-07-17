@@ -119,7 +119,46 @@ test("localizes legacy relative date labels", () => {
   assert.equal(localizeLegacyDateLabel("de", "Today, 14:30"), "Heute um 14:30");
   assert.equal(localizeLegacyDateLabel("en", "Today, 2:30 PM"), "Today at 2:30 PM");
   assert.equal(localizeLegacyDateLabel("de", "Yesterday"), "Gestern");
-  assert.equal(localizeLegacyDateLabel("de", "2026-07-16"), "2026-07-16");
+  assert.equal(localizeLegacyDateLabel("de", "2026-07-16"), "16.07.2026");
+  assert.equal(localizeLegacyDateLabel("en", "2026-07-16"), "Jul 16, 2026");
+  assert.equal(localizeLegacyDateLabel("de", "2026-02-30"), "2026-02-30");
+});
+
+test("dynamic interface labels have complete German translations", () => {
+  assert.equal(translate("de", "Your voice"), "Deine Stimme");
+  assert.equal(translate("de", "Other participants"), "Andere Teilnehmende");
+  assert.equal(translate("de", "Echo control"), "Echounterdrückung");
+  assert.equal(translate("de", "Reduces speaker echo"), "Reduziert Lautsprecherechos");
+  assert.equal(translate("de", "Preparing audio"), "Audio wird vorbereitet");
+  assert.equal(translate("de", "local audio"), "Lokales Audio");
+  assert.equal(translate("de", "Default microphone"), "Standardmikrofon");
+  assert.equal(translate("de", "Critical"), "Kritisch");
+  assert.equal(translate("de", "Error"), "Fehler");
+  assert.equal(translate("de", "Warning"), "Warnung");
+  assert.equal(translate("de", "Info"), "Info");
+  assert.equal(translate("de", "Debug"), "Debug");
+  assert.equal(translate("de", "Trace"), "Trace");
+  assert.equal(translate("de", "Cancel requested"), "Abbruch angefordert");
+  assert.equal(
+    translate("de", "Audio playback could not start."),
+    "Die Audiowiedergabe konnte nicht gestartet werden.",
+  );
+  assert.equal(
+    translate("de", "Saved audio is not available for this meeting."),
+    "Für dieses Meeting ist kein gespeichertes Audio verfügbar.",
+  );
+  assert.equal(
+    translate("de", "No saved voice sample is available for this speaker."),
+    "Für diesen Sprecher ist keine gespeicherte Stimmprobe verfügbar.",
+  );
+  assert.equal(
+    translate("de", "The saved voice sample could not be played."),
+    "Die gespeicherte Stimmprobe konnte nicht wiedergegeben werden.",
+  );
+  assert.equal(
+    translate("de", "The saved meeting audio could not be loaded."),
+    "Das gespeicherte Meeting-Audio konnte nicht geladen werden.",
+  );
 });
 
 test("German translations are non-empty and preserve placeholders", () => {

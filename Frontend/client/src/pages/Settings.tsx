@@ -3269,12 +3269,17 @@ export default function Settings() {
   }, [refreshMicrophones]);
 
   const selectedOnnxModel = onnxModels.find((m) => m.id === onnxModel) || onnxModels[0];
-  const selectedMicDevice = inputDevices.find(
+  const selectedMicIndex = inputDevices.findIndex(
     (device, index) => (device.deviceId || `device-${index}`) === selectedDeviceId
   );
+  const selectedMicDevice = selectedMicIndex >= 0 ? inputDevices[selectedMicIndex] : undefined;
   const selectedMicLabel = inputDevices.length === 0
     ? t("Loading devices...")
-    : (selectedMicDevice?.label || (selectedDeviceId === "default" ? t("Default") : ""));
+    : selectedMicDevice
+      ? ((selectedMicDevice.deviceId || `device-${selectedMicIndex}`) === "default"
+        ? t("Default microphone")
+        : (selectedMicDevice.label || t("Device {{number}}", { number: formatNumber(selectedMicIndex + 1) })))
+      : (selectedDeviceId === "default" ? t("Default microphone") : "");
   const savedSpeakerCount = speakerProfilesQuery.data?.items.length ?? 0;
   const hasSelectedMic = Boolean(selectedMicDevice || selectedDeviceId === "default");
   const selectedLanguage = LANGUAGE_OPTIONS.find((option) => option.value === language) || LANGUAGE_OPTIONS[0];
@@ -3784,7 +3789,7 @@ export default function Settings() {
         )}
       />
 
-      <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+      <div className="grid gap-4 min-[1440px]:grid-cols-2 min-[1440px]:items-start">
         <SectionPanel
           id="settings-transcription"
           title={t("Transcription")}
@@ -3837,7 +3842,9 @@ export default function Settings() {
                             ) : (
                               inputDevices.map((device, index) => {
                                 const deviceValue = device.deviceId || `device-${index}`;
-                                const deviceLabel = device.label || t("Device {{number}}", { number: formatNumber(index + 1) });
+                                const deviceLabel = deviceValue === "default"
+                                  ? t("Default microphone")
+                                  : (device.label || t("Device {{number}}", { number: formatNumber(index + 1) }));
                                 const micInputId = `mic-device-${index}`;
                                 const favoriteInputId = `favorite-mic-${index}`;
                                 const isSelected = selectedDeviceId === deviceValue;
@@ -4016,7 +4023,7 @@ export default function Settings() {
           title={t("Meetings")}
           description={t("Choose how new meetings are transcribed, summarized, protected, and connected to Outlook. Changes apply to new meetings.")}
           icon={Users}
-          className="lg:col-span-2"
+          className="min-[1440px]:col-span-2"
         >
           <div className="grid gap-3 lg:grid-cols-2">
             <SettingsSubsection
@@ -4088,7 +4095,7 @@ export default function Settings() {
                 </SettingLine>
                 <SettingLine label={t("Final transcript")} description={t("Choose the service that creates the accurate transcript and speaker names after the meeting.")}>
                   <Select value={meetingFinalProvider} onValueChange={(value) => void updateMeetingPreferences({ meetingFinalProvider: value })}>
-                    <SelectTrigger className="h-9 w-[220px] max-w-full text-xs" aria-label={t("Final meeting transcription model")}>
+                    <SelectTrigger className="h-9 w-[248px] max-w-full text-xs" aria-label={t("Final meeting transcription model")}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -4448,7 +4455,7 @@ export default function Settings() {
                   <div className="rounded-lg border border-slate-200/80 p-3 dark:border-[var(--workspace-border)]">
                     <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">{t("Merge duplicate speakers")}</p>
                     <p className="mt-1 text-[11px] leading-4 text-slate-500">{t("Keep the correct speaker and merge the duplicate into it.")}</p>
-                    <div className="mt-2.5 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                    <div className="mt-2.5 grid gap-2 sm:grid-cols-2">
                       <Select value={mergeTargetProfileId} onValueChange={setMergeTargetProfileId}>
                         <SelectTrigger className="h-9 min-w-0 text-xs" aria-label={t("Saved speaker to keep")}><SelectValue placeholder={t("Keep speaker…")} /></SelectTrigger>
                         <SelectContent>{speakerProfilesQuery.data?.items.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.displayName}, {formatNumber(profile.sampleCount)} {profile.sampleCount === 1 ? t("sample") : t("samples")}</SelectItem>)}</SelectContent>
@@ -4457,7 +4464,7 @@ export default function Settings() {
                         <SelectTrigger className="h-9 min-w-0 text-xs" aria-label={t("Duplicate saved speaker")}><SelectValue placeholder={t("Merge duplicate…")} /></SelectTrigger>
                         <SelectContent>{speakerProfilesQuery.data?.items.filter((profile) => profile.id !== mergeTargetProfileId).map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.displayName}, {formatNumber(profile.sampleCount)} {profile.sampleCount === 1 ? t("sample") : t("samples")}</SelectItem>)}</SelectContent>
                       </Select>
-                      <Button type="button" size="sm" variant="outline" className="h-9" disabled={!mergeTargetProfileId || !mergeSourceProfileId || mergeTargetProfileId === mergeSourceProfileId || mergeProfilesMutation.isPending} onClick={() => mergeProfilesMutation.mutate()}>{t("Merge speakers")}</Button>
+                      <Button type="button" size="sm" variant="outline" className="h-9 sm:col-span-2" disabled={!mergeTargetProfileId || !mergeSourceProfileId || mergeTargetProfileId === mergeSourceProfileId || mergeProfilesMutation.isPending} onClick={() => mergeProfilesMutation.mutate()}>{t("Merge speakers")}</Button>
                     </div>
                   </div>
                 )}

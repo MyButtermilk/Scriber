@@ -2839,13 +2839,13 @@ async def test_audio_level_skips_broadcast_work_without_clients_or_overlay():
 
     with (
         patch.object(ctl, "broadcast", new=AsyncMock()) as broadcast_mock,
-        patch.object(ctl._loop, "call_soon_threadsafe") as call_soon_mock,
+        patch.object(ctl, "_enqueue_audio_broadcast") as enqueue_mock,
         patch("src.web_api.update_overlay_audio") as overlay_mock,
     ):
         ctl._on_audio_level(0.02, session_id="s1")
         await asyncio.sleep(0)
 
-    call_soon_mock.assert_not_called()
+    enqueue_mock.assert_not_called()
     broadcast_mock.assert_not_awaited()
     overlay_mock.assert_not_called()
 
@@ -2856,17 +2856,18 @@ async def test_audio_level_broadcast_is_throttled_to_sixty_hz():
     ctl = ScriberWebController(loop)
     ctl._session_id = "s1"
     ctl._client_count = 1
+    isolated_loop = MagicMock()
 
     with (
         patch.object(ctl, "_update_input_warning"),
-        patch.object(ctl._loop, "call_soon_threadsafe") as call_soon_mock,
+        patch.object(ctl, "_loop", isolated_loop),
         patch("src.web_api.time.monotonic", side_effect=[100.0, 100.01, 100.02]),
     ):
         ctl._on_audio_level(0.02, session_id="s1")
         ctl._on_audio_level(0.03, session_id="s1")
         ctl._on_audio_level(0.04, session_id="s1")
 
-    assert call_soon_mock.call_count == 2
+    assert isolated_loop.call_soon_threadsafe.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -2997,14 +2998,14 @@ async def test_audio_level_updates_overlay_without_ws_clients():
 
     with (
         patch.object(ctl, "broadcast", new=AsyncMock()) as broadcast_mock,
-        patch.object(ctl._loop, "call_soon_threadsafe") as call_soon_mock,
+        patch.object(ctl, "_enqueue_audio_broadcast") as enqueue_mock,
         patch("src.web_api.update_overlay_audio") as overlay_mock,
     ):
         ctl._on_audio_level(0.02, session_id="s1")
         await asyncio.sleep(0)
 
     overlay_mock.assert_called_once_with(0.02)
-    call_soon_mock.assert_not_called()
+    enqueue_mock.assert_not_called()
     broadcast_mock.assert_not_awaited()
 
 

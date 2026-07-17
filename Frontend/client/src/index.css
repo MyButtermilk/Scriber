@@ -4103,12 +4103,12 @@ html:has(body[data-scroll-locked]) {
 }
 
 .debug-console-stat-copy small {
-  overflow: hidden;
+  overflow: visible;
   color: color-mix(in srgb, var(--foreground) 42%, transparent);
   font-size: 0.62rem;
   line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .debug-console-stat-icon {

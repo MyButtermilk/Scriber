@@ -41,7 +41,7 @@ export function TranscriptionHistoryToolbar({
   return (
     <header
       className={cn(
-        "transcription-history-toolbar flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between",
+        "transcription-history-toolbar flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between",
         className,
       )}
     >
@@ -62,14 +62,14 @@ export function TranscriptionHistoryToolbar({
         </p>
       </div>
 
-      <div className="transcription-history-controls flex w-full min-w-0 items-center gap-2 sm:w-auto">
+      <div className="transcription-history-controls flex w-full min-w-0 items-center gap-2 lg:w-auto">
         <TranscriptHistorySearch
           value={searchValue}
           onChange={onSearchChange}
           placeholder={searchPlaceholder}
           ariaLabel={searchAriaLabel}
           clearLabel={clearSearchLabel}
-          className="sm:w-[320px] lg:w-[380px]"
+          className="lg:w-[320px] min-[1280px]:w-[380px]"
         />
         <ToggleGroup
           type="single"

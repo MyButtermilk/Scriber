@@ -500,7 +500,7 @@ export function SpeakerAttendeeAssignments({
                     </p>
                   </div>
                 </div>
-                <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
                   <Select value={mergeTargetProfileId} onValueChange={(profileId) => {
                     setMergeTargetProfileId(profileId);
                     if (profileId === mergeSourceProfileId) setMergeSourceProfileId("");
@@ -532,7 +532,7 @@ export function SpeakerAttendeeAssignments({
                     type="button"
                     size="sm"
                     variant="outline"
-                    className="h-9"
+                    className="h-9 sm:col-span-2"
                     disabled={!mergeTarget || !mergeSource || mergeMutation.isPending}
                     onClick={() => {
                       mergeMutation.reset();
