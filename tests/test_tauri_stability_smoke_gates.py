@@ -1009,6 +1009,9 @@ def test_release_cache_gc_keeps_exactly_one_current_generation() -> None:
 
     assert "[int]$RetainPerRollingFamily = 1" in gc
     assert "[int]$ListLimit = 10000" in gc
+    assert "[string[]]$ProtectedRef = @()" in gc
+    assert "[string[]]$PrunableRef = @()" in gc
+    assert "[switch]$PruneCurrentRef" in gc
     assert "gh cache delete" in gc
     assert "gh release delete" in gc
     assert "gh release delete-asset" in gc
@@ -1024,14 +1027,29 @@ def test_release_cache_gc_keeps_exactly_one_current_generation() -> None:
     assert "release-cache-backend-sidecar-v2" in gc
     assert "release-cache-rust-build-v2" in gc
     assert "ffmpeg-profile-b-n7.0-v4" in gc
-    assert "^scriber-tauri-app-binary-v1-Windows-" in gc
-    assert "^scriber-tauri-app-binary-v2-Windows-" in gc
+    assert "^scriber-tauri-app-binary-v[12]-Windows-" in gc
+    obsolete_block = gc.split("$obsoletePatterns = @(", 1)[1].split(")", 1)[0]
+    assert "^scriber-tauri-app-binary-v1-Windows-" not in obsolete_block
+    assert "$null = $protectedRefs.Add('refs/heads/main')" in gc
+    assert "$prunableRefs.Contains([string]$cache.ref)" in gc
+    assert "explicitly-prunable-completed-ref-cache" in gc
+    assert "foreign or merely unrecognized branches remain untouched by default" in gc
+    assert 'if ($PruneCurrentRef)' in gc
+    assert '$null = $currentRefs.Add("refs/heads/$branchName")' in gc
+    assert '$null = $prunableRefs.Add($currentRef)' in gc
+    assert '$null = $protectedRefs.Add($currentRef)' in gc
+    assert "Cache ref cannot be both protected and prunable" in gc
+    assert "GenerationPattern = '^scriber-tauri-app-binary-v(?<generation>[12])-Windows-'" in gc
+    assert "$parsedCaches = $json | ConvertFrom-Json" in gc
+    assert "$parsedReleases = $releaseJson | ConvertFrom-Json" in gc
+    assert "Dictionary[int64, object]" in gc
+    assert "Sort-Object { [int64]$_.Cache.id } -Unique" not in gc
     rolling_gc = gc.split("foreach ($family in $rollingFamilies)", 1)[1].split(
         "# Ref-scoped caches", 1
     )[0]
-    assert rolling_gc.index("[DateTimeOffset]$_.createdAt") < rolling_gc.index(
-        "[DateTimeOffset]$_.lastAccessedAt"
-    )
+    assert rolling_gc.index("[int]$Matches.generation") < rolling_gc.index(
+        "[DateTimeOffset]$_.createdAt"
+    ) < rolling_gc.index("[DateTimeOffset]$_.lastAccessedAt")
     assert "Prune obsolete release caches" in workflow
     assert "Verify current release cache generation" in workflow
     verify_block = workflow.split("- name: Verify current release cache generation", 1)[1]

@@ -7,6 +7,9 @@ param(
     [ValidateRange(10, 10000)]
     [int]$ListLimit = 10000,
     [string]$ExpectedRustDependencyKey = "",
+    [string[]]$ProtectedRef = @(),
+    [string[]]$PrunableRef = @(),
+    [switch]$PruneCurrentRef,
     [switch]$VerifyCurrentGeneration
 )
 
@@ -27,17 +30,73 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
     throw "GitHub CLI is required for release-cache pruning."
 }
 
+$protectedRefs = [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+)
+$prunableRefs = [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+)
+$currentRefs = [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+)
+$null = $protectedRefs.Add('refs/heads/main')
+foreach ($candidateRef in @($ProtectedRef)) {
+    $normalizedRef = ([string]$candidateRef).Trim()
+    if ($normalizedRef -notmatch '^refs/heads/[0-9A-Za-z._/-]+$') {
+        throw "Protected cache ref must be a complete refs/heads/* value: '$candidateRef'."
+    }
+    $null = $protectedRefs.Add($normalizedRef)
+}
+foreach ($candidateRef in @($PrunableRef)) {
+    $normalizedRef = ([string]$candidateRef).Trim()
+    if ($normalizedRef -notmatch '^refs/heads/[0-9A-Za-z._/-]+$' -or $normalizedRef -eq 'refs/heads/main') {
+        throw "Prunable cache ref must be a non-main complete refs/heads/* value: '$candidateRef'."
+    }
+    $null = $prunableRefs.Add($normalizedRef)
+}
+$githubRef = ([string]$env:GITHUB_REF).Trim()
+if ($githubRef -match '^refs/heads/[0-9A-Za-z._/-]+$') {
+    $null = $currentRefs.Add($githubRef)
+}
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    $branchOutput = @(& git symbolic-ref --quiet --short HEAD 2>$null)
+    $branchExitCode = $LASTEXITCODE
+    if ($branchExitCode -eq 0 -and $branchOutput.Count -gt 0) {
+        $branchName = ([string]$branchOutput[0]).Trim()
+        if ($branchName -match '^[0-9A-Za-z._/-]+$') {
+            $null = $currentRefs.Add("refs/heads/$branchName")
+        }
+    }
+}
+foreach ($currentRef in $currentRefs) {
+    if ($currentRef -eq 'refs/heads/main') {
+        continue
+    }
+    if ($PruneCurrentRef) {
+        $null = $prunableRefs.Add($currentRef)
+    } else {
+        $null = $protectedRefs.Add($currentRef)
+    }
+}
+foreach ($candidateRef in $prunableRefs) {
+    if ($protectedRefs.Contains($candidateRef)) {
+        throw "Cache ref cannot be both protected and prunable: '$candidateRef'."
+    }
+}
+
 $json = & gh cache list --repo $Repo --limit $ListLimit --json id,key,ref,sizeInBytes,createdAt,lastAccessedAt
 if ($LASTEXITCODE -ne 0) {
     throw "GitHub cache inventory failed with exit code $LASTEXITCODE."
 }
-$caches = @($json | ConvertFrom-Json)
+$parsedCaches = $json | ConvertFrom-Json
+$caches = @($parsedCaches)
 
 $releaseJson = & gh release list --repo $Repo --limit $ListLimit --json tagName
 if ($LASTEXITCODE -ne 0) {
     throw "GitHub release-cache inventory failed with exit code $LASTEXITCODE."
 }
-$releases = @($releaseJson | ConvertFrom-Json)
+$parsedReleases = $releaseJson | ConvertFrom-Json
+$releases = @($parsedReleases)
 
 # Durable cache snapshots use internal prerelease tags. Keep exactly the
 # current schema generation for each family and never match public app tags.
@@ -106,7 +165,6 @@ $obsoletePatterns = @(
     '^scriber-backend-runtime-Windows-',
     '^scriber-ffmpeg-profile-b-msys2-n7\.0-v[23]-Windows$',
     '^scriber-rust-release-v2-Windows-',
-    '^scriber-tauri-app-binary-v1-Windows-',
     '^setup-python-',
     '^node-cache-'
 )
@@ -117,8 +175,8 @@ $obsoletePatterns = @(
 $rollingFamilies = @(
     [pscustomobject]@{ Name = 'backend-v2'; Pattern = '^scriber-backend-sidecar-v2-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'backend-runtime-v1'; Pattern = '^scriber-backend-runtime-v1-Windows-python-'; Retain = $RetainPerRollingFamily },
-    [pscustomobject]@{ Name = 'audio'; Pattern = '^scriber-rust-audio-sidecar-Windows-'; Retain = $RetainPerRollingFamily },
-    [pscustomobject]@{ Name = 'tauri-app-v2'; Pattern = '^scriber-tauri-app-binary-v2-Windows-'; Retain = $RetainPerRollingFamily },
+    [pscustomobject]@{ Name = 'audio'; Pattern = '^scriber-rust-audio-sidecar-Windows-'; Retain = $RetainPerRollingFamily; GenerationPattern = '' },
+    [pscustomobject]@{ Name = 'tauri-app'; Pattern = '^scriber-tauri-app-binary-v[12]-Windows-'; Retain = $RetainPerRollingFamily; GenerationPattern = '^scriber-tauri-app-binary-v(?<generation>[12])-Windows-' },
     [pscustomobject]@{ Name = 'frontend'; Pattern = '^scriber-frontend-node-modules-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'python-venv'; Pattern = '^scriber-python-venv-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'python-wheelhouse'; Pattern = '^scriber-python-wheelhouse-v2-Windows-'; Retain = $RetainPerRollingFamily },
@@ -143,34 +201,65 @@ foreach ($cache in $caches) {
 }
 
 foreach ($family in $rollingFamilies) {
-    $members = @(
-        $caches |
-            Where-Object { [string]$_.ref -eq 'refs/heads/main' -and [string]$_.key -match $family.Pattern } |
-            # Generation recency is creation time. A concurrent older tag can
-            # touch an obsolete cache after the replacement is created, so
-            # lastAccessedAt must never make the old generation win GC.
-            Sort-Object -Property @{ Expression = { [DateTimeOffset]$_.createdAt }; Descending = $true }, @{ Expression = { [int64]$_.id }; Descending = $true }, @{ Expression = { [DateTimeOffset]$_.lastAccessedAt }; Descending = $true }
-    )
-    foreach ($cache in @($members | Select-Object -Skip ([int]$family.Retain))) {
-        if (-not ($deletions | Where-Object { [int64]$_.Cache.id -eq [int64]$cache.id })) {
-            $deletions.Add([pscustomobject]@{ Cache = $cache; Reason = "rolling-$($family.Name)-beyond-$($family.Retain)" }) | Out-Null
+    foreach ($protectedRef in $protectedRefs) {
+        $matchingMembers = @(
+            $caches |
+                Where-Object { [string]$_.ref -eq $protectedRef -and [string]$_.key -match $family.Pattern }
+        )
+        $members = if (-not [string]::IsNullOrWhiteSpace([string]$family.GenerationPattern)) {
+            @(
+                $matchingMembers |
+                    # Schema generation wins before timestamp. This keeps the
+                    # production v1 Tauri cache until v2 exists on the same ref,
+                    # then makes v2 authoritative even if an older workflow
+                    # happens to touch or recreate v1 later.
+                    Sort-Object -Property `
+                        @{ Expression = { if ([string]$_.key -match $family.GenerationPattern) { [int]$Matches.generation } else { 0 } }; Descending = $true }, `
+                        @{ Expression = { [DateTimeOffset]$_.createdAt }; Descending = $true }, `
+                        @{ Expression = { [int64]$_.id }; Descending = $true }, `
+                        @{ Expression = { [DateTimeOffset]$_.lastAccessedAt }; Descending = $true }
+            )
+        } else {
+            @(
+                $matchingMembers |
+                    # Generation recency is creation time. A concurrent older
+                    # tag can touch an obsolete cache after its replacement is
+                    # created, so lastAccessedAt is only the final tiebreaker.
+                    Sort-Object -Property `
+                        @{ Expression = { [DateTimeOffset]$_.createdAt }; Descending = $true }, `
+                        @{ Expression = { [int64]$_.id }; Descending = $true }, `
+                        @{ Expression = { [DateTimeOffset]$_.lastAccessedAt }; Descending = $true }
+            )
+        }
+        foreach ($cache in @($members | Select-Object -Skip ([int]$family.Retain))) {
+            if (-not ($deletions | Where-Object { [int64]$_.Cache.id -eq [int64]$cache.id })) {
+                $deletions.Add([pscustomobject]@{ Cache = $cache; Reason = "rolling-$($family.Name)-beyond-$($family.Retain)-on-$protectedRef" }) | Out-Null
+            }
         }
     }
 }
 
 # Ref-scoped caches cannot warm main or sibling tags once those releases have
-# completed. Restrict deletion to known Scriber/setup cache families.
+# completed. Delete only exact refs that the caller explicitly marked prunable;
+# foreign or merely unrecognized branches remain untouched by default.
 $knownCachePattern = '^((scriber-|setup-python-|node-cache-|msys2-pkgs-).*)$'
 foreach ($cache in $caches) {
     if (
-        [string]$cache.ref -ne 'refs/heads/main' -and
+        $prunableRefs.Contains([string]$cache.ref) -and
         [string]$cache.key -match $knownCachePattern
     ) {
-        $deletions.Add([pscustomobject]@{ Cache = $cache; Reason = 'inaccessible-completed-ref-cache' }) | Out-Null
+        $deletions.Add([pscustomobject]@{ Cache = $cache; Reason = 'explicitly-prunable-completed-ref-cache' }) | Out-Null
     }
 }
 
-$uniqueDeletions = @($deletions | Sort-Object { [int64]$_.Cache.id } -Unique)
+$deletionsById = [System.Collections.Generic.Dictionary[int64, object]]::new()
+foreach ($entry in $deletions) {
+    $cacheId = [int64]$entry.Cache.id
+    if (-not $deletionsById.ContainsKey($cacheId)) {
+        $deletionsById.Add($cacheId, $entry)
+    }
+}
+$uniqueDeletions = @($deletionsById.Values | Sort-Object { [int64]$_.Cache.id })
 $bytes = [int64](($uniqueDeletions | ForEach-Object { [int64]$_.Cache.sizeInBytes } | Measure-Object -Sum).Sum)
 $mainRustDependencyCaches = @(
     $caches |
@@ -252,6 +341,9 @@ if ($VerifyCurrentGeneration) {
     releaseCandidates = $obsoleteReleaseTags.Count
     releaseAssetCandidates = $obsoleteReleaseAssets.Count
     retainedPerRollingFamily = $RetainPerRollingFamily
+    protectedRefs = @($protectedRefs | Sort-Object)
+    prunableRefs = @($prunableRefs | Sort-Object)
+    pruneCurrentRef = [bool]$PruneCurrentRef
     verifyCurrentGeneration = [bool]$VerifyCurrentGeneration
     verificationPassed = $verificationPassed
     expectedRustDependencyKey = $normalizedExpectedRustDependencyKey
