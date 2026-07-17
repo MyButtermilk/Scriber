@@ -1842,8 +1842,21 @@ def test_html_summary_uses_app_owned_editorial_theme_in_both_modes() -> None:
         assert token in styles
     assert '.summary-document[data-summary-format="html"] > section:first-of-type' in styles
     assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in styles
+    assert ".summary-toc__path-active" in styles
+    assert "stroke-dasharray var(--duration-medium) var(--ease-smooth-out)" in styles
+    assert '.summary-toc__link[aria-current="location"]::before' in styles
     assert 'className="summary-accent-icon w-4 h-4"' in detail
     assert 'data-summary-format="html"' in renderer
+    assert 'className="summary-toc__path"' in renderer
+    assert "new IntersectionObserver(resolveActiveHeading" in renderer
+    assert "new ResizeObserver(connectObserver)" in renderer
+    assert 'root.addEventListener("scroll", scheduleResolve, { passive: true });' in renderer
+    assert "window.requestAnimationFrame" in renderer
+    assert "navigationTargetRef.current = id;" in renderer
+    assert "scheduleNavigationRelease(4_000);" in renderer
+    assert "scheduleNavigationRelease(180);" in renderer
+    assert "if (!targetIsVisible) resolveActiveHeading();" in renderer
+    assert "window.addEventListener(\"scroll\"" not in renderer
 
 
 def test_responsive_ui_polish_contracts_are_preserved() -> None:
