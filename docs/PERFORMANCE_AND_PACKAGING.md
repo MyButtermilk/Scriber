@@ -617,8 +617,9 @@ Release workflow:
   gates before the installer consumes restored outputs. If a restored Profile B
   output fails validation, the workflow falls back to a fresh MSYS2 build.
 - The bounded exact Tauri app product uses a v2 content key over the concrete
-  version, frontend/Rust/config sources, toolchain/target, updater runtime, and
-  Outlook configuration. Its manifest preserves the producing commit and
+  version, frontend/Rust/config sources, Node version, the binary-producing
+  workflow/helper scripts, toolchain/target, updater runtime, and Outlook
+  configuration. Its manifest preserves the producing commit and
   validates the executable length, SHA-256, native version, target, and profile,
   but an unrelated Python-only commit no longer invalidates the product. An
   explicit non-main workflow dispatch may bootstrap only this product in the

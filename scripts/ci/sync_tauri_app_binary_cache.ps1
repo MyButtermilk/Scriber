@@ -137,6 +137,7 @@ try {
         [string]$manifest.apiVersion -eq "2" -and
         [string]$manifest.cacheKey -eq $CacheKey -and
         [string]$manifest.appVersion -eq $Version -and
+        [string]$manifest.binaryVersion -eq $actualVersion -and
         [string]$manifest.target -eq "x86_64-pc-windows-msvc" -and
         [string]$manifest.profile -eq "release" -and
         $commitProvenanceValid -and

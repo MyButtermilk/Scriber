@@ -1335,8 +1335,9 @@ Already implemented and should not be regressed:
 - The Rust Actions cache is keyed by normalized Cargo dependency metadata plus
   resolved toolchain/target/profile, not by ordinary app source. The exact
   Tauri app binary is a separate small v2 cache keyed by full Rust/frontend
-  sources, concrete version, toolchain, target/profile, updater runtime, and
-  Outlook configuration fingerprints. Its attestation retains the producing
+  sources, the Node version and binary-producing workflow/helper scripts,
+  concrete version, toolchain, target/profile, updater runtime, and Outlook
+  configuration fingerprints. Its attestation retains the producing
   commit as provenance without making unrelated Python-only commits miss. A
   validated hit may run bundle-only packaging; NSIS,
   updater signatures, checksums, and publication evidence are always fresh.

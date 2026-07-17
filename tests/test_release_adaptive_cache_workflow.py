@@ -364,9 +364,18 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
 
     fixture_root = REPO_ROOT / "build" / f"test-tauri-key-{uuid.uuid4().hex}"
     touched_paths = [
+        REPO_ROOT / ".node-version",
+        REPO_ROOT / ".github/workflows/release-windows.yml",
         REPO_ROOT / "Frontend/client/src/lib/api-types.ts",
         REPO_ROOT / "Frontend/src-tauri/src/audio_frame_pipe.rs",
         REPO_ROOT / "Frontend/src-tauri/tauri.conf.json",
+        REPO_ROOT / "scripts/create_release_metadata.py",
+        REPO_ROOT / "scripts/sync_version.py",
+        REPO_ROOT / "scripts/ci/write_release_cache_keys.ps1",
+        REPO_ROOT / "scripts/ci/finalize_release_cache_keys.ps1",
+        REPO_ROOT / "scripts/ci/prepare_tauri_app.ps1",
+        REPO_ROOT / "scripts/ci/prepare_cold_tauri_product.ps1",
+        REPO_ROOT / "scripts/ci/sync_tauri_app_binary_cache.ps1",
     ]
     original_bytes = {path: path.read_bytes() for path in touched_paths}
     outputs: list[Path] = []
@@ -427,9 +436,18 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
         tauri_manifest = baseline["tauri-app-binary.txt"]
         assert b"release-runtime\tsource-commit\t" not in tauri_manifest
         for relative_path in (
+            b".node-version",
+            b".github/workflows/release-windows.yml",
             b"Frontend/client/src/lib/api-types.ts",
             b"Frontend/src-tauri/src/audio_frame_pipe.rs",
             b"Frontend/src-tauri/tauri.conf.json",
+            b"scripts/create_release_metadata.py",
+            b"scripts/sync_version.py",
+            b"scripts/ci/write_release_cache_keys.ps1",
+            b"scripts/ci/finalize_release_cache_keys.ps1",
+            b"scripts/ci/prepare_tauri_app.ps1",
+            b"scripts/ci/prepare_cold_tauri_product.ps1",
+            b"scripts/ci/sync_tauri_app_binary_cache.ps1",
         ):
             assert relative_path in tauri_manifest
 
@@ -441,7 +459,12 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
         assert all(item["tauri-app-binary.txt"] != tauri_manifest for item in runtime_variants)
 
         for index, path in enumerate(touched_paths):
-            suffix = b"\n " if path.suffix == ".json" else b"\n// cache-key sensitivity fixture\n"
+            if path.suffix == ".json":
+                suffix = b"\n "
+            elif path.suffix in {".ts", ".rs"}:
+                suffix = b"\n// cache-key sensitivity fixture\n"
+            else:
+                suffix = b"\n# cache-key sensitivity fixture\n"
             path.write_bytes(original_bytes[path] + suffix)
             changed = generate(f"binary-input-{index}")
             assert changed["tauri-app-binary.txt"] != tauri_manifest
@@ -525,6 +548,8 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
         assert export_outputs["usable"] == "true"
         manifest_path = cache_root / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        cached_binary_path = cache_root / "scriber-desktop.exe"
+        cached_binary = cached_binary_path.read_bytes()
         assert manifest["apiVersion"] == "2"
         assert manifest["sourceCommit"] == "1" * 40
 
@@ -536,30 +561,41 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
         expected_sha256 = hashlib.sha256(Path(gh).read_bytes()).hexdigest()
         assert hashlib.sha256(binary_path.read_bytes()).hexdigest() == expected_sha256
 
-        manifest["cacheKey"] = "f" * 64
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        binary_path.unlink()
-        wrong_key, wrong_key_outputs = invoke("Import", commit="2" * 40)
-        assert wrong_key.returncode == 0, wrong_key.stderr
-        assert wrong_key_outputs["usable"] == "false"
-        assert not binary_path.exists()
+        def assert_rejected(
+            name: str,
+            *,
+            manifest_changes: dict[str, object] | None = None,
+            executable_changes: dict[str, object] | None = None,
+            commit: str = "2" * 40,
+            expected_version: str = version,
+            tamper_binary: bool = False,
+        ) -> None:
+            candidate = json.loads(json.dumps(manifest))
+            candidate.update(manifest_changes or {})
+            candidate["executable"].update(executable_changes or {})
+            manifest_path.write_text(json.dumps(candidate), encoding="utf-8")
+            cached_binary_path.write_bytes(cached_binary + (b"tamper" if tamper_binary else b""))
+            binary_path.unlink(missing_ok=True)
+            rejected, outputs = invoke(
+                "Import", commit=commit, expected_version=expected_version
+            )
+            assert rejected.returncode == 0, f"{name}: {rejected.stderr}"
+            assert outputs["usable"] == "false", name
+            assert not binary_path.exists(), name
 
-        manifest["cacheKey"] = cache_key
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        with (cache_root / "scriber-desktop.exe").open("ab") as handle:
-            handle.write(b"tamper")
-        tampered, tampered_outputs = invoke("Import", commit="2" * 40)
-        assert tampered.returncode == 0, tampered.stderr
-        assert tampered_outputs["usable"] == "false"
-        assert not binary_path.exists()
-
-        shutil.copy2(gh, cache_root / "scriber-desktop.exe")
-        wrong_version, wrong_version_outputs = invoke(
-            "Import", commit="2" * 40, expected_version="999.999.999"
-        )
-        assert wrong_version.returncode == 0, wrong_version.stderr
-        assert wrong_version_outputs["usable"] == "false"
-        assert not binary_path.exists()
+        assert_rejected("cache key", manifest_changes={"cacheKey": "f" * 64})
+        assert_rejected("API version", manifest_changes={"apiVersion": "1"})
+        assert_rejected("app version", manifest_changes={"appVersion": "999.999.999"})
+        assert_rejected("binary version", manifest_changes={"binaryVersion": "999.999.999"})
+        assert_rejected("target", manifest_changes={"target": "aarch64-pc-windows-msvc"})
+        assert_rejected("profile", manifest_changes={"profile": "debug"})
+        assert_rejected("source commit format", manifest_changes={"sourceCommit": "not-a-commit"})
+        assert_rejected("missing source commit", manifest_changes={"sourceCommit": ""})
+        assert_rejected("caller commit format", commit="not-a-commit")
+        assert_rejected("length", executable_changes={"length": len(cached_binary) + 1})
+        assert_rejected("SHA-256", executable_changes={"sha256": "0" * 64})
+        assert_rejected("tampered executable", tamper_binary=True)
+        assert_rejected("expected version", expected_version="999.999.999")
     finally:
         shutil.rmtree(fixture_root, ignore_errors=True)
 
