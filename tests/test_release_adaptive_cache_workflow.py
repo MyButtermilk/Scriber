@@ -369,7 +369,9 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
         REPO_ROOT / "Frontend/client/src/lib/api-types.ts",
         REPO_ROOT / "Frontend/src-tauri/src/audio_frame_pipe.rs",
         REPO_ROOT / "Frontend/src-tauri/tauri.conf.json",
+        REPO_ROOT / "scripts/build_windows.ps1",
         REPO_ROOT / "scripts/create_release_metadata.py",
+        REPO_ROOT / "scripts/prepare_tauri_updater_config.py",
         REPO_ROOT / "scripts/sync_version.py",
         REPO_ROOT / "scripts/ci/write_release_cache_keys.ps1",
         REPO_ROOT / "scripts/ci/finalize_release_cache_keys.ps1",
@@ -441,7 +443,9 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
             b"Frontend/client/src/lib/api-types.ts",
             b"Frontend/src-tauri/src/audio_frame_pipe.rs",
             b"Frontend/src-tauri/tauri.conf.json",
+            b"scripts/build_windows.ps1",
             b"scripts/create_release_metadata.py",
+            b"scripts/prepare_tauri_updater_config.py",
             b"scripts/sync_version.py",
             b"scripts/ci/write_release_cache_keys.ps1",
             b"scripts/ci/finalize_release_cache_keys.ps1",
@@ -480,6 +484,17 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
     assert "scriber-tauri-app-binary-v2-" in workflow
     assert "SCRIBER_SAVE_REF_LOCAL_TAURI_CACHE" in workflow
     assert "github.ref != 'refs/heads/main'" in workflow
+    assert 'schemaVersion = 2' in workflow
+    assert 'runIdentity = [ordered]@{' in workflow
+    assert 'runId = [int64]"${{ github.run_id }}"' in workflow
+    assert 'headSha = "${{ github.sha }}"' in workflow
+    assert 'cacheKeyParity = [ordered]@{' in workflow
+    assert '$allFingerprintsMatch = $componentMatches.backendSidecar' in workflow
+    assert 'Release cache summary parity disagrees with the parity gate output' in workflow
+    assert '$tauriAppBinaryImportUsable = Normalize-CacheOutput' in workflow
+    assert 'actions-cache-exact-validated' in workflow
+    assert 'actions-cache-exact-rejected' in workflow
+    assert 'importUsable = $tauriAppBinaryImportUsable -eq "true"' in workflow
 
 
 def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() -> None:

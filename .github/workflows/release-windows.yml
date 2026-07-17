@@ -657,10 +657,31 @@ jobs:
         id: cache-key-parity
         shell: pwsh
         run: |
-          $backendMatches = "${{ steps.final-cache-keys.outputs.backend-sidecar-hash }}" -eq "${{ needs.release-plan.outputs.backend-sidecar-hash }}"
-          $runtimeMatches = "${{ steps.final-cache-keys.outputs.backend-runtime-hash }}" -eq "${{ needs.release-plan.outputs.backend-runtime-hash }}"
-          $tauriMatches = "${{ steps.final-cache-keys.outputs.tauri-app-binary-hash }}" -eq "${{ needs.release-plan.outputs.tauri-app-binary-hash }}"
+          $plannerBackend = "${{ needs.release-plan.outputs.backend-sidecar-hash }}"
+          $plannerRuntime = "${{ needs.release-plan.outputs.backend-runtime-hash }}"
+          $plannerTauri = "${{ needs.release-plan.outputs.tauri-app-binary-hash }}"
+          $packagerBackend = "${{ steps.final-cache-keys.outputs.backend-sidecar-hash }}"
+          $packagerRuntime = "${{ steps.final-cache-keys.outputs.backend-runtime-hash }}"
+          $packagerTauri = "${{ steps.final-cache-keys.outputs.tauri-app-binary-hash }}"
+          foreach ($entry in @(
+            [pscustomobject]@{ Name = "planner backend"; Value = $plannerBackend },
+            [pscustomobject]@{ Name = "planner runtime"; Value = $plannerRuntime },
+            [pscustomobject]@{ Name = "planner Tauri"; Value = $plannerTauri },
+            [pscustomobject]@{ Name = "packager backend"; Value = $packagerBackend },
+            [pscustomobject]@{ Name = "packager runtime"; Value = $packagerRuntime },
+            [pscustomobject]@{ Name = "packager Tauri"; Value = $packagerTauri }
+          )) {
+            if ([string]$entry.Value -notmatch '^[0-9a-f]{64}$') {
+              throw "Cross-runner cache-key parity received an invalid $($entry.Name) SHA-256 fingerprint."
+            }
+          }
+          $backendMatches = $packagerBackend -ceq $plannerBackend
+          $runtimeMatches = $packagerRuntime -ceq $plannerRuntime
+          $tauriMatches = $packagerTauri -ceq $plannerTauri
           $matches = $backendMatches -and $runtimeMatches -and $tauriMatches
+          "backend-sidecar-matches=$(if ($backendMatches) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "backend-runtime-matches=$(if ($runtimeMatches) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tauri-app-binary-matches=$(if ($tauriMatches) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "matches=$(if ($matches) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           if (-not $matches) {
             Write-Warning "Linux planner and Windows packager cache keys differed; cold artifacts will be ignored and the normal path retained."
@@ -1144,6 +1165,8 @@ jobs:
           $ffmpegProfileBArtifactRestored = Normalize-CacheOutput "${{ steps.component-cache-artifacts.outputs.ffmpeg-profile-b-restored }}"
           $tauriBundlerCacheHit = Normalize-CacheOutput "${{ steps.tauri-bundler-cache.outputs.cache-hit }}"
           $tauriAppBinaryCacheHit = Normalize-CacheOutput "${{ steps.tauri-app-binary-cache.outputs.cache-hit }}"
+          $tauriAppBinaryImportUsable = Normalize-CacheOutput "${{ steps.tauri-app-binary-import.outputs.usable }}"
+          $tauriAppBinaryImportSha256 = Normalize-CacheOutput "${{ steps.tauri-app-binary-import.outputs.sha256 }}"
 
           if ($rustBuildCacheHit -eq "true") {
             $rustBuildEffective = "actions-cache-exact"
@@ -1159,7 +1182,15 @@ jobs:
 
           $backendSidecarEffective = if ($coldProductsUsed) { "cold-product-artifact" } elseif ($backendSidecarValidated -eq "true") { Get-EffectiveCacheSource $backendSidecarCacheHit $backendSidecarArtifactRestored } else { "invalid-or-miss" }
           $backendRuntimeEffective = if ($coldProductsUsed) { "cold-product-artifact" } elseif ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeValidated -eq "true") { Get-EffectiveCacheSource $backendRuntimeCacheHit $backendRuntimeArtifactRestored } else { "miss" }
-          $tauriAppEffective = if ($coldProductsUsed) { "cold-product-artifact" } else { Get-EffectiveCacheSource $tauriAppBinaryCacheHit "empty" }
+          $tauriAppEffective = if ($coldProductsUsed) {
+            "cold-product-artifact"
+          } elseif ($tauriAppBinaryImportUsable -eq "true") {
+            "actions-cache-exact-validated"
+          } elseif ($tauriAppBinaryCacheHit -eq "true") {
+            "actions-cache-exact-rejected"
+          } else {
+            "miss"
+          }
           $pythonVenvEffective = if ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "validated-restored-environment" } else { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored }
           $pythonWheelhouseEffective = if ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "not-needed-validated-venv" } else { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored }
           $pythonPipStoreNotNeeded = (
@@ -1218,8 +1249,51 @@ jobs:
           }
           $cacheSummaryPath = "build\release-cache-summary.json"
           New-Item -ItemType Directory -Force -Path (Split-Path -Parent $cacheSummaryPath) | Out-Null
+          $plannerFingerprints = [ordered]@{
+            backendSidecar = "${{ needs.release-plan.outputs.backend-sidecar-hash }}"
+            backendRuntime = "${{ needs.release-plan.outputs.backend-runtime-hash }}"
+            tauriAppBinary = "${{ needs.release-plan.outputs.tauri-app-binary-hash }}"
+          }
+          $packagerFingerprints = [ordered]@{
+            backendSidecar = "${{ steps.final-cache-keys.outputs.backend-sidecar-hash }}"
+            backendRuntime = "${{ steps.final-cache-keys.outputs.backend-runtime-hash }}"
+            tauriAppBinary = "${{ steps.final-cache-keys.outputs.tauri-app-binary-hash }}"
+          }
+          foreach ($side in @($plannerFingerprints, $packagerFingerprints)) {
+            foreach ($name in @("backendSidecar", "backendRuntime", "tauriAppBinary")) {
+              if ([string]$side[$name] -notmatch '^[0-9a-f]{64}$') {
+                throw "Release cache summary received an invalid $name SHA-256 fingerprint."
+              }
+            }
+          }
+          $componentMatches = [ordered]@{
+            backendSidecar = [string]$plannerFingerprints.backendSidecar -ceq [string]$packagerFingerprints.backendSidecar
+            backendRuntime = [string]$plannerFingerprints.backendRuntime -ceq [string]$packagerFingerprints.backendRuntime
+            tauriAppBinary = [string]$plannerFingerprints.tauriAppBinary -ceq [string]$packagerFingerprints.tauriAppBinary
+          }
+          $allFingerprintsMatch = $componentMatches.backendSidecar -and $componentMatches.backendRuntime -and $componentMatches.tauriAppBinary
+          $reportedParity = "${{ steps.cache-key-parity.outputs.matches }}" -eq "true"
+          if ($reportedParity -ne $allFingerprintsMatch) {
+            throw "Release cache summary parity disagrees with the parity gate output."
+          }
           [ordered]@{
+            schemaVersion = 2
             generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+            runIdentity = [ordered]@{
+              repository = "${{ github.repository }}"
+              runId = [int64]"${{ github.run_id }}"
+              runAttempt = [int]"${{ github.run_attempt }}"
+              headSha = "${{ github.sha }}"
+              ref = "${{ github.ref }}"
+              eventName = "${{ github.event_name }}"
+            }
+            cacheKeyParity = [ordered]@{
+              apiVersion = "1"
+              planner = $plannerFingerprints
+              packager = $packagerFingerprints
+              componentMatches = $componentMatches
+              allMatch = $allFingerprintsMatch
+            }
             refreshReleaseCacheArtifacts = $env:SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS
             saveActionsCaches = $env:SCRIBER_SAVE_ACTIONS_CACHES
             publishReleaseCacheArtifacts = $env:SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS
@@ -1236,6 +1310,11 @@ jobs:
             backendSidecarPrebuilt = $backendSidecarPrebuilt
             backendRuntimeValidated = $backendRuntimeValidated
             coldProductsUsed = $coldProductsUsed
+            tauriAppBinary = [ordered]@{
+              actionsCacheExact = $tauriAppBinaryCacheHit -eq "true"
+              importUsable = $tauriAppBinaryImportUsable -eq "true"
+              importedSha256 = $tauriAppBinaryImportSha256
+            }
             pythonVenvValidated = $pythonVenvValidated
           } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $cacheSummaryPath -Encoding utf8
           Write-Host "Wrote machine-readable cache summary: $cacheSummaryPath"
