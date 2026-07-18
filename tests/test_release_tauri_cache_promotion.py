@@ -15,8 +15,24 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PRUNE_SCRIPT = REPO_ROOT / "scripts" / "ci" / "prune_obsolete_release_caches.ps1"
+CLI_CONTRACT_PATH = REPO_ROOT / "packaging" / "tauri-cli-cache-contract.json"
 REPO = "MyButtermilk/Scriber"
 HEAD_SHA = "9" * 40
+CLI_CONTRACT = json.loads(CLI_CONTRACT_PATH.read_text(encoding="utf-8"))
+CLI_CONTRACT_SHA256 = hashlib.sha256(CLI_CONTRACT_PATH.read_bytes()).hexdigest()
+REQUIRED_EVIDENCE_CHECKS = (
+    "evaluated",
+    "identity",
+    "cacheReuse",
+    "cacheKeyBinding",
+    "cliContract",
+    "cliVersion",
+    "stepIsolation",
+    "cacheSummary",
+    "buildTiming",
+    "releaseMetadata",
+    "bundleIdentity",
+)
 
 
 def _utc_text(value: datetime | None = None) -> str:
@@ -42,17 +58,36 @@ def _cache(
     }
 
 
+def _bound_cache(
+    cache_id: int,
+    generation: int,
+    manifest_fingerprint: str,
+    created_at: str,
+    *,
+    ref: str = "refs/heads/main",
+) -> dict[str, object]:
+    actions_fingerprint = hashlib.sha256(bytes.fromhex(manifest_fingerprint)).hexdigest()
+    cache = _cache(cache_id, generation, actions_fingerprint, created_at, ref=ref)
+    cache["manifestFingerprint"] = manifest_fingerprint
+    return cache
+
+
 def _evidence(cache: dict[str, object], *, generation: int) -> dict[str, object]:
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "generatedAtUtc": _utc_text(),
         "repo": REPO,
+        "consumption": {
+            "mode": "deferred-terminal-run",
+            "producerRunMustBeCompleted": True,
+        },
         "cache": {
             "id": cache["id"],
             "key": cache["key"],
             "ref": cache["ref"],
             "generation": generation,
             "fingerprint": str(cache["key"]).rsplit("-", 1)[1],
+            "manifestFingerprint": cache["manifestFingerprint"],
         },
         "run": {
             "id": 42,
@@ -64,6 +99,20 @@ def _evidence(cache: dict[str, object], *, generation: int) -> dict[str, object]
             "exactCacheHit": True,
             "imported": True,
             "seedMiss": False,
+        },
+        "eligible": True,
+        "reason": "eligible",
+        "reasons": [],
+        "checks": {name: True for name in REQUIRED_EVIDENCE_CHECKS},
+        "cliContract": {
+            "sha256": CLI_CONTRACT_SHA256,
+            "version": CLI_CONTRACT["version"],
+            "versionOutput": CLI_CONTRACT["versionOutput"],
+        },
+        "bundle": {
+            "name": "Scriber_0.5.37_x64-setup.exe",
+            "length": 123,
+            "sha256": "f" * 64,
         },
     }
 
@@ -258,7 +307,7 @@ def test_valid_promotion_keeps_exact_evidenced_cache_and_retires_older_generatio
 ) -> None:
     old_v2 = _cache(10, 2, "a" * 64, "2026-07-17T10:00:00Z")
     new_v2 = _cache(11, 2, "b" * 64, "2026-07-17T11:00:00Z")
-    promoted_v3 = _cache(20, 3, "c" * 64, "2026-07-17T12:00:00Z")
+    promoted_v3 = _bound_cache(20, 3, "c" * 64, "2026-07-17T12:00:00Z")
     newer_duplicate_v3 = _cache(21, 3, "d" * 64, "2026-07-17T13:00:00Z")
     evidence_path, evidence_sha = _write_evidence(
         tmp_path,
@@ -289,7 +338,7 @@ def test_valid_promotion_keeps_exact_evidenced_cache_and_retires_older_generatio
         "key": promoted_v3["key"],
         "ref": "refs/heads/main",
         "generation": 3,
-        "fingerprint": "c" * 64,
+        "fingerprint": hashlib.sha256(bytes.fromhex("c" * 64)).hexdigest(),
     }
     assert result["tauriPromotionProposedDeletionIds"] == [10, 11, 21]
     assert result["tauriPromotionDeletedIds"] == [10, 11, 21]
@@ -304,8 +353,18 @@ def test_valid_promotion_keeps_exact_evidenced_cache_and_retires_older_generatio
         ("missing-file", "evidence-file-missing"),
         ("hash-mismatch", "evidence-sha256-mismatch"),
         ("malformed", "evidence-malformed"),
+        ("old-schema", "evidence-schema-mismatch"),
+        ("ineligible", "evidence-eligibility-invalid"),
+        ("wrong-reason", "evidence-eligibility-invalid"),
+        ("failed-check", "evidence-checks-invalid"),
+        ("extra-check", "evidence-checks-invalid"),
+        ("immediate-consumption", "evidence-consumption-mode-invalid"),
+        ("cli-contract", "evidence-cli-contract-mismatch"),
+        ("bundle-identity", "evidence-bundle-identity-invalid"),
+        ("manifest-key-binding", "evidence-cache-key-fields-mismatch"),
         ("stale-evidence", "evidence-stale"),
         ("cache-mismatch", "evidence-cache-not-unique"),
+        ("in-progress-run", "github-run-not-successful"),
         ("failed-run", "github-run-not-successful"),
         ("run-binding-mismatch", "github-run-binding-mismatch"),
         ("seed-miss", "seed-miss-not-promotable"),
@@ -319,7 +378,7 @@ def test_invalid_promotion_evidence_suppresses_every_mutation(
 ) -> None:
     old_v2 = _cache(10, 2, "a" * 64, "2026-07-17T10:00:00Z")
     new_v2 = _cache(11, 2, "b" * 64, "2026-07-17T11:00:00Z")
-    promoted_v3 = _cache(20, 3, "c" * 64, "2026-07-17T12:00:00Z")
+    promoted_v3 = _bound_cache(20, 3, "c" * 64, "2026-07-17T12:00:00Z")
     obsolete_generic = {
         "id": 30,
         "key": "setup-python-obsolete",
@@ -332,10 +391,31 @@ def test_invalid_promotion_evidence_suppresses_every_mutation(
     run = _successful_run()
     expected_tauri_key = str(promoted_v3["key"])
 
-    if case == "stale-evidence":
+    if case == "old-schema":
+        evidence["schemaVersion"] = 1
+    elif case == "ineligible":
+        evidence["eligible"] = False
+    elif case == "wrong-reason":
+        evidence["reason"] = "invariant-failed"
+    elif case == "failed-check":
+        evidence["checks"]["bundleIdentity"] = False  # type: ignore[index]
+    elif case == "extra-check":
+        evidence["checks"]["notContracted"] = True  # type: ignore[index]
+    elif case == "immediate-consumption":
+        evidence["consumption"]["mode"] = "same-run"  # type: ignore[index]
+    elif case == "cli-contract":
+        evidence["cliContract"]["sha256"] = "0" * 64  # type: ignore[index]
+    elif case == "bundle-identity":
+        evidence["bundle"]["length"] = 0  # type: ignore[index]
+    elif case == "manifest-key-binding":
+        evidence["cache"]["manifestFingerprint"] = "d" * 64  # type: ignore[index]
+    elif case == "stale-evidence":
         evidence["generatedAtUtc"] = _utc_text(datetime.now(timezone.utc) - timedelta(hours=25))
     elif case == "cache-mismatch":
         evidence["cache"]["id"] = 999  # type: ignore[index]
+    elif case == "in-progress-run":
+        run["status"] = "in_progress"
+        run["conclusion"] = None
     elif case == "failed-run":
         run["conclusion"] = "failure"
     elif case == "run-binding-mismatch":
@@ -393,7 +473,7 @@ def test_invalid_promotion_evidence_suppresses_every_mutation(
 
 def test_valid_promotion_dry_run_reports_without_mutation(tmp_path: Path) -> None:
     old_v2 = _cache(10, 2, "a" * 64, "2026-07-17T10:00:00Z")
-    promoted_v3 = _cache(20, 3, "c" * 64, "2026-07-17T12:00:00Z")
+    promoted_v3 = _bound_cache(20, 3, "c" * 64, "2026-07-17T12:00:00Z")
     evidence_path, evidence_sha = _write_evidence(
         tmp_path,
         _evidence(promoted_v3, generation=3),

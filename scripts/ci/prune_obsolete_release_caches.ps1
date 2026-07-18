@@ -43,6 +43,81 @@ function Get-Sha256Hex {
     return ([System.BitConverter]::ToString($digest) -replace '-', '').ToLowerInvariant()
 }
 
+function Get-CheckedInTauriCliContract {
+    $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
+    $contractPath = Join-Path $repoRoot "packaging\tauri-cli-cache-contract.json"
+    if (-not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
+        throw "Checked-in Tauri CLI cache contract is missing: $contractPath"
+    }
+    $contractItem = Get-Item -LiteralPath $contractPath
+    if (($contractItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Checked-in Tauri CLI cache contract must not be a reparse point."
+    }
+    if ([int64]$contractItem.Length -le 0 -or [int64]$contractItem.Length -gt 64KB) {
+        throw "Checked-in Tauri CLI cache contract has an invalid size."
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes($contractItem.FullName)
+    if (
+        ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) -or
+        ($bytes -contains [byte]0x0D) -or
+        $bytes[$bytes.Length - 1] -ne [byte]0x0A
+    ) {
+        throw "Checked-in Tauri CLI cache contract must be BOM-free UTF-8 with LF-only line endings and a final LF."
+    }
+
+    try {
+        $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
+        $text = $strictUtf8.GetString($bytes)
+        $contract = $text | ConvertFrom-Json
+    } catch {
+        throw "Checked-in Tauri CLI cache contract is not strict UTF-8 JSON."
+    }
+    if (
+        $null -eq $contract -or
+        [string]$contract.schemaVersion -cne '1' -or
+        [string]$contract.name -cne 'scriber-tauri-cli-cache-contract' -or
+        [string]$contract.target -cne 'win32-x64-msvc' -or
+        [string]$contract.version -cnotmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$' -or
+        [string]$contract.versionOutput -cne "tauri-cli $([string]$contract.version)" -or
+        [string]$contract.entrypoint -cne 'tauri-cli/node_modules/@tauri-apps/cli/tauri.js'
+    ) {
+        throw "Checked-in Tauri CLI cache contract identity is invalid."
+    }
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha256.ComputeHash($bytes)
+    } finally {
+        $sha256.Dispose()
+    }
+    return [pscustomobject][ordered]@{
+        sha256 = ([System.BitConverter]::ToString($digest) -replace '-', '').ToLowerInvariant()
+        version = [string]$contract.version
+        versionOutput = [string]$contract.versionOutput
+    }
+}
+
+function Convert-ManifestFingerprintToHashFilesFingerprint {
+    param([Parameter(Mandatory = $true)][string]$Fingerprint)
+
+    $normalized = ([string]$Fingerprint).Trim().ToLowerInvariant()
+    if ($normalized -cnotmatch '^[0-9a-f]{64}$') {
+        throw "Tauri app manifest fingerprint must be a lowercase SHA-256 digest."
+    }
+    $manifestDigestBytes = New-Object byte[] 32
+    for ($index = 0; $index -lt $manifestDigestBytes.Length; $index++) {
+        $manifestDigestBytes[$index] = [Convert]::ToByte($normalized.Substring($index * 2, 2), 16)
+    }
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hashFilesDigest = $sha256.ComputeHash($manifestDigestBytes)
+    } finally {
+        $sha256.Dispose()
+    }
+    return -join ($hashFilesDigest | ForEach-Object { $_.ToString('x2') })
+}
+
 if ($VerifyCurrentGeneration -and $Apply) {
     throw "Current-generation verification must run after apply in a fresh inventory pass."
 }
@@ -54,7 +129,7 @@ if (
 }
 if (
     $VerifyCurrentGeneration -and
-    $normalizedExpectedTauriAppKey -cnotmatch '^scriber-tauri-app-binary-v[123]-Windows-[0-9a-f]{64}$'
+    $normalizedExpectedTauriAppKey -cnotmatch '^scriber-tauri-app-binary-v3-Windows-[0-9a-f]{64}$'
 ) {
     throw "Current-generation verification requires the full expected Tauri app cache key."
 }
@@ -134,13 +209,27 @@ $tauriFamily = [pscustomobject]@{
     GenerationPattern = '^scriber-tauri-app-binary-v(?<generation>[123])-Windows-'
     KeyPattern = '^scriber-tauri-app-binary-v(?<generation>[123])-Windows-(?<fingerprint>[0-9a-f]{64})$'
 }
+$checkedInTauriCliContract = $null
+$checkedInTauriCliContractInvalid = $false
+if ($tauriPromotionRequested) {
+    try {
+        $checkedInTauriCliContract = Get-CheckedInTauriCliContract
+    } catch {
+        $checkedInTauriCliContractInvalid = $true
+    }
+}
 
 if ($tauriPromotionRequested) {
     $tauriPromotionReason = 'paired-parameters-required'
     $mutationSuppressed = $true
 
-    if ($tauriPromotionEvidencePathSupplied -and $tauriPromotionEvidenceShaSupplied -and $tauriPromotionExpectedKeySupplied) {
-        if ($normalizedExpectedTauriAppKey -cnotmatch '^scriber-tauri-app-binary-v[123]-Windows-[0-9a-f]{64}$') {
+    # Promotion evidence is passive producer output. Authorization happens only
+    # in a later invocation after GitHub reports that exact producer attempt as
+    # completed successfully; same-run evidence is never terminal proof.
+    if ($checkedInTauriCliContractInvalid) {
+        $tauriPromotionReason = 'checked-in-cli-contract-invalid'
+    } elseif ($tauriPromotionEvidencePathSupplied -and $tauriPromotionEvidenceShaSupplied -and $tauriPromotionExpectedKeySupplied) {
+        if ($normalizedExpectedTauriAppKey -cnotmatch '^scriber-tauri-app-binary-v3-Windows-[0-9a-f]{64}$') {
             $tauriPromotionReason = 'invalid-expected-tauri-key'
         } elseif ($normalizedExpectedTauriPromotionEvidenceSha256 -cnotmatch '^[0-9a-f]{64}$') {
             $tauriPromotionReason = 'invalid-expected-evidence-sha256'
@@ -170,13 +259,94 @@ if ($tauriPromotionRequested) {
             }
 
             if ($null -ne $evidence) {
-                $requiredTopLevelProperties = @('schemaVersion', 'generatedAtUtc', 'repo', 'cache', 'run', 'reuse')
+                $requiredTopLevelProperties = @(
+                    'schemaVersion',
+                    'generatedAtUtc',
+                    'repo',
+                    'consumption',
+                    'cache',
+                    'run',
+                    'reuse',
+                    'eligible',
+                    'reason',
+                    'reasons',
+                    'checks',
+                    'cliContract',
+                    'bundle'
+                )
+                $requiredEvidenceChecks = @(
+                    'evaluated',
+                    'identity',
+                    'cacheReuse',
+                    'cacheKeyBinding',
+                    'cliContract',
+                    'cliVersion',
+                    'stepIsolation',
+                    'cacheSummary',
+                    'buildTiming',
+                    'releaseMetadata',
+                    'bundleIdentity'
+                )
                 $missingTopLevelProperty = @(
                     $requiredTopLevelProperties |
                         Where-Object { $null -eq $evidence.PSObject.Properties[$_] }
                 ).Count -gt 0
-                if ($missingTopLevelProperty -or [string]$evidence.schemaVersion -cne '1') {
+                $evidenceChecksInvalid = $null -eq $evidence.checks
+                if (-not $evidenceChecksInvalid) {
+                    $actualEvidenceCheckProperties = @($evidence.checks.PSObject.Properties)
+                    $evidenceChecksInvalid = (
+                        $actualEvidenceCheckProperties.Count -ne $requiredEvidenceChecks.Count -or
+                        @(
+                            $requiredEvidenceChecks |
+                                Where-Object {
+                                    $property = $evidence.checks.PSObject.Properties[$_]
+                                    $null -eq $property -or
+                                    $property.Value -isnot [bool] -or
+                                    -not [bool]$property.Value
+                                }
+                        ).Count -gt 0
+                    )
+                }
+                [int64]$evidenceBundleLength = 0
+                $evidenceBundleInvalid = (
+                    $null -eq $evidence.bundle -or
+                    @(
+                        @('name', 'length', 'sha256') |
+                            Where-Object { $null -eq $evidence.bundle.PSObject.Properties[$_] }
+                    ).Count -gt 0 -or
+                    [string]$evidence.bundle.name -cnotmatch '^Scriber_\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?_x64-setup\.exe$' -or
+                    ($evidence.bundle.length -isnot [int] -and $evidence.bundle.length -isnot [long]) -or
+                    ([string]$evidence.bundle.length).Trim() -cnotmatch '^[1-9][0-9]*$' -or
+                    -not [int64]::TryParse(([string]$evidence.bundle.length).Trim(), [ref]$evidenceBundleLength) -or
+                    [string]$evidence.bundle.sha256 -cnotmatch '^[0-9a-f]{64}$'
+                )
+                if ($missingTopLevelProperty -or [string]$evidence.schemaVersion -cne '2') {
                     $tauriPromotionReason = 'evidence-schema-mismatch'
+                } elseif (
+                    $evidence.eligible -isnot [bool] -or
+                    -not [bool]$evidence.eligible -or
+                    [string]$evidence.reason -cne 'eligible' -or
+                    @($evidence.reasons).Count -ne 0
+                ) {
+                    $tauriPromotionReason = 'evidence-eligibility-invalid'
+                } elseif (
+                    $null -eq $evidence.consumption -or
+                    $evidence.consumption.producerRunMustBeCompleted -isnot [bool] -or
+                    -not [bool]$evidence.consumption.producerRunMustBeCompleted -or
+                    [string]$evidence.consumption.mode -cne 'deferred-terminal-run'
+                ) {
+                    $tauriPromotionReason = 'evidence-consumption-mode-invalid'
+                } elseif ($evidenceChecksInvalid) {
+                    $tauriPromotionReason = 'evidence-checks-invalid'
+                } elseif (
+                    $null -eq $evidence.cliContract -or
+                    [string]$evidence.cliContract.sha256 -cne [string]$checkedInTauriCliContract.sha256 -or
+                    [string]$evidence.cliContract.version -cne [string]$checkedInTauriCliContract.version -or
+                    [string]$evidence.cliContract.versionOutput -cne [string]$checkedInTauriCliContract.versionOutput
+                ) {
+                    $tauriPromotionReason = 'evidence-cli-contract-mismatch'
+                } elseif ($evidenceBundleInvalid) {
+                    $tauriPromotionReason = 'evidence-bundle-identity-invalid'
                 } else {
                     $nowUtc = [DateTimeOffset]::UtcNow
                     $evidenceGeneratedAt = $null
@@ -202,7 +372,7 @@ if ($tauriPromotionRequested) {
                     } elseif (
                         $null -eq $evidence.cache -or
                         @(
-                            @('id', 'key', 'ref', 'generation', 'fingerprint') |
+                            @('id', 'key', 'ref', 'generation', 'fingerprint', 'manifestFingerprint') |
                                 Where-Object { $null -eq $evidence.cache.PSObject.Properties[$_] }
                         ).Count -gt 0
                     ) {
@@ -214,7 +384,7 @@ if ($tauriPromotionRequested) {
                         $prunableRefs.Contains([string]$evidence.cache.ref)
                     ) {
                         $tauriPromotionReason = 'evidence-cache-ref-not-protected'
-                    } elseif ([string]$evidence.cache.key -cnotmatch $tauriFamily.KeyPattern) {
+                    } elseif ([string]$evidence.cache.key -cnotmatch '^scriber-tauri-app-binary-v(?<generation>3)-Windows-(?<fingerprint>[0-9a-f]{64})$') {
                         $tauriPromotionReason = 'evidence-cache-key-invalid'
                     } elseif ([string]$evidence.cache.key -cne $normalizedExpectedTauriAppKey) {
                         $tauriPromotionReason = 'evidence-cache-key-not-expected'
@@ -223,13 +393,22 @@ if ($tauriPromotionRequested) {
                         $keyFingerprint = [string]$Matches.fingerprint
                         $evidenceCacheIdText = ([string]$evidence.cache.id).Trim()
                         $evidenceGenerationText = ([string]$evidence.cache.generation).Trim()
+                        $evidenceManifestFingerprint = ([string]$evidence.cache.manifestFingerprint).Trim()
+                        $derivedActionsFingerprint = $null
+                        try {
+                            $derivedActionsFingerprint = Convert-ManifestFingerprintToHashFilesFingerprint -Fingerprint $evidenceManifestFingerprint
+                        } catch {
+                            $derivedActionsFingerprint = $null
+                        }
                         [int64]$evidenceCacheId = 0
                         if (
                             $evidenceCacheIdText -cnotmatch '^[1-9][0-9]*$' -or
                             -not [int64]::TryParse($evidenceCacheIdText, [ref]$evidenceCacheId) -or
-                            $evidenceGenerationText -cnotmatch '^[123]$' -or
+                            $evidenceGenerationText -cne '3' -or
                             [int]$evidenceGenerationText -ne $keyGeneration -or
-                            [string]$evidence.cache.fingerprint -cne $keyFingerprint
+                            [string]$evidence.cache.fingerprint -cne $keyFingerprint -or
+                            $evidenceManifestFingerprint -cnotmatch '^[0-9a-f]{64}$' -or
+                            [string]$derivedActionsFingerprint -cne $keyFingerprint
                         ) {
                             $tauriPromotionReason = 'evidence-cache-key-fields-mismatch'
                         } else {
