@@ -2073,6 +2073,7 @@ function Write-SidecarBuildMetadata {
         [object]$PreparedMediaTools,
         [object[]]$MediaToolsCopied,
         [object]$RustAudioSidecarCopied,
+        [object]$RustAudioParallelSetup = $null,
         [object]$RustDiarizationSidecarCopied,
         [string]$CopiedTo,
         [bool]$TargetCurrent = $false
@@ -2144,6 +2145,7 @@ function Write-SidecarBuildMetadata {
         preparedMediaTools = $PreparedMediaTools
         mediaToolsCopied = $MediaToolsCopied
         rustAudioSidecarCopied = $RustAudioSidecarCopied
+        rustAudioParallelSetup = $RustAudioParallelSetup
         rustDiarizationSidecarCopied = $RustDiarizationSidecarCopied
         totalDurationMs = [int64]$script:BuildTimingStarted.ElapsedMilliseconds
         phases = @($script:BuildTimingPhases)
@@ -3076,6 +3078,12 @@ $rustAudioParallelStderrPath = ""
 $rustAudioParallelStopwatch = $null
 $rustAudioParallelStdoutTask = $null
 $rustAudioParallelStderrTask = $null
+$rustAudioParallelBackendResourceDir = ""
+$rustAudioParallelBackendStageDir = ""
+$rustAudioParallelBackendPlaceholderCreated = $false
+$rustAudioParallelBackendPlaceholderInitialFileCount = $null
+$rustAudioParallelChildTauriConfigPresent = $null
+$rustAudioParallelBackendPromoted = $false
 $rustDiarizationParallelProcess = $null
 $rustDiarizationParallelRoot = ""
 $rustDiarizationParallelResultPath = ""
@@ -3089,6 +3097,7 @@ $rustDiarizationParallelTimeoutMs = 30 * 60 * 1000
 $rustDiarizationPreparedInParallel = $false
 $parallelizeSharedRustAudio = (
     [string]$env:SCRIBER_PARALLELIZE_SHARED_RUST_AUDIO -eq "1" -and
+    [bool]$CopyToTauriRelease -and
     -not $ParallelizeIndependentBuilds -and
     -not $RustAudioIsolatedTarget
 )
@@ -3101,6 +3110,32 @@ if (($ParallelizeIndependentBuilds -or $parallelizeSharedRustAudio) -and $Bundle
     foreach ($path in @($rustAudioParallelResultPath, $rustAudioParallelStdoutPath, $rustAudioParallelStderrPath)) {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             Remove-Item -LiteralPath $path -Force
+        }
+    }
+    if ($parallelizeSharedRustAudio) {
+        $rustAudioParallelReleaseDir = Join-Path $RepoRoot "Frontend\src-tauri\target\release"
+        $rustAudioParallelBackendResourceDir = Join-Path $rustAudioParallelReleaseDir "backend"
+        $rustAudioParallelBackendStageDir = Join-Path $rustAudioParallelReleaseDir (
+            "backend.audio-overlap-{0}-{1}" -f $PID, [Guid]::NewGuid().ToString("N")
+        )
+        Assert-UnderRoot -Root $rustAudioParallelReleaseDir -Path $rustAudioParallelBackendResourceDir -Label "Rust audio Tauri backend resource placeholder"
+        Assert-UnderRoot -Root $rustAudioParallelReleaseDir -Path $rustAudioParallelBackendStageDir -Label "Rust audio Tauri backend staging target"
+        if (Test-Path -LiteralPath $rustAudioParallelBackendResourceDir -PathType Leaf) {
+            throw "The Tauri backend resource placeholder is a file."
+        }
+        if (Test-Path -LiteralPath $rustAudioParallelBackendResourceDir -PathType Container) {
+            Remove-Item -LiteralPath $rustAudioParallelBackendResourceDir -Recurse -Force
+        }
+        if (Test-Path -LiteralPath $rustAudioParallelBackendStageDir) {
+            throw "The unique Tauri backend staging target already exists."
+        }
+        New-Item -ItemType Directory -Force -Path $rustAudioParallelBackendResourceDir | Out-Null
+        $rustAudioParallelBackendPlaceholderCreated = $true
+        $rustAudioParallelBackendPlaceholderInitialFileCount = @(
+            Get-ChildItem -LiteralPath $rustAudioParallelBackendResourceDir -Force -ErrorAction Stop
+        ).Count
+        if ($rustAudioParallelBackendPlaceholderInitialFileCount -ne 0) {
+            throw "Shared-target Rust audio overlap requires an initially empty Tauri backend resource directory."
         }
     }
     $rustAudioParallelArgs = @(
@@ -3123,7 +3158,11 @@ if (($ParallelizeIndependentBuilds -or $parallelizeSharedRustAudio) -and $Bundle
     $rustAudioParallelStartInfo.WorkingDirectory = $RepoRoot
     $rustAudioParallelStartInfo.UseShellExecute = $false
     if ($parallelizeSharedRustAudio) {
-        $rustAudioParallelStartInfo.EnvironmentVariables["TAURI_CONFIG"] = '{"bundle":{"resources":[]}}'
+        $rustAudioParallelStartInfo.EnvironmentVariables.Remove("TAURI_CONFIG")
+        $rustAudioParallelChildTauriConfigPresent = [bool]$rustAudioParallelStartInfo.EnvironmentVariables.ContainsKey("TAURI_CONFIG")
+        if ($rustAudioParallelChildTauriConfigPresent) {
+            throw "The shared-target Rust audio child retained TAURI_CONFIG."
+        }
     }
     $rustAudioParallelStartInfo.CreateNoWindow = $true
     $rustAudioParallelStartInfo.RedirectStandardOutput = $true
@@ -3388,7 +3427,8 @@ $rustDiarizationSidecarCopied = $null
 
 if ($CopyToTauriRelease) {
     Invoke-TimedStep -Label "copy-to-tauri-release" -Command {
-        $targetDir = Join-Path $RepoRoot "Frontend\src-tauri\target\release\backend"
+        $finalTargetDir = Join-Path $RepoRoot "Frontend\src-tauri\target\release\backend"
+        $targetDir = if ($rustAudioParallelBackendStageDir) { $rustAudioParallelBackendStageDir } else { $finalTargetDir }
         Copy-DirectoryContents -SourceDir $sidecarDir -TargetDir $targetDir -TargetLabel "Tauri release backend target"
         if (-not (Test-BackendRuntimeLayer -RuntimeDir $targetDir -ExpectedCacheKey $runtimeCacheKey)) {
             throw "The Tauri release backend contains a missing, extra, or modified frozen runtime file."
@@ -3449,6 +3489,7 @@ if ($BundleRustAudioSidecar) {
                 durationMs = $rustAudioParallelDurationMs
                 ok = $rustAudioParallelOk
                 parallel = $true
+                sharedCargoTarget = [bool]$parallelizeSharedRustAudio
                 overlappedWallDurationMs = $rustAudioParallelJoinDurationMs
             }) | Out-Null
         }
@@ -3458,6 +3499,32 @@ if ($BundleRustAudioSidecar) {
         }
         $rustAudioSidecarCopied = $script:RustAudioSidecarCopied
     }
+}
+
+if ($rustAudioParallelBackendStageDir) {
+    Invoke-TimedStep -Label "promote-overlapped-backend" -Command {
+        if (-not (Test-Path -LiteralPath $rustAudioParallelBackendStageDir -PathType Container)) {
+            throw "The overlapped Tauri backend staging directory is missing."
+        }
+        if (-not (Test-Path -LiteralPath $rustAudioParallelBackendResourceDir -PathType Container)) {
+            throw "The empty Tauri backend resource placeholder is missing."
+        }
+        if (Get-ChildItem -LiteralPath $rustAudioParallelBackendResourceDir -Force -ErrorAction Stop | Select-Object -First 1) {
+            throw "The Tauri backend resource placeholder changed before the Rust audio child completed."
+        }
+        [System.IO.Directory]::Delete($rustAudioParallelBackendResourceDir, $false)
+        if (Test-Path -LiteralPath $rustAudioParallelBackendResourceDir) {
+            throw "The empty Tauri backend resource placeholder could not be removed."
+        }
+        [System.IO.Directory]::Move($rustAudioParallelBackendStageDir, $rustAudioParallelBackendResourceDir)
+        if (-not (Test-BackendRuntimeLayer -RuntimeDir $rustAudioParallelBackendResourceDir -ExpectedCacheKey $runtimeCacheKey)) {
+            throw "The promoted Tauri release backend contains a missing, extra, or modified frozen runtime file."
+        }
+        $script:CopiedToTauriRelease = $rustAudioParallelBackendResourceDir
+        $script:RustAudioParallelBackendPromoted = $true
+    }
+    $copiedTo = $script:CopiedToTauriRelease
+    $rustAudioParallelBackendPromoted = [bool]$script:RustAudioParallelBackendPromoted
 }
 
 if ($rustDiarizationParallelProcess) {
@@ -3538,6 +3605,19 @@ if ($rustDiarizationParallelProcess) {
         Assert-UnderRoot -Root $RepoRoot -Path $rustDiarizationParallelRoot -Label "Rust diarization parallel cleanup root"
         Remove-Item -LiteralPath $rustDiarizationParallelRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
+    if ($rustAudioParallelBackendStageDir -and (Test-Path -LiteralPath $rustAudioParallelBackendStageDir -PathType Container)) {
+        Assert-UnderRoot -Root $RepoRoot -Path $rustAudioParallelBackendStageDir -Label "Rust audio backend staging cleanup target"
+        Remove-Item -LiteralPath $rustAudioParallelBackendStageDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (
+        $rustAudioParallelBackendPlaceholderCreated -and
+        -not $rustAudioParallelBackendPromoted -and
+        (Test-Path -LiteralPath $rustAudioParallelBackendResourceDir -PathType Container) -and
+        -not (Get-ChildItem -LiteralPath $rustAudioParallelBackendResourceDir -Force -ErrorAction SilentlyContinue | Select-Object -First 1)
+    ) {
+        Assert-UnderRoot -Root $RepoRoot -Path $rustAudioParallelBackendResourceDir -Label "Rust audio backend placeholder cleanup target"
+        Remove-Item -LiteralPath $rustAudioParallelBackendResourceDir -Force -ErrorAction SilentlyContinue
+    }
 }
 
 if ($BundleRustDiarizationSidecar) {
@@ -3557,6 +3637,15 @@ if ($BundleRustDiarizationSidecar) {
     $rustDiarizationSidecarCopied = $script:RustDiarizationSidecarCopied
 }
 
+$rustAudioParallelSetup = [ordered]@{
+    sharedCargoTarget = [bool]$parallelizeSharedRustAudio
+    backendResourcePlaceholderCreated = [bool]$rustAudioParallelBackendPlaceholderCreated
+    backendResourcePlaceholderInitialFileCount = $rustAudioParallelBackendPlaceholderInitialFileCount
+    childTauriConfigPresent = $rustAudioParallelChildTauriConfigPresent
+    backendStagedOutsideResourcePath = [bool]$rustAudioParallelBackendStageDir
+    backendPromotedAfterAudio = [bool]$rustAudioParallelBackendPromoted
+}
+
 if ($CopyToTauriRelease) {
     $metadataPath = Write-SidecarBuildMetadata `
         -SidecarDir $sidecarDir `
@@ -3570,6 +3659,7 @@ if ($CopyToTauriRelease) {
         -PreparedMediaTools $preparedMediaTools `
         -MediaToolsCopied $mediaToolsCopied `
         -RustAudioSidecarCopied $rustAudioSidecarCopied `
+        -RustAudioParallelSetup $rustAudioParallelSetup `
         -RustDiarizationSidecarCopied $rustDiarizationSidecarCopied `
         -CopiedTo $copiedTo
     if (Test-Path -LiteralPath $copiedTo -PathType Container) {
@@ -3588,6 +3678,7 @@ if ($CopyToTauriRelease) {
         -PreparedMediaTools $preparedMediaTools `
         -MediaToolsCopied $mediaToolsCopied `
         -RustAudioSidecarCopied $rustAudioSidecarCopied `
+        -RustAudioParallelSetup $rustAudioParallelSetup `
         -RustDiarizationSidecarCopied $rustDiarizationSidecarCopied `
         -CopiedTo $copiedTo
 }
@@ -3604,6 +3695,7 @@ if ($CopyToTauriRelease) {
     applicationLayerKey = $applicationLayerKey
     mediaToolsCopied = $mediaToolsCopied
     rustAudioSidecarCopied = $rustAudioSidecarCopied
+    rustAudioParallelSetup = $rustAudioParallelSetup
     rustDiarizationSidecarCopied = $rustDiarizationSidecarCopied
     sidecarBuildMetadata = $metadataPath
     copiedToTauriRelease = $copiedTo

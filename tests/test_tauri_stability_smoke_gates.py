@@ -380,6 +380,7 @@ def test_prebuilt_tauri_audio_miss_overlaps_shared_target_only_with_backend() ->
     ) in workflow
     assert '$parallelizeSharedRustAudio = (' in sidecar
     assert '[string]$env:SCRIBER_PARALLELIZE_SHARED_RUST_AUDIO -eq "1"' in sidecar
+    assert "[bool]$CopyToTauriRelease" in sidecar
     assert "-not $ParallelizeIndependentBuilds" in sidecar
     assert "-not $RustAudioIsolatedTarget" in sidecar
     assert (
@@ -391,6 +392,49 @@ def test_prebuilt_tauri_audio_miss_overlaps_shared_target_only_with_backend() ->
     assert (
         "-UseIsolatedTarget ([bool]$RustAudioIsolatedTarget)" in sidecar
     )
+    audio_parallel_setup = sidecar[
+        sidecar.index(
+            "if (($ParallelizeIndependentBuilds -or $parallelizeSharedRustAudio)"
+        ) : sidecar.index(
+            "Starting Rust audio sidecar preparation in parallel with the Python backend."
+        )
+    ]
+    assert 'Join-Path $rustAudioParallelReleaseDir "backend"' in audio_parallel_setup
+    assert '"backend.audio-overlap-{0}-{1}"' in audio_parallel_setup
+    assert '[Guid]::NewGuid().ToString("N")' in audio_parallel_setup
+    assert (
+        'Assert-UnderRoot -Root $rustAudioParallelReleaseDir '
+        '-Path $rustAudioParallelBackendResourceDir' in audio_parallel_setup
+    )
+    assert (
+        'Assert-UnderRoot -Root $rustAudioParallelReleaseDir '
+        '-Path $rustAudioParallelBackendStageDir' in audio_parallel_setup
+    )
+    assert (
+        "New-Item -ItemType Directory -Force "
+        "-Path $rustAudioParallelBackendResourceDir" in audio_parallel_setup
+    )
+    stale_backend_cleanup = (
+        "Remove-Item -LiteralPath $rustAudioParallelBackendResourceDir "
+        "-Recurse -Force"
+    )
+    assert audio_parallel_setup.count(stale_backend_cleanup) == 1
+    assert audio_parallel_setup.index(
+        'Assert-UnderRoot -Root $rustAudioParallelReleaseDir '
+        '-Path $rustAudioParallelBackendResourceDir'
+    ) < audio_parallel_setup.index(stale_backend_cleanup) < audio_parallel_setup.index(
+        "New-Item -ItemType Directory -Force "
+        "-Path $rustAudioParallelBackendResourceDir"
+    )
+    assert (
+        "Get-ChildItem -LiteralPath $rustAudioParallelBackendResourceDir "
+        "-Force -ErrorAction Stop" in audio_parallel_setup
+    )
+    assert "$rustAudioParallelBackendPlaceholderInitialFileCount -ne 0" in audio_parallel_setup
+    assert "initially empty Tauri backend resource directory" in audio_parallel_setup
+    assert ".gitkeep" not in audio_parallel_setup
+    assert "Set-Content" not in audio_parallel_setup
+
     audio_start_info = sidecar[
         sidecar.index(
             "$rustAudioParallelStartInfo = [System.Diagnostics.ProcessStartInfo]::new()"
@@ -398,21 +442,79 @@ def test_prebuilt_tauri_audio_miss_overlaps_shared_target_only_with_backend() ->
             "$rustAudioParallelProcess = [System.Diagnostics.Process]::new()"
         )
     ]
-    child_tauri_overlay = (
-        '$rustAudioParallelStartInfo.EnvironmentVariables["TAURI_CONFIG"] = '
-        "'{\"bundle\":{\"resources\":[]}}'"
+    remove_child_tauri_config = (
+        '$rustAudioParallelStartInfo.EnvironmentVariables.Remove("TAURI_CONFIG")'
     )
-    child_tauri_overlay_block = (
-        "if ($parallelizeSharedRustAudio) {\n"
-        f"        {child_tauri_overlay}\n"
-        "    }"
-    )
-    assert audio_start_info.count(child_tauri_overlay_block) == 1
+    assert audio_start_info.count(remove_child_tauri_config) == 1
     assert audio_start_info.index("UseShellExecute = $false") < audio_start_info.index(
-        child_tauri_overlay
+        remove_child_tauri_config
     )
-    assert sidecar.count(child_tauri_overlay) == 1
+    assert 'EnvironmentVariables.ContainsKey("TAURI_CONFIG")' in audio_start_info
+    assert "shared-target Rust audio child retained TAURI_CONFIG" in audio_start_info
+    assert 'EnvironmentVariables["TAURI_CONFIG"] =' not in sidecar
     assert '$env:TAURI_CONFIG =' not in sidecar
+
+    backend_copy = sidecar[
+        sidecar.index('if ($CopyToTauriRelease) {', sidecar.index("$copiedTo = $null"))
+        : sidecar.index('if ($BundleRustAudioSidecar) {', sidecar.index("$copiedTo = $null"))
+    ]
+    conditional_copy_target = (
+        "$targetDir = if ($rustAudioParallelBackendStageDir) { "
+        "$rustAudioParallelBackendStageDir } else { $finalTargetDir }"
+    )
+    assert conditional_copy_target in backend_copy
+    assert backend_copy.index(conditional_copy_target) < backend_copy.index(
+        "Copy-DirectoryContents -SourceDir $sidecarDir -TargetDir $targetDir"
+    )
+
+    audio_join_and_promotion = sidecar[
+        sidecar.index('if ($BundleRustAudioSidecar) {', sidecar.index("$copiedTo = $null"))
+        : sidecar.index("if ($rustDiarizationParallelProcess) {")
+    ]
+    promotion = audio_join_and_promotion[
+        audio_join_and_promotion.index("if ($rustAudioParallelBackendStageDir) {") :
+    ]
+    assert audio_join_and_promotion.index("$rustAudioParallelProcess.WaitForExit()") < (
+        audio_join_and_promotion.index("if ($rustAudioParallelBackendStageDir) {")
+    )
+    assert promotion.index(
+        "Get-ChildItem -LiteralPath $rustAudioParallelBackendResourceDir"
+    ) < promotion.index(
+        "[System.IO.Directory]::Delete($rustAudioParallelBackendResourceDir, $false)"
+    ) < promotion.index(
+        "[System.IO.Directory]::Move("
+        "$rustAudioParallelBackendStageDir, $rustAudioParallelBackendResourceDir)"
+    ) < promotion.index(
+        "Test-BackendRuntimeLayer -RuntimeDir $rustAudioParallelBackendResourceDir"
+    ) < promotion.index(
+        "$script:CopiedToTauriRelease = $rustAudioParallelBackendResourceDir"
+    )
+    assert "Move-Item" not in promotion
+    assert "sharedCargoTarget = [bool]$parallelizeSharedRustAudio" in sidecar
+    assert "backendResourcePlaceholderInitialFileCount" in sidecar
+    assert "childTauriConfigPresent" in sidecar
+    assert "backendPromotedAfterAudio" in sidecar
+    metadata_writer = sidecar[
+        sidecar.index("function Write-SidecarBuildMetadata {")
+        : sidecar.index("function Resolve-PythonPath")
+    ]
+    assert "[object]$RustAudioParallelSetup = $null" in metadata_writer
+    assert "rustAudioParallelSetup = $RustAudioParallelSetup" in metadata_writer
+    persisted_setup = sidecar[
+        sidecar.index("$rustAudioParallelSetup = [ordered]@{")
+        : sidecar.index("[pscustomobject]@{", sidecar.index("$rustAudioParallelSetup = [ordered]@{"))
+    ]
+    for exact_field in (
+        "sharedCargoTarget = [bool]$parallelizeSharedRustAudio",
+        "backendResourcePlaceholderCreated = [bool]$rustAudioParallelBackendPlaceholderCreated",
+        "backendResourcePlaceholderInitialFileCount = $rustAudioParallelBackendPlaceholderInitialFileCount",
+        "childTauriConfigPresent = $rustAudioParallelChildTauriConfigPresent",
+        "backendStagedOutsideResourcePath = [bool]$rustAudioParallelBackendStageDir",
+        "backendPromotedAfterAudio = [bool]$rustAudioParallelBackendPromoted",
+    ):
+        assert persisted_setup.count(exact_field) == 1
+    assert sidecar.count("-RustAudioParallelSetup $rustAudioParallelSetup") == 2
+    assert sidecar.count("rustAudioParallelSetup = $rustAudioParallelSetup") == 1
     assert sidecar.index("$parallelizeSharedRustAudio = (") < sidecar.index(
         "Starting Rust audio sidecar preparation in parallel with the Python backend."
     ) < sidecar.index('Invoke-TimedStep -Label "pyinstaller-build"')
