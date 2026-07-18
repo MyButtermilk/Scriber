@@ -391,6 +391,28 @@ def test_prebuilt_tauri_audio_miss_overlaps_shared_target_only_with_backend() ->
     assert (
         "-UseIsolatedTarget ([bool]$RustAudioIsolatedTarget)" in sidecar
     )
+    audio_start_info = sidecar[
+        sidecar.index(
+            "$rustAudioParallelStartInfo = [System.Diagnostics.ProcessStartInfo]::new()"
+        ) : sidecar.index(
+            "$rustAudioParallelProcess = [System.Diagnostics.Process]::new()"
+        )
+    ]
+    child_tauri_overlay = (
+        '$rustAudioParallelStartInfo.EnvironmentVariables["TAURI_CONFIG"] = '
+        "'{\"bundle\":{\"resources\":[]}}'"
+    )
+    child_tauri_overlay_block = (
+        "if ($parallelizeSharedRustAudio) {\n"
+        f"        {child_tauri_overlay}\n"
+        "    }"
+    )
+    assert audio_start_info.count(child_tauri_overlay_block) == 1
+    assert audio_start_info.index("UseShellExecute = $false") < audio_start_info.index(
+        child_tauri_overlay
+    )
+    assert sidecar.count(child_tauri_overlay) == 1
+    assert '$env:TAURI_CONFIG =' not in sidecar
     assert sidecar.index("$parallelizeSharedRustAudio = (") < sidecar.index(
         "Starting Rust audio sidecar preparation in parallel with the Python backend."
     ) < sidecar.index('Invoke-TimedStep -Label "pyinstaller-build"')

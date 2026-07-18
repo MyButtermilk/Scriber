@@ -3122,6 +3122,9 @@ if (($ParallelizeIndependentBuilds -or $parallelizeSharedRustAudio) -and $Bundle
     $rustAudioParallelStartInfo.Arguments = ($rustAudioParallelArgs -join " ")
     $rustAudioParallelStartInfo.WorkingDirectory = $RepoRoot
     $rustAudioParallelStartInfo.UseShellExecute = $false
+    if ($parallelizeSharedRustAudio) {
+        $rustAudioParallelStartInfo.EnvironmentVariables["TAURI_CONFIG"] = '{"bundle":{"resources":[]}}'
+    }
     $rustAudioParallelStartInfo.CreateNoWindow = $true
     $rustAudioParallelStartInfo.RedirectStandardOutput = $true
     $rustAudioParallelStartInfo.RedirectStandardError = $true
