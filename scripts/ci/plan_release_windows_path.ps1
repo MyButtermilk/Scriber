@@ -24,7 +24,8 @@ param(
     [string]$BackendArtifactTag = "release-cache-backend-sidecar-v2",
     [string]$RunnerOs = "Windows",
     [ValidateSet("", "0", "1")]
-    [string]$RequireAuthenticodeSignature = ""
+    [string]$RequireAuthenticodeSignature = "",
+    [switch]$EmitDerivedCacheKeysOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,6 +36,28 @@ function Write-OutputValue {
     if ($env:GITHUB_OUTPUT) {
         "$Name=$Value" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
     }
+}
+
+function Convert-ManifestFingerprintToHashFilesFingerprint {
+    param([string]$Fingerprint)
+
+    $normalized = ([string]$Fingerprint).Trim().ToLowerInvariant()
+    if ($normalized -notmatch '\A[0-9a-f]{64}\z') {
+        throw "Release cache manifest fingerprint must be a 64-character SHA-256 digest."
+    }
+
+    $manifestDigestBytes = New-Object byte[] 32
+    for ($index = 0; $index -lt $manifestDigestBytes.Length; $index++) {
+        $manifestDigestBytes[$index] = [Convert]::ToByte($normalized.Substring($index * 2, 2), 16)
+    }
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hashFilesDigest = $sha256.ComputeHash($manifestDigestBytes)
+    } finally {
+        $sha256.Dispose()
+    }
+    return -join ($hashFilesDigest | ForEach-Object { $_.ToString("x2") })
 }
 
 function Test-MainCacheKey {
@@ -62,10 +85,21 @@ function Test-ReleaseAsset {
     }
 }
 
+$backendActionsHash = Convert-ManifestFingerprintToHashFilesFingerprint -Fingerprint $BackendSidecarHash
+$tauriActionsHash = Convert-ManifestFingerprintToHashFilesFingerprint -Fingerprint $TauriAppBinaryHash
 $isTagRelease = $GitRef -like "refs/tags/v*"
-$backendActionsKey = "scriber-backend-sidecar-v2-$RunnerOs-python-$PythonVersion-$BackendSidecarHash"
-$tauriActionsKey = "scriber-tauri-app-binary-v2-$RunnerOs-$TauriAppBinaryHash"
-$backendAssetName = "scriber-backend-sidecar-$RunnerOs-python-$PythonVersion-$BackendSidecarHash.zip"
+$backendActionsKey = "scriber-backend-sidecar-v2-$RunnerOs-python-$PythonVersion-$backendActionsHash"
+$tauriActionsKey = "scriber-tauri-app-binary-v2-$RunnerOs-$tauriActionsHash"
+$backendAssetName = "scriber-backend-sidecar-$RunnerOs-python-$PythonVersion-$backendActionsHash.zip"
+
+if ($EmitDerivedCacheKeysOnly) {
+    [ordered]@{
+        backendActionsKey = $backendActionsKey
+        tauriActionsKey = $tauriActionsKey
+        backendAssetName = $backendAssetName
+    } | ConvertTo-Json -Compress
+    exit 0
+}
 
 $backendActionsReady = $false
 $tauriActionsReady = $false

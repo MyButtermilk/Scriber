@@ -55,18 +55,55 @@ def test_release_workflow_uses_adaptive_parallel_cold_producers_and_safe_warm_fa
     assert "merge-multiple: true" in workflow
 
 
-def test_release_path_planner_probes_current_tauri_app_cache_generation() -> None:
+def test_release_path_planner_probes_hashfiles_digest_for_current_cache_generation() -> None:
     planner = _read("scripts/ci/plan_release_windows_path.ps1")
     workflow = _read(".github/workflows/release-windows.yml")
 
-    assert (
-        '$tauriActionsKey = "scriber-tauri-app-binary-v2-$RunnerOs-$TauriAppBinaryHash"'
-        in planner
-    )
+    assert "Convert-ManifestFingerprintToHashFilesFingerprint" in planner
+    assert '$tauriActionsKey = "scriber-tauri-app-binary-v2-$RunnerOs-$tauriActionsHash"' in planner
     assert workflow.count(
         "key: scriber-tauri-app-binary-v2-${{ runner.os }}-"
         "${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}"
     ) == 2
+
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("PowerShell 7 is required for release-script validation")
+
+    manifest_fingerprint = "874af53b8de03b013f5d8af466492c181b8b9365fa7c515c2eeb81ae6137a86c"
+    hashfiles_fingerprint = "ab399919060c2d1c346de94bbfd5abb22d3cd1b6e69a4c1c7af62be139bb2d81"
+    result = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-File",
+            str(REPO_ROOT / "scripts/ci/plan_release_windows_path.ps1"),
+            "-Repo",
+            "MyButtermilk/Scriber",
+            "-GitRef",
+            "refs/tags/v0.5.37",
+            "-PythonVersion",
+            "3.13",
+            "-BackendSidecarHash",
+            manifest_fingerprint,
+            "-TauriAppBinaryHash",
+            manifest_fingerprint,
+            "-EmitDerivedCacheKeysOnly",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    derived = json.loads(result.stdout)
+    assert derived["backendActionsKey"] == (
+        "scriber-backend-sidecar-v2-Windows-python-3.13-" + hashfiles_fingerprint
+    )
+    assert derived["tauriActionsKey"] == "scriber-tauri-app-binary-v2-Windows-" + hashfiles_fingerprint
+    assert derived["backendAssetName"] == (
+        "scriber-backend-sidecar-Windows-python-3.13-" + hashfiles_fingerprint + ".zip"
+    )
 
 
 def test_runtime_tree_identity_is_compatible_with_windows_powershell() -> None:
