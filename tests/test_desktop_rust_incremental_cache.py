@@ -159,6 +159,111 @@ def _create_directory_junction(link: Path, target: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def _write_rustc_session(
+    crate: Path,
+    *,
+    timestamp: str,
+    random: str,
+    svh: str,
+    files: dict[str, bytes],
+) -> tuple[Path, Path]:
+    assert re.fullmatch(r"[0-9a-z]{10}", timestamp)
+    assert re.fullmatch(r"[0-9a-z]{7}", random)
+    assert re.fullmatch(r"[0-9a-z]{25}", svh)
+    session = crate / f"s-{timestamp}-{random}-{svh}"
+    session.mkdir(parents=True)
+    for name, content in files.items():
+        (session / name).write_bytes(content)
+    lock = crate / f"s-{timestamp}-{random}.lock"
+    lock.write_bytes(b"")
+    return session, lock
+
+
+def _tree_inventory(root: Path) -> tuple[dict[str, object], str]:
+    inventory: dict[str, object] = {
+        "directories": sorted(
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_dir()
+        ),
+        "files": [
+            {
+                "path": path.relative_to(root).as_posix(),
+                "length": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            for path in sorted(path for path in root.rglob("*") if path.is_file())
+        ],
+    }
+    serialized = json.dumps(
+        inventory, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return inventory, hashlib.sha256(serialized).hexdigest()
+
+
+def _write_legacy_multisession_envelope(cache_root: Path) -> None:
+    payload_root = cache_root / "payload"
+    directories = sorted(
+        path.relative_to(cache_root).as_posix()
+        for path in payload_root.rglob("*")
+        if path.is_dir()
+    )
+    file_records = []
+    for path in sorted(path for path in payload_root.rglob("*") if path.is_file()):
+        content = path.read_bytes()
+        file_records.append(
+            {
+                "path": path.relative_to(cache_root).as_posix(),
+                "length": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        )
+    inventory = {
+        "apiVersion": "1",
+        "directories": directories,
+        "files": file_records,
+    }
+    inventory_path = cache_root / "inventory.json"
+    inventory_path.write_text(
+        json.dumps(inventory, separators=(",", ":")), encoding="utf-8"
+    )
+    inventory_bytes = inventory_path.read_bytes()
+    crate_names = sorted(path.name for path in payload_root.iterdir() if path.is_dir())
+    manifest = {
+        "apiVersion": "1",
+        "generation": GENERATION,
+        "inputKey": "a" * 64,
+        "dependencyScopeKey": "b" * 64,
+        "refScopeKey": "c" * 64,
+        "contractSha256": hashlib.sha256(CONTRACT_PATH.read_bytes()).hexdigest(),
+        "target": "x86_64-pc-windows-msvc",
+        "profile": "release",
+        "sourceCommit": "d" * 40,
+        "buildEvidence": {
+            "timingSha256": hashlib.sha256(b"legacy-build-timing").hexdigest(),
+            "executableLength": len(b"legacy-desktop-executable"),
+            "executableSha256": hashlib.sha256(
+                b"legacy-desktop-executable"
+            ).hexdigest(),
+        },
+        "content": {
+            "crateDirectoryCount": len(crate_names),
+            "crateDirectories": crate_names,
+            "directoryCount": len(directories),
+            "fileCount": len(file_records),
+            "totalBytes": sum(record["length"] for record in file_records),
+        },
+        "inventory": {
+            "length": len(inventory_bytes),
+            "sha256": hashlib.sha256(inventory_bytes).hexdigest(),
+        },
+        "exportedAtUtc": "2026-07-18T00:00:00.0000000Z",
+    }
+    (cache_root / "manifest.json").write_text(
+        json.dumps(manifest, separators=(",", ":")), encoding="utf-8"
+    )
+
+
 def test_desktop_incremental_key_is_ref_and_dependency_scoped_without_changing_tauri_output_key() -> None:
     fixture_root = REPO_ROOT / "build" / f"test-desktop-incremental-key-{uuid.uuid4().hex}"
     key_dir = fixture_root / "keys"
@@ -245,22 +350,45 @@ def test_desktop_incremental_envelope_roundtrip_contains_only_desktop_state() ->
     desktop_lib.mkdir(parents=True)
     audio.mkdir(parents=True)
     foreign.mkdir(parents=True)
-    (desktop_bin / "dep-graph.bin").write_bytes(b"desktop-bin-graph")
-    (desktop_lib / "dep-graph.bin").write_bytes(b"desktop-lib-graph")
-    (desktop_lib / "work-products.bin").write_bytes(b"desktop-lib-products")
-    (desktop_lib / "thin-lto-past-keys.bin").write_bytes(
-        b"desktop-thin-lto-past-keys"
+    old_bin, old_bin_lock = _write_rustc_session(
+        desktop_bin,
+        timestamp="000000000z",
+        random="0000001",
+        svh="1" * 25,
+        files={"dep-graph.bin": b"stale-desktop-bin-graph"},
     )
-    (desktop_lib / "abc123.o").write_bytes(b"desktop-object")
-    (desktop_lib / "abc123.bc.z").write_bytes(b"desktop-bitcode")
-    (desktop_lib / "01w6t5u1kedjhmd6zhuedks4j.pre-lto.bc").write_bytes(
-        b"desktop-pre-lto-bitcode"
+    current_bin, current_bin_lock = _write_rustc_session(
+        desktop_bin,
+        timestamp="0000000010",
+        random="0000002",
+        svh="2" * 25,
+        files={"dep-graph.bin": b"desktop-bin-graph"},
     )
-    (desktop_lib / "metadata.rmeta").write_bytes(b"desktop-metadata")
-    (desktop_lib / "s-fixture-0001.lock").write_bytes(b"")
+    old_lib, old_lib_lock = _write_rustc_session(
+        desktop_lib,
+        timestamp="0000000003",
+        random="0000003",
+        svh="3" * 25,
+        files={"dep-graph.bin": b"stale-desktop-lib-graph"},
+    )
+    current_lib, current_lib_lock = _write_rustc_session(
+        desktop_lib,
+        timestamp="0000000004",
+        random="0000004",
+        svh="4" * 25,
+        files={
+            "dep-graph.bin": b"desktop-lib-graph",
+            "work-products.bin": b"desktop-lib-products",
+            "thin-lto-past-keys.bin": b"desktop-thin-lto-past-keys",
+            "abc123.o": b"desktop-object",
+            "abc123.bc.z": b"desktop-bitcode",
+            "01w6t5u1kedjhmd6zhuedks4j.pre-lto.bc": b"desktop-pre-lto-bitcode",
+            "metadata.rmeta": b"desktop-metadata",
+        },
+    )
     source_hardlink = fixture_root / "cargo-hardlink.bin"
-    os.link(desktop_lib / "dep-graph.bin", source_hardlink)
-    assert (desktop_lib / "dep-graph.bin").stat().st_nlink >= 2
+    os.link(current_lib / "dep-graph.bin", source_hardlink)
+    assert (current_lib / "dep-graph.bin").stat().st_nlink >= 2
     (audio / "audio.o").write_bytes(b"audio-state")
     (foreign / "dependency.o").write_bytes(b"dependency-state")
     (target / "release/.fingerprint/scriber-desktop-fixture").mkdir(parents=True)
@@ -270,11 +398,15 @@ def test_desktop_incremental_envelope_roundtrip_contains_only_desktop_state() ->
     binary_hardlink = fixture_root / "scriber-desktop-cargo-hardlink.exe"
     os.link(fixture_root / "scriber-desktop.exe", binary_hardlink)
     assert (fixture_root / "scriber-desktop.exe").stat().st_nlink >= 2
+    source_inventory_before, source_tree_sha_before = _tree_inventory(incremental)
     try:
         exported, export_outputs = _invoke_sync(fixture_root, "Export")
         assert exported.returncode == 0, exported.stdout + exported.stderr
         assert export_outputs["staged"] == "true"
-        assert export_outputs["file-count"] == "9"
+        assert export_outputs["source-session-count"] == "4"
+        assert export_outputs["staged-session-count"] == "2"
+        assert export_outputs["stale-session-count"] == "2"
+        assert export_outputs["file-count"] == "10"
         assert int(export_outputs["total-bytes"]) == sum(
             map(
                 len,
@@ -299,23 +431,38 @@ def test_desktop_incremental_envelope_roundtrip_contains_only_desktop_state() ->
             "scriber_desktop_lib-c3d4e5",
         }
         cached_paths = {record["path"] for record in inventory["files"]}
+        bin_prefix = f"payload/{desktop_bin.name}/{current_bin.name}"
+        lib_prefix = f"payload/{desktop_lib.name}/{current_lib.name}"
         assert cached_paths == {
-            "payload/scriber_desktop-a1b2c3/dep-graph.bin",
-            "payload/scriber_desktop_lib-c3d4e5/01w6t5u1kedjhmd6zhuedks4j.pre-lto.bc",
-            "payload/scriber_desktop_lib-c3d4e5/abc123.bc.z",
-            "payload/scriber_desktop_lib-c3d4e5/abc123.o",
-            "payload/scriber_desktop_lib-c3d4e5/dep-graph.bin",
-            "payload/scriber_desktop_lib-c3d4e5/metadata.rmeta",
-            "payload/scriber_desktop_lib-c3d4e5/s-fixture-0001.lock",
-            "payload/scriber_desktop_lib-c3d4e5/thin-lto-past-keys.bin",
-            "payload/scriber_desktop_lib-c3d4e5/work-products.bin",
+            f"payload/{desktop_bin.name}/{current_bin_lock.name}",
+            f"{bin_prefix}/dep-graph.bin",
+            f"payload/{desktop_lib.name}/{current_lib_lock.name}",
+            f"{lib_prefix}/01w6t5u1kedjhmd6zhuedks4j.pre-lto.bc",
+            f"{lib_prefix}/abc123.bc.z",
+            f"{lib_prefix}/abc123.o",
+            f"{lib_prefix}/dep-graph.bin",
+            f"{lib_prefix}/metadata.rmeta",
+            f"{lib_prefix}/thin-lto-past-keys.bin",
+            f"{lib_prefix}/work-products.bin",
         }
+        assert all(path.exists() for path in (old_bin, old_bin_lock, old_lib, old_lib_lock))
+        assert all(
+            path.exists()
+            for path in (current_bin, current_bin_lock, current_lib, current_lib_lock)
+        )
+        source_inventory_after, source_tree_sha_after = _tree_inventory(incremental)
+        assert source_inventory_after == source_inventory_before
+        assert source_tree_sha_after == source_tree_sha_before
         assert not any("audio" in path for path in cached_paths)
         assert not any("dependency_crate" in path for path in cached_paths)
         assert not any(path.endswith((".exe", ".pdb")) for path in cached_paths)
         assert (
-            cache_root / "payload/scriber_desktop_lib-c3d4e5/dep-graph.bin"
+            cache_root / lib_prefix / "dep-graph.bin"
         ).stat().st_nlink == 1
+        first_payload = {
+            record["path"]: (record["length"], record["sha256"])
+            for record in inventory["files"]
+        }
 
         shutil.rmtree(desktop_bin)
         shutil.rmtree(desktop_lib)
@@ -325,15 +472,11 @@ def test_desktop_incremental_envelope_roundtrip_contains_only_desktop_state() ->
         assert imported.returncode == 0, imported.stdout + imported.stderr
         assert import_outputs["usable"] == "true"
         assert import_outputs["exact-current"] == "true"
-        assert (desktop_bin / "dep-graph.bin").read_bytes() == b"desktop-bin-graph"
-        assert (desktop_lib / "dep-graph.bin").read_bytes() == b"desktop-lib-graph"
-        assert (desktop_lib / "work-products.bin").read_bytes() == b"desktop-lib-products"
-        assert (
-            desktop_lib / "thin-lto-past-keys.bin"
-        ).read_bytes() == b"desktop-thin-lto-past-keys"
-        assert (
-            desktop_lib / "01w6t5u1kedjhmd6zhuedks4j.pre-lto.bc"
-        ).read_bytes() == b"desktop-pre-lto-bitcode"
+        assert (desktop_bin / current_bin.name / "dep-graph.bin").read_bytes() == b"desktop-bin-graph"
+        assert (desktop_lib / current_lib.name / "dep-graph.bin").read_bytes() == b"desktop-lib-graph"
+        assert (desktop_lib / current_lib.name / "work-products.bin").read_bytes() == b"desktop-lib-products"
+        assert (desktop_lib / current_lib.name / "thin-lto-past-keys.bin").read_bytes() == b"desktop-thin-lto-past-keys"
+        assert (desktop_lib / current_lib.name / "01w6t5u1kedjhmd6zhuedks4j.pre-lto.bc").read_bytes() == b"desktop-pre-lto-bitcode"
         assert (audio / "audio.o").read_bytes() == b"audio-state"
         assert (foreign / "dependency.o").read_bytes() == b"dependency-state"
 
@@ -350,10 +493,189 @@ def test_desktop_incremental_envelope_roundtrip_contains_only_desktop_state() ->
         assert prefixed.returncode == 0, prefixed.stdout + prefixed.stderr
         assert prefix_outputs["usable"] == "true"
         assert prefix_outputs["exact-current"] == "false"
-        assert (desktop_bin / "dep-graph.bin").read_bytes() == b"desktop-bin-graph"
-        assert (desktop_lib / "dep-graph.bin").read_bytes() == b"desktop-lib-graph"
+        assert (desktop_bin / current_bin.name / "dep-graph.bin").read_bytes() == b"desktop-bin-graph"
+        assert (desktop_lib / current_lib.name / "dep-graph.bin").read_bytes() == b"desktop-lib-graph"
+
+        reexported, reexport_outputs = _invoke_sync(
+            fixture_root,
+            "Export",
+            current_key="e" * 64,
+        )
+        assert reexported.returncode == 0, reexported.stdout + reexported.stderr
+        assert reexport_outputs["staged"] == "true"
+        assert reexport_outputs["source-session-count"] == "2"
+        assert reexport_outputs["staged-session-count"] == "2"
+        assert reexport_outputs["stale-session-count"] == "0"
+        assert reexport_outputs["file-count"] == export_outputs["file-count"]
+        assert reexport_outputs["total-bytes"] == export_outputs["total-bytes"]
+        reexport_inventory = json.loads(
+            (cache_root / "inventory.json").read_text(encoding="utf-8-sig")
+        )
+        assert {
+            record["path"]: (record["length"], record["sha256"])
+            for record in reexport_inventory["files"]
+        } == first_payload
     finally:
         shutil.rmtree(fixture_root, ignore_errors=True)
+
+
+def test_legacy_multisession_import_remains_usable_and_invalid_exports_fail_closed() -> None:
+    legacy_root = (
+        REPO_ROOT
+        / "build"
+        / f"test-desktop-incremental-legacy-{uuid.uuid4().hex}"
+    )
+    legacy_cache = legacy_root / "cache"
+    legacy_crate = legacy_cache / "payload/scriber_desktop_lib-feed01"
+    old_session, old_lock = _write_rustc_session(
+        legacy_crate,
+        timestamp="0000000001",
+        random="0000001",
+        svh="1" * 25,
+        files={"query-cache.bin": b"legacy-stale-query-cache"},
+    )
+    current_session, current_lock = _write_rustc_session(
+        legacy_crate,
+        timestamp="0000000002",
+        random="0000002",
+        svh="2" * 25,
+        files={
+            "dep-graph.bin": b"legacy-current-dep-graph",
+            "query-cache.bin": b"legacy-current-query-cache",
+        },
+    )
+    _write_legacy_multisession_envelope(legacy_cache)
+    try:
+        imported, outputs = _invoke_sync(
+            legacy_root,
+            "Import",
+            current_key="e" * 64,
+            matched_key=_full_key(),
+        )
+        assert imported.returncode == 0, imported.stdout + imported.stderr
+        assert outputs["usable"] == "true"
+        assert outputs["exact-current"] == "false"
+        restored_crate = (
+            legacy_root / "target/release/incremental/scriber_desktop_lib-feed01"
+        )
+        assert (
+            restored_crate / old_session.name / "query-cache.bin"
+        ).read_bytes() == b"legacy-stale-query-cache"
+        assert (
+            restored_crate / current_session.name / "query-cache.bin"
+        ).read_bytes() == b"legacy-current-query-cache"
+        assert (restored_crate / old_lock.name).is_file()
+        assert (restored_crate / current_lock.name).is_file()
+    finally:
+        shutil.rmtree(legacy_root, ignore_errors=True)
+
+    cases = {
+        "working": "active rustc *-working session",
+        "missing-lock": "missing its rustc-owned lock file",
+        "extra-lock": "lock without one exact finalized session",
+        "non-empty-lock": "non-empty rustc session lock file",
+        "near-miss": "invalid or near-miss rustc session directory",
+        "ambiguous-newest": "ambiguous finalized rustc sessions",
+        "locked": "active or locked",
+    }
+    for case, expected_error in cases.items():
+        fixture_root = (
+            REPO_ROOT
+            / "build"
+            / f"test-desktop-incremental-layout-{case}-{uuid.uuid4().hex}"
+        )
+        desktop = (
+            fixture_root / "target/release/incremental/scriber_desktop_lib-feed01"
+        )
+        desktop.mkdir(parents=True)
+        _, base_lock = _write_rustc_session(
+            desktop,
+            timestamp="0000000002",
+            random="0000002",
+            svh="2" * 25,
+            files={"query-cache.bin": b"trusted-query-cache"},
+        )
+        if case == "working":
+            (desktop / "s-0000000003-0000003-working").mkdir()
+            (desktop / "s-0000000003-0000003.lock").write_bytes(b"")
+        elif case == "missing-lock":
+            base_lock.unlink()
+        elif case == "extra-lock":
+            (desktop / "s-0000000003-0000003.lock").write_bytes(b"")
+        elif case == "non-empty-lock":
+            base_lock.write_bytes(b"x")
+        elif case == "near-miss":
+            (desktop / f"s-0000000003-0000003-{'3' * 24}").mkdir()
+        elif case == "ambiguous-newest":
+            _write_rustc_session(
+                desktop,
+                timestamp="0000000002",
+                random="0000003",
+                svh="3" * 25,
+                files={"query-cache.bin": b"ambiguous-query-cache"},
+            )
+        _write_build_evidence(fixture_root)
+        source_inventory, source_tree_sha = _tree_inventory(desktop)
+        holder: subprocess.Popen[str] | None = None
+        try:
+            if case == "locked":
+                holder_env = os.environ.copy()
+                holder_env["SCRIBER_TEST_RUSTC_LOCK_PATH"] = str(base_lock)
+                holder = subprocess.Popen(
+                    [
+                        _powershell_51(),
+                        "-NoProfile",
+                        "-Command",
+                        (
+                            "$share = [System.IO.FileShare]::Read -bor "
+                            "[System.IO.FileShare]::Write -bor "
+                            "[System.IO.FileShare]::Delete; "
+                            "$stream = [System.IO.File]::Open("
+                            "$env:SCRIBER_TEST_RUSTC_LOCK_PATH, "
+                            "[System.IO.FileMode]::Open, "
+                            "[System.IO.FileAccess]::ReadWrite, $share); "
+                            "$stream.Lock(0, 1); "
+                            "[Console]::Out.WriteLine('READY'); "
+                            "[Console]::Out.Flush(); "
+                            "[void][Console]::ReadLine(); "
+                            "$stream.Dispose()"
+                        ),
+                    ],
+                    cwd=REPO_ROOT,
+                    env=holder_env,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                assert holder.stdout is not None
+                assert holder.stdout.readline().strip() == "READY"
+
+            rejected, reject_outputs = _invoke_sync(fixture_root, "Export")
+            if holder is not None:
+                assert holder.stdin is not None
+                holder.stdin.write("\n")
+                holder.stdin.flush()
+                _, holder_stderr = holder.communicate(timeout=10)
+                assert holder.returncode == 0, holder_stderr
+                holder = None
+            assert rejected.returncode != 0
+            assert reject_outputs["staged"] == "false"
+            assert expected_error in (rejected.stdout + rejected.stderr)
+            assert not (fixture_root / "cache").exists()
+            rejected_inventory, rejected_tree_sha = _tree_inventory(desktop)
+            assert rejected_inventory == source_inventory
+            assert rejected_tree_sha == source_tree_sha
+            if case == "locked":
+                assert base_lock.stat().st_size == 0
+        finally:
+            if holder is not None:
+                assert holder.stdin is not None
+                holder.stdin.write("\n")
+                holder.stdin.flush()
+                _, holder_stderr = holder.communicate(timeout=10)
+                assert holder.returncode == 0, holder_stderr
+            shutil.rmtree(fixture_root, ignore_errors=True)
 
 
 def test_desktop_incremental_import_rejects_miss_tamper_wrong_key_and_foreign_paths() -> None:
@@ -361,7 +683,13 @@ def test_desktop_incremental_import_rejects_miss_tamper_wrong_key_and_foreign_pa
     target = fixture_root / "target"
     desktop = target / "release/incremental/scriber_desktop-feed01"
     desktop.mkdir(parents=True)
-    (desktop / "query-cache.bin").write_bytes(b"trusted-query-cache")
+    session, _ = _write_rustc_session(
+        desktop,
+        timestamp="0000000001",
+        random="0000001",
+        svh="1" * 25,
+        files={"query-cache.bin": b"trusted-query-cache"},
+    )
     _write_build_evidence(fixture_root)
     try:
         exported, outputs = _invoke_sync(fixture_root, "Export")
@@ -394,7 +722,8 @@ def test_desktop_incremental_import_rejects_miss_tamper_wrong_key_and_foreign_pa
         assert not desktop.exists()
 
         restore()
-        payload = cache_root / "payload/scriber_desktop-feed01/query-cache.bin"
+        cached_session = cache_root / "payload/scriber_desktop-feed01" / session.name
+        payload = cached_session / "query-cache.bin"
         payload.write_bytes(b"tampered-query-cache")
         desktop.mkdir(parents=True)
         (desktop / "existing-state.bin").write_bytes(b"untouched-existing-state")
@@ -406,7 +735,7 @@ def test_desktop_incremental_import_rejects_miss_tamper_wrong_key_and_foreign_pa
         assert (desktop / "existing-state.bin").read_bytes() == b"untouched-existing-state"
 
         restore()
-        (cache_root / "payload/scriber_desktop-feed01/foreign.exe").write_bytes(b"foreign")
+        (cached_session / "foreign.exe").write_bytes(b"foreign")
         foreign, foreign_outputs = _invoke_sync(
             fixture_root, "Import", matched_key=_full_key()
         )
@@ -416,7 +745,7 @@ def test_desktop_incremental_import_rejects_miss_tamper_wrong_key_and_foreign_pa
 
         restore()
         native_bytes = b"attested-but-forbidden-native-library"
-        native_relative = "payload/scriber_desktop-feed01/finished.rlib"
+        native_relative = f"payload/scriber_desktop-feed01/{session.name}/finished.rlib"
         native_path = cache_root / Path(native_relative)
         native_path.write_bytes(native_bytes)
         inventory_path = cache_root / "inventory.json"
@@ -459,7 +788,7 @@ def test_desktop_incremental_import_rejects_miss_tamper_wrong_key_and_foreign_pa
         assert not desktop.exists()
 
         restore()
-        link = cache_root / "payload/scriber_desktop-feed01/link.bin"
+        link = cache_root / "payload/scriber_desktop-feed01" / session.name / "link.bin"
         try:
             link.symlink_to(fixture_root / "scriber-desktop.exe")
         except OSError:
@@ -473,7 +802,7 @@ def test_desktop_incremental_import_rejects_miss_tamper_wrong_key_and_foreign_pa
             assert not desktop.exists()
 
         restore()
-        payload = cache_root / "payload/scriber_desktop-feed01/query-cache.bin"
+        payload = cache_root / "payload/scriber_desktop-feed01" / session.name / "query-cache.bin"
         payload_hardlink = fixture_root / "cached-payload-hardlink.bin"
         os.link(payload, payload_hardlink)
         assert payload.stat().st_nlink >= 2
@@ -501,8 +830,16 @@ def test_desktop_incremental_export_rejects_finished_native_artifacts(
     fixture_root = REPO_ROOT / "build" / f"test-desktop-incremental-native-{uuid.uuid4().hex}"
     desktop = fixture_root / "target/release/incremental/scriber_desktop_lib-deadbe"
     desktop.mkdir(parents=True)
-    (desktop / "query-cache.bin").write_bytes(b"legitimate-incremental-state")
-    (desktop / f"finished{native_suffix}").write_bytes(b"finished-native-artifact")
+    _write_rustc_session(
+        desktop,
+        timestamp="0000000001",
+        random="0000001",
+        svh="1" * 25,
+        files={
+            "query-cache.bin": b"legitimate-incremental-state",
+            f"finished{native_suffix}": b"finished-native-artifact",
+        },
+    )
     _write_build_evidence(fixture_root)
     try:
         rejected, outputs = _invoke_sync(fixture_root, "Export")
@@ -520,7 +857,13 @@ def test_unsafe_prefix_import_then_optional_reexport_is_a_nonfatal_skip() -> Non
     fixture_root = REPO_ROOT / "build" / f"test-desktop-incremental-reexport-{uuid.uuid4().hex}"
     desktop = fixture_root / "target/release/incremental/scriber_desktop_lib-feed01"
     desktop.mkdir(parents=True)
-    (desktop / "query-cache.bin").write_bytes(b"trusted-query-cache")
+    session, _ = _write_rustc_session(
+        desktop,
+        timestamp="0000000001",
+        random="0000001",
+        svh="1" * 25,
+        files={"query-cache.bin": b"trusted-query-cache"},
+    )
     _write_build_evidence(fixture_root)
     junction: Path | None = None
     try:
@@ -544,7 +887,7 @@ def test_unsafe_prefix_import_then_optional_reexport_is_a_nonfatal_skip() -> Non
         assert rejected.returncode == 0
         assert reject_outputs["usable"] == "false"
         assert sentinel.read_bytes() == b"external-sentinel"
-        assert (desktop / "query-cache.bin").read_bytes() == b"trusted-query-cache"
+        assert (session / "query-cache.bin").read_bytes() == b"trusted-query-cache"
 
         restaged, restage_outputs = _invoke_sync(
             fixture_root,
@@ -573,7 +916,13 @@ def test_desktop_incremental_export_requires_a_real_successful_desktop_build() -
     fixture_root = REPO_ROOT / "build" / f"test-desktop-incremental-build-gate-{uuid.uuid4().hex}"
     desktop = fixture_root / "target/release/incremental/scriber_desktop-deadbe"
     desktop.mkdir(parents=True)
-    (desktop / "dep-graph.bin").write_bytes(b"graph")
+    _write_rustc_session(
+        desktop,
+        timestamp="0000000001",
+        random="0000001",
+        svh="1" * 25,
+        files={"dep-graph.bin": b"graph"},
+    )
     _write_build_evidence(fixture_root, prebuilt=True)
     try:
         rejected, outputs = _invoke_sync(fixture_root, "Export")
@@ -731,6 +1080,12 @@ def test_release_workflow_uses_only_the_bounded_feature_ref_envelope() -> None:
     assert "$sourceFileCount += @($sourceTree.files).Count" in sync_script
     assert "$sourceTotalBytes += [int64]$sourceTree.totalBytes" in sync_script
     assert "Combined Desktop Rust incremental source exceeds" in sync_script
+    assert "RustcFinalizedSessionDirectoryPattern" in sync_script
+    assert "Open-DesktopSessionLocks" in sync_script
+    assert "ValidatedEmptySessionLockPaths" in sync_script
+    assert "Copy-Item -LiteralPath $snapshot.current.path" in sync_script
+    assert "[System.IO.FileMode]::CreateNew" in sync_script
+    assert "Copy-Item -LiteralPath $directory.FullName" not in sync_script
     assert "maxBytes" in sync_script
     assert "inventory" in sync_script
     assert "prebuiltTauriApp" in sync_script

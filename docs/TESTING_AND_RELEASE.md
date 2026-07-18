@@ -894,7 +894,12 @@ It:
   only when `build-timing.json` proves that the workflow actually compiled the
   app instead of bundling a prebuilt executable. Tags, `main`, sibling refs,
   Rust audio, and diarization cannot publish or consume that experimental
-  envelope,
+  envelope. Existing revision-3 multi-session envelopes remain importable;
+  after a successful compile, export holds every rustc session lock and stages
+  only the uniquely newest finalized session plus a fresh empty lock per
+  allowlisted Desktop crate. The Cargo target remains untouched. Working or
+  malformed sessions, invalid lock sets, held or non-empty locks, and equal
+  highest embedded timestamps fail closed,
 - builds the Tauri shell library as `rlib` only for the Windows desktop
   release path. The `staticlib` and `cdylib` crate types are kept out of this
   Windows-first package because Tauri documents them for mobile targets and
@@ -928,6 +933,8 @@ It:
   updater, Outlook, or executable-attestation changes still miss. The Desktop
   envelope uses an exact key for current inputs plus a dependency- and
   ref-bound fallback prefix for the immediately preceding incremental state.
+  Its revision/generation/key remain unchanged for compatibility; bounding is
+  enforced when the next successful build exports a replacement envelope.
   No shared cache, tag/main cache, or internal cache release is published by
   this path,
 - passes the produced media tools to `scripts/build_windows.ps1`,

@@ -34,6 +34,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$script:RustcFinalizedSessionDirectoryPattern = '^s-([0-9a-z]{10})-([0-9a-z]{7})-([0-9a-z]{25})$'
+$script:RustcWorkingSessionDirectoryPattern = '^s-[0-9a-z]{10}-[0-9a-z]{7}-working$'
+$script:RustcSessionLockFilePattern = '^s-([0-9a-z]{10})-([0-9a-z]{7})\.lock$'
+$script:EmptyFileSha256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
 
 function Write-GitHubOutput {
     param([string]$Name, [string]$Value)
@@ -246,7 +250,8 @@ function Get-SafeTree {
         $Contract,
         [string]$Label,
         [switch]$AllowSourceFileHardLinks,
-        [switch]$EnforceIncrementalFileNames
+        [switch]$EnforceIncrementalFileNames,
+        [string[]]$ValidatedEmptySessionLockPaths = @()
     )
     Assert-SafePathAncestry -BoundaryRoot $RelativeTo -Path $Root -Label "$Label root"
     if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
@@ -256,6 +261,15 @@ function Get-SafeTree {
     $pending.Enqueue([System.IO.Path]::GetFullPath($Root))
     $directories = New-Object System.Collections.Generic.List[string]
     $files = New-Object System.Collections.Generic.List[object]
+    $validatedEmptySessionLocks = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $seenValidatedEmptySessionLocks = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($lockPath in @($ValidatedEmptySessionLockPaths)) {
+        $canonicalLockPath = [System.IO.Path]::GetFullPath([string]$lockPath)
+        Assert-UnderRoot -Root $Root -Path $canonicalLockPath -Label "$Label validated rustc session lock"
+        if (-not $validatedEmptySessionLocks.Add($canonicalLockPath)) {
+            throw "$Label contains a duplicate validated rustc session lock path."
+        }
+    }
     [int64]$totalBytes = 0
     while ($pending.Count -gt 0) {
         $directory = [string]$pending.Dequeue()
@@ -280,16 +294,41 @@ function Get-SafeTree {
                 if ($totalBytes -gt [int64]$Contract.maxBytes) {
                     throw "$Label exceeds the total-byte bound."
                 }
+                $isValidatedEmptySessionLock = (
+                    $validatedEmptySessionLocks.Contains(
+                        [System.IO.Path]::GetFullPath($child.FullName)
+                    )
+                )
+                if ($isValidatedEmptySessionLock) {
+                    if (
+                        -not $directory.Equals([System.IO.Path]::GetFullPath($Root), [System.StringComparison]::OrdinalIgnoreCase) -or
+                        $child.Name -cnotmatch $script:RustcSessionLockFilePattern -or
+                        [int64]$child.Length -ne 0
+                    ) {
+                        throw "$Label contains a malformed validated rustc session lock: $relative"
+                    }
+                    [void]$seenValidatedEmptySessionLocks.Add(
+                        [System.IO.Path]::GetFullPath($child.FullName)
+                    )
+                }
+                $sha256 = if ($isValidatedEmptySessionLock) {
+                    $script:EmptyFileSha256
+                } else {
+                    Get-FileSha256 -Path $child.FullName
+                }
                 $files.Add([ordered]@{
                     path = $relative
                     length = [int64]$child.Length
-                    sha256 = Get-FileSha256 -Path $child.FullName
+                    sha256 = $sha256
                 })
                 if ($files.Count -gt [int]$Contract.maxFiles) {
                     throw "$Label exceeds the file-count bound."
                 }
             }
         }
+    }
+    if ($seenValidatedEmptySessionLocks.Count -ne $validatedEmptySessionLocks.Count) {
+        throw "$Label did not observe the exact validated rustc session lock set."
     }
     return [pscustomobject]@{
         directories = @($directories | Sort-Object)
@@ -308,6 +347,212 @@ function Assert-ExactStringSet {
         ($actualSorted -join "`n") -cne ($expectedSorted -join "`n")
     ) {
         throw "$Label does not match the attested inventory."
+    }
+}
+
+function Get-DesktopSessionLayout {
+    param(
+        [string]$CrateDirectory,
+        [string]$IncrementalRoot,
+        $Contract,
+        [string]$Label,
+        [switch]$AllowSourceFileHardLinks
+    )
+    Assert-SafePathAncestry -BoundaryRoot $IncrementalRoot -Path $CrateDirectory -Label $Label
+    if (-not (Test-Path -LiteralPath $CrateDirectory -PathType Container)) {
+        throw "$Label is not a crate directory: $CrateDirectory"
+    }
+    $crateItem = Get-Item -LiteralPath $CrateDirectory -Force
+    Assert-SafeItem -Item $crateItem -Label $Label
+    if ($crateItem.Name -cnotmatch [string]$Contract.crateDirectoryPattern) {
+        throw "$Label is not an allowlisted Desktop crate directory: $($crateItem.Name)"
+    }
+
+    $sessions = New-Object System.Collections.Generic.List[object]
+    $lockItems = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::Ordinal)
+    $entryNames = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in @(Get-ChildItem -LiteralPath $CrateDirectory -Force | Sort-Object Name)) {
+        Assert-SafeItem -Item $entry -Label $Label -AllowRegularFileHardLink:$AllowSourceFileHardLinks
+        $entryNames.Add($entry.Name)
+        if ($entry.PSIsContainer) {
+            if ($entry.Name -cmatch $script:RustcWorkingSessionDirectoryPattern) {
+                throw "$Label contains an active rustc *-working session: $($entry.Name)"
+            }
+            $match = [System.Text.RegularExpressions.Regex]::Match(
+                $entry.Name,
+                $script:RustcFinalizedSessionDirectoryPattern,
+                [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+            )
+            if (-not $match.Success) {
+                throw "$Label contains an invalid or near-miss rustc session directory: $($entry.Name)"
+            }
+            $sessions.Add([pscustomobject]@{
+                name = $entry.Name
+                path = $entry.FullName
+                timestamp = $match.Groups[1].Value
+                random = $match.Groups[2].Value
+                lockName = "s-$($match.Groups[1].Value)-$($match.Groups[2].Value).lock"
+            })
+            continue
+        }
+
+        $lockMatch = [System.Text.RegularExpressions.Regex]::Match(
+            $entry.Name,
+            $script:RustcSessionLockFilePattern,
+            [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+        )
+        if (-not $lockMatch.Success) {
+            throw "$Label contains a non-session or near-miss file at the crate root: $($entry.Name)"
+        }
+        if ([int64]$entry.Length -ne 0) {
+            throw "$Label contains a non-empty rustc session lock file: $($entry.Name)"
+        }
+        if ($lockItems.ContainsKey($entry.Name)) {
+            throw "$Label contains a duplicate rustc session lock file: $($entry.Name)"
+        }
+        $lockItems.Add($entry.Name, $entry)
+    }
+
+    if ($sessions.Count -eq 0) {
+        throw "$Label contains no finalized rustc session."
+    }
+    $sessionPrefixes = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    foreach ($session in $sessions) {
+        $prefix = "$($session.timestamp)-$($session.random)"
+        if (-not $sessionPrefixes.Add($prefix)) {
+            throw "$Label contains multiple finalized sessions for one rustc session lock: $($session.name)"
+        }
+        if (-not $lockItems.ContainsKey($session.lockName)) {
+            throw "$Label finalized session is missing its rustc-owned lock file: $($session.name)"
+        }
+    }
+    if ($lockItems.Count -ne $sessions.Count) {
+        throw "$Label contains a rustc lock without one exact finalized session."
+    }
+
+    $newestTimestamp = $null
+    foreach ($session in $sessions) {
+        if (
+            $null -eq $newestTimestamp -or
+            [System.StringComparer]::Ordinal.Compare([string]$session.timestamp, [string]$newestTimestamp) -gt 0
+        ) {
+            $newestTimestamp = [string]$session.timestamp
+        }
+    }
+    $newestSessions = @($sessions | Where-Object { [string]$_.timestamp -ceq $newestTimestamp })
+    if ($newestSessions.Count -ne 1) {
+        throw "$Label has ambiguous finalized rustc sessions with the same highest embedded timestamp."
+    }
+    $current = $newestSessions[0]
+    return [pscustomobject]@{
+        crateName = $crateItem.Name
+        cratePath = $crateItem.FullName
+        sessions = @($sessions | Sort-Object name)
+        entryNames = @($entryNames)
+        current = $current
+        currentLockPath = [string]$lockItems[$current.lockName].FullName
+        lockPaths = @(
+            $sessions |
+                ForEach-Object { [string]$lockItems[$_.lockName].FullName } |
+                Sort-Object
+        )
+        staleSessionCount = $sessions.Count - 1
+    }
+}
+
+function Open-DesktopSessionLocks {
+    param($Layout, [string]$Label)
+    $streams = New-Object System.Collections.Generic.List[object]
+    $share = [System.IO.FileShare]::Read -bor [System.IO.FileShare]::Write -bor [System.IO.FileShare]::Delete
+    try {
+        foreach ($session in @($Layout.sessions | Sort-Object name)) {
+            $lockPath = Join-Path $Layout.cratePath $session.lockName
+            $stream = $null
+            try {
+                $stream = [System.IO.File]::Open(
+                    $lockPath,
+                    [System.IO.FileMode]::Open,
+                    [System.IO.FileAccess]::Read,
+                    $share
+                )
+                $stream.Lock(0, 1)
+                $streams.Add($stream)
+                $stream = $null
+            } catch {
+                if ($null -ne $stream) {
+                    $stream.Dispose()
+                }
+                throw "$Label rustc session is active or locked and cannot be exported: $($session.name)"
+            }
+        }
+        return $streams.ToArray()
+    } catch {
+        foreach ($stream in $streams) {
+            $stream.Dispose()
+        }
+        throw
+    }
+}
+
+function Assert-DesktopSessionLayoutUnchanged {
+    param($Before, $After, [string]$Label)
+    Assert-ExactStringSet -Actual $After.entryNames -Expected $Before.entryNames -Label "$Label entry set"
+    if (
+        [string]$After.current.name -cne [string]$Before.current.name -or
+        [string]$After.current.lockName -cne [string]$Before.current.lockName
+    ) {
+        throw "$Label changed while the bounded export snapshot was being staged."
+    }
+}
+
+function Assert-DesktopSessionTree {
+    param(
+        $Tree,
+        $Layout,
+        [string]$RelativeCratePath,
+        [string]$Label
+    )
+    $expectedDirectories = @(
+        $Layout.sessions | ForEach-Object { "$RelativeCratePath/$($_.name)" }
+    )
+    Assert-ExactStringSet -Actual $Tree.directories -Expected $expectedDirectories -Label "$Label session directory set"
+
+    $sessionNames = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $sessionFileCounts = @{}
+    $expectedLocks = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    foreach ($session in $Layout.sessions) {
+        [void]$sessionNames.Add([string]$session.name)
+        $sessionFileCounts[[string]$session.name] = 0
+        [void]$expectedLocks.Add("$RelativeCratePath/$($session.lockName)")
+    }
+    foreach ($record in @($Tree.files)) {
+        $relative = [string]$record.path
+        $segments = @($relative.Split('/'))
+        $crateSegments = @($RelativeCratePath.Split('/'))
+        if ($segments.Count -eq ($crateSegments.Count + 1)) {
+            if (-not $expectedLocks.Contains($relative)) {
+                throw "$Label contains an unexpected file at the crate root: $relative"
+            }
+            continue
+        }
+        if ($segments.Count -ne ($crateSegments.Count + 2)) {
+            throw "$Label contains a nested or malformed rustc session path: $relative"
+        }
+        for ($index = 0; $index -lt $crateSegments.Count; $index += 1) {
+            if ($segments[$index] -cne $crateSegments[$index]) {
+                throw "$Label contains a foreign rustc session path: $relative"
+            }
+        }
+        $sessionName = $segments[$crateSegments.Count]
+        if (-not $sessionNames.Contains($sessionName)) {
+            throw "$Label contains a file under an unknown rustc session: $relative"
+        }
+        $sessionFileCounts[$sessionName] = [int]$sessionFileCounts[$sessionName] + 1
+    }
+    foreach ($sessionName in $sessionNames) {
+        if ([int]$sessionFileCounts[$sessionName] -le 0) {
+            throw "$Label contains an empty finalized rustc session: $sessionName"
+        }
     }
 }
 
@@ -462,6 +707,27 @@ function Test-CacheEnvelope {
     Assert-ExactStringSet -Actual $tree.directories -Expected (@('payload') + $directoryPaths) -Label "Desktop Rust incremental directory tree"
     Assert-ExactStringSet -Actual @($tree.files | ForEach-Object { [string]$_.path }) -Expected (@('inventory.json', 'manifest.json') + @($fileRecords | ForEach-Object { [string]$_.path })) -Label "Desktop Rust incremental file tree"
 
+    $payloadRoot = Join-Path $Root "payload"
+    foreach ($crateName in @($crateNames | Sort-Object)) {
+        $cratePath = Join-Path $payloadRoot $crateName
+        $layout = Get-DesktopSessionLayout `
+            -CrateDirectory $cratePath `
+            -IncrementalRoot $payloadRoot `
+            -Contract $Contract `
+            -Label "Desktop Rust incremental cache crate"
+        $relativeCratePath = "payload/$crateName"
+        $prefix = $relativeCratePath + "/"
+        $crateTree = [pscustomobject]@{
+            directories = @($tree.directories | Where-Object { ([string]$_).StartsWith($prefix, [System.StringComparison]::Ordinal) })
+            files = @($tree.files | Where-Object { ([string]$_.path).StartsWith($prefix, [System.StringComparison]::Ordinal) })
+        }
+        Assert-DesktopSessionTree `
+            -Tree $crateTree `
+            -Layout $layout `
+            -RelativeCratePath $relativeCratePath `
+            -Label "Desktop Rust incremental cache crate"
+    }
+
     return [pscustomobject]@{
         manifest = $manifest
         inventory = $inventory
@@ -563,40 +829,150 @@ if ($Mode -eq "Export") {
     [int]$sourceDirectoryCount = 0
     [int]$sourceFileCount = 0
     [int64]$sourceTotalBytes = 0
-    foreach ($directory in $crateDirectories) {
-        Assert-SafeItem -Item $directory -Label "Desktop Rust incremental source directory"
-        $sourceTree = Get-SafeTree -Root $directory.FullName -RelativeTo $incrementalRoot -Contract $contract -Label "Desktop Rust incremental source" -AllowSourceFileHardLinks -EnforceIncrementalFileNames
-        $sourceDirectoryCount += 1 + @($sourceTree.directories).Count
-        $sourceFileCount += @($sourceTree.files).Count
-        $sourceTotalBytes += [int64]$sourceTree.totalBytes
-        if (
-            $sourceDirectoryCount -gt [int]$contract.maxDirectories -or
-            $sourceFileCount -gt [int]$contract.maxFiles -or
-            $sourceTotalBytes -gt [int64]$contract.maxBytes
-        ) {
-            throw "Combined Desktop Rust incremental source exceeds the checked-in directory, file, or byte bound."
+    [int]$sourceSessionCount = 0
+    [int]$staleSessionCount = 0
+    $sourceSnapshots = New-Object System.Collections.Generic.List[object]
+    $sourceLocks = New-Object System.Collections.Generic.List[object]
+    $skipExport = $false
+    try {
+        foreach ($directory in $crateDirectories) {
+            Assert-SafeItem -Item $directory -Label "Desktop Rust incremental source directory"
+            $layout = Get-DesktopSessionLayout `
+                -CrateDirectory $directory.FullName `
+                -IncrementalRoot $incrementalRoot `
+                -Contract $contract `
+                -Label "Desktop Rust incremental source crate" `
+                -AllowSourceFileHardLinks
+            foreach ($stream in @(Open-DesktopSessionLocks -Layout $layout -Label "Desktop Rust incremental source crate")) {
+                $sourceLocks.Add($stream)
+            }
+            $lockedLayout = Get-DesktopSessionLayout `
+                -CrateDirectory $directory.FullName `
+                -IncrementalRoot $incrementalRoot `
+                -Contract $contract `
+                -Label "Desktop Rust incremental source crate" `
+                -AllowSourceFileHardLinks
+            Assert-DesktopSessionLayoutUnchanged `
+                -Before $layout `
+                -After $lockedLayout `
+                -Label "Desktop Rust incremental source crate"
+
+            $sourceTree = Get-SafeTree `
+                -Root $directory.FullName `
+                -RelativeTo $incrementalRoot `
+                -Contract $contract `
+                -Label "Desktop Rust incremental source" `
+                -AllowSourceFileHardLinks `
+                -EnforceIncrementalFileNames `
+                -ValidatedEmptySessionLockPaths $lockedLayout.lockPaths
+            Assert-DesktopSessionTree `
+                -Tree $sourceTree `
+                -Layout $lockedLayout `
+                -RelativeCratePath $directory.Name `
+                -Label "Desktop Rust incremental source crate"
+            $sourceDirectoryCount += 1 + @($sourceTree.directories).Count
+            $sourceFileCount += @($sourceTree.files).Count
+            $sourceTotalBytes += [int64]$sourceTree.totalBytes
+            $sourceSessionCount += $lockedLayout.sessions.Count
+            $staleSessionCount += $lockedLayout.staleSessionCount
+            if (
+                $sourceDirectoryCount -gt [int]$contract.maxDirectories -or
+                $sourceFileCount -gt [int]$contract.maxFiles -or
+                $sourceTotalBytes -gt [int64]$contract.maxBytes
+            ) {
+                throw "Combined Desktop Rust incremental source exceeds the checked-in directory, file, or byte bound."
+            }
+            $sourceSnapshots.Add($lockedLayout)
+        }
+
+        if (Test-Path -LiteralPath $resolvedCacheRoot) {
+            try {
+                Assert-SafePathAncestry -BoundaryRoot $buildRoot -Path $resolvedCacheRoot -Label "Existing Desktop Rust incremental cache root"
+                [void](Get-SafeTree -Root $resolvedCacheRoot -RelativeTo $resolvedCacheRoot -Contract $contract -Label "Existing Desktop Rust incremental cache")
+                Remove-CheckedDirectory -BoundaryRoot $buildRoot -Path $resolvedCacheRoot -Label "Existing Desktop Rust incremental cache root"
+            } catch {
+                Write-Warning "Skipping optional Desktop Rust incremental re-export because the restored cache root is unsafe; the successful installer build remains authoritative: $($_.Exception.Message)"
+                Write-GitHubOutput -Name "skip-reason" -Value "unsafe-existing-envelope"
+                $skipExport = $true
+            }
+        }
+        if (-not $skipExport) {
+            New-Item -ItemType Directory -Force -Path $resolvedCacheRoot | Out-Null
+            $payloadRoot = Join-Path $resolvedCacheRoot "payload"
+            New-Item -ItemType Directory -Force -Path $payloadRoot | Out-Null
+            foreach ($snapshot in $sourceSnapshots) {
+                $unchangedLayout = Get-DesktopSessionLayout `
+                    -CrateDirectory $snapshot.cratePath `
+                    -IncrementalRoot $incrementalRoot `
+                    -Contract $contract `
+                    -Label "Desktop Rust incremental source crate" `
+                    -AllowSourceFileHardLinks
+                Assert-DesktopSessionLayoutUnchanged `
+                    -Before $snapshot `
+                    -After $unchangedLayout `
+                    -Label "Desktop Rust incremental source crate"
+                $destinationCrate = Join-Path $payloadRoot $snapshot.crateName
+                New-Item -ItemType Directory -Force -Path $destinationCrate | Out-Null
+                Copy-Item -LiteralPath $snapshot.current.path -Destination $destinationCrate -Recurse -Force
+                $destinationLock = Join-Path $destinationCrate $snapshot.current.lockName
+                $stagedLock = [System.IO.File]::Open(
+                    $destinationLock,
+                    [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::Write,
+                    [System.IO.FileShare]::None
+                )
+                $stagedLock.Dispose()
+            }
+            foreach ($snapshot in $sourceSnapshots) {
+                $afterCopyLayout = Get-DesktopSessionLayout `
+                    -CrateDirectory $snapshot.cratePath `
+                    -IncrementalRoot $incrementalRoot `
+                    -Contract $contract `
+                    -Label "Desktop Rust incremental source crate" `
+                    -AllowSourceFileHardLinks
+                Assert-DesktopSessionLayoutUnchanged `
+                    -Before $snapshot `
+                    -After $afterCopyLayout `
+                    -Label "Desktop Rust incremental source crate"
+            }
+            $payloadTree = Get-SafeTree `
+                -Root $payloadRoot `
+                -RelativeTo $resolvedCacheRoot `
+                -Contract $contract `
+                -Label "Exported Desktop Rust incremental payload" `
+                -EnforceIncrementalFileNames
+            foreach ($snapshot in $sourceSnapshots) {
+                $stagedCrate = Join-Path $payloadRoot $snapshot.crateName
+                $stagedLayout = Get-DesktopSessionLayout `
+                    -CrateDirectory $stagedCrate `
+                    -IncrementalRoot $payloadRoot `
+                    -Contract $contract `
+                    -Label "Exported Desktop Rust incremental crate"
+                if ($stagedLayout.sessions.Count -ne 1 -or $stagedLayout.staleSessionCount -ne 0) {
+                    throw "Exported Desktop Rust incremental staging must contain exactly one finalized rustc session per crate."
+                }
+                $relativeCratePath = "payload/$($snapshot.crateName)"
+                $prefix = $relativeCratePath + "/"
+                $stagedTree = [pscustomobject]@{
+                    directories = @($payloadTree.directories | Where-Object { ([string]$_).StartsWith($prefix, [System.StringComparison]::Ordinal) })
+                    files = @($payloadTree.files | Where-Object { ([string]$_.path).StartsWith($prefix, [System.StringComparison]::Ordinal) })
+                }
+                Assert-DesktopSessionTree `
+                    -Tree $stagedTree `
+                    -Layout $stagedLayout `
+                    -RelativeCratePath $relativeCratePath `
+                    -Label "Exported Desktop Rust incremental crate"
+            }
+        }
+    } finally {
+        foreach ($stream in $sourceLocks) {
+            $stream.Dispose()
         }
     }
-
-    if (Test-Path -LiteralPath $resolvedCacheRoot) {
-        try {
-            Assert-SafePathAncestry -BoundaryRoot $buildRoot -Path $resolvedCacheRoot -Label "Existing Desktop Rust incremental cache root"
-            [void](Get-SafeTree -Root $resolvedCacheRoot -RelativeTo $resolvedCacheRoot -Contract $contract -Label "Existing Desktop Rust incremental cache")
-            Remove-CheckedDirectory -BoundaryRoot $buildRoot -Path $resolvedCacheRoot -Label "Existing Desktop Rust incremental cache root"
-        } catch {
-            Write-Warning "Skipping optional Desktop Rust incremental re-export because the restored cache root is unsafe; the successful installer build remains authoritative: $($_.Exception.Message)"
-            Write-GitHubOutput -Name "skip-reason" -Value "unsafe-existing-envelope"
-            exit 0
-        }
-    }
-    New-Item -ItemType Directory -Force -Path $resolvedCacheRoot | Out-Null
-    $payloadRoot = Join-Path $resolvedCacheRoot "payload"
-    New-Item -ItemType Directory -Force -Path $payloadRoot | Out-Null
-    foreach ($directory in $crateDirectories) {
-        Copy-Item -LiteralPath $directory.FullName -Destination $payloadRoot -Recurse -Force
+    if ($skipExport) {
+        exit 0
     }
 
-    $payloadTree = Get-SafeTree -Root $payloadRoot -RelativeTo $resolvedCacheRoot -Contract $contract -Label "Exported Desktop Rust incremental payload" -EnforceIncrementalFileNames
     $crateNames = @($crateDirectories | ForEach-Object { $_.Name })
     $inventory = [ordered]@{
         apiVersion = "1"
@@ -653,12 +1029,15 @@ if ($Mode -eq "Export") {
         -ExpectedRunnerOs $RunnerOs `
         -ContractSha256 $contractSha256 `
         -Contract $contract
-    Write-Host "Staged bounded Desktop Rust incremental cache: crates=$($validated.crateDirectories.Count); files=$($validated.fileCount); bytes=$($validated.totalBytes)."
+    Write-Host "Staged bounded Desktop Rust incremental cache: crates=$($validated.crateDirectories.Count); sessions=$($crateNames.Count); staleSessionsExcluded=$staleSessionCount; files=$($validated.fileCount); bytes=$($validated.totalBytes)."
     Write-GitHubOutput -Name "staged" -Value "true"
     Write-GitHubOutput -Name "file-count" -Value ([string]$validated.fileCount)
     Write-GitHubOutput -Name "directory-count" -Value ([string]$validated.directoryCount)
     Write-GitHubOutput -Name "total-bytes" -Value ([string]$validated.totalBytes)
     Write-GitHubOutput -Name "source-input-key" -Value $CurrentInputKey
+    Write-GitHubOutput -Name "source-session-count" -Value ([string]$sourceSessionCount)
+    Write-GitHubOutput -Name "staged-session-count" -Value ([string]$crateNames.Count)
+    Write-GitHubOutput -Name "stale-session-count" -Value ([string]$staleSessionCount)
     exit 0
 }
 

@@ -489,7 +489,17 @@ Packaging/build:
   the pinned rustc incremental filename set (`.bin`, `.o`, compressed LLVM
   bitcode, `metadata.rmeta`, and session locks). Finished/native artifacts such
   as EXE, PDB, DLL, LIB, and RLIB plus foreign paths and reparse points are
-  rejected before export or import. Its exact key covers the
+  rejected before export or import. Import remains compatible with existing
+  revision-3 envelopes containing more than one valid finalized rustc session.
+  Export validates every finalized session and its exact empty lock, acquires
+  the rustc byte-range locks, and stages only the uniquely newest session per
+  Desktop crate according to rustc's fixed-width embedded Base36 timestamp.
+  It creates a fresh empty staged lock and never removes or rewrites the Cargo
+  target tree. A working session, missing/extra/non-empty/held lock, malformed
+  session name, or ambiguous newest timestamp fails closed. Repeated export is
+  therefore bounded to one session per allowlisted crate instead of carrying
+  both the imported predecessor and the newly compiled successor forward. Its
+  exact key covers the
   current Tauri inputs while its restore prefix is bound to one feature ref,
   toolchain/target, and Cargo dependency graph. This allows a seed/canary pair
   to measure rustc incremental reuse without widening shared release caches or

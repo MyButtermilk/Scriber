@@ -1327,9 +1327,10 @@ Already implemented and should not be regressed:
   `refresh_release_cache_artifacts=true`; feature-branch diagnostics are
   read-only with respect to shared caches and internal cache releases. An
   explicit non-main `workflow_dispatch` may save only the bounded exact Tauri
-  app product in that ref's isolated Actions-cache namespace. That cache cannot
-  warm `main`, tags, or sibling refs and does not enable any other cache save or
-  publication. The maintenance path retains
+  app product and bounded Desktop Rust incremental envelope in that ref's
+  isolated Actions-cache namespace. Those caches cannot warm `main`, tags, or
+  sibling refs and do not enable any other cache save or publication. The
+  maintenance path retains
   exactly one Actions-cache generation per allowlisted family, removes
   superseded internal cache-release tags, and current cache publishers keep
   only their replacement asset. After best-effort GC, the maintenance workflow
@@ -1378,6 +1379,14 @@ Already implemented and should not be regressed:
   The separate `audio_sidecar.rs` binary root and its private `meeting_aec.rs`
   module belong only to the Rust-audio product key; shared modules such as
   `audio_frame_pipe.rs` and `redaction.rs` remain in both product identities.
+- Keep the ref-local Desktop Rust incremental envelope on its revision-3
+  generation/key contract so existing multi-session envelopes remain usable
+  prefix imports. After a successful app compile, export must validate and
+  lock every exact finalized rustc session, select the unique newest embedded
+  fixed-width Base36 timestamp per allowlisted Desktop crate, and stage exactly
+  that session plus a newly created empty lock. Never prune or rewrite Cargo's
+  target tree. Working/malformed sessions, missing/extra/non-empty or held
+  locks, and equal highest timestamps fail closed.
 - Before backend sidecar cache save/publication,
   `scripts/ci/select_backend_sidecar_cache_entry.ps1` must validate and retain
   exactly the current internal SHA-256 directory. Never publish the cumulative
