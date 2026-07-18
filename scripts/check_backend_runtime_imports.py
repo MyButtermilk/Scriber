@@ -11,7 +11,45 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from backend_runtime.contract import (
+    REQUIRED_PACKAGE_VERSIONS as FROZEN_RUNTIME_REQUIRED_PACKAGE_VERSIONS,
+    RUNTIME_REQUIRED_IMPORTS,
+)
 from src.runtime.provider_dependencies import STANDARD_PROVIDER_RUNTIME_IMPORTS
+
+
+def _merge_required_imports(
+    *groups: Iterable[tuple[str, str]],
+) -> tuple[tuple[str, str], ...]:
+    merged: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for module_name, reason in group:
+            if module_name in seen:
+                continue
+            seen.add(module_name)
+            merged.append((module_name, reason))
+    return tuple(merged)
+
+
+def _merge_required_package_versions(
+    *groups: Iterable[tuple[str, str]],
+) -> tuple[tuple[str, str], ...]:
+    merged: list[tuple[str, str]] = []
+    versions: dict[str, str] = {}
+    for group in groups:
+        for package_name, expected_version in group:
+            previous = versions.get(package_name)
+            if previous is not None and previous != expected_version:
+                raise ValueError(
+                    "Conflicting required package versions for "
+                    f"{package_name}: {previous} and {expected_version}"
+                )
+            if previous is not None:
+                continue
+            versions[package_name] = expected_version
+            merged.append((package_name, expected_version))
+    return tuple(merged)
 
 
 CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
@@ -48,14 +86,22 @@ CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("src.pipeline", "transcription pipeline application runtime"),
     ("src.web_api", "backend API entry point"),
 )
-REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
+APPLICATION_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     *CORE_RUNTIME_IMPORTS,
     *STANDARD_PROVIDER_RUNTIME_IMPORTS,
 )
-REQUIRED_PACKAGE_VERSIONS: tuple[tuple[str, str], ...] = (
+APPLICATION_REQUIRED_PACKAGE_VERSIONS: tuple[tuple[str, str], ...] = (
     ("pipecat-ai", "1.5.0"),
     ("yt-dlp", "2026.7.4"),
     ("yt-dlp-ejs", "0.8.0"),
+)
+REQUIRED_IMPORTS = _merge_required_imports(
+    APPLICATION_REQUIRED_IMPORTS,
+    RUNTIME_REQUIRED_IMPORTS,
+)
+REQUIRED_PACKAGE_VERSIONS = _merge_required_package_versions(
+    APPLICATION_REQUIRED_PACKAGE_VERSIONS,
+    FROZEN_RUNTIME_REQUIRED_PACKAGE_VERSIONS,
 )
 
 

@@ -207,7 +207,8 @@ Packaging/build:
 
 - The packaged backend has two cache boundaries. The stable PyInstaller runtime
   lives under `build\tauri-sidecar-runtime-cache`; current `src` code and the
-  minimal runtime checker are staged afterwards as a physical, checksummed
+  comprehensive runtime/application import checker are staged afterwards as a
+  physical, checksummed
   `backend\app` layer. Ordinary backend edits therefore invalidate only the
   cheap composed-sidecar key, not PyInstaller analysis or its dependency tree.
 - `runtime-cache-manifest.json` records and validates the runtime input key,
@@ -303,7 +304,10 @@ Packaging/build:
   includes the concrete application-layer hash and bundled media-tool identities.
   On a runtime hit, PyInstaller and the source dependency environment are not
   required; the builder validates the frozen runtime, mirrors it into the dist
-  tree, stages current application code, then runs the full frozen import gate.
+  tree, stages current application code, then runs one comprehensive import
+  gate covering both the frozen runtime contract and application/provider
+  imports. A newly frozen runtime still passes its isolated import gate before
+  it can be saved to the runtime cache.
   The internal manifests and outer GitHub keys share
   `packaging\backend-sidecar-output-contract.json`; they do not hash the whole
   orchestration script. Increment its `revision` for output-affecting builder or

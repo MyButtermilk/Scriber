@@ -201,6 +201,10 @@ scripts\project-python.cmd scripts\smoke_diarization_worker_resource.py `
   additionally requires every direct `pipecat.*` import under `src` to be in the
   frozen contract; revision 3 specifically protects
   `pipecat.transports.base_input` used by microphone and audio-file transports.
+  When composing a cached runtime with a current application layer, the final
+  gate imports the union of this frozen contract and all application/provider
+  requirements in one process. Newly frozen runtimes retain their isolated
+  pre-cache import gate.
 - Provider tests for custom Pipecat services must run with deprecation warnings
   promoted to errors and assert complete Pipecat 1.5 `STTSettings`. Lifecycle
   coverage also verifies that only the expected Windows Proactor WinError 10054

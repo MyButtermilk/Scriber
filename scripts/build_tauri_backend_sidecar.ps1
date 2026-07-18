@@ -3291,16 +3291,6 @@ if (-not $cacheHit) {
     }
 
     $cachedRuntimeDir = Join-Path $RuntimeCacheRoot "scriber-backend"
-    $cachedRuntimeExe = Join-Path $cachedRuntimeDir "scriber-backend.exe"
-    if (-not (Test-Path -LiteralPath $cachedRuntimeExe -PathType Leaf)) {
-        $cachedRuntimeExe = Join-Path $cachedRuntimeDir "scriber-backend"
-    }
-    Invoke-TimedStep -Label "frozen-runtime-cache-import-check" -Command {
-        Invoke-FrozenBackendRuntimeLayerCheck `
-            -SidecarExe $cachedRuntimeExe `
-            -SidecarDir $cachedRuntimeDir `
-            -LogRoot $WorkRoot
-    }
     Invoke-TimedStep -Label "backend-runtime-stage" -Command {
         Copy-DirectoryContents `
             -SourceDir $cachedRuntimeDir `

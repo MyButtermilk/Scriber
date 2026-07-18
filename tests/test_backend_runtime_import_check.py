@@ -5,13 +5,21 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from scripts.check_backend_runtime_imports import (
     REQUIRED_IMPORTS,
     REQUIRED_PACKAGE_VERSIONS,
+    _merge_required_imports,
+    _merge_required_package_versions,
     check_imports,
     check_package_versions,
 )
-from backend_runtime.contract import RUNTIME_CONTRACT_REVISION, RUNTIME_REQUIRED_IMPORTS
+from backend_runtime.contract import (
+    REQUIRED_PACKAGE_VERSIONS as FROZEN_RUNTIME_REQUIRED_PACKAGE_VERSIONS,
+    RUNTIME_CONTRACT_REVISION,
+    RUNTIME_REQUIRED_IMPORTS,
+)
 
 
 def test_backend_worker_startup_timeout_simulation_is_once(monkeypatch, tmp_path):
@@ -82,6 +90,43 @@ def test_frozen_runtime_contract_covers_direct_pipecat_pipeline_imports():
         "pipecat.turns.user_start",
         "pipecat.turns.user_stop",
     } <= frozen_modules
+
+
+def test_composed_import_gate_covers_frozen_runtime_contract_without_duplicates():
+    required_modules = [module for module, _reason in REQUIRED_IMPORTS]
+    frozen_modules = {module for module, _reason in RUNTIME_REQUIRED_IMPORTS}
+
+    assert frozen_modules <= set(required_modules)
+    assert len(required_modules) == len(set(required_modules))
+    assert set(FROZEN_RUNTIME_REQUIRED_PACKAGE_VERSIONS) <= set(
+        REQUIRED_PACKAGE_VERSIONS
+    )
+    required_packages = [package for package, _version in REQUIRED_PACKAGE_VERSIONS]
+    assert len(required_packages) == len(set(required_packages))
+
+
+def test_composed_import_gate_merges_deterministically_and_conflicting_pins_fail_closed():
+    assert _merge_required_imports(
+        (("shared", "application reason"), ("application", "application-only")),
+        (("shared", "runtime reason"), ("runtime", "runtime-only")),
+    ) == (
+        ("shared", "application reason"),
+        ("application", "application-only"),
+        ("runtime", "runtime-only"),
+    )
+    assert _merge_required_package_versions(
+        (("shared", "1.0"),),
+        (("shared", "1.0"), ("runtime", "2.0")),
+    ) == (("shared", "1.0"), ("runtime", "2.0"))
+
+    with pytest.raises(
+        ValueError,
+        match=r"Conflicting required package versions for shared: 1\.0 and 2\.0",
+    ):
+        _merge_required_package_versions(
+            (("shared", "1.0"),),
+            (("shared", "2.0"),),
+        )
 
 
 def test_runtime_build_and_cache_validators_read_the_contract_revision_from_source():
@@ -207,6 +252,17 @@ def test_sidecar_build_runs_frozen_runtime_import_check():
     assert "Invoke-FrozenBackendRuntimeLayerCheck" in build_script
     assert "--runtime-import-check" in build_script
     assert "--runtime-layer-check" in build_script
+    assert (
+        'Invoke-TimedStep -Label "frozen-runtime-cache-import-check"'
+        not in build_script
+    )
+    runtime_cache_miss = build_script.split("if (-not $runtimeCacheHit) {", 1)[1].split(
+        '\n    $cachedRuntimeDir = Join-Path $RuntimeCacheRoot "scriber-backend"', 1
+    )[0]
+    assert (
+        'Invoke-TimedStep -Label "frozen-runtime-layer-check"' in runtime_cache_miss
+    )
+    assert 'Invoke-TimedStep -Label "frozen-runtime-import-check"' in build_script
     assert 'repo_root / "backend_runtime" / "launcher.py"' in spec
     assert "scripts.check_backend_runtime_imports" not in spec
 
