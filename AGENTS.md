@@ -1334,18 +1334,20 @@ Already implemented and should not be regressed:
   build.
 - The Rust Actions cache is keyed by normalized Cargo dependency metadata plus
   resolved toolchain/target/profile, not by ordinary app source. The exact
-  Tauri app binary is a separate small v2 cache keyed by full Rust/frontend
+  Tauri app product is a separate bounded v3 cache keyed by full Rust/frontend
   sources, the Node version, binary-producing helper scripts, the versioned
   `packaging/tauri-app-binary-output-contract.json`, concrete version,
   toolchain, target/profile, updater runtime, and Outlook configuration
   fingerprints. The whole workflow is deliberately excluded: bump the output
   contract revision for otherwise-unrepresented binary-producing behavior, but
   not for cache probes, scheduling, diagnostics, or non-producing setup skips.
-  Its attestation retains the producing
-  commit as provenance without making unrelated Python-only commits miss. A
-  validated hit keeps the restored frontend dependencies for the repository-local
-  Tauri CLI, skips the redundant frontend type check, and may run bundle-only
-  packaging; NSIS,
+  Its attestation retains the producing commit as provenance without making
+  unrelated Python-only commits miss. The same manifest inventories the
+  minimal Windows x64 Tauri CLI files, their SHA-256 values, and the exact
+  package-lock version and SHA-512 integrity records. A validated hit uses that
+  build-local CLI entrypoint, skips the full `node_modules`/npm-store restore
+  and the redundant frontend type check, and may run bundle-only packaging.
+  Authenticode-required runs still select fresh frontend/build preparation; NSIS,
   updater signatures, checksums, and publication evidence are always fresh.
 - Before backend sidecar cache save/publication,
   `scripts/ci/select_backend_sidecar_cache_entry.ps1` must validate and retain

@@ -176,7 +176,7 @@ $rollingFamilies = @(
     [pscustomobject]@{ Name = 'backend-v2'; Pattern = '^scriber-backend-sidecar-v2-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'backend-runtime-v1'; Pattern = '^scriber-backend-runtime-v1-Windows-python-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'audio'; Pattern = '^scriber-rust-audio-sidecar-Windows-'; Retain = $RetainPerRollingFamily; GenerationPattern = '' },
-    [pscustomobject]@{ Name = 'tauri-app'; Pattern = '^scriber-tauri-app-binary-v[12]-Windows-'; Retain = $RetainPerRollingFamily; GenerationPattern = '^scriber-tauri-app-binary-v(?<generation>[12])-Windows-' },
+    [pscustomobject]@{ Name = 'tauri-app'; Pattern = '^scriber-tauri-app-binary-v[123]-Windows-'; Retain = $RetainPerRollingFamily; GenerationPattern = '^scriber-tauri-app-binary-v(?<generation>[123])-Windows-' },
     [pscustomobject]@{ Name = 'frontend'; Pattern = '^scriber-frontend-node-modules-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'python-venv'; Pattern = '^scriber-python-venv-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'python-wheelhouse'; Pattern = '^scriber-python-wheelhouse-v2-Windows-'; Retain = $RetainPerRollingFamily },

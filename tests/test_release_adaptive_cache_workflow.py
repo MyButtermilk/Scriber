@@ -60,9 +60,9 @@ def test_release_path_planner_probes_hashfiles_digest_for_current_cache_generati
     workflow = _read(".github/workflows/release-windows.yml")
 
     assert "Convert-ManifestFingerprintToHashFilesFingerprint" in planner
-    assert '$tauriActionsKey = "scriber-tauri-app-binary-v2-$RunnerOs-$tauriActionsHash"' in planner
+    assert '$tauriActionsKey = "scriber-tauri-app-binary-v3-$RunnerOs-$tauriActionsHash"' in planner
     assert workflow.count(
-        "key: scriber-tauri-app-binary-v2-${{ runner.os }}-"
+        "key: scriber-tauri-app-binary-v3-${{ runner.os }}-"
         "${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}"
     ) == 2
 
@@ -100,13 +100,13 @@ def test_release_path_planner_probes_hashfiles_digest_for_current_cache_generati
     assert derived["backendActionsKey"] == (
         "scriber-backend-sidecar-v2-Windows-python-3.13-" + hashfiles_fingerprint
     )
-    assert derived["tauriActionsKey"] == "scriber-tauri-app-binary-v2-Windows-" + hashfiles_fingerprint
+    assert derived["tauriActionsKey"] == "scriber-tauri-app-binary-v3-Windows-" + hashfiles_fingerprint
     assert derived["backendAssetName"] == (
         "scriber-backend-sidecar-Windows-python-3.13-" + hashfiles_fingerprint + ".zip"
     )
 
 
-def test_attested_tauri_app_skips_only_the_covered_frontend_typecheck() -> None:
+def test_attested_tauri_app_uses_its_lock_bound_cli_without_full_frontend_dependencies() -> None:
     workflow = _read(".github/workflows/release-windows.yml")
     build_workflow = workflow.split("  build-windows:\n", 1)[1]
     build_step = build_workflow.split("- name: Build Windows installer\n", 1)[1].split(
@@ -118,7 +118,18 @@ def test_attested_tauri_app_skips_only_the_covered_frontend_typecheck() -> None:
 
     assert '$buildArgs += "-UsePrebuiltTauriApp"' in prebuilt_block
     assert '$buildArgs += "-SkipFrontendTypeCheck"' in prebuilt_block
-    assert "frontend dependencies remain available for the Tauri CLI" in prebuilt_block
+    assert '$buildArgs += @("-TauriCliEntrypoint", $tauriCliEntrypoint)' in prebuilt_block
+    assert "exact attested Tauri app binary and lock-bound CLI" in prebuilt_block
+
+    selection = build_workflow.split("- name: Select frontend dependency preparation\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert '$env:SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE -eq "1"' in selection
+    assert "steps.cold-tauri-import.outputs.cli-entrypoint" in selection
+    assert "steps.tauri-app-binary-import.outputs.cli-entrypoint" in selection
+    assert "Test-Path -LiteralPath $cliEntrypoint -PathType Leaf" in selection
+    assert "must remain under the workflow build directory" in selection
+    assert '"required=$(if ($usePrebuiltTauriApp) { \'false\' } else { \'true\' })"' in selection
 
     frontend_restore = build_workflow.split("- name: Restore frontend dependency cache\n", 1)[1].split(
         "\n      - name:", 1
@@ -126,12 +137,26 @@ def test_attested_tauri_app_skips_only_the_covered_frontend_typecheck() -> None:
     frontend_install = build_workflow.split("- name: Install frontend dependencies\n", 1)[1].split(
         "\n      - name:", 1
     )[0]
-    assert "if:" not in frontend_restore
-    assert "frontend-preparation" not in frontend_restore
+    assert "if: steps.frontend-preparation.outputs.required == 'true'" in frontend_restore
     assert "tauri-app-binary-import" not in frontend_restore
-    assert "if: steps.frontend-node-modules-cache.outputs.cache-hit != 'true'" in frontend_install
-    assert "frontend-preparation" not in frontend_install
+    assert (
+        "if: steps.frontend-preparation.outputs.required == 'true' && "
+        "steps.frontend-node-modules-cache.outputs.cache-hit != 'true'"
+    ) in frontend_install
     assert "tauri-app-binary-import" not in frontend_install
+
+    export_step = build_workflow.split("- name: Export exact Tauri app binary\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert "steps.frontend-preparation.outputs.cli-entrypoint" in export_step
+    assert '"-TauriCliPackagePath", $cliPackagePath' in export_step
+    assert '"-TauriCliPlatformPackagePath", (Join-Path $tauriAppsRoot "cli-win32-x64-msvc")' in export_step
+
+    build_script = _read("scripts/build_windows.ps1")
+    assert "[string]$TauriCliEntrypoint" in build_script
+    assert "-TauriCliEntrypoint requires -UsePrebuiltTauriApp" in build_script
+    assert "must resolve under the repository build directory" in build_script
+    assert "node \"{0}\" bundle --bundles" in build_script
 
 
 def test_runtime_tree_identity_is_compatible_with_windows_powershell() -> None:
@@ -569,7 +594,7 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
     finalizer = _read("scripts/ci/finalize_release_cache_keys.ps1")
     workflow = _read(".github/workflows/release-windows.yml")
     assert 'Add-DynamicRow -Path $tauriAppBinaryPath -Name "source-commit"' not in finalizer
-    assert "scriber-tauri-app-binary-v2-" in workflow
+    assert "scriber-tauri-app-binary-v3-" in workflow
     assert "SCRIBER_SAVE_REF_LOCAL_TAURI_CACHE" in workflow
     assert "github.ref != 'refs/heads/main'" in workflow
     assert 'schemaVersion = 2' in workflow
@@ -605,8 +630,33 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
     fixture_root = REPO_ROOT / "build" / f"test-tauri-product-{uuid.uuid4().hex}"
     cache_root = fixture_root / "cache"
     binary_path = fixture_root / "target/scriber-desktop.exe"
+    cli_package_path = fixture_root / "source-node-modules/@tauri-apps/cli"
+    cli_platform_package_path = fixture_root / "source-node-modules/@tauri-apps/cli-win32-x64-msvc"
     binary_path.parent.mkdir(parents=True)
     shutil.copy2(gh, binary_path)
+    package_lock = json.loads(_read("Frontend/package-lock.json"))
+    cli_version = package_lock["packages"]["node_modules/@tauri-apps/cli"]["version"]
+    cli_package_path.mkdir(parents=True)
+    cli_platform_package_path.mkdir(parents=True)
+    (cli_package_path / "package.json").write_text(
+        json.dumps({"name": "@tauri-apps/cli", "version": cli_version}), encoding="utf-8"
+    )
+    (cli_package_path / "tauri.js").write_text(
+        f"console.log('tauri-cli {cli_version}')\n", encoding="utf-8"
+    )
+    (cli_package_path / "main.js").write_text("module.exports = {}\n", encoding="utf-8")
+    (cli_package_path / "index.js").write_text("module.exports = {}\n", encoding="utf-8")
+    (cli_platform_package_path / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "@tauri-apps/cli-win32-x64-msvc",
+                "version": cli_version,
+                "main": "cli.win32-x64-msvc.node",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cli_platform_package_path / "cli.win32-x64-msvc.node").write_bytes(b"fixture-native-cli")
     cache_key = "a" * 64
     script = REPO_ROOT / "scripts/ci/sync_tauri_app_binary_cache.ps1"
 
@@ -631,6 +681,10 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
                 str(cache_root.relative_to(REPO_ROOT)),
                 "-BinaryPath",
                 str(binary_path.relative_to(REPO_ROOT)),
+                "-TauriCliPackagePath",
+                str(cli_package_path.relative_to(REPO_ROOT)),
+                "-TauriCliPlatformPackagePath",
+                str(cli_platform_package_path.relative_to(REPO_ROOT)),
             ],
             cwd=REPO_ROOT,
             env=env,
@@ -653,31 +707,61 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         cached_binary_path = cache_root / "scriber-desktop.exe"
         cached_binary = cached_binary_path.read_bytes()
-        assert manifest["apiVersion"] == "2"
+        assert manifest["apiVersion"] == "3"
         assert manifest["sourceCommit"] == "1" * 40
+        assert manifest["tauriCli"]["version"] == cli_version
+        assert manifest["tauriCli"]["entrypoint"] == (
+            "tauri-cli/node_modules/@tauri-apps/cli/tauri.js"
+        )
+        assert len(manifest["tauriCli"]["files"]) == 6
+        cached_cli_paths = {
+            cache_root / record["path"]: (cache_root / record["path"]).read_bytes()
+            for record in manifest["tauriCli"]["files"]
+        }
 
         binary_path.unlink()
+        shutil.rmtree(fixture_root / "source-node-modules")
         imported, import_outputs = invoke("Import", commit="2" * 40)
         assert imported.returncode == 0, imported.stderr
         assert import_outputs["usable"] == "true"
         assert binary_path.exists()
         expected_sha256 = hashlib.sha256(Path(gh).read_bytes()).hexdigest()
         assert hashlib.sha256(binary_path.read_bytes()).hexdigest() == expected_sha256
+        assert Path(import_outputs["cli-entrypoint"]).is_file()
+        assert import_outputs["cli-version"] == cli_version
 
         def assert_rejected(
             name: str,
             *,
             manifest_changes: dict[str, object] | None = None,
             executable_changes: dict[str, object] | None = None,
+            tauri_cli_changes: dict[str, object] | None = None,
+            tauri_cli_file_changes: dict[str, object] | None = None,
             commit: str = "2" * 40,
             expected_version: str = version,
             tamper_binary: bool = False,
+            tamper_cli: bool = False,
+            add_unattested_cli_file: bool = False,
         ) -> None:
             candidate = json.loads(json.dumps(manifest))
             candidate.update(manifest_changes or {})
             candidate["executable"].update(executable_changes or {})
+            candidate["tauriCli"].update(tauri_cli_changes or {})
+            if tauri_cli_file_changes:
+                candidate["tauriCli"]["files"][0].update(tauri_cli_file_changes)
             manifest_path.write_text(json.dumps(candidate), encoding="utf-8")
             cached_binary_path.write_bytes(cached_binary + (b"tamper" if tamper_binary else b""))
+            for path, content in cached_cli_paths.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            if tamper_cli:
+                cli_entrypoint = cache_root / manifest["tauriCli"]["entrypoint"]
+                cli_entrypoint.write_bytes(cli_entrypoint.read_bytes() + b"tamper")
+            extra_cli_path = cache_root / "tauri-cli/node_modules/@tauri-apps/cli/unattested.js"
+            if add_unattested_cli_file:
+                extra_cli_path.write_text("module.exports = {}\n", encoding="utf-8")
+            else:
+                extra_cli_path.unlink(missing_ok=True)
             binary_path.unlink(missing_ok=True)
             rejected, outputs = invoke(
                 "Import", commit=commit, expected_version=expected_version
@@ -698,6 +782,13 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
         assert_rejected("length", executable_changes={"length": len(cached_binary) + 1})
         assert_rejected("SHA-256", executable_changes={"sha256": "0" * 64})
         assert_rejected("tampered executable", tamper_binary=True)
+        assert_rejected("CLI version", tauri_cli_changes={"version": "999.999.999"})
+        assert_rejected("CLI package integrity", tauri_cli_changes={"packageIntegrity": "sha512-invalid"})
+        assert_rejected("CLI entrypoint", tauri_cli_changes={"entrypoint": "tauri.js"})
+        assert_rejected("CLI file length", tauri_cli_file_changes={"length": 1})
+        assert_rejected("CLI file SHA-256", tauri_cli_file_changes={"sha256": "0" * 64})
+        assert_rejected("tampered CLI file", tamper_cli=True)
+        assert_rejected("unattested CLI file", add_unattested_cli_file=True)
         assert_rejected("expected version", expected_version="999.999.999")
     finally:
         shutil.rmtree(fixture_root, ignore_errors=True)
