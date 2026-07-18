@@ -1491,7 +1491,7 @@ Installer speed evidence:
   versus overlapped preparation: ready/total/build moved from
   `245s / 252s / 141s` to `226s / 234s / 117s`, while the real audio compile
   stayed about `103-106s`. Require semantic PE equality (sections, imports,
-  exports, resources, layout, PDB identity, version, and self-test), not merely
+  exports, resources, layout, PDB path/age, version, and self-test), not merely
   a successful build; this pair differed only in 24 allowlisted volatile bytes.
 - Diarization-only miss run `29653870999` measured `174s / 182s / 85s`, with
   `73.197s` in isolated worker preparation and no main Cargo/Desktop lane. It

@@ -248,8 +248,8 @@ Packaging/build:
   respectively. The audio compile itself stayed effectively flat
   (`103.075s` versus `105.569s`); the gain came from removing `21.958s`
   (`16.812%`) from the sidecar critical path. A strict PE oracle found equal
-  normalized SHA-256, sections, imports, exports, resources, layout, PDB
-  identity, native version, and self-test; only 24 allowlisted volatile bytes
+  normalized SHA-256, sections, imports, exports, resources, layout, PDB path
+  and age, native version, and self-test; only 24 allowlisted volatile bytes
   in five PE ranges differed.
   The overlap keeps the canonical Tauri backend resource path as an initially
   empty, monitored placeholder, stages Python into a unique sibling, removes
