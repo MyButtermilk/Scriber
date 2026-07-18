@@ -1343,10 +1343,7 @@ Already implemented and should not be regressed:
   not for cache probes, scheduling, diagnostics, or non-producing setup skips.
   Its attestation retains the producing
   commit as provenance without making unrelated Python-only commits miss. A
-  validated hit may run bundle-only packaging and skip frontend dependency
-  restore/install plus the repeated typecheck. Authenticode-required rebuilds
-  and explicit main dependency-cache maintenance retain the full frontend path.
-  NSIS,
+  validated hit may run bundle-only packaging; NSIS,
   updater signatures, checksums, and publication evidence are always fresh.
 - Before backend sidecar cache save/publication,
   `scripts/ci/select_backend_sidecar_cache_entry.ps1` must validate and retain

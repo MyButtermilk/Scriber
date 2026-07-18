@@ -277,11 +277,6 @@ Packaging/build:
   binary-producing orchestration changes output without changing another
   hashed input. Cache probes, scheduling, diagnostics, and setup steps that do
   not alter the attested EXE must leave the revision unchanged.
-- Once that exact EXE imports successfully, non-maintenance packaging skips
-  `node_modules`/npm-store restore, `npm ci`, and the repeated frontend type
-  check. Authenticode-required rebuilds retain the full frontend path, and an
-  explicit main cache-refresh run still prepares frontend dependencies so
-  maintenance semantics do not silently weaken.
 - Frontend dependency reuse is two-layered in CI: an explicit
   `Frontend\node_modules` cache is the fast path, and the workflow restores an
   explicitly keyed npm package store from normalized

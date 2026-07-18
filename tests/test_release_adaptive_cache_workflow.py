@@ -106,39 +106,6 @@ def test_release_path_planner_probes_hashfiles_digest_for_current_cache_generati
     )
 
 
-def test_attested_tauri_app_skips_frontend_build_prerequisites_safely() -> None:
-    workflow = _read(".github/workflows/release-windows.yml")
-
-    selector = workflow.split("- name: Select frontend preparation path\n", 1)[1].split(
-        "\n      - name:", 1
-    )[0]
-    assert 'id: frontend-preparation' in selector
-    assert 'SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE: ${{ vars.SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE }}' in selector
-    assert 'steps.tauri-app-binary-import.outputs.usable' in selector
-    assert '$env:SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE -ne "1"' in selector
-    assert '$env:SCRIBER_SAVE_ACTIONS_CACHES -eq "true"' in selector
-    assert '"prebuilt-tauri-app=' in selector
-    assert '"required=' in selector
-
-    frontend_restore = workflow.split("- name: Restore frontend dependency cache\n", 1)[1].split(
-        "\n      - name:", 1
-    )[0]
-    frontend_install = workflow.split("- name: Install frontend dependencies\n", 1)[1].split(
-        "\n      - name:", 1
-    )[0]
-    assert "if: steps.frontend-preparation.outputs.required == 'true'" in frontend_restore
-    assert "steps.frontend-preparation.outputs.required == 'true'" in frontend_install
-
-    build_step = workflow.split("- name: Build Windows installer\n", 1)[1].split(
-        "\n      - name:", 1
-    )[0]
-    prebuilt_block = build_step.split("if ($usePrebuiltTauriApp) {", 1)[1].split("}", 1)[0]
-    assert 'steps.frontend-preparation.outputs.prebuilt-tauri-app' in build_step
-    assert '$buildArgs += "-UsePrebuiltTauriApp"' in prebuilt_block
-    assert '$buildArgs += "-SkipFrontendTypeCheck"' in prebuilt_block
-    assert 'not-needed-prebuilt-tauri' in workflow
-
-
 def test_runtime_tree_identity_is_compatible_with_windows_powershell() -> None:
     scripts = [
         _read("scripts/build_tauri_backend_sidecar.ps1"),
