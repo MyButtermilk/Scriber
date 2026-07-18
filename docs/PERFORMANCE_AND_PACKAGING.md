@@ -270,6 +270,13 @@ Packaging/build:
 - The release workflow reports entry counts and short SHA-256 fingerprints for
   each normalized cache-key file. Use those fingerprints to distinguish a true
   input change from a cold or ref-scoped cache miss.
+- The exact Tauri app-binary cache hashes explicit frontend, Rust, native
+  configuration, version, updater, Outlook, toolchain, target, and cache-import
+  inputs plus `packaging\tauri-app-binary-output-contract.json`; it does not
+  hash the entire release workflow. Increment the contract `revision` whenever
+  binary-producing orchestration changes output without changing another
+  hashed input. Cache probes, scheduling, diagnostics, and setup steps that do
+  not alter the attested EXE must leave the revision unchanged.
 - Frontend dependency reuse is two-layered in CI: an explicit
   `Frontend\node_modules` cache is the fast path, and the workflow restores an
   explicitly keyed npm package store from normalized

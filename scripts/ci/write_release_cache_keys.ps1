@@ -155,6 +155,33 @@ function Get-BackendSidecarOutputContract {
     }
 }
 
+function Get-TauriAppBinaryOutputContract {
+    $contractPath = Join-Path $repoRoot "packaging/tauri-app-binary-output-contract.json"
+    if (-not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
+        throw "Missing Tauri app binary output contract: $contractPath"
+    }
+
+    try {
+        $contract = Get-Content -LiteralPath $contractPath -Raw | ConvertFrom-Json
+    } catch {
+        throw "Tauri app binary output contract is not valid JSON: $contractPath"
+    }
+
+    if (
+        [int]$contract.schemaVersion -ne 1 -or
+        [string]$contract.name -ne "scriber-tauri-app-binary" -or
+        [int]$contract.revision -lt 1
+    ) {
+        throw "Tauri app binary output contract is invalid: $contractPath"
+    }
+
+    return [ordered]@{
+        schemaVersion = 1
+        name = "scriber-tauri-app-binary"
+        revision = [int]$contract.revision
+    }
+}
+
 function Add-RawFileEntry {
     param(
         [System.Collections.Generic.List[string]]$Entries,
@@ -261,8 +288,8 @@ Write-KeyFile -Name "rust-release.txt" -Entries $rustEntries
 $tauriAppEntries = New-EntryList
 foreach ($path in @(
     ".node-version",
-    ".github/workflows/release-windows.yml",
     "src/version.py",
+    "packaging/tauri-app-binary-output-contract.json",
     "Frontend/package.json",
     "Frontend/package-lock.json",
     "Frontend/components.json",
@@ -287,6 +314,10 @@ foreach ($path in @(
 )) {
     Add-RawFileEntry -Entries $tauriAppEntries -Path $path
 }
+$tauriAppContract = Get-TauriAppBinaryOutputContract
+$tauriAppEntries.Add("contract`tschema-version`t$($tauriAppContract.schemaVersion)")
+$tauriAppEntries.Add("contract`tname`t$($tauriAppContract.name)")
+$tauriAppEntries.Add("contract`trevision`t$($tauriAppContract.revision)")
 Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/client" -Filter "*"
 Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/shared" -Filter "*"
 Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/src-tauri/capabilities" -Filter "*.json"

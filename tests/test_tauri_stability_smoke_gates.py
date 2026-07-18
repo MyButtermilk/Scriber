@@ -956,11 +956,17 @@ def test_parallel_tauri_compile_config_strips_only_bundle_resources(tmp_path: Pa
 def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     script = read_script("scripts/ci/write_release_cache_keys.ps1")
     contract = json.loads(read_script("packaging/backend-sidecar-output-contract.json"))
+    tauri_contract = json.loads(read_script("packaging/tauri-app-binary-output-contract.json"))
 
     assert contract == {
         "schemaVersion": 1,
         "name": "scriber-backend-onedir",
         "revision": 3,
+    }
+    assert tauri_contract == {
+        "schemaVersion": 1,
+        "name": "scriber-tauri-app-binary",
+        "revision": 1,
     }
 
     assert "frontend-dependencies.txt" in script
@@ -987,6 +993,9 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert "Get-BackendSidecarOutputContract" in script
     assert 'packaging/backend-sidecar-output-contract.json' in script
     assert 'contract`trevision`t$($backendContract.revision)' in script
+    assert "Get-TauriAppBinaryOutputContract" in script
+    assert 'packaging/tauri-app-binary-output-contract.json' in script
+    assert 'contract`trevision`t$($tauriAppContract.revision)' in script
     assert 'flag`tbundleMediaTools`ttrue' in script
     assert 'flag`tuseProfileBFfmpeg`ttrue' in script
     assert 'flag`tuseGyanFfmpegEssentials`tfalse' in script

@@ -956,6 +956,15 @@ version files; otherwise patch-only version bumps will cause avoidable cache
 misses for frontend dependencies, Rust build outputs, and backend sidecar
 scratch caches.
 
+The exact Tauri app-binary key uses
+`packaging\tauri-app-binary-output-contract.json` instead of hashing the whole
+release workflow. Its explicit inputs and dynamic rows still bind frontend and
+Rust source, native configuration, concrete version, updater public runtime,
+Outlook client identity, toolchain/target, and import/attestation helpers. Bump
+the contract revision for an otherwise-unrepresented change that can alter the
+produced EXE; do not bump it for cache probes, runner scheduling, diagnostics,
+or setup steps that cannot change the attested binary.
+
 The reusable FFmpeg Profile B artifact is published to the internal prerelease
 tag `ffmpeg-profile-b-n7.0-v4` as
 `scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip`. That asset is not an app

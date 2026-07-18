@@ -414,9 +414,10 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
         pytest.skip("PowerShell 7 is required for release-script validation")
 
     fixture_root = REPO_ROOT / "build" / f"test-tauri-key-{uuid.uuid4().hex}"
+    workflow_path = REPO_ROOT / ".github/workflows/release-windows.yml"
     touched_paths = [
         REPO_ROOT / ".node-version",
-        REPO_ROOT / ".github/workflows/release-windows.yml",
+        REPO_ROOT / "packaging/tauri-app-binary-output-contract.json",
         REPO_ROOT / "Frontend/client/src/lib/api-types.ts",
         REPO_ROOT / "Frontend/src-tauri/src/audio_frame_pipe.rs",
         REPO_ROOT / "Frontend/src-tauri/tauri.conf.json",
@@ -430,7 +431,7 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
         REPO_ROOT / "scripts/ci/prepare_cold_tauri_product.ps1",
         REPO_ROOT / "scripts/ci/sync_tauri_app_binary_cache.ps1",
     ]
-    original_bytes = {path: path.read_bytes() for path in touched_paths}
+    original_bytes = {path: path.read_bytes() for path in [workflow_path, *touched_paths]}
     outputs: list[Path] = []
 
     def generate(
@@ -490,7 +491,7 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
         assert b"release-runtime\tsource-commit\t" not in tauri_manifest
         for relative_path in (
             b".node-version",
-            b".github/workflows/release-windows.yml",
+            b"packaging/tauri-app-binary-output-contract.json",
             b"Frontend/client/src/lib/api-types.ts",
             b"Frontend/src-tauri/src/audio_frame_pipe.rs",
             b"Frontend/src-tauri/tauri.conf.json",
@@ -505,6 +506,7 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
             b"scripts/ci/sync_tauri_app_binary_cache.ps1",
         ):
             assert relative_path in tauri_manifest
+        assert b".github/workflows/release-windows.yml" not in tauri_manifest
 
         runtime_variants = [
             generate("updater-key", updater_key="test-updater-key-b"),
@@ -512,6 +514,13 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
             generate("outlook", outlook_id="22222222-2222-4222-8222-222222222222"),
         ]
         assert all(item["tauri-app-binary.txt"] != tauri_manifest for item in runtime_variants)
+
+        workflow_path.write_bytes(
+            original_bytes[workflow_path] + b"\n# orchestration-only cache-key fixture\n"
+        )
+        workflow_only = generate("workflow-only")
+        assert workflow_only["tauri-app-binary.txt"] == tauri_manifest
+        workflow_path.write_bytes(original_bytes[workflow_path])
 
         for index, path in enumerate(touched_paths):
             if path.suffix == ".json":
