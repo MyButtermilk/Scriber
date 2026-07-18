@@ -11,6 +11,7 @@ from scripts.validate_installer_youtube_holdouts import (
     HoldoutError,
     observed_capabilities,
     pinned_deno_version,
+    require_baseline_environment_root,
 )
 
 
@@ -147,3 +148,15 @@ def test_pinned_deno_version_normalizes_supported_stable_output(stdout: str) -> 
 def test_pinned_deno_version_rejects_unpinned_or_ambiguous_output(stdout: str) -> None:
     with pytest.raises(HoldoutError, match="pinned 2.9.2"):
         pinned_deno_version(stdout)
+
+
+def test_holdout_process_is_bound_to_exact_run_environment(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    expected = run_root / "environments" / "baseline" / ".venv"
+    expected.mkdir(parents=True)
+    other = tmp_path / "other-venv"
+    other.mkdir()
+
+    assert require_baseline_environment_root(run_root, expected) == expected.resolve()
+    with pytest.raises(HoldoutError, match="this RunId's baseline environment"):
+        require_baseline_environment_root(run_root, other)

@@ -44,6 +44,20 @@ def pinned_deno_version(stdout: str) -> str:
     return match.group(1)
 
 
+def require_baseline_environment_root(run_root: Path, active_prefix: Path) -> Path:
+    """Bind the probe process to this run's exact baseline environment."""
+
+    expected = (run_root / "environments" / "baseline" / ".venv").resolve(
+        strict=True
+    )
+    active = Path(active_prefix).resolve(strict=True)
+    if active != expected:
+        raise HoldoutError(
+            "holdout probe must run inside this RunId's baseline environment"
+        )
+    return active
+
+
 def _canonical_json(value: Any) -> bytes:
     return json.dumps(
         value,
@@ -300,7 +314,10 @@ def main(argv: list[str] | None = None) -> int:
             or environment_manifest.get("environmentName") != "baseline"
         ):
             raise HoldoutError("baseline environment manifest identity mismatch")
-        environment_root = Path(sys.prefix).resolve(strict=True)
+        environment_root = require_baseline_environment_root(
+            run_root,
+            Path(sys.prefix),
+        )
         python_executable = _plain_file(Path(sys.executable), label="research Python")
         python_identity = environment_manifest.get("python")
         if not isinstance(python_identity, dict) or (
