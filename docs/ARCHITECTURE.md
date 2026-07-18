@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-07-16
+Last verified: 2026-07-18
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -998,6 +998,10 @@ Rust audio:
 
 - `Frontend/src-tauri/src/audio_sidecar.rs` is a separate Cargo binary reserved
   for crash-isolated audio capture work.
+- The signed installer places exactly one `scriber-audio-sidecar.exe` at the
+  Tauri install root. `audio_sidecar_client.rs` resolves only allowlisted
+  install-root names; an explicit executable environment override is reserved
+  for local tests. The backend resource tree contains no duplicate audio copy.
 - The sidecar currently exposes `--self-test` and `--stdio` JSON-lines commands
   for `ping`, `capabilities`, `captureStart`, `captureStop`, `prewarmStart`,
   `prewarmStop`, and `shutdown`.
@@ -1075,8 +1079,8 @@ Rust audio:
 - The passive Rust WASAPI probe and active Rust capture path share the same
   redacted SHA-256/16-hex native endpoint hash contract, so selected-device
   probe evidence is comparable with selected-device capture evidence.
-- The standard installer bundles the sidecar under `audio-sidecar/`; this is
-  the default live microphone engine.
+- The single install-root `scriber-audio-sidecar.exe` is the default live
+  microphone engine; there is no `audio-sidecar/` resource directory.
 
 ## Contracts
 

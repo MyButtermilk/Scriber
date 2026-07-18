@@ -1,6 +1,6 @@
 # Performance And Packaging
 
-Last verified: 2026-07-15
+Last verified: 2026-07-18
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
@@ -242,6 +242,20 @@ Packaging/build:
   remains available for diagnostics,
   but it is not the release default because a cold isolated target took
   `437.3s` in `v0.5.13` despite a warm main Cargo cache.
+  A 2026-07-18 same-head pair proved the exact-Tauri overlap: sequential run
+  `29652733547` took `141s` in the installer build and `130.609s` in sidecar
+  preparation; overlap run `29652941457` took `117s` and `108.651s`
+  respectively. The audio compile itself stayed effectively flat
+  (`103.075s` versus `105.569s`); the gain came from removing `21.958s`
+  (`16.812%`) from the sidecar critical path. A strict PE oracle found equal
+  normalized SHA-256, sections, imports, exports, resources, layout, PDB
+  identity, native version, and self-test; only 24 allowlisted volatile bytes
+  in five PE ranges differed.
+  The overlap keeps the canonical Tauri backend resource path as an initially
+  empty, monitored placeholder, stages Python into a unique sibling, removes
+  inherited `TAURI_CONFIG` from the audio-only child, and promotes the verified
+  staged backend only after both producers join. Cargo must never observe a
+  concurrently mutating resource tree.
 - The static Rust diarization worker has a separate focused input cache under
   `build\rust-diarization-sidecar-cache`; it hashes only its standalone crate,
   lockfile, static-CRT config, manifest writer, target contract, and pinned
@@ -249,6 +263,11 @@ Packaging/build:
   `build\sherpa-onnx-archive-cache`. Neither cache is part of the Tauri/audio
   Cargo graph or the Python backend cache, and neither cache contains optional
   diarization models.
+  Rust selection distinguishes `rust-required` from `main-cargo-required`.
+  With exact Tauri and audio products, a diarization-only miss still installs
+  the pinned toolchain, restores Sherpa, and builds the worker in its isolated
+  target beside Python preparation; it skips every main-Cargo
+  restore/fallback/import/prune and Desktop-envelope step.
 - Installed frontend assets are owned by the Tauri WebView bundle and are not
   embedded in the Python/PyInstaller backend sidecar.
 - The Rust audio sidecar is bundled once as Tauri's install-root
@@ -267,9 +286,11 @@ Packaging/build:
   package data files required at runtime by models such as Parakeet TDT. Actual
   model weights remain in the user/model cache and are not embedded in the
   backend sidecar.
-- GitHub release builds compute normalized cache-key inputs so patch version
-  bumps do not invalidate frontend dependency, Rust build, or backend sidecar
-  scratch caches unless their real inputs changed.
+- GitHub release builds compute normalized cache-key inputs so patch-version
+  bumps invalidate the concrete-version composed backend and exact Tauri app,
+  but not the frozen backend runtime, frontend dependencies, Cargo
+  dependency/toolchain state, focused audio/diarization workers, Sherpa archive,
+  or FFmpeg unless their real inputs changed.
 - The release workflow reports entry counts and short SHA-256 fingerprints for
   each normalized cache-key file. Use those fingerprints to distinguish a true
   input change from a cold or ref-scoped cache miss.
@@ -282,6 +303,22 @@ Packaging/build:
   binary-producing orchestration changes output without changing another
   hashed input. Cache probes, scheduling, diagnostics, and setup steps that do
   not alter the attested EXE must leave the revision unchanged.
+- The cache-key change matrix is language-independent and mechanically tested:
+
+  | Change class | Key files that change |
+  | --- | --- |
+  | Workflow/cache scheduling or diagnostics only | none |
+  | Python application source | `backend-sidecar.txt` |
+  | React/frontend source | `tauri-app-binary.txt` |
+  | Frontend dependency manifest | `frontend-dependencies.txt`, `tauri-app-binary.txt` |
+  | Desktop Rust source | `rust-release.txt`, `tauri-app-binary.txt` |
+  | Audio-only Rust source | `rust-release.txt`, `rust-audio-sidecar.txt` |
+  | Shared desktop/audio Rust source | `rust-release.txt`, `tauri-app-binary.txt`, `rust-audio-sidecar.txt` |
+  | Diarization-only Rust source | `rust-diarization-sidecar.txt` |
+  | Cargo contract | `rust-dependencies.txt`, `rust-release.txt`, `tauri-app-binary.txt`, `rust-audio-sidecar.txt` |
+  | Tauri CLI contract | `tauri-app-binary.txt` |
+  | Backend output contract | `backend-runtime.txt`, `backend-sidecar.txt` |
+  | Version-only release | `backend-sidecar.txt`, `tauri-app-binary.txt`; expensive layers remain neutral |
 - Frontend dependency reuse is two-layered in CI: an explicit
   `Frontend\node_modules` cache is the fast path, and the workflow restores an
   explicitly keyed npm package store from normalized
@@ -369,6 +406,13 @@ Packaging/build:
   removes superseded internal cache-release tags. Current cache publishers also
   delete sibling assets after a successful replacement upload, so each durable
   cache release contains at most one current asset.
+- Feature diagnostics may retain only the current ref-local exact Tauri product
+  and bounded Desktop incremental envelope needed for measured hits. After
+  evidence is downloaded and hashed, delete per-run artifacts and verify the
+  remote artifact count/404, remove canary caches, obsolete worktrees, and
+  scratch, and never retain feature audio/diarization or large dependency
+  caches. Public `v*` releases and current shared cache generations remain
+  protected.
 - Manual `main` exact hits have a narrower terminal path for the bounded V3
   Tauri app cache. The producer uploads only passive JSON evidence; a trusted
   default-branch `workflow_run` consumer independently binds the exact completed
@@ -509,17 +553,21 @@ Packaging/build:
   app binary key still covers concrete version, full frontend plus
   desktop/shared Rust inputs, resolved toolchain, target/profile, and updater
   runtime fingerprint.
-- Before installing the pinned Rust toolchain or restoring that multi-GB Cargo
-  state, the warm packaging path now imports the exact Tauri product and
-  restores the exact audio/diarization products. It skips Rust preparation only
-  when the reusable Tauri app is selected, both sidecar restores have exact
-  provenance and independently pass manifest, checksum, and native self-test
-  validation, the existing runner Cargo can answer a read-only `metadata
-  --no-deps --locked --frozen` probe for the desktop package without changing
-  the checkout or reaching the network, and the run is not explicit cache
-  maintenance. Empty outputs, corrupt caches, release-artifact uncertainty,
-  fresh Authenticode signing, a failed metadata probe, or any product miss fail
-  closed to the existing pinned toolchain and Cargo restore.
+- Before installing the pinned Rust toolchain or restoring multi-GB shared Cargo
+  state, the warm path imports the exact Tauri product and restores the focused
+  audio/diarization products. It computes toolchain need separately from main
+  Cargo need. Exact Tauri plus exact audio, a valid read-only `cargo metadata
+  --no-deps --locked --frozen` probe, and no maintenance request cover the main
+  Cargo consumer even when diarization misses. That narrow miss runs the pinned
+  toolchain/Sherpa/isolated-worker lane beside Python, but skips main-Cargo and
+  Desktop-envelope compute/restore/import/prune/export/save. A desktop,
+  shared-Rust, or audio miss; corrupt/uncertain provenance; fresh Authenticode
+  requirements; failed metadata; or explicit maintenance fails closed to the
+  established main-Cargo lane. Diagnostic run `29653870999` proved this shape:
+  `85s` installer build, `174s` ready, `182s` total, with `73.197s` in the real
+  diarization prestage. For context only, the nearest same-key Cargo Actions
+  transfer was `920,832,191` bytes/about `15s`, and the durable fallback was
+  `1,509,767,150` bytes; this was not a paired timing comparison.
 - The Tauri shell library is built only as `rlib` for the Windows desktop
   release path. Tauri's `staticlib`/`cdylib` crate types are for mobile
   targets; keeping them in this Windows-first app produced extra library
@@ -684,7 +732,8 @@ Release workflow:
 - The bounded exact Tauri app product uses a v3 content key over the concrete
   version, frontend/Rust/config sources, Node version, the binary-producing
   workflow/helper scripts, toolchain/target, updater runtime, and Outlook
-  configuration. Its manifest preserves the producing commit and
+  configuration. Its manifest preserves the producing commit as provenance,
+  not cache identity, and
   validates the executable length, SHA-256, native version, target, and profile,
   but an unrelated Python-only commit no longer invalidates the product. The v3
   manifest also inventories the minimal Windows x64 Tauri CLI tree and binds it
@@ -817,21 +866,22 @@ Release workflow:
   docs/workflow commit: non-tag builds still used `nsisCompression=none` despite
   the signed-tag repository variable being `bzip2`, finished in `2m17s`
   end-to-end, and spent `58.44s` in `build_windows.ps1`.
-- Main run `29003544425` tested using preinstalled runner Rust instead of
-  `dtolnay/rust-toolchain@stable`; it regressed to `8m9s` end-to-end and
-  `413.9s` inside `build_windows.ps1` because Cargo recompiled `285` crates.
+- Main run `29003544425` tested using preinstalled runner Rust instead of the
+  pinned `dtolnay/rust-toolchain@1.97.0` lane; it regressed to `8m9s`
+  end-to-end and `413.9s` inside `build_windows.ps1` because Cargo recompiled
+  `285` crates.
   Keep the setup action unless a future cache/toolchain migration is measured
   end-to-end.
 - Main run `29004179335` verified the revert back to `dtolnay`: job time
   returned to `2m34s`, `build_windows.ps1` took `55.1s`, the Tauri bundle took
   `38.7s`, and the log again had only one `scriber-desktop` Cargo compile line.
-- Version-only app releases must not invalidate durable cache artifacts unless
-  their real inputs changed. The Rust shell passes `SCRIBER_VERSION` to the
-  Python backend at launch, so a version-normalized backend sidecar can still
-  report the installed app version through `/api/health`. The Rust shell reads
-  the installed package version from Tauri package metadata instead of
-  `CARGO_PKG_VERSION`, because Cargo's package version is a stable internal
-  build-cache input.
+- Version-only app releases must invalidate the finished composed backend and
+  exact Tauri products because both attest the concrete installed version. They
+  must not invalidate the expensive frozen backend runtime, frontend/Cargo
+  dependency state, focused Rust workers, Sherpa archive, or FFmpeg unless real
+  inputs changed. The Rust shell passes `SCRIBER_VERSION` from Tauri package
+  metadata to the backend instead of using stable internal
+  `CARGO_PKG_VERSION`.
 - The main Tauri desktop build uses a stable Actions dependency cache first,
   then an optional normalized internal release artifact that contains Cargo
   registry/git data plus selected `target\release` directories, including the
@@ -933,7 +983,7 @@ Priority order:
 | `PERF-MTG-10` | P1 | Replace five-ms WASAPI polling with event-driven capture | Idle wakeups and prewarm CPU |
 | `PERF-MTG-11` | P1 | Gate relay deadlines and Meeting resource slopes | Detect stalls, leaks, and false-positive soaks |
 | `PERF-UI-01` | P2 | Keep eager tab shells but idle-load heavy subtrees | Startup parse/execute time |
-| `PERF-BUILD-01` | P3 | Overlap hot-cache typecheck and sidecar-current proof | Repeated release-build wall time |
+| `PERF-BUILD-01` | Done | Overlap independent warm producers and exact-Tauri audio miss | Measured release-build wall time |
 
 Implementation update (2026-07-12): the broadly useful portions of
 `PERF-MTG-01`, `PERF-MTG-02`, and `PERF-MTG-05` are implemented. Scriber now
@@ -1411,23 +1461,16 @@ route remains below its documented 2-GB boundary and has no audio-duration cap.
   JS, no blank sample, and no regression beyond the current primary-tab smoke.
   Reject a change that saves less than 50 ms or creates offline chunk failures.
 
-### `PERF-BUILD-01` - Overlap exact-hot-cache proofs
+### `PERF-BUILD-01` - Implemented independent-producer overlap
 
-**Evidence**
-
-- `scripts/build_windows.ps1` runs frontend typecheck before sidecar preparation
-  and target-current validation. A documented hot build spends about 8.1
-  seconds on typecheck and 6.2 seconds on sidecar preparation, so the theoretical
-  saving is only several seconds.
-
-**Implementation boundary and gate**
-
-- Only on the exact-hot/target-current path, run the two independent checks in
-  parallel with separate logs, then join both successfully before the Tauri
-  bundle. Keep cold builds serial unless an A/B shows no CPU-contention loss.
-- Compare five hot and three cold runs. Keep the change only for at least four
-  seconds median hot improvement, less than 5% cold regression, identical
-  artifact digests/checks, and equally clear failure diagnostics.
+`scripts/build_windows.ps1` overlaps frontend typecheck, backend preparation,
+and Tauri compile, then joins before full-config bundling. When exact Tauri is
+selected, an audio miss also overlaps the shared-target audio build with Python
+preparation. The same-head pair `29652733547`/`29652941457` reduced installer
+build time from `141s` to `117s` and sidecar critical-path time from `130.609s`
+to `108.651s`; the audio compile itself did not speed up. Keep this only with
+the strict semantic PE oracle described above and preserve serial fresh-Tauri
+contention boundaries.
 
 ### Cross-cutting measurement sequence
 

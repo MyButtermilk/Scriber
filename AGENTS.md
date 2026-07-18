@@ -146,18 +146,22 @@ Packaging and scripts:
   Python backend preparation. Fresh Tauri builds keep audio after backend
   preparation so it does not compete with the app compile; the broad sidecar
   parallel mode remains isolated. `-RustAudioIsolatedTarget` remains an
-  explicit diagnostic/local opt-in. On the normal packaging runner, restore and validate
+  explicit diagnostic/local opt-in. Shared-target overlap must leave the
+  canonical Tauri backend resource path as an empty monitored placeholder,
+  stage Python into a unique sibling, remove `TAURI_CONFIG` from the audio-only
+  child, and promote the verified backend only after both producers join. On
+  the normal packaging runner, restore and validate
   the exact Tauri desktop product plus the independent Rust audio and
-  diarization products before setting up Rust. The pinned toolchain and large
-  Cargo dependency restore may be skipped only when the Tauri product is
-  selected for reuse, both Rust sidecars came from exact trusted restores and
-  pass their native validation/self-tests, and no explicit cache-maintenance
-  operation requires Rust. Any missing output, validation error, fresh
-  Authenticode requirement, product miss, or failed read-only `cargo metadata
-  --no-deps --locked --frozen` probe must retain the established Rust
-  setup/build path. The probe exists because Tauri's bundle-only command still
-  resolves package metadata; it may not update the checkout or use the network,
-  and it never substitutes an unpinned toolchain for a compile. NSIS, updater
+  diarization products before setting up Rust. Compute pinned-toolchain need
+  separately from main-Cargo need. Exact Tauri plus exact validated audio and a
+  successful read-only `cargo metadata --no-deps --locked --frozen` probe cover
+  the main Cargo consumer even when diarization misses. That narrow miss still
+  runs pinned Rust and Sherpa in the isolated worker lane beside Python, while
+  every main-Cargo and Desktop-envelope step remains skipped. Desktop/shared/
+  audio misses, validation uncertainty, fresh Authenticode requirements,
+  failed metadata, or cache maintenance retain the established main-Cargo path.
+  The probe may not update the checkout or use the network, and it never
+  substitutes an unpinned toolchain for a compile. NSIS, updater
   signing, and verification start only after every producer succeeds.
 - `native/scriber-diarization-sidecar/`: isolated, statically linked
   Sherpa-ONNX worker; release preparation stages its attested EXE under backend
@@ -1245,10 +1249,18 @@ Already implemented and should not be regressed:
   backend sidecar cache so Python/backend changes do not force an audio sidecar
   executable rebuild.
 - Release workflow cache keys normalize app-version-only files before hashing
-  dependency/build caches, so patch version bumps do not invalidate frontend,
-  Rust, or backend scratch caches without real input changes. The main Rust
-  release key still includes real Tauri shell inputs such as `tauri.conf.json`,
-  capabilities, and icons.
+  expensive dependency/build layers. Patch versions must change the physical
+  composed backend and exact Tauri identities, but not the frozen runtime,
+  frontend/Cargo dependencies, focused audio/diarization workers, Sherpa, or
+  FFmpeg without real input changes. Preserve the mechanically tested
+  language-independent matrix: workflow-only changes affect no product; Python
+  app changes affect composed backend; React affects exact Tauri; frontend
+  dependencies affect frontend dependencies plus Tauri; Desktop Rust affects
+  Rust release plus Tauri; audio-only affects Rust release plus audio; shared
+  Rust affects Rust release plus Tauri plus audio; diarization-only affects only
+  diarization; Cargo contracts affect Rust dependencies/release plus Tauri and
+  audio; the Tauri CLI contract affects Tauri; the backend output contract
+  affects runtime plus sidecar.
 - Frontend dependency reuse in GitHub release builds is two-layered: restore
   `Frontend\node_modules` first, then restore the explicitly keyed npm package
   store only when that stronger cache misses. `actions/setup-node` must not
@@ -1332,6 +1344,10 @@ Already implemented and should not be regressed:
   app product and bounded Desktop Rust incremental envelope in that ref's
   isolated Actions-cache namespace. Those caches cannot warm `main`, tags, or
   sibling refs and do not enable any other cache save or publication. The
+  diagnostic closeout must hash downloaded evidence, delete each run artifact
+  and verify remote absence, remove canaries/obsolete worktrees/scratch, and
+  retain only the current hit-critical exact-Tauri and bounded Desktop caches;
+  never retain feature audio/diarization or large dependency caches. The
   maintenance path retains
   exactly one Actions-cache generation per allowlisted family, removes
   superseded internal cache-release tags, and current cache publishers keep

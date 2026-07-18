@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-07-16
+Last verified: 2026-07-18
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -781,13 +781,16 @@ It:
   FFmpeg internal-artifact fallbacks concurrently after their Actions-cache
   results are known. These bounded finished products are restored and validated
   before the normal runner decides whether Rust setup is needed. An exact Tauri
-  product plus exact, self-tested audio and diarization products skips the
-  pinned toolchain and large Cargo dependency restore only after the runner's
-  existing Cargo passes a read-only `metadata --no-deps --locked --frozen`
-  package probe that cannot update the checkout or access the network;
-  validation uncertainty, a miss, fresh Authenticode signing, a failed probe,
-  or explicit cache maintenance preserves the established Rust path. The
-  helper uses fixed disjoint destinations and
+  product plus exact, self-tested audio covers the main Cargo consumer after
+  the runner's existing Cargo passes a read-only
+  `metadata --no-deps --locked --frozen` package probe that cannot update the
+  checkout or access the network. If only diarization misses, the workflow still
+  installs the pinned toolchain and restores Sherpa, but skips every main Tauri
+  Cargo and Desktop-envelope compute/restore/import/prune/export/save step; the
+  isolated worker prestages beside Python. A desktop/shared/audio miss,
+  validation uncertainty, fresh Authenticode signing, a failed probe, or
+  explicit cache maintenance preserves the main-Cargo path. The helper uses
+  fixed disjoint destinations and
   private child output files; overlapping Rust/main-target, backend, `.venv`,
   and wheelhouse restores remain serialized,
 - can import the newest internal Rust/Tauri cache artifact only when Actions
@@ -941,6 +944,11 @@ It:
   enforced when the next successful build exports a replacement envelope.
   No shared cache, tag/main cache, or internal cache release is published by
   this path,
+- closes every feature diagnostic by downloading and hashing its evidence,
+  deleting the per-run artifact and verifying remote absence, and removing
+  canaries, obsolete worktrees, and scratch. Retain only the current ref-local
+  exact Tauri product and bounded Desktop envelope needed for cache hits; never
+  retain feature audio/diarization or large dependency caches,
 - passes the produced media tools to `scripts/build_windows.ps1`,
 - skips the full Python unit suite in the packaging step; run it before release
   or through PR/readiness gates. The release workflow therefore installs
@@ -1475,6 +1483,19 @@ Installer speed evidence:
   preparation at `6.2s`. Heavy caches were exact hits. Treat future slowdowns
   from this shape as Tauri/NSIS/signing/upload regressions first, not
   dependency-cache regressions.
+- Unpublished AutoResearch diagnostics on 2026-07-18 reached `123s` ready /
+  `132s` total in the best observed runner-variance run. The stronger causal
+  exact-hot baseline is `133s / 143s` with a `38.862s` installer build. Do not
+  present either as a signed-tag timing.
+- Same-head audio runs `29652733547` and `29652941457` measured sequential
+  versus overlapped preparation: ready/total/build moved from
+  `245s / 252s / 141s` to `226s / 234s / 117s`, while the real audio compile
+  stayed about `103-106s`. Require semantic PE equality (sections, imports,
+  exports, resources, layout, PDB identity, version, and self-test), not merely
+  a successful build; this pair differed only in 24 allowlisted volatile bytes.
+- Diarization-only miss run `29653870999` measured `174s / 182s / 85s`, with
+  `73.197s` in isolated worker preparation and no main Cargo/Desktop lane. It
+  proves the selector, not a new global best.
 - The 2026-07-09 compression sweep kept the same exact heavy-cache shape and
   measured signed tag installer tradeoffs:
   `tauri-default` `137.5s` / `74.4 MiB`, `none` `58.2s` / `189.3 MiB`,
