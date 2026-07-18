@@ -471,6 +471,7 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
     touched_paths = [
         REPO_ROOT / ".node-version",
         REPO_ROOT / "packaging/tauri-app-binary-output-contract.json",
+        REPO_ROOT / "packaging/tauri-cli-cache-contract.json",
         REPO_ROOT / "Frontend/client/src/lib/api-types.ts",
         REPO_ROOT / "Frontend/src-tauri/src/audio_frame_pipe.rs",
         REPO_ROOT / "Frontend/src-tauri/tauri.conf.json",
@@ -546,6 +547,7 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
         for relative_path in (
             b".node-version",
             b"packaging/tauri-app-binary-output-contract.json",
+            b"packaging/tauri-cli-cache-contract.json",
             b"Frontend/client/src/lib/api-types.ts",
             b"Frontend/src-tauri/src/audio_frame_pipe.rs",
             b"Frontend/src-tauri/tauri.conf.json",

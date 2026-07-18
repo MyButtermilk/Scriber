@@ -290,6 +290,7 @@ foreach ($path in @(
     ".node-version",
     "src/version.py",
     "packaging/tauri-app-binary-output-contract.json",
+    "packaging/tauri-cli-cache-contract.json",
     "Frontend/package.json",
     "Frontend/package-lock.json",
     "Frontend/components.json",

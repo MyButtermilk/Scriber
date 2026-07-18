@@ -966,7 +966,7 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert tauri_contract == {
         "schemaVersion": 1,
         "name": "scriber-tauri-app-binary",
-        "revision": 2,
+        "revision": 3,
     }
 
     assert "frontend-dependencies.txt" in script
