@@ -19,6 +19,7 @@ PRUNE_SCRIPT = REPO_ROOT / "scripts" / "ci" / "prune_obsolete_release_caches.ps1
 CLI_CONTRACT_PATH = REPO_ROOT / "packaging" / "tauri-cli-cache-contract.json"
 REPO = "MyButtermilk/Scriber"
 HEAD_SHA = "9" * 40
+WORKFLOW_ID = 314
 MANIFEST_FINGERPRINT = "a" * 64
 FINGERPRINT = hashlib.sha256(bytes.fromhex(MANIFEST_FINGERPRINT)).hexdigest()
 CACHE_KEY = f"scriber-tauri-app-binary-v3-Windows-{FINGERPRINT}"
@@ -43,8 +44,12 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, separators=(",", ":")), encoding="utf-8")
 
 
-def _invoke(arguments: dict[str, str | Path]) -> tuple[dict[str, object], subprocess.CompletedProcess[str]]:
-    command = [_powershell(), "-NoProfile", "-File", str(SCRIPT)]
+def _invoke(
+    arguments: dict[str, str | Path],
+    *,
+    executable: str | None = None,
+) -> tuple[dict[str, object], subprocess.CompletedProcess[str]]:
+    command = [executable or _powershell(), "-NoProfile", "-File", str(SCRIPT)]
     for name, value in arguments.items():
         command.extend((f"-{name}", str(value)))
     completed = subprocess.run(
@@ -64,7 +69,7 @@ def _invoke(arguments: dict[str, str | Path]) -> tuple[dict[str, object], subpro
             candidate = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(candidate, dict) and candidate.get("schemaVersion") == 2:
+        if isinstance(candidate, dict) and candidate.get("schemaVersion") == 3:
             result = candidate
             break
     assert result is not None, completed.stdout
@@ -109,6 +114,9 @@ elif args[:2] == ["release", "delete"]:
 elif args[:2] == ["release", "delete-asset"]:
     record_mutation("release-asset-delete", "/".join(args[2:4]))
 elif args[:1] == ["api"]:
+    if args != ["api", "/repos/MyButtermilk/Scriber/actions/runs/42/attempts/2"]:
+        print(f"unexpected exact-run API arguments: {args!r}", file=sys.stderr)
+        raise SystemExit(2)
     emit_env("FAKE_GH_RUN", "{}")
 else:
     print(f"unexpected fake gh arguments: {args!r}", file=sys.stderr)
@@ -168,6 +176,10 @@ def _invoke_pruner_with_completed_run(
             "run_attempt": 2,
             "head_sha": HEAD_SHA,
             "head_branch": "main",
+            "workflow_id": WORKFLOW_ID,
+            "name": "Release Windows",
+            "path": ".github/workflows/release-windows.yml",
+            "event": "workflow_dispatch",
             "status": "completed",
             "conclusion": "success",
             "updated_at": _utc_text(datetime.now(timezone.utc)),
@@ -192,6 +204,22 @@ def _invoke_pruner_with_completed_run(
             evidence_sha256,
             "-ExpectedTauriAppKey",
             CACHE_KEY,
+            "-ExpectedSourceRunId",
+            "42",
+            "-ExpectedSourceRunAttempt",
+            "2",
+            "-ExpectedSourceHeadSha",
+            HEAD_SHA,
+            "-ExpectedSourceHeadBranch",
+            "main",
+            "-ExpectedSourceWorkflowId",
+            str(WORKFLOW_ID),
+            "-ExpectedSourceWorkflowName",
+            "Release Windows",
+            "-ExpectedSourceWorkflowPath",
+            ".github/workflows/release-windows.yml",
+            "-ExpectedSourceEvent",
+            "workflow_dispatch",
         ],
         cwd=REPO_ROOT,
         env=env,
@@ -331,6 +359,10 @@ def _valid_setup(tmp_path: Path) -> tuple[dict[str, str | Path], dict[str, Path]
         "RunAttempt": "2",
         "HeadSha": HEAD_SHA,
         "HeadBranch": "main",
+        "WorkflowId": str(WORKFLOW_ID),
+        "WorkflowName": "Release Windows",
+        "WorkflowPath": ".github/workflows/release-windows.yml",
+        "EventName": "workflow_dispatch",
         "CacheId": "123",
         "ExpectedCacheKey": CACHE_KEY,
         "ActionsCacheKey": CACHE_KEY,
@@ -382,7 +414,7 @@ def test_valid_exact_hit_writes_pruner_compatible_evidence(tmp_path: Path) -> No
     assert evidence["eligible"] is True
     assert evidence["reason"] == "eligible"
     assert evidence["reasons"] == []
-    assert evidence["schemaVersion"] == 2
+    assert evidence["schemaVersion"] == 3
     assert evidence["consumption"] == {
         "mode": "deferred-terminal-run",
         "producerRunMustBeCompleted": True,
@@ -414,6 +446,10 @@ def test_valid_exact_hit_writes_pruner_compatible_evidence(tmp_path: Path) -> No
         "attempt": 2,
         "headSha": HEAD_SHA,
         "headBranch": "main",
+        "workflowId": WORKFLOW_ID,
+        "workflowName": "Release Windows",
+        "workflowPath": ".github/workflows/release-windows.yml",
+        "event": "workflow_dispatch",
     }
     assert evidence["reuse"] == {
         "exactCacheHit": True,
@@ -430,6 +466,18 @@ def test_valid_exact_hit_writes_pruner_compatible_evidence(tmp_path: Path) -> No
         "length": paths["bundle"].stat().st_size,
         "sha256": hashlib.sha256(paths["bundle"].read_bytes()).hexdigest(),
     }
+
+
+def test_valid_exact_hit_is_also_accepted_by_workflow_pwsh(tmp_path: Path) -> None:
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("PowerShell 7 is required for workflow timestamp parsing coverage")
+    arguments, _ = _valid_setup(tmp_path)
+
+    result, _ = _invoke(arguments, executable=pwsh)
+
+    assert result["eligible"] is True
+    assert result["schemaVersion"] == 3
 
 
 def test_writer_output_is_consumed_only_by_a_later_completed_run_pruner(
@@ -449,7 +497,7 @@ def test_writer_output_is_consumed_only_by_a_later_completed_run_pruner(
         "mode": "deferred-terminal-run",
         "producerRunMustBeCompleted": True,
     }
-    assert result["tauriPromotionAuthorized"] is True
+    assert result["tauriPromotionAuthorized"] is True, result["tauriPromotionReason"]
     assert result["tauriPromotionReason"] == "validated-successful-cache-reuse"
     assert result["tauriPromotedCache"] == {
         "id": 123,
@@ -475,6 +523,10 @@ def test_seed_miss_is_non_error_without_build_fixtures_and_replaces_old_output(
         "RunAttempt": "2",
         "HeadSha": HEAD_SHA,
         "HeadBranch": "main",
+        "WorkflowId": str(WORKFLOW_ID),
+        "WorkflowName": "Release Windows",
+        "WorkflowPath": ".github/workflows/release-windows.yml",
+        "EventName": "workflow_dispatch",
         "ExpectedCacheKey": CACHE_KEY,
         "ActionsCacheHit": "false",
         "OutputPath": output,
@@ -505,7 +557,13 @@ def test_seed_miss_is_non_error_without_build_fixtures_and_replaces_old_output(
         ("ExpectedCacheKey", "incomplete", "expected-cache-key-incomplete"),
         ("ActionsCacheKey", CACHE_KEY + "-wrong", "actions-cache-key-mismatch"),
         ("CacheRef", "refs/heads/other", "cache-ref-mismatch"),
+        ("Ref", "refs/heads/canary", "source-ref-not-main"),
         ("Ref", "refs/tags/v1.2.3", "ref-invalid"),
+        ("HeadBranch", "canary", "source-branch-not-main"),
+        ("WorkflowId", "0", "workflow-id-invalid"),
+        ("WorkflowName", "Other Workflow", "workflow-name-invalid"),
+        ("WorkflowPath", ".github/workflows/other.yml", "workflow-path-invalid"),
+        ("EventName", "push", "workflow-event-invalid"),
         ("ImportCliContractSha256", "e" * 64, "cli-contract-sha-mismatch"),
         ("SelectedCliVersionOutput", "tauri-cli 2.11.4", "cli-version-output-mismatch"),
         ("UsePrebuiltTauriApp", "false", "prebuilt-tauri-not-selected"),

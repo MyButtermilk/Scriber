@@ -1343,6 +1343,20 @@ Already implemented and should not be regressed:
   Actions caches remain restore-only on tags, so a routine release has one
   complete tag-triggered build rather than a duplicate main warm-up plus tag
   build.
+- A successful manual `main` V3 Tauri exact hit may emit only the passive
+  `scriber-tauri-cache-promotion-evidence` JSON artifact. Promotion runs later
+  in the default-branch `release-cache-maintenance.yml` `workflow_run`
+  consumer, and only for a completed successful same-repository
+  `Release Windows` / `.github/workflows/release-windows.yml`
+  `workflow_dispatch` whose source branch is `main`. Bind evidence to the exact
+  run/attempt/SHA plus workflow id/name/path/event, recompute the current key
+  from trusted checkout code, require dry-run/apply deletion-set parity, and
+  recheck the trusted default-branch SHA after artifact validation, immediately
+  before Apply, and inside the pruner before the first deletion. Perform a
+  fresh V3-only postflight. `-TauriPromotionOnly` may delete only
+  Tauri Actions-cache generations on `refs/heads/main`; it must not invoke
+  global GC, touch a branch canary, or query/mutate public `v*` and internal
+  cache releases through the pruner. Downloaded evidence remains data only.
 - The Rust Actions cache is keyed by normalized Cargo dependency metadata plus
   resolved toolchain/target/profile, not by ordinary app source. The exact
   Tauri app product is a separate bounded v3 cache keyed by full frontend plus

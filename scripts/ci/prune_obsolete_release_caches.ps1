@@ -11,9 +11,20 @@ param(
     [string[]]$PrunableRef = @(),
     [switch]$PruneCurrentRef,
     [switch]$VerifyCurrentGeneration,
+    [switch]$TauriPromotionOnly,
     [string]$TauriPromotionEvidencePath = "",
     [string]$ExpectedTauriPromotionEvidenceSha256 = "",
-    [string]$ExpectedTauriAppKey = ""
+    [string]$ExpectedTauriAppKey = "",
+    [string]$ExpectedTauriPromotionDeletionSetSha256 = "",
+    [string]$ExpectedSourceRunId = "",
+    [string]$ExpectedSourceRunAttempt = "",
+    [string]$ExpectedSourceHeadSha = "",
+    [string]$ExpectedSourceHeadBranch = "",
+    [string]$ExpectedSourceWorkflowId = "",
+    [string]$ExpectedSourceWorkflowName = "",
+    [string]$ExpectedSourceWorkflowPath = "",
+    [string]$ExpectedSourceEvent = "",
+    [string]$ExpectedTrustedDefaultBranchSha = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +32,16 @@ $normalizedExpectedRustDependencyKey = ([string]$ExpectedRustDependencyKey).Trim
 $normalizedTauriPromotionEvidencePath = ([string]$TauriPromotionEvidencePath).Trim()
 $normalizedExpectedTauriPromotionEvidenceSha256 = ([string]$ExpectedTauriPromotionEvidenceSha256).Trim().ToLowerInvariant()
 $normalizedExpectedTauriAppKey = ([string]$ExpectedTauriAppKey).Trim()
+$normalizedExpectedTauriPromotionDeletionSetSha256 = ([string]$ExpectedTauriPromotionDeletionSetSha256).Trim().ToLowerInvariant()
+$normalizedExpectedSourceRunId = ([string]$ExpectedSourceRunId).Trim()
+$normalizedExpectedSourceRunAttempt = ([string]$ExpectedSourceRunAttempt).Trim()
+$normalizedExpectedSourceHeadSha = ([string]$ExpectedSourceHeadSha).Trim()
+$normalizedExpectedSourceHeadBranch = ([string]$ExpectedSourceHeadBranch).Trim()
+$normalizedExpectedSourceWorkflowId = ([string]$ExpectedSourceWorkflowId).Trim()
+$normalizedExpectedSourceWorkflowName = ([string]$ExpectedSourceWorkflowName).Trim()
+$normalizedExpectedSourceWorkflowPath = ([string]$ExpectedSourceWorkflowPath).Trim()
+$normalizedExpectedSourceEvent = ([string]$ExpectedSourceEvent).Trim()
+$normalizedExpectedTrustedDefaultBranchSha = ([string]$ExpectedTrustedDefaultBranchSha).Trim()
 $tauriPromotionEvidencePathSupplied = -not [string]::IsNullOrWhiteSpace($normalizedTauriPromotionEvidencePath)
 $tauriPromotionEvidenceShaSupplied = -not [string]::IsNullOrWhiteSpace($normalizedExpectedTauriPromotionEvidenceSha256)
 $tauriPromotionExpectedKeySupplied = -not [string]::IsNullOrWhiteSpace($normalizedExpectedTauriAppKey)
@@ -30,9 +51,19 @@ $tauriPromotionReason = 'not-requested'
 $tauriPromotionEvidenceSha256 = $null
 $tauriPromotedCache = $null
 $mutationSuppressed = $false
+$expectedSourceBindingValid = (
+    $normalizedExpectedSourceRunId -cmatch '^[1-9][0-9]*$' -and
+    $normalizedExpectedSourceRunAttempt -cmatch '^[1-9][0-9]*$' -and
+    $normalizedExpectedSourceHeadSha -cmatch '^[0-9a-f]{40}$' -and
+    $normalizedExpectedSourceHeadBranch -ceq 'main' -and
+    $normalizedExpectedSourceWorkflowId -cmatch '^[1-9][0-9]*$' -and
+    $normalizedExpectedSourceWorkflowName -ceq 'Release Windows' -and
+    $normalizedExpectedSourceWorkflowPath -ceq '.github/workflows/release-windows.yml' -and
+    $normalizedExpectedSourceEvent -ceq 'workflow_dispatch'
+)
 
 function Get-Sha256Hex {
-    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][byte[]]$Bytes)
 
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
     try {
@@ -41,6 +72,46 @@ function Get-Sha256Hex {
         $sha256.Dispose()
     }
     return ([System.BitConverter]::ToString($digest) -replace '-', '').ToLowerInvariant()
+}
+
+function Get-Sha256Text {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
+
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    return Get-Sha256Hex -Bytes $utf8NoBom.GetBytes($Text)
+}
+
+function ConvertTo-StrictUtcTimestamp {
+    param([AllowNull()][object]$Value)
+
+    if ($Value -is [DateTimeOffset]) {
+        if ($Value.Offset -ne [TimeSpan]::Zero) {
+            return $null
+        }
+        return [DateTimeOffset]$Value
+    }
+    if ($Value -is [DateTime]) {
+        if ($Value.Kind -ne [DateTimeKind]::Utc) {
+            return $null
+        }
+        return [DateTimeOffset]::new([DateTime]$Value)
+    }
+    if ($Value -isnot [string] -or [string]$Value -cnotmatch '^\d{4}-\d{2}-\d{2}T.+(?:Z|\+00:00)$') {
+        return $null
+    }
+    try {
+        $timestamp = [DateTimeOffset]::Parse(
+            [string]$Value,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::RoundtripKind
+        )
+    } catch {
+        return $null
+    }
+    if ($timestamp.Offset -ne [TimeSpan]::Zero) {
+        return $null
+    }
+    return $timestamp
 }
 
 function Get-CheckedInTauriCliContract {
@@ -123,6 +194,7 @@ if ($VerifyCurrentGeneration -and $Apply) {
 }
 if (
     $VerifyCurrentGeneration -and
+    -not $TauriPromotionOnly -and
     $normalizedExpectedRustDependencyKey -notmatch '^scriber-rust-dependencies-v1-Windows-[0-9a-f]{64}$'
 ) {
     throw "Current-generation verification requires the full expected Rust dependency cache key."
@@ -132,6 +204,31 @@ if (
     $normalizedExpectedTauriAppKey -cnotmatch '^scriber-tauri-app-binary-v3-Windows-[0-9a-f]{64}$'
 ) {
     throw "Current-generation verification requires the full expected Tauri app cache key."
+}
+
+if ($TauriPromotionOnly) {
+    if ($PruneCurrentRef -or @($PrunableRef).Count -gt 0) {
+        throw "Tauri promotion-only mode cannot prune current or branch refs."
+    }
+    $nonMainProtectedRefs = @(
+        @($ProtectedRef) |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace([string]$_) -and
+                ([string]$_).Trim() -cne 'refs/heads/main'
+            }
+    )
+    if ($nonMainProtectedRefs.Count -gt 0) {
+        throw "Tauri promotion-only mode is restricted to refs/heads/main."
+    }
+    if ($Apply -and -not $tauriPromotionRequested) {
+        throw "Tauri promotion-only apply requires terminal promotion evidence."
+    }
+    if ($Apply -and $normalizedExpectedTauriPromotionDeletionSetSha256 -cnotmatch '^[0-9a-f]{64}$') {
+        throw "Tauri promotion-only apply requires the dry-run deletion-set SHA-256."
+    }
+    if ($Apply -and $normalizedExpectedTrustedDefaultBranchSha -cnotmatch '^[0-9a-f]{40}$') {
+        throw "Tauri promotion-only apply requires the trusted default-branch SHA."
+    }
 }
 
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
@@ -163,16 +260,18 @@ foreach ($candidateRef in @($PrunableRef)) {
     $null = $prunableRefs.Add($normalizedRef)
 }
 $githubRef = ([string]$env:GITHUB_REF).Trim()
-if ($githubRef -match '^refs/heads/[0-9A-Za-z._/-]+$') {
-    $null = $currentRefs.Add($githubRef)
-}
-if (Get-Command git -ErrorAction SilentlyContinue) {
-    $branchOutput = @(& git symbolic-ref --quiet --short HEAD 2>$null)
-    $branchExitCode = $LASTEXITCODE
-    if ($branchExitCode -eq 0 -and $branchOutput.Count -gt 0) {
-        $branchName = ([string]$branchOutput[0]).Trim()
-        if ($branchName -match '^[0-9A-Za-z._/-]+$') {
-            $null = $currentRefs.Add("refs/heads/$branchName")
+if (-not $TauriPromotionOnly) {
+    if ($githubRef -match '^refs/heads/[0-9A-Za-z._/-]+$') {
+        $null = $currentRefs.Add($githubRef)
+    }
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        $branchOutput = @(& git symbolic-ref --quiet --short HEAD 2>$null)
+        $branchExitCode = $LASTEXITCODE
+        if ($branchExitCode -eq 0 -and $branchOutput.Count -gt 0) {
+            $branchName = ([string]$branchOutput[0]).Trim()
+            if ($branchName -match '^[0-9A-Za-z._/-]+$') {
+                $null = $currentRefs.Add("refs/heads/$branchName")
+            }
         }
     }
 }
@@ -228,6 +327,8 @@ if ($tauriPromotionRequested) {
     # completed successfully; same-run evidence is never terminal proof.
     if ($checkedInTauriCliContractInvalid) {
         $tauriPromotionReason = 'checked-in-cli-contract-invalid'
+    } elseif (-not $expectedSourceBindingValid) {
+        $tauriPromotionReason = 'expected-source-binding-invalid'
     } elseif ($tauriPromotionEvidencePathSupplied -and $tauriPromotionEvidenceShaSupplied -and $tauriPromotionExpectedKeySupplied) {
         if ($normalizedExpectedTauriAppKey -cnotmatch '^scriber-tauri-app-binary-v3-Windows-[0-9a-f]{64}$') {
             $tauriPromotionReason = 'invalid-expected-tauri-key'
@@ -320,7 +421,7 @@ if ($tauriPromotionRequested) {
                     -not [int64]::TryParse(([string]$evidence.bundle.length).Trim(), [ref]$evidenceBundleLength) -or
                     [string]$evidence.bundle.sha256 -cnotmatch '^[0-9a-f]{64}$'
                 )
-                if ($missingTopLevelProperty -or [string]$evidence.schemaVersion -cne '2') {
+                if ($missingTopLevelProperty -or [string]$evidence.schemaVersion -cne '3') {
                     $tauriPromotionReason = 'evidence-schema-mismatch'
                 } elseif (
                     $evidence.eligible -isnot [bool] -or
@@ -349,16 +450,7 @@ if ($tauriPromotionRequested) {
                     $tauriPromotionReason = 'evidence-bundle-identity-invalid'
                 } else {
                     $nowUtc = [DateTimeOffset]::UtcNow
-                    $evidenceGeneratedAt = $null
-                    try {
-                        $evidenceGeneratedAt = [DateTimeOffset]::Parse(
-                            [string]$evidence.generatedAtUtc,
-                            [System.Globalization.CultureInfo]::InvariantCulture,
-                            [System.Globalization.DateTimeStyles]::RoundtripKind
-                        )
-                    } catch {
-                        $evidenceGeneratedAt = $null
-                    }
+                    $evidenceGeneratedAt = ConvertTo-StrictUtcTimestamp -Value $evidence.generatedAtUtc
 
                     if ($null -eq $evidenceGeneratedAt -or $evidenceGeneratedAt.Offset -ne [TimeSpan]::Zero) {
                         $tauriPromotionReason = 'evidence-generated-at-invalid'
@@ -431,7 +523,7 @@ if ($tauriPromotionRequested) {
                             } elseif (
                                 $null -eq $evidence.run -or
                                 @(
-                                    @('id', 'attempt', 'headSha', 'headBranch') |
+                                    @('id', 'attempt', 'headSha', 'headBranch', 'workflowId', 'workflowName', 'workflowPath', 'event') |
                                         Where-Object { $null -eq $evidence.run.PSObject.Properties[$_] }
                                 ).Count -gt 0
                             ) {
@@ -441,17 +533,38 @@ if ($tauriPromotionRequested) {
                                 $runAttemptText = ([string]$evidence.run.attempt).Trim()
                                 $runHeadSha = ([string]$evidence.run.headSha).Trim()
                                 $runHeadBranch = ([string]$evidence.run.headBranch).Trim()
+                                $runWorkflowIdText = ([string]$evidence.run.workflowId).Trim()
+                                $runWorkflowName = ([string]$evidence.run.workflowName).Trim()
+                                $runWorkflowPath = ([string]$evidence.run.workflowPath).Trim()
+                                $runEvent = ([string]$evidence.run.event).Trim()
                                 [int64]$runId = 0
                                 [int]$runAttempt = 0
+                                [int64]$runWorkflowId = 0
                                 if (
                                     $runIdText -cnotmatch '^[1-9][0-9]*$' -or
                                     -not [int64]::TryParse($runIdText, [ref]$runId) -or
                                     $runAttemptText -cnotmatch '^[1-9][0-9]*$' -or
                                     -not [int]::TryParse($runAttemptText, [ref]$runAttempt) -or
                                     $runHeadSha -cnotmatch '^[0-9a-f]{40}$' -or
-                                    $runHeadBranch -cnotmatch '^[0-9A-Za-z._/-]+$'
+                                    $runHeadBranch -cne 'main' -or
+                                    $runWorkflowIdText -cnotmatch '^[1-9][0-9]*$' -or
+                                    -not [int64]::TryParse($runWorkflowIdText, [ref]$runWorkflowId) -or
+                                    $runWorkflowName -cne 'Release Windows' -or
+                                    $runWorkflowPath -cne '.github/workflows/release-windows.yml' -or
+                                    $runEvent -cne 'workflow_dispatch'
                                 ) {
                                     $tauriPromotionReason = 'evidence-run-binding-invalid'
+                                } elseif (
+                                    $runIdText -cne $normalizedExpectedSourceRunId -or
+                                    $runAttemptText -cne $normalizedExpectedSourceRunAttempt -or
+                                    $runHeadSha -cne $normalizedExpectedSourceHeadSha -or
+                                    $runHeadBranch -cne $normalizedExpectedSourceHeadBranch -or
+                                    $runWorkflowIdText -cne $normalizedExpectedSourceWorkflowId -or
+                                    $runWorkflowName -cne $normalizedExpectedSourceWorkflowName -or
+                                    $runWorkflowPath -cne $normalizedExpectedSourceWorkflowPath -or
+                                    $runEvent -cne $normalizedExpectedSourceEvent
+                                ) {
+                                    $tauriPromotionReason = 'evidence-source-binding-mismatch'
                                 } elseif ([string]$evidence.cache.ref -cne "refs/heads/$runHeadBranch") {
                                     $tauriPromotionReason = 'evidence-run-ref-mismatch'
                                 } elseif (
@@ -487,7 +600,7 @@ if ($tauriPromotionRequested) {
                                             $null -eq $freshRun -or
                                             $null -eq $freshRun.repository -or
                                             @(
-                                                @('id', 'run_attempt', 'head_sha', 'head_branch', 'status', 'conclusion', 'updated_at') |
+                                                @('id', 'run_attempt', 'head_sha', 'head_branch', 'workflow_id', 'name', 'path', 'event', 'status', 'conclusion', 'updated_at') |
                                                     Where-Object { $null -eq $freshRun.PSObject.Properties[$_] }
                                             ).Count -gt 0 -or
                                             $null -eq $freshRun.repository.PSObject.Properties['full_name']
@@ -498,7 +611,11 @@ if ($tauriPromotionRequested) {
                                             [string]$freshRun.id -cne [string]$runId -or
                                             [string]$freshRun.run_attempt -cne [string]$runAttempt -or
                                             [string]$freshRun.head_sha -cne $runHeadSha -or
-                                            [string]$freshRun.head_branch -cne $runHeadBranch
+                                            [string]$freshRun.head_branch -cne $runHeadBranch -or
+                                            [string]$freshRun.workflow_id -cne [string]$runWorkflowId -or
+                                            [string]$freshRun.name -cne $runWorkflowName -or
+                                            [string]$freshRun.path -cne $runWorkflowPath -or
+                                            [string]$freshRun.event -cne $runEvent
                                         ) {
                                             $tauriPromotionReason = 'github-run-binding-mismatch'
                                         } elseif (
@@ -507,16 +624,7 @@ if ($tauriPromotionRequested) {
                                         ) {
                                             $tauriPromotionReason = 'github-run-not-successful'
                                         } else {
-                                            $runUpdatedAt = $null
-                                            try {
-                                                $runUpdatedAt = [DateTimeOffset]::Parse(
-                                                    [string]$freshRun.updated_at,
-                                                    [System.Globalization.CultureInfo]::InvariantCulture,
-                                                    [System.Globalization.DateTimeStyles]::RoundtripKind
-                                                )
-                                            } catch {
-                                                $runUpdatedAt = $null
-                                            }
+                                            $runUpdatedAt = ConvertTo-StrictUtcTimestamp -Value $freshRun.updated_at
                                             if (
                                                 $null -eq $runUpdatedAt -or
                                                 $runUpdatedAt.Offset -ne [TimeSpan]::Zero -or
@@ -548,12 +656,16 @@ if ($tauriPromotionRequested) {
     }
 }
 
-$releaseJson = & gh release list --repo $Repo --limit $ListLimit --json tagName
-if ($LASTEXITCODE -ne 0) {
-    throw "GitHub release-cache inventory failed with exit code $LASTEXITCODE."
-}
-$parsedReleases = $releaseJson | ConvertFrom-Json
-$releases = @($parsedReleases)
+$releases = @()
+$obsoleteReleaseTags = @()
+$obsoleteReleaseAssets = [System.Collections.Generic.List[object]]::new()
+if (-not $TauriPromotionOnly) {
+    $releaseJson = & gh release list --repo $Repo --limit $ListLimit --json tagName
+    if ($LASTEXITCODE -ne 0) {
+        throw "GitHub release-cache inventory failed with exit code $LASTEXITCODE."
+    }
+    $parsedReleases = $releaseJson | ConvertFrom-Json
+    $releases = @($parsedReleases)
 
 # Durable cache snapshots use internal prerelease tags. Keep exactly the
 # current schema generation for each family and never match public app tags.
@@ -592,26 +704,26 @@ $obsoleteReleaseTags = @(
         }
 )
 
-$obsoleteReleaseAssets = [System.Collections.Generic.List[object]]::new()
-foreach ($tag in $currentReleaseTags) {
-    $assetJson = & gh release view $tag --repo $Repo --json assets 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        # A current durable fallback may not exist until its first cold build.
-        continue
-    }
-    $assets = @(
-        ($assetJson | ConvertFrom-Json).assets |
-            Sort-Object -Property `
-                @{ Expression = { [DateTimeOffset]$_.createdAt }; Descending = $true }, `
-                @{ Expression = { if ([string]$_.apiUrl -match '/(\d+)$') { [int64]$Matches[1] } else { 0 } }; Descending = $true }, `
-                @{ Expression = { [string]$_.name }; Descending = $true }
-    )
-    foreach ($asset in @($assets | Select-Object -Skip 1)) {
-        $obsoleteReleaseAssets.Add([pscustomobject]@{
-            Tag = $tag
-            Name = [string]$asset.name
-            CreatedAt = [string]$asset.createdAt
-        }) | Out-Null
+    foreach ($tag in $currentReleaseTags) {
+        $assetJson = & gh release view $tag --repo $Repo --json assets 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            # A current durable fallback may not exist until its first cold build.
+            continue
+        }
+        $assets = @(
+            ($assetJson | ConvertFrom-Json).assets |
+                Sort-Object -Property `
+                    @{ Expression = { [DateTimeOffset]$_.createdAt }; Descending = $true }, `
+                    @{ Expression = { if ([string]$_.apiUrl -match '/(\d+)$') { [int64]$Matches[1] } else { 0 } }; Descending = $true }, `
+                    @{ Expression = { [string]$_.name }; Descending = $true }
+        )
+        foreach ($asset in @($assets | Select-Object -Skip 1)) {
+            $obsoleteReleaseAssets.Add([pscustomobject]@{
+                Tag = $tag
+                Name = [string]$asset.name
+                CreatedAt = [string]$asset.createdAt
+            }) | Out-Null
+        }
     }
 }
 
@@ -647,48 +759,50 @@ $rollingFamilies = @(
 )
 
 $deletions = [System.Collections.Generic.List[object]]::new()
-foreach ($cache in $caches) {
-    if ([string]$cache.ref -ne 'refs/heads/main') {
-        continue
-    }
-    if ($obsoletePatterns | Where-Object { [string]$cache.key -match $_ }) {
-        $deletions.Add([pscustomobject]@{ Cache = $cache; Reason = 'obsolete-generation' }) | Out-Null
-    }
-}
-
-foreach ($family in $rollingFamilies) {
-    foreach ($protectedRef in $protectedRefs) {
-        $matchingMembers = @(
-            $caches |
-                Where-Object { [string]$_.ref -eq $protectedRef -and [string]$_.key -match $family.Pattern }
-        )
-        $members = if (-not [string]::IsNullOrWhiteSpace([string]$family.GenerationPattern)) {
-            @(
-                $matchingMembers |
-                    # Schema generation wins before timestamp for any generic
-                    # rolling family that explicitly declares generations.
-                    # Tauri uses the evidence-bound retention path below.
-                    Sort-Object -Property `
-                        @{ Expression = { if ([string]$_.key -match $family.GenerationPattern) { [int]$Matches.generation } else { 0 } }; Descending = $true }, `
-                        @{ Expression = { [DateTimeOffset]$_.createdAt }; Descending = $true }, `
-                        @{ Expression = { [int64]$_.id }; Descending = $true }, `
-                        @{ Expression = { [DateTimeOffset]$_.lastAccessedAt }; Descending = $true }
-            )
-        } else {
-            @(
-                $matchingMembers |
-                    # Generation recency is creation time. A concurrent older
-                    # tag can touch an obsolete cache after its replacement is
-                    # created, so lastAccessedAt is only the final tiebreaker.
-                    Sort-Object -Property `
-                        @{ Expression = { [DateTimeOffset]$_.createdAt }; Descending = $true }, `
-                        @{ Expression = { [int64]$_.id }; Descending = $true }, `
-                        @{ Expression = { [DateTimeOffset]$_.lastAccessedAt }; Descending = $true }
-            )
+if (-not $TauriPromotionOnly) {
+    foreach ($cache in $caches) {
+        if ([string]$cache.ref -ne 'refs/heads/main') {
+            continue
         }
-        foreach ($cache in @($members | Select-Object -Skip ([int]$family.Retain))) {
-            if (-not ($deletions | Where-Object { [int64]$_.Cache.id -eq [int64]$cache.id })) {
-                $deletions.Add([pscustomobject]@{ Cache = $cache; Reason = "rolling-$($family.Name)-beyond-$($family.Retain)-on-$protectedRef" }) | Out-Null
+        if ($obsoletePatterns | Where-Object { [string]$cache.key -match $_ }) {
+            $deletions.Add([pscustomobject]@{ Cache = $cache; Reason = 'obsolete-generation' }) | Out-Null
+        }
+    }
+
+    foreach ($family in $rollingFamilies) {
+        foreach ($protectedRef in $protectedRefs) {
+            $matchingMembers = @(
+                $caches |
+                    Where-Object { [string]$_.ref -eq $protectedRef -and [string]$_.key -match $family.Pattern }
+            )
+            $members = if (-not [string]::IsNullOrWhiteSpace([string]$family.GenerationPattern)) {
+                @(
+                    $matchingMembers |
+                        # Schema generation wins before timestamp for any generic
+                        # rolling family that explicitly declares generations.
+                        # Tauri uses the evidence-bound retention path below.
+                        Sort-Object -Property `
+                            @{ Expression = { if ([string]$_.key -match $family.GenerationPattern) { [int]$Matches.generation } else { 0 } }; Descending = $true }, `
+                            @{ Expression = { [DateTimeOffset]$_.createdAt }; Descending = $true }, `
+                            @{ Expression = { [int64]$_.id }; Descending = $true }, `
+                            @{ Expression = { [DateTimeOffset]$_.lastAccessedAt }; Descending = $true }
+                )
+            } else {
+                @(
+                    $matchingMembers |
+                        # Generation recency is creation time. A concurrent older
+                        # tag can touch an obsolete cache after its replacement is
+                        # created, so lastAccessedAt is only the final tiebreaker.
+                        Sort-Object -Property `
+                            @{ Expression = { [DateTimeOffset]$_.createdAt }; Descending = $true }, `
+                            @{ Expression = { [int64]$_.id }; Descending = $true }, `
+                            @{ Expression = { [DateTimeOffset]$_.lastAccessedAt }; Descending = $true }
+                )
+            }
+            foreach ($cache in @($members | Select-Object -Skip ([int]$family.Retain))) {
+                if (-not ($deletions | Where-Object { [int64]$_.Cache.id -eq [int64]$cache.id })) {
+                    $deletions.Add([pscustomobject]@{ Cache = $cache; Reason = "rolling-$($family.Name)-beyond-$($family.Retain)-on-$protectedRef" }) | Out-Null
+                }
             }
         }
     }
@@ -761,12 +875,14 @@ foreach ($protectedRef in $protectedRefs) {
 # completed. Delete only exact refs that the caller explicitly marked prunable;
 # foreign or merely unrecognized branches remain untouched by default.
 $knownCachePattern = '^((scriber-|setup-python-|node-cache-|msys2-pkgs-).*)$'
-foreach ($cache in $caches) {
-    if (
-        $prunableRefs.Contains([string]$cache.ref) -and
-        [string]$cache.key -match $knownCachePattern
-    ) {
-        $deletions.Add([pscustomobject]@{ Cache = $cache; Reason = 'explicitly-prunable-completed-ref-cache' }) | Out-Null
+if (-not $TauriPromotionOnly) {
+    foreach ($cache in $caches) {
+        if (
+            $prunableRefs.Contains([string]$cache.ref) -and
+            [string]$cache.key -match $knownCachePattern
+        ) {
+            $deletions.Add([pscustomobject]@{ Cache = $cache; Reason = 'explicitly-prunable-completed-ref-cache' }) | Out-Null
+        }
     }
 }
 
@@ -778,6 +894,29 @@ foreach ($entry in $deletions) {
     }
 }
 $uniqueDeletions = @($deletionsById.Values | Sort-Object { [int64]$_.Cache.id })
+$tauriPromotionDeletionSetText = @(
+    $uniqueDeletions |
+        ForEach-Object { [string][int64]$_.Cache.id }
+) -join ','
+$tauriPromotionDeletionSetSha256 = Get-Sha256Text -Text $tauriPromotionDeletionSetText
+if ($TauriPromotionOnly) {
+    $nonTauriPromotionCandidates = @(
+        $uniqueDeletions |
+            Where-Object {
+                [string]$_.Cache.ref -cne 'refs/heads/main' -or
+                [string]$_.Cache.key -cnotmatch '^scriber-tauri-app-binary-v[123]-Windows-[0-9a-f]{64}$'
+            }
+    )
+    if ($nonTauriPromotionCandidates.Count -gt 0) {
+        throw "Tauri promotion-only mode produced a non-Tauri or non-main deletion candidate."
+    }
+    if (
+        $Apply -and
+        $tauriPromotionDeletionSetSha256 -cne $normalizedExpectedTauriPromotionDeletionSetSha256
+    ) {
+        throw "Tauri promotion inventory changed between dry-run and apply."
+    }
+}
 $bytes = [int64](($uniqueDeletions | ForEach-Object { [int64]$_.Cache.sizeInBytes } | Measure-Object -Sum).Sum)
 $mainRustDependencyCaches = @(
     $caches |
@@ -828,6 +967,26 @@ $effectiveApply = [bool]$Apply -and -not $mutationSuppressed
 if ($Apply -and $mutationSuppressed) {
     Write-Warning "Release cache mutation suppressed because Tauri promotion evidence was not authorized: $tauriPromotionReason."
 }
+if ($effectiveApply -and $TauriPromotionOnly) {
+    $trustedRefJson = & gh api "/repos/$Repo/git/ref/heads/main" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Rechecking the trusted default-branch ref before Tauri promotion failed."
+    }
+    try {
+        $trustedRef = $trustedRefJson | ConvertFrom-Json
+    } catch {
+        $trustedRef = $null
+    }
+    if (
+        $null -eq $trustedRef -or
+        [string]$trustedRef.ref -cne 'refs/heads/main' -or
+        $null -eq $trustedRef.object -or
+        [string]$trustedRef.object.type -cne 'commit' -or
+        [string]$trustedRef.object.sha -cne $normalizedExpectedTrustedDefaultBranchSha
+    ) {
+        throw "Trusted default-branch code changed before Tauri promotion mutation."
+    }
+}
 if ($effectiveApply) {
     foreach ($entry in $uniqueDeletions) {
         & gh cache delete ([string]$entry.Cache.id) --repo $Repo
@@ -860,11 +1019,13 @@ if ($effectiveApply) {
 $verificationPassed = $null
 if ($VerifyCurrentGeneration) {
     $verificationIssues = [System.Collections.Generic.List[string]]::new()
-    if ($mainRustDependencyCaches.Count -ne 1) {
-        $verificationIssues.Add("expected exactly one main Rust dependency cache, found $($mainRustDependencyCaches.Count)") | Out-Null
-    }
-    if ($expectedRustDependencyCaches.Count -ne 1) {
-        $verificationIssues.Add("expected Rust dependency cache '$normalizedExpectedRustDependencyKey' was not the sole exact match") | Out-Null
+    if (-not $TauriPromotionOnly) {
+        if ($mainRustDependencyCaches.Count -ne 1) {
+            $verificationIssues.Add("expected exactly one main Rust dependency cache, found $($mainRustDependencyCaches.Count)") | Out-Null
+        }
+        if ($expectedRustDependencyCaches.Count -ne 1) {
+            $verificationIssues.Add("expected Rust dependency cache '$normalizedExpectedRustDependencyKey' was not the sole exact match") | Out-Null
+        }
     }
     if ($expectedTauriAppCaches.Count -ne 1) {
         $verificationIssues.Add("expected Tauri app cache '$normalizedExpectedTauriAppKey' was not the sole exact protected-ref match") | Out-Null
@@ -874,10 +1035,10 @@ if ($VerifyCurrentGeneration) {
     if ($uniqueDeletions.Count -ne 0) {
         $verificationIssues.Add("$($uniqueDeletions.Count) obsolete Actions-cache entries remain") | Out-Null
     }
-    if ($obsoleteReleaseTags.Count -ne 0) {
+    if (-not $TauriPromotionOnly -and $obsoleteReleaseTags.Count -ne 0) {
         $verificationIssues.Add("$($obsoleteReleaseTags.Count) obsolete internal cache-release tags remain") | Out-Null
     }
-    if ($obsoleteReleaseAssets.Count -ne 0) {
+    if (-not $TauriPromotionOnly -and $obsoleteReleaseAssets.Count -ne 0) {
         $verificationIssues.Add("$($obsoleteReleaseAssets.Count) superseded internal cache-release assets remain") | Out-Null
     }
 
@@ -885,7 +1046,11 @@ if ($VerifyCurrentGeneration) {
         throw "Release cache generation verification failed: $($verificationIssues -join '; ')."
     }
     $verificationPassed = $true
-    Write-Host "Release cache generation verification passed: the expected Rust and Tauri caches are unique, the promoted Tauri ref has one generation, and no GC candidates remain."
+    if ($TauriPromotionOnly) {
+        Write-Host "Tauri promotion verification passed: the expected main cache is the sole Tauri generation and no Tauri candidates remain."
+    } else {
+        Write-Host "Release cache generation verification passed: the expected Rust and Tauri caches are unique, the promoted Tauri ref has one generation, and no GC candidates remain."
+    }
 }
 
 [ordered]@{
@@ -900,6 +1065,7 @@ if ($VerifyCurrentGeneration) {
     protectedRefs = @($protectedRefs | Sort-Object)
     prunableRefs = @($prunableRefs | Sort-Object)
     pruneCurrentRef = [bool]$PruneCurrentRef
+    tauriPromotionOnly = [bool]$TauriPromotionOnly
     verifyCurrentGeneration = [bool]$VerifyCurrentGeneration
     verificationPassed = $verificationPassed
     expectedRustDependencyKey = $normalizedExpectedRustDependencyKey
@@ -913,6 +1079,7 @@ if ($VerifyCurrentGeneration) {
     tauriPromotionReason = $tauriPromotionReason
     tauriPromotedCache = $tauriPromotedCache
     tauriPromotionEvidenceSha256 = $tauriPromotionEvidenceSha256
+    tauriPromotionDeletionSetSha256 = $tauriPromotionDeletionSetSha256
     tauriProposedDeletionIds = @(
         @($tauriRetentionProposedDeletionIds) + @($tauriPromotionProposedDeletionIds) |
             Sort-Object -Unique

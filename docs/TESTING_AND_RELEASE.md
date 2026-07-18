@@ -895,7 +895,7 @@ It:
   `SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER=1` is set for a deliberate non-tag
   installer download,
 - permits an explicit non-main dispatch to save only the bounded, fully
-  attested v2 Tauri app product in that branch's ref-local Actions cache. Its
+  attested v3 Tauri app product in that branch's ref-local Actions cache. Its
   content key deliberately excludes the producing commit, so same-version
   Python-only changes can reuse it, while frontend/Rust/config, Node version,
   binary-producing workflow/helper scripts, app version, toolchain/target,
@@ -938,6 +938,23 @@ dependency generation on `refs/heads/main` and fails if any Actions-cache,
 internal cache-release tag, or superseded cache-release asset still qualifies
 for deletion. This final verification is the authority for a clean cache
 maintenance run; do not infer success only from the earlier cache-save step.
+
+A successful manual `main` exact hit also uploads one small passive
+`scriber-tauri-cache-promotion-evidence` JSON artifact. The default-branch
+`release-cache-maintenance.yml` `workflow_run` consumer accepts it only from
+the completed successful `Release Windows` workflow at
+`.github/workflows/release-windows.yml`, event `workflow_dispatch`, source
+repository Scriber, and source branch `main`. The JSON is bound to the exact
+run id, attempt, head SHA, workflow id/name/path/event, cache id/key/ref, CLI
+contract, build timing, and installer checksum; it is parsed only as data.
+The consumer recomputes the current trusted V3 key, performs an evidence-bound
+dry-run, applies exactly that dry-run deletion set, and then runs a fresh
+V3-only postflight. It rechecks the trusted default-branch SHA after artifact
+validation, immediately before Apply, and inside the pruner after the fresh
+inventory pass but before deletion. This narrow promotion mode can delete only older Tauri
+Actions-cache generations on `refs/heads/main`: it never runs global cache GC,
+never deletes branch canaries, and never mutates public `v*` or internal cache
+releases. A seed miss uploads no promotion artifact and is a clean no-op.
 
 Only the separately frozen Python runtime cache is version-neutral for
 `src/version.py`; it contains no `src` application code. The application layer

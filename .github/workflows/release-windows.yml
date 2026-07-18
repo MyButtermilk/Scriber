@@ -1581,11 +1581,13 @@ jobs:
           key: scriber-python-pip-store-v1-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
 
       - name: Install frontend dependencies
+        id: frontend-dependency-install
         if: steps.frontend-preparation.outputs.required == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
         working-directory: Frontend
         run: npm ci --prefer-offline --no-audit --fund=false
 
       - name: Use cached frontend dependencies
+        id: frontend-cached-use
         if: steps.frontend-preparation.outputs.required == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit == 'true'
         working-directory: Frontend
         shell: pwsh
@@ -1597,6 +1599,7 @@ jobs:
           Write-Host "Using cached Frontend/node_modules with npm install metadata."
 
       - name: Save frontend dependency cache
+        id: frontend-dependency-save
         if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.frontend-preparation.outputs.required == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
@@ -1604,6 +1607,7 @@ jobs:
           key: scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}
 
       - name: Save npm package store
+        id: npm-package-store-save
         if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.frontend-preparation.outputs.required == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true' && steps.npm-package-store-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
@@ -1872,11 +1876,123 @@ jobs:
           powershell @exportArgs
 
       - name: Save exact Tauri app binary
+        id: tauri-app-binary-save
         if: (env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' || env.SCRIBER_SAVE_REF_LOCAL_TAURI_CACHE == 'true') && steps.tauri-app-binary-cache.outputs.cache-hit != 'true' && steps.tauri-app-binary-export.outputs.usable == 'true'
         uses: actions/cache/save@v6
         with:
           path: build/tauri-app-binary-cache
           key: scriber-tauri-app-binary-v3-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
+
+      # This step writes data only. It cannot authorize cache deletion while
+      # its own workflow attempt is still in progress. A default-branch
+      # workflow_run consumer revalidates the exact completed attempt later.
+      - name: Write passive Tauri cache-promotion evidence
+        id: tauri-promotion-evidence
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          steps.cold-products.outputs.usable != 'true' &&
+          steps.tauri-app-binary-cache.outputs.cache-hit == 'true' &&
+          steps.tauri-app-binary-import.outputs.usable == 'true' &&
+          steps.frontend-preparation.outputs.use-prebuilt == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $key = "scriber-tauri-app-binary-v3-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}"
+          $cacheJson = & gh cache list `
+            --repo "${{ github.repository }}" `
+            --key $key `
+            --ref "${{ github.ref }}" `
+            --limit 100 `
+            --json id,key,ref
+          if ($LASTEXITCODE -ne 0) {
+            throw "Reading the exact restored Tauri cache identity failed."
+          }
+          $cacheMatches = @(
+            $cacheJson | ConvertFrom-Json |
+              Where-Object {
+                [string]$_.key -ceq $key -and
+                [string]$_.ref -ceq "${{ github.ref }}"
+              }
+          )
+          if ($cacheMatches.Count -ne 1) {
+            throw "Expected exactly one restored Tauri cache identity, found $($cacheMatches.Count)."
+          }
+
+          $runJson = & gh api "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Reading the exact producer attempt identity failed."
+          }
+          $run = $runJson | ConvertFrom-Json
+          if (
+            [string]$run.repository.full_name -cne "${{ github.repository }}" -or
+            [string]$run.id -cne "${{ github.run_id }}" -or
+            [string]$run.run_attempt -cne "${{ github.run_attempt }}" -or
+            [string]$run.head_sha -cne "${{ github.sha }}" -or
+            [string]$run.head_branch -cne "main" -or
+            [string]$run.name -cne "Release Windows" -or
+            [string]$run.path -cne ".github/workflows/release-windows.yml" -or
+            [string]$run.event -cne "workflow_dispatch" -or
+            [string]$run.workflow_id -cnotmatch '^[1-9][0-9]*$'
+          ) {
+            throw "The exact producer attempt identity is not eligible for passive promotion evidence."
+          }
+
+          $version = (python -c "from scripts.create_release_metadata import read_version; print(read_version())").Trim()
+          $bundlePath = "Frontend\src-tauri\target\release\bundle\nsis\Scriber_$($version)_x64-setup.exe"
+          $outputRoot = "build\tauri-cache-promotion-evidence"
+          New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
+          & .\scripts\ci\write_tauri_cache_promotion_evidence.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Ref "${{ github.ref }}" `
+            -CacheRef "${{ github.ref }}" `
+            -RunId "${{ github.run_id }}" `
+            -RunAttempt "${{ github.run_attempt }}" `
+            -HeadSha "${{ github.sha }}" `
+            -HeadBranch "${{ github.ref_name }}" `
+            -WorkflowId ([string]$run.workflow_id) `
+            -WorkflowName ([string]$run.name) `
+            -WorkflowPath ([string]$run.path) `
+            -EventName ([string]$run.event) `
+            -CacheId ([string]$cacheMatches[0].id) `
+            -ExpectedCacheKey $key `
+            -ActionsCacheKey $key `
+            -ActionsCacheHit "${{ steps.tauri-app-binary-cache.outputs.cache-hit }}" `
+            -ImportUsable "${{ steps.tauri-app-binary-import.outputs.usable }}" `
+            -ColdProductsUsable "${{ steps.cold-products.outputs.usable }}" `
+            -UsePrebuiltTauriApp "${{ steps.frontend-preparation.outputs.use-prebuilt }}" `
+            -FrontendDependenciesRequired "${{ steps.frontend-preparation.outputs.required }}" `
+            -ImportCliContractSha256 "${{ steps.tauri-app-binary-import.outputs.cli-contract-sha256 }}" `
+            -SelectedCliContractSha256 "${{ steps.tauri-app-binary-import.outputs.cli-contract-sha256 }}" `
+            -ImportCliVersionOutput "${{ steps.tauri-app-binary-import.outputs.cli-version-output }}" `
+            -SelectedCliVersionOutput "${{ steps.tauri-app-binary-import.outputs.cli-version-output }}" `
+            -TauriExportOutcome "${{ steps.tauri-app-binary-export.outcome }}" `
+            -TauriSaveOutcome "${{ steps.tauri-app-binary-save.outcome }}" `
+            -FrontendNodeModulesRestoreOutcome "${{ steps.frontend-node-modules-cache.outcome }}" `
+            -NpmPackageStoreRestoreOutcome "${{ steps.npm-package-store-cache.outcome }}" `
+            -FrontendInstallOutcome "${{ steps.frontend-dependency-install.outcome }}" `
+            -FrontendCachedUseOutcome "${{ steps.frontend-cached-use.outcome }}" `
+            -FrontendDependencySaveOutcome "${{ steps.frontend-dependency-save.outcome }}" `
+            -NpmPackageStoreSaveOutcome "${{ steps.npm-package-store-save.outcome }}" `
+            -CacheSummaryPath "build\release-cache-summary.json" `
+            -BuildTimingPath "Frontend\src-tauri\target\release\release-metadata\build-timing.json" `
+            -LatestJsonPath "Frontend\src-tauri\target\release\release-metadata\latest.json" `
+            -Sha256SumsPath "Frontend\src-tauri\target\release\release-metadata\SHA256SUMS.txt" `
+            -BundlePath $bundlePath `
+            -ExpectedVersion $version `
+            -OutputPath "$outputRoot\tauri-cache-promotion-evidence.json"
+
+      - name: Upload passive Tauri cache-promotion evidence
+        if: steps.tauri-promotion-evidence.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: scriber-tauri-cache-promotion-evidence
+          path: build/tauri-cache-promotion-evidence/tauri-cache-promotion-evidence.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
       - name: Report Windows installer timing
         if: always()

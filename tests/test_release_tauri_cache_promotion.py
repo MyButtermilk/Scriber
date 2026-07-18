@@ -18,6 +18,7 @@ PRUNE_SCRIPT = REPO_ROOT / "scripts" / "ci" / "prune_obsolete_release_caches.ps1
 CLI_CONTRACT_PATH = REPO_ROOT / "packaging" / "tauri-cli-cache-contract.json"
 REPO = "MyButtermilk/Scriber"
 HEAD_SHA = "9" * 40
+WORKFLOW_ID = 314
 CLI_CONTRACT = json.loads(CLI_CONTRACT_PATH.read_text(encoding="utf-8"))
 CLI_CONTRACT_SHA256 = hashlib.sha256(CLI_CONTRACT_PATH.read_bytes()).hexdigest()
 REQUIRED_EVIDENCE_CHECKS = (
@@ -74,7 +75,7 @@ def _bound_cache(
 
 def _evidence(cache: dict[str, object], *, generation: int) -> dict[str, object]:
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "generatedAtUtc": _utc_text(),
         "repo": REPO,
         "consumption": {
@@ -94,6 +95,10 @@ def _evidence(cache: dict[str, object], *, generation: int) -> dict[str, object]
             "attempt": 2,
             "headSha": HEAD_SHA,
             "headBranch": "main",
+            "workflowId": WORKFLOW_ID,
+            "workflowName": "Release Windows",
+            "workflowPath": ".github/workflows/release-windows.yml",
+            "event": "workflow_dispatch",
         },
         "reuse": {
             "exactCacheHit": True,
@@ -123,6 +128,10 @@ def _successful_run() -> dict[str, object]:
         "run_attempt": 2,
         "head_sha": HEAD_SHA,
         "head_branch": "main",
+        "workflow_id": WORKFLOW_ID,
+        "name": "Release Windows",
+        "path": ".github/workflows/release-windows.yml",
+        "event": "workflow_dispatch",
         "status": "completed",
         "conclusion": "success",
         "updated_at": _utc_text(),
@@ -177,6 +186,9 @@ elif args[:2] == ["release", "delete-asset"]:
 elif args[:1] == ["api"]:
     if os.environ.get("FAKE_GH_API_FAIL") == "1":
         raise SystemExit(1)
+    if args != ["api", "/repos/MyButtermilk/Scriber/actions/runs/42/attempts/2"]:
+        print(f"unexpected exact-run API arguments: {args!r}", file=sys.stderr)
+        raise SystemExit(2)
     emit_env("FAKE_GH_RUN", "{}")
 else:
     print(f"unexpected fake gh arguments: {args!r}", file=sys.stderr)
@@ -236,6 +248,22 @@ def _run_prune(
         str(PRUNE_SCRIPT),
         "-Repo",
         REPO,
+        "-ExpectedSourceRunId",
+        "42",
+        "-ExpectedSourceRunAttempt",
+        "2",
+        "-ExpectedSourceHeadSha",
+        HEAD_SHA,
+        "-ExpectedSourceHeadBranch",
+        "main",
+        "-ExpectedSourceWorkflowId",
+        str(WORKFLOW_ID),
+        "-ExpectedSourceWorkflowName",
+        "Release Windows",
+        "-ExpectedSourceWorkflowPath",
+        ".github/workflows/release-windows.yml",
+        "-ExpectedSourceEvent",
+        "workflow_dispatch",
     ]
     command.extend(extra_args or [])
     completed = subprocess.run(

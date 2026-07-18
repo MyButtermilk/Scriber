@@ -18,6 +18,14 @@ param(
     [string]$HeadSha,
     [Parameter(Mandatory = $true)]
     [string]$HeadBranch,
+    [Parameter(Mandatory = $true)]
+    [string]$WorkflowId,
+    [Parameter(Mandatory = $true)]
+    [string]$WorkflowName,
+    [Parameter(Mandatory = $true)]
+    [string]$WorkflowPath,
+    [Parameter(Mandatory = $true)]
+    [string]$EventName,
     [AllowEmptyString()]
     [string]$CacheId = "",
     [Parameter(Mandatory = $true)]
@@ -290,6 +298,18 @@ function Convert-ManifestFingerprintToHashFilesFingerprint {
 function ConvertTo-StrictUtcTimestamp {
     param([AllowNull()][object]$Value)
 
+    if ($Value -is [DateTimeOffset]) {
+        if ($Value.Offset -ne [TimeSpan]::Zero) {
+            return $null
+        }
+        return [DateTimeOffset]$Value
+    }
+    if ($Value -is [DateTime]) {
+        if ($Value.Kind -ne [DateTimeKind]::Utc) {
+            return $null
+        }
+        return [DateTimeOffset]::new([DateTime]$Value)
+    }
     if ($Value -isnot [string]) {
         return $null
     }
@@ -361,6 +381,9 @@ $normalizedRef = ([string]$Ref).Trim()
 $normalizedCacheRef = ([string]$CacheRef).Trim()
 $normalizedHeadSha = ([string]$HeadSha).Trim()
 $normalizedHeadBranch = ([string]$HeadBranch).Trim()
+$normalizedWorkflowName = ([string]$WorkflowName).Trim()
+$normalizedWorkflowPath = ([string]$WorkflowPath).Trim()
+$normalizedEventName = ([string]$EventName).Trim()
 $normalizedExpectedCacheKey = ([string]$ExpectedCacheKey).Trim()
 $normalizedActionsCacheKey = ([string]$ActionsCacheKey).Trim()
 $cacheKeyMatch = [regex]::Match(
@@ -384,6 +407,11 @@ $runIdValid = (
 $runAttemptValid = (
     ([string]$RunAttempt).Trim() -cmatch '^[1-9][0-9]*$' -and
     [int]::TryParse(([string]$RunAttempt).Trim(), [ref]$parsedRunAttempt)
+)
+[int64]$parsedWorkflowId = 0
+$workflowIdValid = (
+    ([string]$WorkflowId).Trim() -cmatch '^[1-9][0-9]*$' -and
+    [int64]::TryParse(([string]$WorkflowId).Trim(), [ref]$parsedWorkflowId)
 )
 $seedMiss = [string]$ActionsCacheHit -ceq 'false'
 $observedExactHit = [string]$ActionsCacheHit -ceq 'true'
@@ -412,6 +440,8 @@ if ($seedMiss) {
     }
     if ($normalizedRef -cnotmatch '^refs/heads/[0-9A-Za-z._/-]+$') {
         Add-PromotionReason 'ref-invalid'
+    } elseif ($normalizedRef -cne 'refs/heads/main') {
+        Add-PromotionReason 'source-ref-not-main'
     }
     if ($normalizedCacheRef -cnotmatch '^refs/heads/[0-9A-Za-z._/-]+$') {
         Add-PromotionReason 'cache-ref-invalid'
@@ -420,6 +450,8 @@ if ($seedMiss) {
     }
     if ($normalizedHeadBranch -cnotmatch '^[0-9A-Za-z._/-]+$') {
         Add-PromotionReason 'head-branch-invalid'
+    } elseif ($normalizedHeadBranch -cne 'main') {
+        Add-PromotionReason 'source-branch-not-main'
     } elseif ($normalizedRef -cne "refs/heads/$normalizedHeadBranch") {
         Add-PromotionReason 'ref-head-branch-mismatch'
     }
@@ -431,6 +463,18 @@ if ($seedMiss) {
     }
     if (-not $runAttemptValid) {
         Add-PromotionReason 'run-attempt-invalid'
+    }
+    if (-not $workflowIdValid) {
+        Add-PromotionReason 'workflow-id-invalid'
+    }
+    if ($normalizedWorkflowName -cne 'Release Windows') {
+        Add-PromotionReason 'workflow-name-invalid'
+    }
+    if ($normalizedWorkflowPath -cne '.github/workflows/release-windows.yml') {
+        Add-PromotionReason 'workflow-path-invalid'
+    }
+    if ($normalizedEventName -cne 'workflow_dispatch') {
+        Add-PromotionReason 'workflow-event-invalid'
     }
     if (-not $cacheIdValid) {
         Add-PromotionReason 'cache-id-invalid'
@@ -719,7 +763,7 @@ if ($seedMiss) {
 $eligible = -not $seedMiss -and $observedExactHit -and $script:PromotionReasons.Count -eq 0
 $reason = if ($seedMiss) { 'seed-miss' } elseif ($eligible) { 'eligible' } else { 'invariant-failed' }
 $evidence = [ordered]@{
-    schemaVersion = 2
+    schemaVersion = 3
     generatedAtUtc = $nowUtc.ToString('o')
     repo = $normalizedRepo
     consumption = [ordered]@{
@@ -739,6 +783,10 @@ $evidence = [ordered]@{
         attempt = $(if ($runAttemptValid) { $parsedRunAttempt } else { $null })
         headSha = $normalizedHeadSha
         headBranch = $normalizedHeadBranch
+        workflowId = $(if ($workflowIdValid) { $parsedWorkflowId } else { $null })
+        workflowName = $normalizedWorkflowName
+        workflowPath = $normalizedWorkflowPath
+        event = $normalizedEventName
     }
     reuse = [ordered]@{
         exactCacheHit = [bool]$eligible

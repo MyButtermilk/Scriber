@@ -363,6 +363,16 @@ Packaging/build:
   removes superseded internal cache-release tags. Current cache publishers also
   delete sibling assets after a successful replacement upload, so each durable
   cache release contains at most one current asset.
+- Manual `main` exact hits have a narrower terminal path for the bounded V3
+  Tauri app cache. The producer uploads only passive JSON evidence; a trusted
+  default-branch `workflow_run` consumer independently binds the exact completed
+  attempt, recomputes the current key, downloads one fixed small artifact,
+  executes dry-run/apply/fresh-postflight inventory passes, and deletes only
+  superseded Tauri generations on `refs/heads/main`. Apply is pinned to the
+  dry-run deletion-set SHA-256, and the trusted default-branch SHA is rechecked
+  immediately before and inside Apply, so an inventory or newer-main race fails before deletion.
+  Public releases, internal cache releases, non-Tauri caches, and ref-local
+  branch canaries are outside this mode and are compared/retained unchanged.
 - `requirements-build.txt` pins the complete PyInstaller build-tool set so a
   resolver update cannot silently change the frozen backend under an unchanged
   cache contract.

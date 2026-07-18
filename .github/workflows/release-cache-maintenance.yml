@@ -26,6 +26,50 @@ env:
   SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG: release-cache-rust-diarization-sidecar-v1
 
 jobs:
+  promote-tauri-cache-generation:
+    name: Promote terminal Tauri cache generation
+    if: >-
+      github.event.repository.default_branch == 'main' &&
+      github.event.workflow_run.status == 'completed' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.name == 'Release Windows' &&
+      github.event.workflow_run.path == '.github/workflows/release-windows.yml'
+    permissions:
+      actions: write
+      contents: read
+    runs-on: windows-latest
+    steps:
+      # workflow_run executes this workflow definition from the default branch.
+      # Keep checkout explicit as a second trust boundary: downloaded producer
+      # content remains passive data and is never invoked or dot-sourced.
+      - name: Checkout trusted default-branch promotion code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Promote exact terminal Tauri cache generation
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & .\scripts\ci\promote_tauri_cache_from_terminal_run.ps1 `
+            -Repo "${{ github.repository }}" `
+            -SourceRunId "${{ github.event.workflow_run.id }}" `
+            -SourceRunAttempt "${{ github.event.workflow_run.run_attempt }}" `
+            -SourceHeadSha "${{ github.event.workflow_run.head_sha }}" `
+            -SourceHeadBranch "${{ github.event.workflow_run.head_branch }}" `
+            -SourceWorkflowId "${{ github.event.workflow_run.workflow_id }}" `
+            -SourceWorkflowName "${{ github.event.workflow_run.name }}" `
+            -SourceWorkflowPath "${{ github.event.workflow_run.path }}" `
+            -SourceEvent "${{ github.event.workflow_run.event }}" `
+            -TrustedCheckoutSha "${{ github.sha }}" `
+            -TrustedDefaultBranch "${{ github.event.repository.default_branch }}" `
+            -OutputPath "build\tauri-cache-terminal-promotion.json"
+
   publish-finished-caches:
     name: Publish finished release caches
     if: >-
