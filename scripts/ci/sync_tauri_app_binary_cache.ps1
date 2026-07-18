@@ -89,7 +89,12 @@ function Assert-SafeFileSystemItem {
 }
 
 function Assert-SafePathAncestry {
-    param([string]$BoundaryRoot, [string]$Path, [string]$Label)
+    param(
+        [string]$BoundaryRoot,
+        [string]$Path,
+        [string]$Label,
+        [switch]$AllowLeafHardLink
+    )
     $canonicalRoot = [System.IO.Path]::GetFullPath($BoundaryRoot).TrimEnd("\", "/")
     $canonicalPath = [System.IO.Path]::GetFullPath($Path)
     Assert-UnderOrEqualRoot -Root $canonicalRoot -Path $canonicalPath -Label $Label
@@ -111,7 +116,23 @@ function Assert-SafePathAncestry {
         if (-not (Test-Path -LiteralPath $current)) {
             break
         }
-        Assert-SafeFileSystemItem -Item (Get-Item -LiteralPath $current -Force) -Label $Label
+        $item = Get-Item -LiteralPath $current -Force
+        $isLeaf = $current.Equals($canonicalPath, [System.StringComparison]::OrdinalIgnoreCase)
+        if ($AllowLeafHardLink -and $isLeaf -and -not $item.PSIsContainer) {
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "$Label must not be a reparse point: $($item.FullName)"
+            }
+            $linkTypeProperty = $item.PSObject.Properties["LinkType"]
+            $linkType = if ($linkTypeProperty) { [string]$linkTypeProperty.Value } else { "" }
+            if (
+                -not [string]::IsNullOrWhiteSpace($linkType) -and
+                -not $linkType.Equals("HardLink", [System.StringComparison]::OrdinalIgnoreCase)
+            ) {
+                throw "$Label must not be a symbolic or junction link: $($item.FullName)"
+            }
+        } else {
+            Assert-SafeFileSystemItem -Item $item -Label $Label
+        }
     }
 }
 
@@ -403,7 +424,11 @@ if (-not $trustedContractPath.Equals($defaultTrustedContractPath, [System.String
 Assert-SafePathAncestry -BoundaryRoot $repoRoot -Path $trustedContractPath -Label "Checked-in Tauri CLI cache contract"
 Assert-SafePathAncestry -BoundaryRoot $repoRoot -Path $extractScript -Label "Tauri CLI package-lock extractor"
 Assert-SafePathAncestry -BoundaryRoot $repoRoot -Path $resolvedPackageLockPath -Label "Frontend package lock"
-Assert-SafePathAncestry -BoundaryRoot $repoRoot -Path $resolvedBinaryPath -Label "Tauri app binary path"
+Assert-SafePathAncestry `
+    -BoundaryRoot $repoRoot `
+    -Path $resolvedBinaryPath `
+    -Label "Tauri app binary path" `
+    -AllowLeafHardLink:($Mode -eq "Export")
 if (Test-Path -LiteralPath $resolvedCacheRoot) {
     Assert-SafePathAncestry -BoundaryRoot $buildRoot -Path $resolvedCacheRoot -Label "Tauri app binary cache root"
 } else {
@@ -428,6 +453,7 @@ if ($Mode -eq "Export") {
     if (-not (Test-ExpectedVersion -Actual $actualVersion -Expected $Version)) {
         throw "Tauri app binary version '$actualVersion' does not match expected version '$Version'."
     }
+    $sourceBinarySha256 = Get-FileSha256 -Path $resolvedBinaryPath
     $cliPackageIdentity = Get-JsonPackageIdentity -Path (Join-Path $resolvedTauriCliPackagePath "package.json")
     $platformPackageIdentity = Get-JsonPackageIdentity -Path (Join-Path $resolvedTauriCliPlatformPackagePath "package.json")
     if (
@@ -473,6 +499,10 @@ if ($Mode -eq "Export") {
     }
     New-Item -ItemType Directory -Force -Path $resolvedCacheRoot | Out-Null
     Copy-Item -LiteralPath $resolvedBinaryPath -Destination $cachedBinaryPath -Force
+    Assert-SafePathAncestry -BoundaryRoot $resolvedCacheRoot -Path $cachedBinaryPath -Label "Exported Tauri app binary"
+    if ((Get-FileSha256 -Path $cachedBinaryPath) -ne $sourceBinarySha256) {
+        throw "Tauri app binary checksum changed while creating the independent cache copy."
+    }
     foreach ($entry in $tauriCliSourceFiles.GetEnumerator()) {
         $destination = [System.IO.Path]::GetFullPath((Join-Path $resolvedCacheRoot ($entry.Key -replace '/', '\')))
         Assert-UnderRoot -Root $resolvedCacheRoot -Path $destination -Label "Tauri CLI export destination"

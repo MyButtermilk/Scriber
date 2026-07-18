@@ -819,6 +819,9 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
     cli_platform_package_path = fixture_root / "source-node-modules/@tauri-apps/cli-win32-x64-msvc"
     binary_path.parent.mkdir(parents=True)
     shutil.copy2(gh, binary_path)
+    source_binary_hardlink = binary_path.with_name("scriber-desktop-cargo-hardlink.exe")
+    os.link(binary_path, source_binary_hardlink)
+    assert binary_path.stat().st_nlink >= 2
     package_lock = json.loads(_read("Frontend/package-lock.json"))
     cli_version = package_lock["packages"]["node_modules/@tauri-apps/cli"]["version"]
     cli_package_path.mkdir(parents=True)
@@ -946,6 +949,10 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         cached_binary_path = cache_root / "scriber-desktop.exe"
         cached_binary = cached_binary_path.read_bytes()
+        assert cached_binary_path.stat().st_nlink == 1
+        assert hashlib.sha256(cached_binary).hexdigest() == hashlib.sha256(
+            Path(gh).read_bytes()
+        ).hexdigest()
         assert manifest["apiVersion"] == "4"
         assert manifest["sourceCommit"] == "1" * 40
         assert manifest["tauriCli"]["version"] == cli_version
@@ -961,6 +968,7 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
         }
 
         binary_path.unlink()
+        source_binary_hardlink.unlink()
         shutil.rmtree(fixture_root / "source-node-modules")
         imported, import_outputs = invoke("Import", commit="2" * 40)
         assert imported.returncode == 0, imported.stderr
@@ -985,6 +993,7 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
             tamper_binary: bool = False,
             tamper_cli: bool = False,
             add_unattested_cli_file: bool = False,
+            hardlink_cached_binary: bool = False,
         ) -> None:
             candidate = json.loads(json.dumps(manifest))
             candidate.update(manifest_changes or {})
@@ -1005,10 +1014,23 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
                 extra_cli_path.write_text("module.exports = {}\n", encoding="utf-8")
             else:
                 extra_cli_path.unlink(missing_ok=True)
+            cached_binary_hardlink = fixture_root / "cached-binary-hardlink.exe"
+            cached_binary_hardlink.unlink(missing_ok=True)
+            if hardlink_cached_binary:
+                os.link(cached_binary_path, cached_binary_hardlink)
             binary_path.unlink(missing_ok=True)
-            rejected, outputs = invoke(
-                "Import", commit=commit, expected_version=expected_version
-            )
+            try:
+                rejected, outputs = invoke(
+                    "Import", commit=commit, expected_version=expected_version
+                )
+            finally:
+                cached_binary_hardlink.unlink(missing_ok=True)
+            if hardlink_cached_binary:
+                assert rejected.returncode != 0, name
+                assert "hard link" in (rejected.stdout + rejected.stderr), name
+                assert outputs["usable"] == "false", name
+                assert not binary_path.exists(), name
+                return
             assert rejected.returncode == 0, f"{name}: {rejected.stderr}"
             assert outputs["usable"] == "false", name
             assert not binary_path.exists(), name
@@ -1025,6 +1047,7 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
         assert_rejected("length", executable_changes={"length": len(cached_binary) + 1})
         assert_rejected("SHA-256", executable_changes={"sha256": "0" * 64})
         assert_rejected("tampered executable", tamper_binary=True)
+        assert_rejected("hard-linked restored executable", hardlink_cached_binary=True)
         assert_rejected("CLI version", tauri_cli_changes={"version": "999.999.999"})
         assert_rejected("CLI package integrity", tauri_cli_changes={"packageIntegrity": "sha512-invalid"})
         assert_rejected("CLI entrypoint", tauri_cli_changes={"entrypoint": "tauri.js"})
