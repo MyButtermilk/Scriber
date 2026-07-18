@@ -2226,4 +2226,5 @@ jobs:
           & .\scripts\ci\prune_obsolete_release_caches.ps1 `
             -Repo "${{ github.repository }}" `
             -ExpectedRustDependencyKey "scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}" `
+            -ExpectedTauriAppKey "scriber-tauri-app-binary-v3-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}" `
             -VerifyCurrentGeneration

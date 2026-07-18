@@ -1064,6 +1064,8 @@ def test_release_cache_gc_keeps_exactly_one_current_generation() -> None:
     verify_block = workflow.split("- name: Verify current release cache generation", 1)[1]
     assert "-ExpectedRustDependencyKey" in verify_block
     assert "scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}" in verify_block
+    assert "-ExpectedTauriAppKey" in verify_block
+    assert "scriber-tauri-app-binary-v3-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}" in verify_block
     assert "-VerifyCurrentGeneration" in verify_block
     assert "continue-on-error: true" not in verify_block.split("\n      - name:", 1)[0]
     assert "actions: write" in workflow
