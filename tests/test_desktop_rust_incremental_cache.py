@@ -197,7 +197,7 @@ def test_desktop_incremental_key_is_ref_and_dependency_scoped_without_changing_t
         # The cache-envelope contract invalidates only this cache. It is not an
         # input to tauri-app-binary.txt or the Tauri output contract.
         contract = json.loads(contract_original)
-        contract["revision"] = 3
+        contract["revision"] = 4
         CONTRACT_PATH.write_text(json.dumps(contract), encoding="utf-8")
         changed_contract_result, changed_contract = _invoke_key_writer(key_dir)
         assert changed_contract_result.returncode != 0
@@ -248,8 +248,14 @@ def test_desktop_incremental_envelope_roundtrip_contains_only_desktop_state() ->
     (desktop_bin / "dep-graph.bin").write_bytes(b"desktop-bin-graph")
     (desktop_lib / "dep-graph.bin").write_bytes(b"desktop-lib-graph")
     (desktop_lib / "work-products.bin").write_bytes(b"desktop-lib-products")
+    (desktop_lib / "thin-lto-past-keys.bin").write_bytes(
+        b"desktop-thin-lto-past-keys"
+    )
     (desktop_lib / "abc123.o").write_bytes(b"desktop-object")
     (desktop_lib / "abc123.bc.z").write_bytes(b"desktop-bitcode")
+    (desktop_lib / "01w6t5u1kedjhmd6zhuedks4j.pre-lto.bc").write_bytes(
+        b"desktop-pre-lto-bitcode"
+    )
     (desktop_lib / "metadata.rmeta").write_bytes(b"desktop-metadata")
     (desktop_lib / "s-fixture-0001.lock").write_bytes(b"")
     source_hardlink = fixture_root / "cargo-hardlink.bin"
@@ -268,7 +274,7 @@ def test_desktop_incremental_envelope_roundtrip_contains_only_desktop_state() ->
         exported, export_outputs = _invoke_sync(fixture_root, "Export")
         assert exported.returncode == 0, exported.stdout + exported.stderr
         assert export_outputs["staged"] == "true"
-        assert export_outputs["file-count"] == "7"
+        assert export_outputs["file-count"] == "9"
         assert int(export_outputs["total-bytes"]) == sum(
             map(
                 len,
@@ -276,8 +282,10 @@ def test_desktop_incremental_envelope_roundtrip_contains_only_desktop_state() ->
                     b"desktop-bin-graph",
                     b"desktop-lib-graph",
                     b"desktop-lib-products",
+                    b"desktop-thin-lto-past-keys",
                     b"desktop-object",
                     b"desktop-bitcode",
+                    b"desktop-pre-lto-bitcode",
                     b"desktop-metadata",
                 ),
             )
@@ -293,11 +301,13 @@ def test_desktop_incremental_envelope_roundtrip_contains_only_desktop_state() ->
         cached_paths = {record["path"] for record in inventory["files"]}
         assert cached_paths == {
             "payload/scriber_desktop-a1b2c3/dep-graph.bin",
+            "payload/scriber_desktop_lib-c3d4e5/01w6t5u1kedjhmd6zhuedks4j.pre-lto.bc",
             "payload/scriber_desktop_lib-c3d4e5/abc123.bc.z",
             "payload/scriber_desktop_lib-c3d4e5/abc123.o",
             "payload/scriber_desktop_lib-c3d4e5/dep-graph.bin",
             "payload/scriber_desktop_lib-c3d4e5/metadata.rmeta",
             "payload/scriber_desktop_lib-c3d4e5/s-fixture-0001.lock",
+            "payload/scriber_desktop_lib-c3d4e5/thin-lto-past-keys.bin",
             "payload/scriber_desktop_lib-c3d4e5/work-products.bin",
         }
         assert not any("audio" in path for path in cached_paths)
@@ -318,6 +328,12 @@ def test_desktop_incremental_envelope_roundtrip_contains_only_desktop_state() ->
         assert (desktop_bin / "dep-graph.bin").read_bytes() == b"desktop-bin-graph"
         assert (desktop_lib / "dep-graph.bin").read_bytes() == b"desktop-lib-graph"
         assert (desktop_lib / "work-products.bin").read_bytes() == b"desktop-lib-products"
+        assert (
+            desktop_lib / "thin-lto-past-keys.bin"
+        ).read_bytes() == b"desktop-thin-lto-past-keys"
+        assert (
+            desktop_lib / "01w6t5u1kedjhmd6zhuedks4j.pre-lto.bc"
+        ).read_bytes() == b"desktop-pre-lto-bitcode"
         assert (audio / "audio.o").read_bytes() == b"audio-state"
         assert (foreign / "dependency.o").read_bytes() == b"dependency-state"
 
@@ -612,9 +628,11 @@ def test_contract_matches_the_desktop_bin_and_app_library_from_cargo_metadata_on
         "dep-graph.bin",
         "query-cache.bin",
         "work-products.bin",
+        "thin-lto-past-keys.bin",
         "metadata.rmeta",
         "abc123.o",
         "abc123.bc.z",
+        "01w6t5u1kedjhmd6zhuedks4j.pre-lto.bc",
         "s-fixture-0001.lock",
     ):
         assert file_allowed(name)
@@ -624,6 +642,15 @@ def test_contract_matches_the_desktop_bin_and_app_library_from_cargo_metadata_on
         "finished.dll",
         "finished.lib",
         "finished.rlib",
+        "abc123.bc",
+        "abc123.lto.bc",
+        "ABC123.pre-lto.bc",
+        ".pre-lto.bc",
+        "thin-lto-future-keys.bin",
+        "abc123.post-lto.bc",
+        "abc123.pre-lto.bc.z",
+        "abc123.pre_lto.bc",
+        "abc123.pre-lto.bc.exe",
     ):
         assert not file_allowed(name)
 

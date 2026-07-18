@@ -1,16 +1,18 @@
 {
   "schemaVersion": 1,
   "name": "scriber-desktop-rust-incremental-cache",
-  "revision": 2,
+  "revision": 3,
   "generation": "scriber-desktop-rust-incremental-v1",
   "target": "x86_64-pc-windows-msvc",
   "profile": "release",
   "crateDirectoryPattern": "^scriber_desktop(?:_lib)?-[0-9A-Za-z_-]+$",
   "incrementalFileNamePatterns": [
     "^(?:dep-graph|query-cache|work-products)\\.bin$",
+    "^thin-lto-past-keys\\.bin$",
     "^metadata\\.rmeta$",
     "^[0-9a-z]+\\.o$",
     "^[0-9a-z]+\\.bc\\.z$",
+    "^[0-9a-z]+\\.pre-lto\\.bc$",
     "^s-[0-9a-z]+-[0-9a-z]+\\.lock$"
   ],
   "maxCrateDirectories": 8,

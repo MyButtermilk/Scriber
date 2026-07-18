@@ -165,16 +165,18 @@ function Get-TrustedContract {
     }
     $expectedFileNamePatterns = @(
         '^(?:dep-graph|query-cache|work-products)\.bin$',
+        '^thin-lto-past-keys\.bin$',
         '^metadata\.rmeta$',
         '^[0-9a-z]+\.o$',
         '^[0-9a-z]+\.bc\.z$',
+        '^[0-9a-z]+\.pre-lto\.bc$',
         '^s-[0-9a-z]+-[0-9a-z]+\.lock$'
     )
     $actualFileNamePatterns = @($contract.incrementalFileNamePatterns | ForEach-Object { [string]$_ })
     if (
         [int]$contract.schemaVersion -ne 1 -or
         [string]$contract.name -cne "scriber-desktop-rust-incremental-cache" -or
-        [int]$contract.revision -ne 2 -or
+        [int]$contract.revision -ne 3 -or
         [string]$contract.generation -cne "scriber-desktop-rust-incremental-v1" -or
         [string]$contract.target -cne "x86_64-pc-windows-msvc" -or
         [string]$contract.profile -cne "release" -or
