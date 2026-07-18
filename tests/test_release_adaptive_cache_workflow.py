@@ -614,6 +614,159 @@ def test_tauri_app_cache_key_is_commit_stable_and_binary_input_sensitive() -> No
     assert 'importUsable = $tauriAppBinaryImportUsable -eq "true"' in workflow
 
 
+def test_release_cache_key_change_class_matrix_is_language_independent() -> None:
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("PowerShell 7 is required for release-script validation")
+
+    fixture_root = (
+        REPO_ROOT / "build" / f"test-change-class-matrix-{uuid.uuid4().hex}"
+    )
+    cases = [
+        (
+            "workflow-only",
+            REPO_ROOT / ".github/workflows/release-windows.yml",
+            set(),
+        ),
+        (
+            "python-app",
+            REPO_ROOT / "src/runtime/media_tools.py",
+            {"backend-sidecar.txt"},
+        ),
+        (
+            "frontend-typescript",
+            REPO_ROOT / "Frontend/client/src/lib/api-types.ts",
+            {"tauri-app-binary.txt"},
+        ),
+        (
+            "frontend-dependencies",
+            REPO_ROOT / "Frontend/package.json",
+            {"frontend-dependencies.txt", "tauri-app-binary.txt"},
+        ),
+        (
+            "desktop-rust",
+            REPO_ROOT / "Frontend/src-tauri/src/native_overlay.rs",
+            {"rust-release.txt", "tauri-app-binary.txt"},
+        ),
+        (
+            "audio-only-rust-root",
+            REPO_ROOT / "Frontend/src-tauri/src/audio_sidecar.rs",
+            {"rust-release.txt", "rust-audio-sidecar.txt"},
+        ),
+        (
+            "audio-only-rust-module",
+            REPO_ROOT / "Frontend/src-tauri/src/meeting_aec.rs",
+            {"rust-release.txt", "rust-audio-sidecar.txt"},
+        ),
+        (
+            "shared-rust",
+            REPO_ROOT / "Frontend/src-tauri/src/audio_frame_pipe.rs",
+            {
+                "rust-release.txt",
+                "tauri-app-binary.txt",
+                "rust-audio-sidecar.txt",
+            },
+        ),
+        (
+            "diarization-rust",
+            REPO_ROOT / "native/scriber-diarization-sidecar/src/lib.rs",
+            {"rust-diarization-sidecar.txt"},
+        ),
+        (
+            "cargo-contract",
+            REPO_ROOT / "Frontend/src-tauri/Cargo.toml",
+            {
+                "rust-dependencies.txt",
+                "rust-release.txt",
+                "tauri-app-binary.txt",
+                "rust-audio-sidecar.txt",
+            },
+        ),
+        (
+            "tauri-cli-contract",
+            REPO_ROOT / "packaging/tauri-cli-cache-contract.json",
+            {"tauri-app-binary.txt"},
+        ),
+        (
+            "backend-output-contract",
+            REPO_ROOT / "packaging/backend-sidecar-output-contract.json",
+            {"backend-runtime.txt", "backend-sidecar.txt"},
+        ),
+    ]
+    original_bytes = {path: path.read_bytes() for _, path, _ in cases}
+
+    def generate(name: str) -> dict[str, bytes]:
+        output = fixture_root / name
+        subprocess.run(
+            [
+                pwsh,
+                "-NoProfile",
+                "-File",
+                str(REPO_ROOT / "scripts/ci/write_release_cache_keys.ps1"),
+                "-OutputDir",
+                str(output.relative_to(REPO_ROOT)),
+            ],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return {path.name: path.read_bytes() for path in output.glob("*.txt")}
+
+    try:
+        baseline = generate("baseline")
+        assert set(baseline) == {
+            "frontend-dependencies.txt",
+            "rust-dependencies.txt",
+            "rust-release.txt",
+            "tauri-app-binary.txt",
+            "rust-audio-sidecar.txt",
+            "rust-diarization-sidecar.txt",
+            "sherpa-onnx-archive.txt",
+            "backend-runtime.txt",
+            "backend-sidecar.txt",
+        }
+
+        tauri_manifest = baseline["tauri-app-binary.txt"]
+        rust_release_manifest = baseline["rust-release.txt"]
+        audio_manifest = baseline["rust-audio-sidecar.txt"]
+        for relative_path in (
+            b"Frontend/src-tauri/src/audio_sidecar.rs",
+            b"Frontend/src-tauri/src/meeting_aec.rs",
+        ):
+            assert relative_path not in tauri_manifest
+            assert relative_path in rust_release_manifest
+            assert relative_path in audio_manifest
+        for relative_path in (
+            b"Frontend/src-tauri/src/audio_frame_pipe.rs",
+            b"Frontend/src-tauri/src/redaction.rs",
+            b"Frontend/src-tauri/src/audio_sidecar_client.rs",
+            b"Frontend/src-tauri/src/lib.rs",
+        ):
+            assert relative_path in tauri_manifest
+
+        for index, (name, path, expected_changed) in enumerate(cases):
+            if path.suffix == ".json":
+                suffix = b"\n "
+            elif path.suffix in {".py", ".toml"} or path.name.endswith(".yml"):
+                suffix = b"\n# change-class matrix fixture\n"
+            else:
+                suffix = b"\n// change-class matrix fixture\n"
+            path.write_bytes(original_bytes[path] + suffix)
+            changed = generate(f"{index:02d}-{name}")
+            changed_manifests = {
+                manifest_name
+                for manifest_name, content in changed.items()
+                if content != baseline[manifest_name]
+            }
+            assert changed_manifests == expected_changed, name
+            path.write_bytes(original_bytes[path])
+    finally:
+        for path, content in original_bytes.items():
+            path.write_bytes(content)
+        shutil.rmtree(fixture_root, ignore_errors=True)
+
+
 def test_tauri_cli_lock_extractor_is_windows_powershell_safe() -> None:
     windows_powershell = shutil.which("powershell.exe")
     if windows_powershell is None:

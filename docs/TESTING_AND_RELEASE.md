@@ -963,11 +963,14 @@ scratch caches.
 The exact Tauri app-binary key uses
 `packaging\tauri-app-binary-output-contract.json` instead of hashing the whole
 release workflow. Its explicit inputs and dynamic rows still bind frontend and
-Rust source, native configuration, concrete version, updater public runtime,
-Outlook client identity, toolchain/target, and import/attestation helpers. Bump
+desktop/shared Rust source, native configuration, concrete version, updater
+public runtime, Outlook client identity, toolchain/target, and
+import/attestation helpers. Bump
 the contract revision for an otherwise-unrepresented change that can alter the
-produced EXE or attested CLI tree; do not bump it for cache probes, runner scheduling, diagnostics,
-or setup steps that cannot change the attested binary.
+produced EXE or attested CLI tree; do not bump it for cache probes, runner
+scheduling, diagnostics, or setup steps that cannot change the attested binary. Audio-only
+`audio_sidecar.rs`/`meeting_aec.rs` changes invalidate the independent Rust-audio
+product while shared Rust modules continue to invalidate both products.
 
 The reusable FFmpeg Profile B artifact is published to the internal prerelease
 tag `ffmpeg-profile-b-n7.0-v4` as

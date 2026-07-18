@@ -206,19 +206,22 @@ function Add-FileGlobEntries {
         [System.Collections.Generic.List[string]]$Entries,
         [string]$Root,
         [string]$Filter,
-        [scriptblock]$ContentNormalizer = $null
+        [scriptblock]$ContentNormalizer = $null,
+        [string[]]$ExcludeRelativePaths = @()
     )
     $absoluteRoot = Join-Path $repoRoot $Root
     Get-ChildItem -LiteralPath $absoluteRoot -Recurse -File -Filter $Filter |
         Sort-Object FullName |
         ForEach-Object {
             $relative = Get-RelativePath $_.FullName
-            if ($ContentNormalizer) {
-                $content = Get-Content -LiteralPath $_.FullName -Raw
-                $normalized = & $ContentNormalizer $relative $content
-                $Entries.Add("content`t$relative`t$(Get-StringSha256 $normalized)")
-            } else {
-                $Entries.Add("file`t$relative`t$(Get-FileSha256 $_.FullName)")
+            if ($ExcludeRelativePaths -cnotcontains $relative) {
+                if ($ContentNormalizer) {
+                    $content = Get-Content -LiteralPath $_.FullName -Raw
+                    $normalized = & $ContentNormalizer $relative $content
+                    $Entries.Add("content`t$relative`t$(Get-StringSha256 $normalized)")
+                } else {
+                    $Entries.Add("file`t$relative`t$(Get-FileSha256 $_.FullName)")
+                }
             }
         }
 }
@@ -324,7 +327,15 @@ Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/client" -Filter "*
 Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/shared" -Filter "*"
 Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/src-tauri/capabilities" -Filter "*.json"
 Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/src-tauri/icons" -Filter "*"
-Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/src-tauri/src" -Filter "*.rs"
+$tauriAudioOnlyRustSources = @(
+    "Frontend/src-tauri/src/audio_sidecar.rs",
+    "Frontend/src-tauri/src/meeting_aec.rs"
+)
+Add-FileGlobEntries `
+    -Entries $tauriAppEntries `
+    -Root "Frontend/src-tauri/src" `
+    -Filter "*.rs" `
+    -ExcludeRelativePaths $tauriAudioOnlyRustSources
 $tauriAppEntries.Add("constant`ttarget`tx86_64-pc-windows-msvc")
 $tauriAppEntries.Add("constant`tprofile`trelease")
 Write-KeyFile -Name "tauri-app-binary.txt" -Entries $tauriAppEntries

@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-07-16
+Last verified: 2026-07-18
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -1334,8 +1334,9 @@ Already implemented and should not be regressed:
   build.
 - The Rust Actions cache is keyed by normalized Cargo dependency metadata plus
   resolved toolchain/target/profile, not by ordinary app source. The exact
-  Tauri app product is a separate bounded v3 cache keyed by full Rust/frontend
-  sources, the Node version, binary-producing helper scripts, the versioned
+  Tauri app product is a separate bounded v3 cache keyed by full frontend plus
+  desktop/shared Rust sources, the Node version, binary-producing helper
+  scripts, the versioned
   `packaging/tauri-app-binary-output-contract.json`, concrete version,
   toolchain, target/profile, updater runtime, and Outlook configuration
   fingerprints. The whole workflow is deliberately excluded: bump the output
@@ -1349,6 +1350,9 @@ Already implemented and should not be regressed:
   and the redundant frontend type check, and may run bundle-only packaging.
   Authenticode-required runs still select fresh frontend/build preparation; NSIS,
   updater signatures, checksums, and publication evidence are always fresh.
+  The separate `audio_sidecar.rs` binary root and its private `meeting_aec.rs`
+  module belong only to the Rust-audio product key; shared modules such as
+  `audio_frame_pipe.rs` and `redaction.rs` remain in both product identities.
 - Before backend sidecar cache save/publication,
   `scripts/ci/select_backend_sidecar_cache_entry.ps1` must validate and retain
   exactly the current internal SHA-256 directory. Never publish the cumulative

@@ -231,8 +231,8 @@ Packaging/build:
 - The Rust audio sidecar has its own input hash cache under
   `build\rust-audio-sidecar-cache`. Its cache key is limited to
   `Cargo.toml`, `Cargo.lock`, `build.rs`, `audio_sidecar.rs`,
-  `audio_frame_pipe.rs`, and `redaction.rs`, with a module guard in the build
-  script. Official release builds use Tauri's restored shared Cargo target for
+  `audio_frame_pipe.rs`, `meeting_aec.rs`, and `redaction.rs`, with a module
+  guard in the build script. Official release builds use Tauri's restored shared Cargo target for
   an audio-cache miss. The app compile and PyInstaller begin together; audio
   preparation follows the Python sidecar phase and reuses the shared target's
   dependency objects. Cargo's target lock serializes any small remaining
@@ -270,10 +270,12 @@ Packaging/build:
 - The release workflow reports entry counts and short SHA-256 fingerprints for
   each normalized cache-key file. Use those fingerprints to distinguish a true
   input change from a cold or ref-scoped cache miss.
-- The exact Tauri app-binary cache hashes explicit frontend, Rust, native
-  configuration, version, updater, Outlook, toolchain, target, and cache-import
+- The exact Tauri app-binary cache hashes explicit frontend, desktop/shared
+  Rust, native configuration, version, updater, Outlook, toolchain, target, and cache-import
   inputs plus `packaging\tauri-app-binary-output-contract.json`; it does not
-  hash the entire release workflow. Increment the contract `revision` whenever
+  hash the audio-only `audio_sidecar.rs`/`meeting_aec.rs` roots or the entire
+  release workflow. Shared `audio_frame_pipe.rs` and `redaction.rs` remain in
+  both product identities. Increment the contract `revision` whenever
   binary-producing orchestration changes output without changing another
   hashed input. Cache probes, scheduling, diagnostics, and setup steps that do
   not alter the attested EXE must leave the revision unchanged.
@@ -464,15 +466,16 @@ Packaging/build:
   keyed and includes `target\release\incremental`; CI builds set
   `CARGO_INCREMENTAL=1`. App/Rust/UI source changes therefore do not create a
   fresh 1.3+ GiB dependency cache. The separate exact Tauri app binary key
-  covers concrete version, full Rust/frontend inputs, resolved toolchain,
-  target/profile, commit, and updater runtime fingerprint.
+  covers concrete version, full frontend plus desktop/shared Rust inputs,
+  resolved toolchain, target/profile, and updater runtime fingerprint.
 - The Tauri shell library is built only as `rlib` for the Windows desktop
   release path. Tauri's `staticlib`/`cdylib` crate types are for mobile
   targets; keeping them in this Windows-first app produced extra library
   artifacts such as `scriber_desktop_lib.dll` and a large static `.lib` without
   helping the NSIS updater build.
 - The exact Tauri app-binary key includes real shell inputs such as
-  `tauri.conf.json`, capabilities, icons, full frontend/Rust sources, and the
+  `tauri.conf.json`, capabilities, icons, full frontend plus desktop/shared
+  Rust sources, and the
   concrete version. The much larger Cargo dependency key excludes those app
   inputs so a UI or shell edit does not create another multi-GB dependency
   cache.
