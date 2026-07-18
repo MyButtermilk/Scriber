@@ -629,6 +629,9 @@ Release workflow:
   configuration. Its manifest preserves the producing commit and
   validates the executable length, SHA-256, native version, target, and profile,
   but an unrelated Python-only commit no longer invalidates the product. An
+  attested hit still restores and validates `Frontend\node_modules` because the
+  bundle-only path needs the repository-local Tauri CLI, but skips the redundant
+  frontend type check already covered by the exact product inputs. An
   explicit non-main workflow dispatch may bootstrap only this product in the
   ref-local Actions-cache namespace; it cannot warm main/tags or publish a
   shared internal cache release.

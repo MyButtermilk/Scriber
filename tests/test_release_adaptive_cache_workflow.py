@@ -106,6 +106,30 @@ def test_release_path_planner_probes_hashfiles_digest_for_current_cache_generati
     )
 
 
+def test_attested_tauri_app_skips_only_the_covered_frontend_typecheck() -> None:
+    workflow = _read(".github/workflows/release-windows.yml")
+    build_workflow = workflow.split("  build-windows:\n", 1)[1]
+    build_step = build_workflow.split("- name: Build Windows installer\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    prebuilt_block = build_step.split("if ($usePrebuiltTauriApp) {", 1)[1].split(
+        "} elseif ($coldProductsUsable) {", 1
+    )[0]
+
+    assert '$buildArgs += "-UsePrebuiltTauriApp"' in prebuilt_block
+    assert '$buildArgs += "-SkipFrontendTypeCheck"' in prebuilt_block
+    assert "frontend dependencies remain available for the Tauri CLI" in prebuilt_block
+
+    frontend_restore = build_workflow.split("- name: Restore frontend dependency cache\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    frontend_install = build_workflow.split("- name: Install frontend dependencies\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert "tauri-app-binary-import" not in frontend_restore
+    assert "tauri-app-binary-import" not in frontend_install
+
+
 def test_runtime_tree_identity_is_compatible_with_windows_powershell() -> None:
     scripts = [
         _read("scripts/build_tauri_backend_sidecar.ps1"),

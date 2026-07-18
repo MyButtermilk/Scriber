@@ -1343,7 +1343,9 @@ Already implemented and should not be regressed:
   not for cache probes, scheduling, diagnostics, or non-producing setup skips.
   Its attestation retains the producing
   commit as provenance without making unrelated Python-only commits miss. A
-  validated hit may run bundle-only packaging; NSIS,
+  validated hit keeps the restored frontend dependencies for the repository-local
+  Tauri CLI, skips the redundant frontend type check, and may run bundle-only
+  packaging; NSIS,
   updater signatures, checksums, and publication evidence are always fresh.
 - Before backend sidecar cache save/publication,
   `scripts/ci/select_backend_sidecar_cache_entry.ps1` must validate and retain

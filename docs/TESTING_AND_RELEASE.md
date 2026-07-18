@@ -781,9 +781,11 @@ It:
   not change for ordinary app source or UI edits. A separate exact Tauri app
   binary cache is keyed by the complete app inputs, concrete version, commit,
   toolchain, target/profile, and updater-runtime fingerprint. A validated hit
-  uses `tauri bundle`. On a miss, the compile-only overlay allows `tauri build
-  --no-bundle` to overlap the sidecar producer; the same full-config `tauri
-  bundle` path runs only after both complete,
+  keeps the restored frontend dependencies available for the local Tauri CLI,
+  skips the product-covered frontend type check, and uses `tauri bundle`. On a
+  miss, the compile-only overlay allows `tauri build --no-bundle` to overlap the
+  sidecar producer; the same full-config `tauri bundle` path runs only after
+  both complete,
 - prunes `build\tauri-sidecar-cache` to the one metadata-attested internal key
   before Actions save or durable publication, preventing cache generations
   from recursively accumulating older complete PyInstaller sidecars. The

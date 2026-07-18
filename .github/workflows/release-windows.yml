@@ -1667,9 +1667,9 @@ jobs:
           )
           if ($usePrebuiltTauriApp) {
             $buildArgs += "-UsePrebuiltTauriApp"
-            Write-Host "Using exact attested Tauri app binary; this run will execute bundle/sign/package only."
-          }
-          if ($coldProductsUsable) {
+            $buildArgs += "-SkipFrontendTypeCheck"
+            Write-Host "Using exact attested Tauri app binary; frontend dependencies remain available for the Tauri CLI, but the covered type check will not be repeated."
+          } elseif ($coldProductsUsable) {
             $buildArgs += "-SkipFrontendTypeCheck"
             Write-Host "Cold preparation already completed the frontend type check; the packaging runner will not repeat it."
           }
