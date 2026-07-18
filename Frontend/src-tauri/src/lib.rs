@@ -4793,7 +4793,11 @@ fn backend_ready_for_snapshot(
     child_present: bool,
     force_managed: bool,
 ) -> bool {
-    health_ready && (child_present || (!force_managed && authenticated))
+    if !health_ready {
+        return false;
+    }
+
+    child_present || (!force_managed && authenticated)
 }
 
 fn backend_snapshot_identity_matches(
