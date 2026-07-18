@@ -89,7 +89,7 @@ $backendActionsHash = Convert-ManifestFingerprintToHashFilesFingerprint -Fingerp
 $tauriActionsHash = Convert-ManifestFingerprintToHashFilesFingerprint -Fingerprint $TauriAppBinaryHash
 $isTagRelease = $GitRef -like "refs/tags/v*"
 $backendActionsKey = "scriber-backend-sidecar-v2-$RunnerOs-python-$PythonVersion-$backendActionsHash"
-$tauriActionsKey = "scriber-tauri-app-binary-v2-$RunnerOs-$tauriActionsHash"
+$tauriActionsKey = "scriber-tauri-app-binary-v3-$RunnerOs-$tauriActionsHash"
 $backendAssetName = "scriber-backend-sidecar-$RunnerOs-python-$PythonVersion-$backendActionsHash.zip"
 
 if ($EmitDerivedCacheKeysOnly) {

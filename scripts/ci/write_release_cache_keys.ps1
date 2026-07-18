@@ -309,6 +309,7 @@ foreach ($path in @(
     "scripts/ci/finalize_release_cache_keys.ps1",
     "scripts/ci/prepare_tauri_app.ps1",
     "scripts/ci/prepare_cold_tauri_product.ps1",
+    "scripts/ci/read_tauri_cli_lock.py",
     "scripts/ci/sync_tauri_app_binary_cache.ps1",
     "THIRD_PARTY_NOTICES.md"
 )) {

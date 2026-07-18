@@ -20,6 +20,7 @@ param(
     [switch]$EnableTauriUpdater,
     [switch]$ConfigureTauriUpdaterRuntime,
     [switch]$UsePrebuiltTauriApp,
+    [string]$TauriCliEntrypoint = "",
     [string]$UpdaterEndpoint = "",
     [string]$UpdaterPublicKey = "",
     [switch]$RequireUpdaterSignatures,
@@ -566,6 +567,9 @@ if ($EnableTauriUpdater -and $ConfigureTauriUpdaterRuntime) {
 if ($UsePrebuiltTauriApp -and $FastLocalStagedApp) {
     throw "-UsePrebuiltTauriApp cannot be combined with -FastLocalStagedApp."
 }
+if ($TauriCliEntrypoint -and -not $UsePrebuiltTauriApp) {
+    throw "-TauriCliEntrypoint requires -UsePrebuiltTauriApp."
+}
 if ($ParallelizeIndependentBuilds -and $FastLocalStagedApp) {
     throw "-ParallelizeIndependentBuilds cannot be combined with -FastLocalStagedApp."
 }
@@ -654,6 +658,22 @@ if ($FastLocalStagedApp) {
 
 if (-not (Test-Path (Join-Path $frontendRoot "package.json"))) {
     throw "Frontend package.json was not found under $frontendRoot."
+}
+$resolvedTauriCliEntrypoint = $null
+if ($TauriCliEntrypoint) {
+    $candidateTauriCliEntrypoint = if ([System.IO.Path]::IsPathRooted($TauriCliEntrypoint)) {
+        [System.IO.Path]::GetFullPath($TauriCliEntrypoint)
+    } else {
+        [System.IO.Path]::GetFullPath((Join-Path $RepoRoot $TauriCliEntrypoint))
+    }
+    $buildRootPrefix = ([System.IO.Path]::GetFullPath((Join-Path $RepoRoot "build"))).TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $candidateTauriCliEntrypoint.StartsWith($buildRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "-TauriCliEntrypoint must resolve under the repository build directory."
+    }
+    if (-not (Test-Path -LiteralPath $candidateTauriCliEntrypoint -PathType Leaf)) {
+        throw "Attested Tauri CLI entrypoint was not found: $candidateTauriCliEntrypoint"
+    }
+    $resolvedTauriCliEntrypoint = $candidateTauriCliEntrypoint
 }
 
 Invoke-Checked -Label "Version sync" -Command {
@@ -846,7 +866,12 @@ try {
                     if (-not (Test-Path -LiteralPath $prebuiltExe -PathType Leaf)) {
                         throw "Prebuilt Tauri app executable was not found: $prebuiltExe"
                     }
-                    $tauriCommand = 'npm run tauri:bundle -- --bundles "{0}" --config "{1}" --ci 2>&1' -f $quotedBundleArg, $quotedConfigPath
+                    if ($resolvedTauriCliEntrypoint) {
+                        $quotedTauriCliEntrypoint = $resolvedTauriCliEntrypoint.Replace('"', '\"')
+                        $tauriCommand = 'node "{0}" bundle --bundles "{1}" --config "{2}" --ci 2>&1' -f $quotedTauriCliEntrypoint, $quotedBundleArg, $quotedConfigPath
+                    } else {
+                        $tauriCommand = 'npm run tauri:bundle -- --bundles "{0}" --config "{1}" --ci 2>&1' -f $quotedBundleArg, $quotedConfigPath
+                    }
                 } else {
                     $tauriCommand = 'npm run tauri:build -- --bundles "{0}" --config "{1}" --ci 2>&1' -f $quotedBundleArg, $quotedConfigPath
                 }
@@ -1345,6 +1370,7 @@ try {
         fastLocalInstaller = [bool]$FastLocalInstaller
         fastLocalStagedApp = [bool]$FastLocalStagedApp
         prebuiltTauriApp = [bool]$UsePrebuiltTauriApp
+        isolatedTauriCli = [bool]$resolvedTauriCliEntrypoint
         parallelizeIndependentBuilds = [bool]$ParallelizeIndependentBuilds
         tauriAppBuiltBeforeBundle = [bool]$tauriAppBuiltBeforeBundle
         tauriAppBuiltInParallel = [bool]$tauriAppBuiltInParallel
@@ -1395,6 +1421,7 @@ try {
         fastLocalInstaller = [bool]$FastLocalInstaller
         fastLocalStagedApp = [bool]$FastLocalStagedApp
         prebuiltTauriApp = [bool]$UsePrebuiltTauriApp
+        isolatedTauriCli = [bool]$resolvedTauriCliEntrypoint
         parallelizeIndependentBuilds = [bool]$ParallelizeIndependentBuilds
         tauriAppBuiltBeforeBundle = [bool]$tauriAppBuiltBeforeBundle
         tauriAppBuiltInParallel = [bool]$tauriAppBuiltInParallel
