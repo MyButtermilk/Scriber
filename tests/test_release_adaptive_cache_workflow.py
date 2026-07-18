@@ -55,6 +55,20 @@ def test_release_workflow_uses_adaptive_parallel_cold_producers_and_safe_warm_fa
     assert "merge-multiple: true" in workflow
 
 
+def test_release_path_planner_probes_current_tauri_app_cache_generation() -> None:
+    planner = _read("scripts/ci/plan_release_windows_path.ps1")
+    workflow = _read(".github/workflows/release-windows.yml")
+
+    assert (
+        '$tauriActionsKey = "scriber-tauri-app-binary-v2-$RunnerOs-$TauriAppBinaryHash"'
+        in planner
+    )
+    assert workflow.count(
+        "key: scriber-tauri-app-binary-v2-${{ runner.os }}-"
+        "${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}"
+    ) == 2
+
+
 def test_runtime_tree_identity_is_compatible_with_windows_powershell() -> None:
     scripts = [
         _read("scripts/build_tauri_backend_sidecar.ps1"),

@@ -64,7 +64,7 @@ function Test-ReleaseAsset {
 
 $isTagRelease = $GitRef -like "refs/tags/v*"
 $backendActionsKey = "scriber-backend-sidecar-v2-$RunnerOs-python-$PythonVersion-$BackendSidecarHash"
-$tauriActionsKey = "scriber-tauri-app-binary-v1-$RunnerOs-$TauriAppBinaryHash"
+$tauriActionsKey = "scriber-tauri-app-binary-v2-$RunnerOs-$TauriAppBinaryHash"
 $backendAssetName = "scriber-backend-sidecar-$RunnerOs-python-$PythonVersion-$BackendSidecarHash.zip"
 
 $backendActionsReady = $false
