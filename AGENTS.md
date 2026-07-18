@@ -141,10 +141,12 @@ Packaging and scripts:
   Tauri does not validate the not-yet-staged backend during compile; the final
   `tauri bundle` always waits for every producer and uses the original complete
   config, revalidating and packaging all resources. Rust audio uses the shared,
-  restored Tauri Cargo target after backend preparation by default; Cargo's
-  target lock bounds a rare overlap with the app compile and avoids a cold
-  duplicate dependency build. `-RustAudioIsolatedTarget` remains an explicit
-  diagnostic/local opt-in. On the normal packaging runner, restore and validate
+  restored Tauri Cargo target by default. When an exact prebuilt Tauri product
+  is selected, a missing audio product may build on that shared target alongside
+  Python backend preparation. Fresh Tauri builds keep audio after backend
+  preparation so it does not compete with the app compile; the broad sidecar
+  parallel mode remains isolated. `-RustAudioIsolatedTarget` remains an
+  explicit diagnostic/local opt-in. On the normal packaging runner, restore and validate
   the exact Tauri desktop product plus the independent Rust audio and
   diarization products before setting up Rust. The pinned toolchain and large
   Cargo dependency restore may be skipped only when the Tauri product is

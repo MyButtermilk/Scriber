@@ -747,6 +747,10 @@ It:
   `--no-bundle` compile. The compile uses a generated config overlay with
   `bundle.resources: []`; after the join, `tauri bundle` uses the original full
   generated config and therefore revalidates and packages the staged backend,
+- when the exact Tauri product is reused, overlaps a missing Rust audio product
+  on the restored shared Cargo target with Python backend preparation. Fresh
+  Tauri builds keep audio after backend preparation, while the broad sidecar
+  parallel mode and explicit isolated-target diagnostics remain isolated,
 - restores release caches for Python `.venv`, Python wheels, frontend
   `node_modules`, Rust/Tauri, backend sidecars, and Profile B media tools. The
   explicitly keyed npm package store is restored only after an exact

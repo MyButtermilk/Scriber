@@ -2690,7 +2690,7 @@ if ($RustAudioOnly) {
     try {
         $rustAudioResult = Copy-RustAudioSidecarToTauriRelease `
             -Root $RepoRoot `
-            -UseIsolatedTarget $true
+            -UseIsolatedTarget ([bool]$RustAudioIsolatedTarget)
         $rustAudioOk = $true
     } finally {
         $rustAudioWatch.Stop()
@@ -3087,9 +3087,14 @@ $rustDiarizationParallelStdoutTask = $null
 $rustDiarizationParallelStderrTask = $null
 $rustDiarizationParallelTimeoutMs = 30 * 60 * 1000
 $rustDiarizationPreparedInParallel = $false
+$parallelizeSharedRustAudio = (
+    [string]$env:SCRIBER_PARALLELIZE_SHARED_RUST_AUDIO -eq "1" -and
+    -not $ParallelizeIndependentBuilds -and
+    -not $RustAudioIsolatedTarget
+)
 
 try {
-if ($ParallelizeIndependentBuilds -and $BundleRustAudioSidecar) {
+if (($ParallelizeIndependentBuilds -or $parallelizeSharedRustAudio) -and $BundleRustAudioSidecar) {
     $rustAudioParallelResultPath = Join-Path $WorkRoot "rust-audio-parallel-$PID.json"
     $rustAudioParallelStdoutPath = Join-Path $WorkRoot "rust-audio-parallel-$PID.stdout.log"
     $rustAudioParallelStderrPath = Join-Path $WorkRoot "rust-audio-parallel-$PID.stderr.log"
@@ -3103,8 +3108,12 @@ if ($ParallelizeIndependentBuilds -and $BundleRustAudioSidecar) {
         "-ExecutionPolicy", "Bypass",
         "-File", "scripts\build_tauri_backend_sidecar.ps1",
         "-RepoRoot", ('"{0}"' -f $RepoRoot),
-        "-RustAudioOnly",
-        "-RustAudioIsolatedTarget",
+        "-RustAudioOnly"
+    )
+    if (-not $parallelizeSharedRustAudio) {
+        $rustAudioParallelArgs += "-RustAudioIsolatedTarget"
+    }
+    $rustAudioParallelArgs += @(
         "-RustAudioResultPath", ('"{0}"' -f $rustAudioParallelResultPath)
     )
     Write-Host "Starting Rust audio sidecar preparation in parallel with the Python backend."

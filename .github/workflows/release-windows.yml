@@ -1804,6 +1804,7 @@ jobs:
           SCRIBER_NSIS_COMPRESSION: ${{ vars.SCRIBER_NSIS_COMPRESSION }}
           SCRIBER_NON_TAG_NSIS_COMPRESSION: ${{ vars.SCRIBER_NON_TAG_NSIS_COMPRESSION }}
           SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE: ${{ vars.SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE }}
+          SCRIBER_PARALLELIZE_SHARED_RUST_AUDIO: ${{ steps.frontend-preparation.outputs.use-prebuilt == 'true' && '1' || '0' }}
         run: |
           $buildArgs = @(
             "-NoProfile",

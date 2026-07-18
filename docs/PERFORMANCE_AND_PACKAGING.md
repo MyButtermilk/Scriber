@@ -233,11 +233,13 @@ Packaging/build:
   `build\rust-audio-sidecar-cache`. Its cache key is limited to
   `Cargo.toml`, `Cargo.lock`, `build.rs`, `audio_sidecar.rs`,
   `audio_frame_pipe.rs`, `meeting_aec.rs`, and `redaction.rs`, with a module
-  guard in the build script. Official release builds use Tauri's restored shared Cargo target for
-  an audio-cache miss. The app compile and PyInstaller begin together; audio
-  preparation follows the Python sidecar phase and reuses the shared target's
-  dependency objects. Cargo's target lock serializes any small remaining
-  overlap safely. `-RustAudioIsolatedTarget` remains available for diagnostics,
+  guard in the build script. Official release builds use Tauri's restored shared
+  Cargo target for an audio-cache miss. When the exact Tauri product is reused,
+  audio preparation can begin beside the Python sidecar phase because no app
+  compile will contend for that target. A fresh Tauri build keeps audio after
+  Python sidecar preparation, reusing the app compile's dependency objects; the
+  broad sidecar parallel mode remains isolated. `-RustAudioIsolatedTarget`
+  remains available for diagnostics,
   but it is not the release default because a cold isolated target took
   `437.3s` in `v0.5.13` despite a warm main Cargo cache.
 - The static Rust diarization worker has a separate focused input cache under

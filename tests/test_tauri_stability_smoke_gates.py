@@ -357,7 +357,7 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "[switch]$ParallelizeIndependentBuilds" in sidecar
     assert "[switch]$RustAudioOnly" in sidecar
     assert "Starting Rust audio sidecar preparation in parallel with the Python backend." in sidecar
-    assert "-UseIsolatedTarget $true" in sidecar
+    assert sidecar.count("-UseIsolatedTarget ([bool]$RustAudioIsolatedTarget)") >= 2
     assert "Parallel Rust audio sidecar build did not write its result" in sidecar
     assert "durationMs = [int64]$rustAudioWatch.ElapsedMilliseconds" in sidecar
     assert 'Get-ObjectPropertyValue -Object $rustAudioParallelPayload -Name "durationMs"' in sidecar
@@ -367,6 +367,34 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "function Get-Sha256Hex" in sidecar
     assert "sha256 = Get-Sha256Hex -Path $item.FullName" in sidecar
     assert "lastWriteTimeUtc" not in sidecar
+
+
+def test_prebuilt_tauri_audio_miss_overlaps_shared_target_only_with_backend() -> None:
+    workflow = read_script(".github/workflows/release-windows.yml")
+    sidecar = read_script("scripts/build_tauri_backend_sidecar.ps1")
+    installer = read_script("scripts/build_windows.ps1")
+
+    assert (
+        "SCRIBER_PARALLELIZE_SHARED_RUST_AUDIO: "
+        "${{ steps.frontend-preparation.outputs.use-prebuilt == 'true' && '1' || '0' }}"
+    ) in workflow
+    assert '$parallelizeSharedRustAudio = (' in sidecar
+    assert '[string]$env:SCRIBER_PARALLELIZE_SHARED_RUST_AUDIO -eq "1"' in sidecar
+    assert "-not $ParallelizeIndependentBuilds" in sidecar
+    assert "-not $RustAudioIsolatedTarget" in sidecar
+    assert (
+        "if (($ParallelizeIndependentBuilds -or $parallelizeSharedRustAudio) -and "
+        "$BundleRustAudioSidecar)" in sidecar
+    )
+    assert 'if (-not $parallelizeSharedRustAudio) {' in sidecar
+    assert '$rustAudioParallelArgs += "-RustAudioIsolatedTarget"' in sidecar
+    assert (
+        "-UseIsolatedTarget ([bool]$RustAudioIsolatedTarget)" in sidecar
+    )
+    assert sidecar.index("$parallelizeSharedRustAudio = (") < sidecar.index(
+        "Starting Rust audio sidecar preparation in parallel with the Python backend."
+    ) < sidecar.index('Invoke-TimedStep -Label "pyinstaller-build"')
+    assert '$sidecarArgs += "-ParallelizeIndependentBuilds"' not in installer
 
 
 def test_diarization_cold_build_is_prestaged_in_parallel_without_sharing_backend_outputs() -> None:
