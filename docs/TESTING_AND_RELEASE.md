@@ -965,6 +965,13 @@ the contract revision for an otherwise-unrepresented change that can alter the
 produced EXE; do not bump it for cache probes, runner scheduling, diagnostics,
 or setup steps that cannot change the attested binary.
 
+A validated exact Tauri EXE makes frontend dependency restore/install and the
+repeated typecheck unnecessary on ordinary packaging runs. The workflow must
+still take the full frontend path when Authenticode requires rebuilding the EXE
+or when explicit main maintenance is refreshing dependency caches. Keep these
+conditions coupled to the validated import output, never to an unvalidated
+Actions cache hit.
+
 The reusable FFmpeg Profile B artifact is published to the internal prerelease
 tag `ffmpeg-profile-b-n7.0-v4` as
 `scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip`. That asset is not an app

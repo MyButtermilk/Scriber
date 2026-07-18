@@ -818,6 +818,24 @@ jobs:
             -CacheKey "${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}" `
             -Version $version
 
+      - name: Select frontend preparation path
+        id: frontend-preparation
+        shell: pwsh
+        env:
+          SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE: ${{ vars.SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE }}
+        run: |
+          $prebuiltTauriApp = (
+            ("${{ steps.cold-products.outputs.usable }}" -eq "true" -or
+             "${{ steps.tauri-app-binary-import.outputs.usable }}" -eq "true") -and
+            $env:SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE -ne "1"
+          )
+          # Explicit main maintenance still refreshes frontend dependency
+          # caches even when an attested app binary can package this run.
+          $required = -not $prebuiltTauriApp -or $env:SCRIBER_SAVE_ACTIONS_CACHES -eq "true"
+          "prebuilt-tauri-app=$(if ($prebuiltTauriApp) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "required=$(if ($required) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Frontend dependency preparation required: $($required.ToString().ToLowerInvariant())"
+
       - name: Remove app outputs from restored Rust dependency state
         if: steps.cold-products.outputs.usable != 'true'
         shell: pwsh
@@ -976,6 +994,7 @@ jobs:
 
       - name: Restore frontend dependency cache
         id: frontend-node-modules-cache
+        if: steps.frontend-preparation.outputs.required == 'true'
         uses: actions/cache/restore@v6
         with:
           path: Frontend/node_modules
@@ -983,7 +1002,7 @@ jobs:
 
       - name: Restore npm package store
         id: npm-package-store-cache
-        if: steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
+        if: steps.frontend-preparation.outputs.required == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v6
         with:
           path: ${{ steps.package-store-paths.outputs.npm }}
@@ -1142,6 +1161,7 @@ jobs:
           $backendSidecarArtifactRestored = Normalize-CacheOutput "${{ steps.backend-sidecar-artifact.outputs.restored }}"
           $backendSidecarValidated = Normalize-CacheOutput "${{ steps.backend-sidecar-validation.outputs.usable }}"
           $coldProductsUsed = "${{ steps.cold-products.outputs.usable }}" -eq "true"
+          $frontendPreparationRequired = "${{ steps.frontend-preparation.outputs.required }}" -eq "true"
           $backendSidecarPrebuilt = $coldProductsUsed -or ($backendSidecarValidated -eq "true")
           $backendRuntimeCacheHit = Normalize-CacheOutput "${{ steps.backend-runtime-cache.outputs.cache-hit }}"
           $backendRuntimeArtifactRestored = Normalize-CacheOutput "${{ steps.backend-runtime-artifact.outputs.restored }}"
@@ -1201,13 +1221,14 @@ jobs:
             $pythonWheelhouseArtifactRestored -eq "true"
           )
           $pythonPipStoreEffective = if ($pythonPipStoreNotNeeded) { "not-needed-restored-python-product" } elseif ($pythonPipStoreCacheHit -eq "true") { "actions-cache-exact" } elseif ($pythonPipStoreCacheHit -eq "false") { "actions-cache-restore-key-or-miss" } else { "miss" }
-          $npmPackageStoreEffective = if ($frontendNodeModulesCacheHit -eq "true") { "not-needed-node_modules" } elseif ($npmPackageStoreCacheHit -eq "true") { "actions-cache-exact" } elseif ($npmPackageStoreCacheHit -eq "false") { "actions-cache-restore-key-or-miss" } else { "miss" }
+          $frontendNodeModulesEffective = if (-not $frontendPreparationRequired) { "not-needed-prebuilt-tauri" } else { Get-EffectiveCacheSource $frontendNodeModulesCacheHit "empty" }
+          $npmPackageStoreEffective = if (-not $frontendPreparationRequired) { "not-needed-prebuilt-tauri" } elseif ($frontendNodeModulesCacheHit -eq "true") { "not-needed-node_modules" } elseif ($npmPackageStoreCacheHit -eq "true") { "actions-cache-exact" } elseif ($npmPackageStoreCacheHit -eq "false") { "actions-cache-restore-key-or-miss" } else { "miss" }
 
           $rows = @(
             [ordered]@{ Name = "Python venv"; Actions = (Get-ActionsCacheLayer $pythonVenvCacheHit); ReleaseArtifact = $pythonVenvArtifactRestored; Effective = $pythonVenvEffective }
             [ordered]@{ Name = "Python wheelhouse"; Actions = (Get-ActionsCacheLayer $pythonWheelhouseCacheHit); ReleaseArtifact = $pythonWheelhouseArtifactRestored; Effective = $pythonWheelhouseEffective }
             [ordered]@{ Name = "Python pip download store"; Actions = (Get-ActionsCacheLayer $pythonPipStoreCacheHit); ReleaseArtifact = "n/a"; Effective = $pythonPipStoreEffective }
-            [ordered]@{ Name = "Frontend node_modules"; Actions = (Get-ActionsCacheLayer $frontendNodeModulesCacheHit); ReleaseArtifact = "n/a"; Effective = (Get-EffectiveCacheSource $frontendNodeModulesCacheHit "empty") }
+            [ordered]@{ Name = "Frontend node_modules"; Actions = (Get-ActionsCacheLayer $frontendNodeModulesCacheHit); ReleaseArtifact = "n/a"; Effective = $frontendNodeModulesEffective }
             [ordered]@{ Name = "npm package store"; Actions = (Get-ActionsCacheLayer $npmPackageStoreCacheHit); ReleaseArtifact = "n/a"; Effective = $npmPackageStoreEffective }
             [ordered]@{ Name = "Backend sidecar"; Actions = (Get-ActionsCacheLayer $backendSidecarCacheHit); ReleaseArtifact = $backendSidecarArtifactRestored; Effective = $backendSidecarEffective }
             [ordered]@{ Name = "Backend runtime"; Actions = (Get-ActionsCacheLayer $backendRuntimeCacheHit); ReleaseArtifact = $backendRuntimeArtifactRestored; Effective = $backendRuntimeEffective }
@@ -1460,12 +1481,12 @@ jobs:
           key: scriber-python-pip-store-v1-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
 
       - name: Install frontend dependencies
-        if: steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
+        if: steps.frontend-preparation.outputs.required == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
         working-directory: Frontend
         run: npm ci --prefer-offline --no-audit --fund=false
 
       - name: Use cached frontend dependencies
-        if: steps.frontend-node-modules-cache.outputs.cache-hit == 'true'
+        if: steps.frontend-preparation.outputs.required == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit == 'true'
         working-directory: Frontend
         shell: pwsh
         run: |
@@ -1476,14 +1497,14 @@ jobs:
           Write-Host "Using cached Frontend/node_modules with npm install metadata."
 
       - name: Save frontend dependency cache
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.frontend-preparation.outputs.required == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: Frontend/node_modules
           key: scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}
 
       - name: Save npm package store
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true' && steps.npm-package-store-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.frontend-preparation.outputs.required == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true' && steps.npm-package-store-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: ${{ steps.package-store-paths.outputs.npm }}
@@ -1660,18 +1681,11 @@ jobs:
             Write-Host "Skipping source media preparation smoke because this cached sidecar fast path did not install Python dependencies."
           }
           $isTagRelease = $env:GITHUB_REF_TYPE -eq "tag"
-          $coldProductsUsable = "${{ steps.cold-products.outputs.usable }}" -eq "true"
-          $usePrebuiltTauriApp = (
-            ($coldProductsUsable -or "${{ steps.tauri-app-binary-import.outputs.usable }}" -eq "true") -and
-            $env:SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE -ne "1"
-          )
+          $usePrebuiltTauriApp = "${{ steps.frontend-preparation.outputs.prebuilt-tauri-app }}" -eq "true"
           if ($usePrebuiltTauriApp) {
             $buildArgs += "-UsePrebuiltTauriApp"
-            Write-Host "Using exact attested Tauri app binary; this run will execute bundle/sign/package only."
-          }
-          if ($coldProductsUsable) {
             $buildArgs += "-SkipFrontendTypeCheck"
-            Write-Host "Cold preparation already completed the frontend type check; the packaging runner will not repeat it."
+            Write-Host "Using exact attested Tauri app binary; frontend dependency installation and type check are not required for bundle/sign/package."
           }
           if ($isTagRelease) {
             $effectiveNsisCompression = $env:SCRIBER_NSIS_COMPRESSION
