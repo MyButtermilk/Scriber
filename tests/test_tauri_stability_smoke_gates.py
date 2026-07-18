@@ -376,7 +376,9 @@ def test_prebuilt_tauri_audio_miss_overlaps_shared_target_only_with_backend() ->
 
     assert (
         "SCRIBER_PARALLELIZE_SHARED_RUST_AUDIO: "
-        "${{ steps.frontend-preparation.outputs.use-prebuilt == 'true' && '1' || '0' }}"
+        "${{ steps.frontend-preparation.outputs.use-prebuilt == 'true' && "
+        "github.event.inputs.rust_audio_pe_diagnostic_mode != 'sequential' && "
+        "'1' || '0' }}"
     ) in workflow
     assert '$parallelizeSharedRustAudio = (' in sidecar
     assert '[string]$env:SCRIBER_PARALLELIZE_SHARED_RUST_AUDIO -eq "1"' in sidecar
@@ -519,6 +521,124 @@ def test_prebuilt_tauri_audio_miss_overlaps_shared_target_only_with_backend() ->
         "Starting Rust audio sidecar preparation in parallel with the Python backend."
     ) < sidecar.index('Invoke-TimedStep -Label "pyinstaller-build"')
     assert '$sidecarArgs += "-ParallelizeIndependentBuilds"' not in installer
+
+
+def test_audio_pe_diagnostic_is_bounded_unpublished_and_arm_specific() -> None:
+    workflow = read_script(".github/workflows/release-windows.yml")
+    collector = read_script("scripts/ci/collect_audio_pe_diagnostic.ps1")
+
+    input_block = workflow[
+        workflow.index("rust_audio_pe_diagnostic_mode:")
+        : workflow.index("  push:", workflow.index("rust_audio_pe_diagnostic_mode:"))
+    ]
+    assert 'type: choice' in input_block
+    assert '- "off"' in input_block
+    assert '- "sequential"' in input_block
+    assert '- "overlap"' in input_block
+    assert 'default: "off"' in input_block
+
+    cache_save_env = workflow[
+        workflow.index("SCRIBER_SAVE_REF_LOCAL_TAURI_CACHE:")
+        : workflow.index("SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS:")
+    ]
+    assert cache_save_env.count(
+        "github.event.inputs.rust_audio_pe_diagnostic_mode != 'sequential'"
+    ) == 2
+    assert cache_save_env.count(
+        "github.event.inputs.rust_audio_pe_diagnostic_mode != 'overlap'"
+    ) == 2
+    assert "SCRIBER_AUDIO_PE_DIAGNOSTIC_MODE:" not in workflow
+    assert (
+        "steps.frontend-preparation.outputs.use-prebuilt == 'true' && "
+        "github.event.inputs.rust_audio_pe_diagnostic_mode != 'sequential'"
+    ) in workflow
+
+    planner_validation_index = workflow.index(
+        "Reject invalid Rust Audio PE diagnostic before planning"
+    )
+    planner_key_index = workflow.index(
+        "Compute deterministic release cache keys", planner_validation_index
+    )
+    assert planner_validation_index < planner_key_index
+    planner_validation_block = workflow[planner_validation_index:planner_key_index]
+    assert "github.event_name == 'workflow_dispatch'" in planner_validation_block
+    assert "rust_audio_pe_diagnostic_mode == 'sequential'" in planner_validation_block
+    assert "rust_audio_pe_diagnostic_mode == 'overlap'" in planner_validation_block
+    assert "collect_audio_pe_diagnostic.ps1" in planner_validation_block
+    assert "-ValidateOnly" in planner_validation_block
+
+    warm_path_index = workflow.index(
+        "Require warm path for Rust Audio PE diagnostic", planner_key_index
+    )
+    summarize_path_index = workflow.index(
+        "Summarize adaptive release path", warm_path_index
+    )
+    warm_path_block = workflow[warm_path_index:summarize_path_index]
+    assert 'steps.release-path.outputs.use-cold-path }}" -ne "false"' in warm_path_block
+    assert "single-runner warm path" in warm_path_block
+
+    validation_index = workflow.index("Validate Rust Audio PE diagnostic request")
+    cache_key_index = workflow.index("Compute release cache keys", validation_index)
+    assert validation_index < cache_key_index
+    validation_block = workflow[validation_index:cache_key_index]
+    assert "github.event.inputs.rust_audio_pe_diagnostic_mode == 'sequential'" in validation_block
+    assert "github.event.inputs.rust_audio_pe_diagnostic_mode == 'overlap'" in validation_block
+    assert '-Mode "${{ github.event.inputs.rust_audio_pe_diagnostic_mode }}"' in validation_block
+    assert "collect_audio_pe_diagnostic.ps1" in validation_block
+    assert "-ValidateOnly" in validation_block
+    assert "refresh_release_cache_artifacts" in validation_block
+
+    build_index = workflow.index("Build Windows installer")
+    timing_index = workflow.index("Summarize release artifact timing", build_index)
+    build_block = workflow[build_index:timing_index]
+    assert '$diagnosticMode = "${{ github.event.inputs.rust_audio_pe_diagnostic_mode }}"' in build_block
+    assert "require an exact prebuilt Tauri app" in build_block
+    assert "require an exact Tauri Actions-cache hit" in build_block
+    assert "require a real Rust Audio Actions-cache miss" in build_block
+    assert "forbid a Rust Audio component-artifact restore" in build_block
+    assert "collect_audio_pe_diagnostic.ps1" in build_block
+    assert "-ValidateOnly" in build_block
+
+    collect_index = workflow.index("Collect release artifacts")
+    summarize_index = workflow.index("Summarize release artifact timing", collect_index)
+    collect_block = workflow[collect_index:summarize_index]
+    assert "collect_audio_pe_diagnostic.ps1" in collect_block
+    assert '$diagnosticMode = "${{ github.event.inputs.rust_audio_pe_diagnostic_mode }}"' in collect_block
+    assert '$diagnosticMode -eq "sequential" -or $diagnosticMode -eq "overlap"' in collect_block
+    assert "-OutputDirectory release-artifacts" in collect_block
+    assert workflow.count("collect_audio_pe_diagnostic.ps1") == 4
+    assert workflow.count("& ./scripts/ci/collect_audio_pe_diagnostic.ps1") == 4
+    assert workflow.count('-RepoRoot "${{ github.workspace }}"') == 4
+
+    assert '[ValidateSet("off", "sequential", "overlap")]' in collector
+    assert '$Ref -eq "refs/heads/main"' in collector
+    assert '$RefreshRequested -ne "false"' in collector
+    assert "requires a real internal Audio cache miss" in collector
+    assert "requires the shared Tauri Cargo target" in collector
+    assert '$Mode -eq "overlap"' in collector
+    assert "complete race-free setup" in collector
+    assert "unexpectedly activated overlap setup" in collector
+    assert '& $audioExe --self-test' in collector
+    assert 'scriber-audio-sidecar-pe-$Mode.exe' in collector
+    assert "Get-Sha256Hex -Path $binaryOutput" in collector
+    assert "Copied Rust Audio PE diagnostic executable differs" in collector
+    assert "Convert-ManifestFingerprintToHashFilesFingerprint" in collector
+    assert 'expectedRustActionsKey = "scriber-rust-dependencies-v1-Windows-$rustDependencyHashFilesFingerprint"' in collector
+    assert 'expectedTauriActionsKey = "scriber-tauri-app-binary-v3-Windows-$tauriHashFilesFingerprint"' in collector
+    assert 'Rust Audio PE diagnostics require CARGO_INCREMENTAL=1.' in collector
+    assert '$audioSidecarRow.Actions -cne "miss"' in collector
+    assert '$audioSidecarRow.ReleaseArtifact -cne "false"' in collector
+    assert '$audioSidecarRow.Effective -cne "miss"' in collector
+    assert "Rust Audio PE diagnostics forbid the combined cold-products artifact" in collector
+    assert "cacheContext = $cacheContext" in collector
+    assert "runner = $runnerContext" in collector
+    assert "linker = $msvcLinkerIdentity" in collector
+    assert "resourceCompiler = $resourceCompilerIdentity" in collector
+    assert "cacheAndPublicationFlagsAllFalse = $true" in collector
+    assert "cacheHitForbidden = $true" in collector
+    assert "publicationForbidden = $true" in collector
+    assert "Invoke-Expression" not in collector
+    assert "EncodedCommand" not in collector
 
 
 def test_diarization_cold_build_is_prestaged_in_parallel_without_sharing_backend_outputs() -> None:

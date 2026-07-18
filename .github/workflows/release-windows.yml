@@ -8,6 +8,15 @@ on:
         required: false
         type: boolean
         default: false
+      rust_audio_pe_diagnostic_mode:
+        description: "Unpublished feature-branch Rust Audio PE comparison arm"
+        required: false
+        type: choice
+        options:
+          - "off"
+          - "sequential"
+          - "overlap"
+        default: "off"
   push:
     tags:
       - "v*"
@@ -50,6 +59,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Reject invalid Rust Audio PE diagnostic before planning
+        if: github.event_name == 'workflow_dispatch' && (github.event.inputs.rust_audio_pe_diagnostic_mode == 'sequential' || github.event.inputs.rust_audio_pe_diagnostic_mode == 'overlap')
+        shell: pwsh
+        run: |
+          & ./scripts/ci/collect_audio_pe_diagnostic.ps1 `
+            -RepoRoot "${{ github.workspace }}" `
+            -Mode "${{ github.event.inputs.rust_audio_pe_diagnostic_mode }}" `
+            -SourceCommit "${{ github.sha }}" `
+            -Repository "${{ github.repository }}" `
+            -RunId "${{ github.run_id }}" `
+            -Ref "${{ github.ref }}" `
+            -RefType "${{ github.ref_type }}" `
+            -RefreshRequested "${{ github.event.inputs.refresh_release_cache_artifacts }}" `
+            -ValidateOnly
 
       - name: Validate Outlook release configuration
         if: startsWith(github.ref, 'refs/tags/')
@@ -94,6 +118,14 @@ jobs:
             -TauriAppBinaryHash "${{ steps.cache-keys.outputs.tauri-app-binary-hash }}" `
             -BackendArtifactTag $env:SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG `
             -RequireAuthenticodeSignature $env:SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE
+
+      - name: Require warm path for Rust Audio PE diagnostic
+        if: github.event_name == 'workflow_dispatch' && (github.event.inputs.rust_audio_pe_diagnostic_mode == 'sequential' || github.event.inputs.rust_audio_pe_diagnostic_mode == 'overlap')
+        shell: pwsh
+        run: |
+          if ("${{ steps.release-path.outputs.use-cold-path }}" -ne "false") {
+            throw "Rust Audio PE diagnostics require the single-runner warm path."
+          }
 
       - name: Summarize adaptive release path
         shell: pwsh
@@ -523,11 +555,11 @@ jobs:
       # A manual branch diagnostic may save only the small, exact Tauri app
       # product in that ref's isolated Actions-cache namespace. It cannot warm
       # main/tags and never enables any shared cache or release publication.
-      SCRIBER_SAVE_REF_LOCAL_TAURI_CACHE: ${{ (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts != 'true') && 'true' || 'false' }}
+      SCRIBER_SAVE_REF_LOCAL_TAURI_CACHE: ${{ (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts != 'true' && github.event.inputs.rust_audio_pe_diagnostic_mode != 'sequential' && github.event.inputs.rust_audio_pe_diagnostic_mode != 'overlap') && 'true' || 'false' }}
       # The bounded Desktop Rust incremental envelope is also diagnostic-only.
       # Its key and restore prefix contain a SHA-256 of this exact feature ref;
       # it cannot warm main, tags, sibling branches, or a durable cache release.
-      SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE: ${{ (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts != 'true') && 'true' || 'false' }}
+      SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE: ${{ (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts != 'true' && github.event.inputs.rust_audio_pe_diagnostic_mode != 'sequential' && github.event.inputs.rust_audio_pe_diagnostic_mode != 'overlap') && 'true' || 'false' }}
       SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       # Tag self-healing is handed to the separate workflow_run maintenance
       # workflow after updater publication. Inline mutation remains reserved
@@ -547,6 +579,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Validate Rust Audio PE diagnostic request
+        if: github.event_name == 'workflow_dispatch' && (github.event.inputs.rust_audio_pe_diagnostic_mode == 'sequential' || github.event.inputs.rust_audio_pe_diagnostic_mode == 'overlap')
+        shell: pwsh
+        run: |
+          & ./scripts/ci/collect_audio_pe_diagnostic.ps1 `
+            -RepoRoot "${{ github.workspace }}" `
+            -Mode "${{ github.event.inputs.rust_audio_pe_diagnostic_mode }}" `
+            -SourceCommit "${{ github.sha }}" `
+            -Repository "${{ github.repository }}" `
+            -RunId "${{ github.run_id }}" `
+            -Ref "${{ github.ref }}" `
+            -RefType "${{ github.ref_type }}" `
+            -RefreshRequested "${{ github.event.inputs.refresh_release_cache_artifacts }}" `
+            -ValidateOnly
 
       - name: Validate tag release signing preflight
         if: startsWith(github.ref, 'refs/tags/v')
@@ -1804,8 +1851,39 @@ jobs:
           SCRIBER_NSIS_COMPRESSION: ${{ vars.SCRIBER_NSIS_COMPRESSION }}
           SCRIBER_NON_TAG_NSIS_COMPRESSION: ${{ vars.SCRIBER_NON_TAG_NSIS_COMPRESSION }}
           SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE: ${{ vars.SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE }}
-          SCRIBER_PARALLELIZE_SHARED_RUST_AUDIO: ${{ steps.frontend-preparation.outputs.use-prebuilt == 'true' && '1' || '0' }}
+          SCRIBER_PARALLELIZE_SHARED_RUST_AUDIO: ${{ steps.frontend-preparation.outputs.use-prebuilt == 'true' && github.event.inputs.rust_audio_pe_diagnostic_mode != 'sequential' && '1' || '0' }}
         run: |
+          $diagnosticMode = "${{ github.event.inputs.rust_audio_pe_diagnostic_mode }}"
+          if ($diagnosticMode -eq "sequential" -or $diagnosticMode -eq "overlap") {
+            if ("${{ needs.release-plan.outputs.use-cold-path }}" -ne "false") {
+              throw "Rust Audio PE diagnostics require the warm packaging path."
+            }
+            if ("${{ steps.frontend-preparation.outputs.use-prebuilt }}" -ne "true") {
+              throw "Rust Audio PE diagnostics require an exact prebuilt Tauri app."
+            }
+            if ("${{ steps.tauri-app-binary-cache.outputs.cache-hit }}" -ne "true") {
+              throw "Rust Audio PE diagnostics require an exact Tauri Actions-cache hit."
+            }
+            if ("${{ steps.tauri-app-binary-import.outputs.usable }}" -ne "true") {
+              throw "Rust Audio PE diagnostics require a usable imported Tauri app."
+            }
+            if ("${{ steps.rust-audio-sidecar-cache.outputs.cache-hit }}" -eq "true") {
+              throw "Rust Audio PE diagnostics require a real Rust Audio Actions-cache miss."
+            }
+            if ("${{ steps.component-cache-artifacts.outputs.rust-audio-sidecar-restored }}" -eq "true") {
+              throw "Rust Audio PE diagnostics forbid a Rust Audio component-artifact restore."
+            }
+            & ./scripts/ci/collect_audio_pe_diagnostic.ps1 `
+              -RepoRoot "${{ github.workspace }}" `
+              -Mode $diagnosticMode `
+              -SourceCommit "${{ github.sha }}" `
+              -Repository "${{ github.repository }}" `
+              -RunId "${{ github.run_id }}" `
+              -Ref "${{ github.ref }}" `
+              -RefType "${{ github.ref_type }}" `
+              -RefreshRequested "${{ github.event.inputs.refresh_release_cache_artifacts }}" `
+              -ValidateOnly
+          }
           $buildArgs = @(
             "-NoProfile",
             "-ExecutionPolicy",
@@ -2263,6 +2341,19 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
+          $diagnosticMode = "${{ github.event.inputs.rust_audio_pe_diagnostic_mode }}"
+          if ($diagnosticMode -eq "sequential" -or $diagnosticMode -eq "overlap") {
+            & ./scripts/ci/collect_audio_pe_diagnostic.ps1 `
+              -RepoRoot "${{ github.workspace }}" `
+              -Mode $diagnosticMode `
+              -OutputDirectory release-artifacts `
+              -SourceCommit "${{ github.sha }}" `
+              -Repository "${{ github.repository }}" `
+              -RunId "${{ github.run_id }}" `
+              -Ref "${{ github.ref }}" `
+              -RefType "${{ github.ref_type }}" `
+              -RefreshRequested "${{ github.event.inputs.refresh_release_cache_artifacts }}"
+          }
           $isTagRelease = $env:GITHUB_REF_TYPE -eq "tag"
           $uploadFullInstaller = $isTagRelease -or ($env:SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER -eq "1")
           if ($uploadFullInstaller) {
