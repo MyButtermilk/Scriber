@@ -472,12 +472,27 @@ Packaging/build:
   double miss. Hot runs with exact backend sidecar and Tauri products are
   already dominated by final Tauri/NSIS packaging; forcing artifact
   upload/download between jobs would make those runs slower.
-- The Actions Rust cache is dependency/toolchain keyed rather than app-source
-  keyed and includes `target\release\incremental`; CI builds set
-  `CARGO_INCREMENTAL=1`. App/Rust/UI source changes therefore do not create a
-  fresh 1.3+ GiB dependency cache. The separate exact Tauri app binary key
-  covers concrete version, full frontend plus desktop/shared Rust inputs,
-  resolved toolchain, target/profile, and updater runtime fingerprint.
+- The large Actions Rust cache is dependency/toolchain keyed rather than
+  app-source keyed; CI builds set `CARGO_INCREMENTAL=1`, but the shared cache
+  deliberately prunes every app-owned fingerprint, object, and incremental
+  directory. Manual non-main diagnostics can additionally restore and save a
+  detached envelope containing only the Cargo-metadata-confirmed Desktop
+  targets `target\release\incremental\scriber_desktop-*` and
+  `scriber_desktop_lib-*`. The latter owns the large Rust app implementation;
+  caching only the thin binary target would not address the measured compile
+  delay. That envelope is capped at
+  512 MiB and 10,000 files, has a complete SHA-256 inventory, and accepts only
+  the pinned rustc incremental filename set (`.bin`, `.o`, compressed LLVM
+  bitcode, `metadata.rmeta`, and session locks). Finished/native artifacts such
+  as EXE, PDB, DLL, LIB, and RLIB plus foreign paths and reparse points are
+  rejected before export or import. Its exact key covers the
+  current Tauri inputs while its restore prefix is bound to one feature ref,
+  toolchain/target, and Cargo dependency graph. This allows a seed/canary pair
+  to measure rustc incremental reuse without widening shared release caches or
+  trusting cached output as a correctness authority. The separate exact Tauri
+  app binary key still covers concrete version, full frontend plus
+  desktop/shared Rust inputs, resolved toolchain, target/profile, and updater
+  runtime fingerprint.
 - Before installing the pinned Rust toolchain or restoring that multi-GB Cargo
   state, the warm packaging path now imports the exact Tauri product and
   restores the exact audio/diarization products. It skips Rust preparation only

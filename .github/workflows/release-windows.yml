@@ -524,6 +524,10 @@ jobs:
       # product in that ref's isolated Actions-cache namespace. It cannot warm
       # main/tags and never enables any shared cache or release publication.
       SCRIBER_SAVE_REF_LOCAL_TAURI_CACHE: ${{ (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts != 'true') && 'true' || 'false' }}
+      # The bounded Desktop Rust incremental envelope is also diagnostic-only.
+      # Its key and restore prefix contain a SHA-256 of this exact feature ref;
+      # it cannot warm main, tags, sibling branches, or a durable cache release.
+      SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE: ${{ (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts != 'true') && 'true' || 'false' }}
       SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       # Tag self-healing is handed to the separate workflow_run maintenance
       # workflow after updater publication. Inline mutation remains reserved
@@ -690,6 +694,15 @@ jobs:
           if (-not $matches) {
             Write-Warning "Linux planner and Windows packager cache keys differed; cold artifacts will be ignored and the normal path retained."
           }
+
+      - name: Compute ref-local Desktop Rust incremental cache identity
+        id: desktop-rust-incremental-key
+        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true'
+        shell: pwsh
+        run: |
+          & .\scripts\ci\write_desktop_rust_incremental_cache_key.ps1 `
+            -CacheKeyDir "build\cache-keys" `
+            -GitRef $env:GITHUB_REF
 
       - name: Download cold products in parallel
         id: cold-products-download
@@ -1003,6 +1016,28 @@ jobs:
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\prune_rust_dependency_cache.ps1
 
+      - name: Restore ref-local Desktop Rust incremental envelope
+        id: desktop-rust-incremental-cache
+        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true' && steps.rust-preparation.outputs.required == 'true' && steps.frontend-preparation.outputs.use-prebuilt != 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: build/desktop-rust-incremental-cache
+          key: scriber-desktop-rust-incremental-v1-${{ runner.os }}-${{ steps.desktop-rust-incremental-key.outputs.ref-scope-hash }}-${{ steps.desktop-rust-incremental-key.outputs.dependency-scope-hash }}-${{ steps.desktop-rust-incremental-key.outputs.exact-input-hash }}
+          restore-keys: |
+            scriber-desktop-rust-incremental-v1-${{ runner.os }}-${{ steps.desktop-rust-incremental-key.outputs.ref-scope-hash }}-${{ steps.desktop-rust-incremental-key.outputs.dependency-scope-hash }}-
+
+      - name: Import ref-local Desktop Rust incremental envelope
+        id: desktop-rust-incremental-import
+        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true' && steps.rust-preparation.outputs.required == 'true' && steps.frontend-preparation.outputs.use-prebuilt != 'true' && steps.desktop-rust-incremental-cache.outputs.cache-matched-key != ''
+        shell: pwsh
+        run: |
+          & .\scripts\ci\sync_desktop_rust_incremental_cache.ps1 `
+            -Mode Import `
+            -CurrentInputKey "${{ steps.desktop-rust-incremental-key.outputs.exact-input-hash }}" `
+            -DependencyScopeKey "${{ steps.desktop-rust-incremental-key.outputs.dependency-scope-hash }}" `
+            -RefScopeKey "${{ steps.desktop-rust-incremental-key.outputs.ref-scope-hash }}" `
+            -MatchedCacheKey "${{ steps.desktop-rust-incremental-cache.outputs.cache-matched-key }}"
+
       - name: Restore Sherpa ONNX static archive cache
         id: sherpa-onnx-archive-cache
         if: steps.rust-preparation.outputs.diarization-covered != 'true'
@@ -1286,6 +1321,12 @@ jobs:
           $tauriAppBinaryCacheHit = Normalize-CacheOutput "${{ steps.tauri-app-binary-cache.outputs.cache-hit }}"
           $tauriAppBinaryImportUsable = Normalize-CacheOutput "${{ steps.tauri-app-binary-import.outputs.usable }}"
           $tauriAppBinaryImportSha256 = Normalize-CacheOutput "${{ steps.tauri-app-binary-import.outputs.sha256 }}"
+          $desktopRustIncrementalCacheHit = Normalize-CacheOutput "${{ steps.desktop-rust-incremental-cache.outputs.cache-hit }}"
+          $desktopRustIncrementalMatchedKey = Normalize-CacheOutput "${{ steps.desktop-rust-incremental-cache.outputs.cache-matched-key }}"
+          $desktopRustIncrementalImportUsable = Normalize-CacheOutput "${{ steps.desktop-rust-incremental-import.outputs.usable }}"
+          $desktopRustIncrementalExactCurrent = Normalize-CacheOutput "${{ steps.desktop-rust-incremental-import.outputs.exact-current }}"
+          $desktopRustIncrementalFileCount = Normalize-CacheOutput "${{ steps.desktop-rust-incremental-import.outputs.file-count }}"
+          $desktopRustIncrementalTotalBytes = Normalize-CacheOutput "${{ steps.desktop-rust-incremental-import.outputs.total-bytes }}"
 
           if ($rustBuildCacheHit -eq "true") {
             $rustBuildEffective = "actions-cache-exact"
@@ -1310,6 +1351,13 @@ jobs:
           } else {
             "miss"
           }
+          $desktopRustIncrementalEffective = if ($desktopRustIncrementalImportUsable -eq "true") {
+            if ($desktopRustIncrementalExactCurrent -eq "true") { "actions-cache-exact-validated" } else { "actions-cache-prefix-validated" }
+          } elseif ($desktopRustIncrementalMatchedKey -ne "empty") {
+            "actions-cache-rejected"
+          } else {
+            "miss"
+          }
           $pythonVenvEffective = if ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "validated-restored-environment" } else { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored }
           $pythonWheelhouseEffective = if ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "not-needed-validated-venv" } else { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored }
           $pythonPipStoreNotNeeded = (
@@ -1331,6 +1379,7 @@ jobs:
             [ordered]@{ Name = "Backend sidecar"; Actions = (Get-ActionsCacheLayer $backendSidecarCacheHit); ReleaseArtifact = $backendSidecarArtifactRestored; Effective = $backendSidecarEffective }
             [ordered]@{ Name = "Backend runtime"; Actions = (Get-ActionsCacheLayer $backendRuntimeCacheHit); ReleaseArtifact = $backendRuntimeArtifactRestored; Effective = $backendRuntimeEffective }
             [ordered]@{ Name = "Rust build"; Actions = (Get-ActionsCacheLayer $rustBuildCacheHit); ReleaseArtifact = $rustBuildArtifactRestored; Effective = $rustBuildEffective }
+            [ordered]@{ Name = "Desktop Rust incremental"; Actions = (Get-ActionsCacheLayer $desktopRustIncrementalCacheHit); ReleaseArtifact = "n/a"; Effective = $desktopRustIncrementalEffective }
             [ordered]@{ Name = "Tauri app binary"; Actions = (Get-ActionsCacheLayer $tauriAppBinaryCacheHit); ReleaseArtifact = "n/a"; Effective = $tauriAppEffective }
             [ordered]@{ Name = "Rust audio sidecar"; Actions = (Get-ActionsCacheLayer $rustAudioSidecarCacheHit); ReleaseArtifact = $rustAudioSidecarArtifactRestored; Effective = $(if ($coldProductsUsed) { "cold-product-artifact" } else { Get-EffectiveCacheSource $rustAudioSidecarCacheHit $rustAudioSidecarArtifactRestored }) }
             [ordered]@{ Name = "Rust diarization sidecar"; Actions = (Get-ActionsCacheLayer $rustDiarizationSidecarCacheHit); ReleaseArtifact = $rustDiarizationSidecarArtifactRestored; Effective = $(if ($coldProductsUsed) { "cold-product-artifact" } else { Get-EffectiveCacheSource $rustDiarizationSidecarCacheHit $rustDiarizationSidecarArtifactRestored }) }
@@ -1350,6 +1399,7 @@ jobs:
             Get-PathEvidence "Rust build" @(".cargo\registry\index", ".cargo\registry\cache", ".cargo\git\db", "Frontend\src-tauri\target\release\.fingerprint", "Frontend\src-tauri\target\release\deps", "Frontend\src-tauri\target\release\incremental")
             Get-PathEvidence "Rust build Cargo cache" @(".cargo\registry\index", ".cargo\registry\cache", ".cargo\git\db")
             Get-PathEvidence "Rust build target cache" @("Frontend\src-tauri\target\release\.fingerprint", "Frontend\src-tauri\target\release\deps", "Frontend\src-tauri\target\release\incremental")
+            Get-PathEvidence "Desktop Rust incremental envelope" @("build\desktop-rust-incremental-cache")
             Get-PathEvidence "Tauri app binary" @("build\tauri-app-binary-cache\scriber-desktop.exe", "build\cold-transfer\tauri-app-binary-cache\scriber-desktop.exe", "Frontend\src-tauri\target\release\scriber-desktop.exe")
             Get-PathEvidence "Rust audio sidecar" @("build\rust-audio-sidecar-cache")
             Get-PathEvidence "Rust diarization sidecar" @("build\rust-diarization-sidecar-cache")
@@ -1429,6 +1479,14 @@ jobs:
             backendSidecarPrebuilt = $backendSidecarPrebuilt
             backendRuntimeValidated = $backendRuntimeValidated
             coldProductsUsed = $coldProductsUsed
+            desktopRustIncremental = [ordered]@{
+              actionsCacheExact = $desktopRustIncrementalCacheHit -eq "true"
+              matchedKey = $desktopRustIncrementalMatchedKey
+              importUsable = $desktopRustIncrementalImportUsable -eq "true"
+              exactCurrent = $desktopRustIncrementalExactCurrent -eq "true"
+              fileCount = $desktopRustIncrementalFileCount
+              totalBytes = $desktopRustIncrementalTotalBytes
+            }
             tauriAppBinary = [ordered]@{
               actionsCacheExact = $tauriAppBinaryCacheHit -eq "true"
               importUsable = $tauriAppBinaryImportUsable -eq "true"
@@ -1850,6 +1908,25 @@ jobs:
             }
           }
           powershell @buildArgs
+
+      - name: Export bounded Desktop Rust incremental envelope
+        id: desktop-rust-incremental-export
+        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true' && steps.frontend-preparation.outputs.use-prebuilt != 'true' && steps.desktop-rust-incremental-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          & .\scripts\ci\sync_desktop_rust_incremental_cache.ps1 `
+            -Mode Export `
+            -CurrentInputKey "${{ steps.desktop-rust-incremental-key.outputs.exact-input-hash }}" `
+            -DependencyScopeKey "${{ steps.desktop-rust-incremental-key.outputs.dependency-scope-hash }}" `
+            -RefScopeKey "${{ steps.desktop-rust-incremental-key.outputs.ref-scope-hash }}" `
+            -SourceCommit "${{ github.sha }}"
+
+      - name: Save bounded Desktop Rust incremental envelope
+        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true' && steps.frontend-preparation.outputs.use-prebuilt != 'true' && steps.desktop-rust-incremental-cache.outputs.cache-hit != 'true' && steps.desktop-rust-incremental-export.outputs.staged == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: build/desktop-rust-incremental-cache
+          key: scriber-desktop-rust-incremental-v1-${{ runner.os }}-${{ steps.desktop-rust-incremental-key.outputs.ref-scope-hash }}-${{ steps.desktop-rust-incremental-key.outputs.dependency-scope-hash }}-${{ steps.desktop-rust-incremental-key.outputs.exact-input-hash }}
 
       - name: Export exact Tauri app binary
         id: tauri-app-binary-export

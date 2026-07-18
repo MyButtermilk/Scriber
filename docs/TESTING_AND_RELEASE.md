@@ -796,6 +796,24 @@ It:
   miss, the compile-only overlay allows `tauri build --no-bundle` to overlap the
   sidecar producer; the same full-config `tauri bundle` path runs only after
   both complete,
+- keeps a second, ref-local diagnostic cache for only the two Desktop targets
+  reported by Cargo metadata: `target\release\incremental\scriber_desktop-*`
+  for the five-line binary wrapper and `scriber_desktop_lib-*` for the actual
+  app rlib. Its exact key binds the
+  finalized Tauri input, pinned toolchain, Windows target, Cargo dependency
+  graph, and the checked-in cache-envelope contract. Its restore prefix also
+  contains the exact feature-ref and dependency hashes, so a small
+  frontend/Desktop-Rust/packaging-input change can receive only that ref's most
+  recent compatible predecessor. The detached envelope is validated before
+  import and has hard file, byte, path, reparse-point, and inventory bounds;
+  it never contains Cargo fingerprints, build-script output, dependency
+  objects, executables/PDBs, native libraries, audio state, or diarization
+  state. A contract-owned rustc incremental filename allowlist enforces this
+  boundary on source export, restored inventories, staging, and target
+  replacement. Cargo/rustc still decides whether any imported query result is
+  reusable. If a prefix restore is rejected for an unsafe link or tree, the
+  successful installer build remains authoritative: optional re-export reports
+  `staged=false` and skips without traversing or deleting that restored tree,
 - prunes `build\tauri-sidecar-cache` to the one metadata-attested internal key
   before Actions save or durable publication, preventing cache generations
   from recursively accumulating older complete PyInstaller sidecars. The
@@ -865,11 +883,14 @@ It:
   `SCRIBER_VERSION`, and `tests/test_version_contract.py` protects installed
   version reporting, but application/version changes must never be normalized
   out of the application or complete-sidecar identity,
-- enables `CARGO_INCREMENTAL=1` for the main Tauri release binary and caches
-  `Frontend\src-tauri\target\release\incremental` in both the Actions cache and
-  the internal Rust release artifact. This gives version-bump and small
-  Rust-shell edits a warmer rebuild path while preserving normal release
-  validation,
+- enables `CARGO_INCREMENTAL=1` for the main Tauri release binary. The large
+  dependency cache and internal Rust artifact continue to prune all app-owned
+  incremental directories. Only an explicit successful non-main
+  `workflow_dispatch` may export the separate bounded Desktop envelope, and
+  only when `build-timing.json` proves that the workflow actually compiled the
+  app instead of bundling a prebuilt executable. Tags, `main`, sibling refs,
+  Rust audio, and diarization cannot publish or consume that experimental
+  envelope,
 - builds the Tauri shell library as `rlib` only for the Windows desktop
   release path. The `staticlib` and `cdylib` crate types are kept out of this
   Windows-first package because Tauri documents them for mobile targets and
@@ -895,12 +916,16 @@ It:
   `SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER=1` is set for a deliberate non-tag
   installer download,
 - permits an explicit non-main dispatch to save only the bounded, fully
-  attested v3 Tauri app product in that branch's ref-local Actions cache. Its
+  attested v3 Tauri app product and bounded Desktop Rust incremental envelope
+  in that branch's ref-local Actions-cache namespace. The app product's
   content key deliberately excludes the producing commit, so same-version
   Python-only changes can reuse it, while frontend/Rust/config, Node version,
   binary-producing workflow/helper scripts, app version, toolchain/target,
-  updater, Outlook, or executable-attestation changes still miss. No shared
-  cache or internal cache release is published by this path,
+  updater, Outlook, or executable-attestation changes still miss. The Desktop
+  envelope uses an exact key for current inputs plus a dependency- and
+  ref-bound fallback prefix for the immediately preceding incremental state.
+  No shared cache, tag/main cache, or internal cache release is published by
+  this path,
 - passes the produced media tools to `scripts/build_windows.ps1`,
 - skips the full Python unit suite in the packaging step; run it before release
   or through PR/readiness gates. The release workflow therefore installs
