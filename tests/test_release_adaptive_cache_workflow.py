@@ -126,7 +126,11 @@ def test_attested_tauri_app_skips_only_the_covered_frontend_typecheck() -> None:
     frontend_install = build_workflow.split("- name: Install frontend dependencies\n", 1)[1].split(
         "\n      - name:", 1
     )[0]
+    assert "if:" not in frontend_restore
+    assert "frontend-preparation" not in frontend_restore
     assert "tauri-app-binary-import" not in frontend_restore
+    assert "if: steps.frontend-node-modules-cache.outputs.cache-hit != 'true'" in frontend_install
+    assert "frontend-preparation" not in frontend_install
     assert "tauri-app-binary-import" not in frontend_install
 
 
