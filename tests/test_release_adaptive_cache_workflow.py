@@ -641,10 +641,10 @@ def test_tauri_cli_lock_extractor_is_windows_powershell_safe() -> None:
 
 
 def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() -> None:
-    pwsh = shutil.which("pwsh")
+    pwsh = shutil.which("powershell.exe")
     gh = shutil.which("gh")
     if pwsh is None or gh is None:
-        pytest.skip("PowerShell 7 and GitHub CLI are required for exact Tauri cache validation")
+        pytest.skip("Windows PowerShell 5.1 and GitHub CLI are required for exact Tauri cache validation")
 
     version_output = subprocess.run(
         [gh, "--version"],
@@ -687,14 +687,66 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
         encoding="utf-8",
     )
     (cli_platform_package_path / "cli.win32-x64-msvc.node").write_bytes(b"fixture-native-cli")
+    cli_integrity = package_lock["packages"]["node_modules/@tauri-apps/cli"]["integrity"]
+    cli_platform_integrity = package_lock["packages"][
+        "node_modules/@tauri-apps/cli-win32-x64-msvc"
+    ]["integrity"]
+    relative_cli_files = {
+        "tauri-cli/node_modules/@tauri-apps/cli/package.json": cli_package_path
+        / "package.json",
+        "tauri-cli/node_modules/@tauri-apps/cli/tauri.js": cli_package_path / "tauri.js",
+        "tauri-cli/node_modules/@tauri-apps/cli/main.js": cli_package_path / "main.js",
+        "tauri-cli/node_modules/@tauri-apps/cli/index.js": cli_package_path / "index.js",
+        "tauri-cli/node_modules/@tauri-apps/cli-win32-x64-msvc/package.json": (
+            cli_platform_package_path / "package.json"
+        ),
+        "tauri-cli/node_modules/@tauri-apps/cli-win32-x64-msvc/cli.win32-x64-msvc.node": (
+            cli_platform_package_path / "cli.win32-x64-msvc.node"
+        ),
+    }
+    fixture_contract = {
+        "schemaVersion": 1,
+        "name": "scriber-tauri-cli-cache-contract",
+        "revision": f"tauri-cli-{cli_version}-win32-x64-msvc-v1",
+        "target": "win32-x64-msvc",
+        "version": cli_version,
+        "versionOutput": f"tauri-cli {cli_version}",
+        "entrypoint": "tauri-cli/node_modules/@tauri-apps/cli/tauri.js",
+        "packages": [
+            {
+                "name": "@tauri-apps/cli",
+                "version": cli_version,
+                "integrity": cli_integrity,
+            },
+            {
+                "name": "@tauri-apps/cli-win32-x64-msvc",
+                "version": cli_version,
+                "integrity": cli_platform_integrity,
+            },
+        ],
+        "files": [
+            {
+                "path": relative_path,
+                "length": path.stat().st_size,
+                "sha256": _sha256(path),
+            }
+            for relative_path, path in relative_cli_files.items()
+        ],
+    }
+    fixture_contract_path = fixture_root / "tauri-cli-cache-contract.json"
+    fixture_contract_path.write_text(json.dumps(fixture_contract), encoding="utf-8")
+    fixture_contract_sha256 = _sha256(fixture_contract_path)
     cache_key = "a" * 64
     script = REPO_ROOT / "scripts/ci/sync_tauri_app_binary_cache.ps1"
 
     def invoke(mode: str, *, commit: str, expected_version: str = version) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
         output_path = fixture_root / f"output-{uuid.uuid4().hex}.txt"
         env = os.environ.copy()
+        for name in ("NODE_OPTIONS", "NODE_PATH", "NAPI_RS_NATIVE_LIBRARY_PATH"):
+            env.pop(name, None)
         env["GITHUB_SHA"] = commit
         env["GITHUB_OUTPUT"] = str(output_path)
+        env["SCRIBER_TAURI_CLI_CACHE_TEST_CONTRACT"] = "1"
         result = subprocess.run(
             [
                 pwsh,
@@ -715,6 +767,8 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
                 str(cli_package_path.relative_to(REPO_ROOT)),
                 "-TauriCliPlatformPackagePath",
                 str(cli_platform_package_path.relative_to(REPO_ROOT)),
+                "-ContractPath",
+                str(fixture_contract_path.relative_to(REPO_ROOT)),
             ],
             cwd=REPO_ROOT,
             env=env,
@@ -737,9 +791,11 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         cached_binary_path = cache_root / "scriber-desktop.exe"
         cached_binary = cached_binary_path.read_bytes()
-        assert manifest["apiVersion"] == "3"
+        assert manifest["apiVersion"] == "4"
         assert manifest["sourceCommit"] == "1" * 40
         assert manifest["tauriCli"]["version"] == cli_version
+        assert manifest["tauriCli"]["contractSha256"] == fixture_contract_sha256
+        assert manifest["tauriCli"]["versionOutput"] == f"tauri-cli {cli_version}"
         assert manifest["tauriCli"]["entrypoint"] == (
             "tauri-cli/node_modules/@tauri-apps/cli/tauri.js"
         )
@@ -759,6 +815,8 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
         assert hashlib.sha256(binary_path.read_bytes()).hexdigest() == expected_sha256
         assert Path(import_outputs["cli-entrypoint"]).is_file()
         assert import_outputs["cli-version"] == cli_version
+        assert import_outputs["cli-contract-sha256"] == fixture_contract_sha256
+        assert import_outputs["cli-version-output"] == f"tauri-cli {cli_version}"
 
         def assert_rejected(
             name: str,
@@ -801,7 +859,7 @@ def test_tauri_app_binary_cache_reuses_across_commits_and_rejects_tampering() ->
             assert not binary_path.exists(), name
 
         assert_rejected("cache key", manifest_changes={"cacheKey": "f" * 64})
-        assert_rejected("API version", manifest_changes={"apiVersion": "1"})
+        assert_rejected("API version", manifest_changes={"apiVersion": "3"})
         assert_rejected("app version", manifest_changes={"appVersion": "999.999.999"})
         assert_rejected("binary version", manifest_changes={"binaryVersion": "999.999.999"})
         assert_rejected("target", manifest_changes={"target": "aarch64-pc-windows-msvc"})

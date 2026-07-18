@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "name": "scriber-tauri-cli-cache-contract",
+  "revision": "tauri-cli-2.11.3-win32-x64-msvc-v1",
+  "target": "win32-x64-msvc",
+  "version": "2.11.3",
+  "versionOutput": "tauri-cli 2.11.3",
+  "entrypoint": "tauri-cli/node_modules/@tauri-apps/cli/tauri.js",
+  "packages": [
+    {
+      "name": "@tauri-apps/cli",
+      "version": "2.11.3",
+      "integrity": "sha512-EElQe8z8uD7Pi5++tJ/UfEwWuK08rd3oCDYdeIbJAb6pZRrxlqmoF5gh5H5YvzmUPhS4IRCaLSsQhvWkrfK+GQ=="
+    },
+    {
+      "name": "@tauri-apps/cli-win32-x64-msvc",
+      "version": "2.11.3",
+      "integrity": "sha512-GlciF75GdbseajOyib2aCHwE3BXIqZ1liGKWLFRvCdN5wm8h8hFssEVKQ/6E+2jsMLg9v7LCTb983YFnn0QSww=="
+    }
+  ],
+  "files": [
+    {
+      "path": "tauri-cli/node_modules/@tauri-apps/cli/package.json",
+      "length": 2455,
+      "sha256": "faf3e54d36401f47119d9dd1386b08aabeffa04280b3289f1414e51679dd131d"
+    },
+    {
+      "path": "tauri-cli/node_modules/@tauri-apps/cli/tauri.js",
+      "length": 1864,
+      "sha256": "0dd6ec63c7c63a993fde20955e291d833c03f3760e63e0ee21e83482f6c0b43a"
+    },
+    {
+      "path": "tauri-cli/node_modules/@tauri-apps/cli/main.js",
+      "length": 450,
+      "sha256": "49df414a16784e3711d5582d55c5c9e537aceb1108c5ecfc6a17cdc2f5259b4d"
+    },
+    {
+      "path": "tauri-cli/node_modules/@tauri-apps/cli/index.js",
+      "length": 24199,
+      "sha256": "92ed83f37d18164f34114c3a411a7c1c4b2c59968d2dcce59c5546eaa43bb759"
+    },
+    {
+      "path": "tauri-cli/node_modules/@tauri-apps/cli-win32-x64-msvc/package.json",
+      "length": 707,
+      "sha256": "2c4b57cbaa6f47f8571fa6f575f28eaef30b7d297cc5f33142dcc63dd5938876"
+    },
+    {
+      "path": "tauri-cli/node_modules/@tauri-apps/cli-win32-x64-msvc/cli.win32-x64-msvc.node",
+      "length": 15235072,
+      "sha256": "5cb11ab8a694496d3f6a57309a2d073edd876af0676a70b0a4d16c5b34bc6087"
+    }
+  ]
+}
