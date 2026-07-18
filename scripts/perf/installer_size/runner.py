@@ -493,6 +493,18 @@ def _run_bounded_command(
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
     }
+    executable_name = str(command[0]).replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    if executable_name == "powershell.exe":
+        # A PowerShell 7 parent prepends its own module directories before
+        # launching arbitrary children.  Windows PowerShell 5.1 can then find
+        # an incompatible Microsoft.PowerShell.Utility module and lose core
+        # commands such as Get-FileHash.  Omitting the cross-edition value lets
+        # powershell.exe rebuild its native default PSModulePath at startup.
+        child_environment = os.environ.copy()
+        for name in list(child_environment):
+            if name.casefold() == "psmodulepath":
+                child_environment.pop(name)
+        popen_kwargs["env"] = child_environment
     if os.name == "nt":
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:

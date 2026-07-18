@@ -2727,6 +2727,45 @@ def test_bounded_dispatch_invokes_process_tree_cleanup_on_timeout(
     assert calls == ["tree"]
 
 
+def test_bounded_windows_powershell_dispatch_drops_cross_edition_module_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setenv("PSModulePath", "C:\\Program Files\\PowerShell\\7\\Modules")
+    monkeypatch.setenv("SCRIBER_RESEARCH_SENTINEL", "retained")
+    monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        runner,
+        "_attach_windows_kill_on_close_job",
+        lambda _process: None,
+    )
+
+    result = runner._run_bounded_command(
+        ["powershell.exe", "-NoProfile", "-Command", "exit 0"],
+        cwd=tmp_path,
+        timeout_seconds=30,
+    )
+
+    assert result.returncode == 0
+    assert captured["command"][0] == "powershell.exe"
+    environment = captured["kwargs"]["env"]
+    assert not any(name.casefold() == "psmodulepath" for name in environment)
+    assert environment["SCRIBER_RESEARCH_SENTINEL"] == "retained"
+
+
 def test_lane_learning_locks_plateaus_and_expands_final_reserve(tmp_path: Path) -> None:
     _repo_root, context = make_repo(tmp_path)
     state.initialize_run(context, resume=False, now=FIXED_NOW)
