@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 RUNTIME_CONTRACT_NAME = "scriber-frozen-python-runtime"
-RUNTIME_CONTRACT_REVISION = 3
+RUNTIME_CONTRACT_REVISION = 4
 APPLICATION_LAYER_SCHEMA_VERSION = 1
 RUNTIME_LAYER_SCHEMA_VERSION = 1
 APPLICATION_ENTRY_POINT = "src.backend_worker:main"

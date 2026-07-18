@@ -299,7 +299,9 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "scripts\\prepare_gyan_ffmpeg_essentials.ps1" in sidecar
     assert "prepare-gyan-ffmpeg-essentials" in sidecar
     assert "$ValidateSlimMediaTools = $true" in sidecar
-    assert "preparedMediaTools = $PreparedMediaTools" in sidecar
+    assert "$metadataPreparedMediaTools = $PreparedMediaTools" in sidecar
+    assert "preparedMediaTools = $metadataPreparedMediaTools" in sidecar
+    assert "[switch]$DeterministicResearchMetadata" in sidecar
     assert 'Test-MediaToolExecutable -Path $copiedFfmpeg -Name "ffmpeg"' in sidecar
     assert 'Test-MediaToolExecutable -Path $copiedFfprobe -Name "ffprobe"' in sidecar
     assert "[switch]$ValidateSlimMediaTools" in sidecar
@@ -315,7 +317,8 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "rust-diarization-sidecar-cache" in sidecar
     assert "sherpa-onnx-archive-cache" in sidecar
     assert "rust-diarization-sidecar-build" in sidecar
-    assert "rustDiarizationSidecarCopied = $RustDiarizationSidecarCopied" in sidecar
+    assert "$metadataRustDiarizationSidecarCopied = $RustDiarizationSidecarCopied" in sidecar
+    assert "rustDiarizationSidecarCopied = $metadataRustDiarizationSidecarCopied" in sidecar
     assert "function Copy-RustAudioSidecarToTauriRelease" in sidecar
     assert "cargo build --release --bin scriber-audio-sidecar" in sidecar
     assert "--target-dir $cargoTargetDir" in sidecar
@@ -960,7 +963,7 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert contract == {
         "schemaVersion": 1,
         "name": "scriber-backend-onedir",
-        "revision": 3,
+        "revision": 4,
     }
 
     assert "frontend-dependencies.txt" in script

@@ -27,9 +27,11 @@ composed sidecar remains independently cacheable for exact hits.
 
 The runtime contract pins Pipecat 1.5 and enumerates the exact direct
 `pipecat.*` modules used by `src`. An AST parity gate prevents application code
-from importing a module that PyInstaller did not freeze. Contract revision 3
-adds `pipecat.transports.base_input`; changing that revision invalidates the
-stable runtime cache instead of reusing an incomplete packaged interpreter.
+from importing a module that PyInstaller did not freeze. Contract revision 4
+also freezes the bounded installer-research YouTube holdout probe beside the
+revision-3 `pipecat.transports.base_input` addition; changing that revision
+invalidates the stable runtime cache instead of reusing an incomplete packaged
+interpreter.
 
 The installed app is local-first. The backend binds to loopback, and the Tauri
 supervisor injects a per-run session token for local control endpoints.

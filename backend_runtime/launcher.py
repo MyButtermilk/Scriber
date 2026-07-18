@@ -23,6 +23,7 @@ from backend_runtime.contract import (
     RUNTIME_MANIFEST_NAME,
     RUNTIME_REQUIRED_IMPORTS,
 )
+from backend_runtime.installer_youtube_holdout_probe import run_frozen_probe
 
 
 class LayerValidationError(RuntimeError):
@@ -286,6 +287,14 @@ def main() -> int:
     if "--runtime-layer-check" in sys.argv:
         return run_runtime_layer_check()
     try:
+        if "--installer-youtube-holdout-probe" in sys.argv:
+            if sys.argv != [sys.argv[0], "--installer-youtube-holdout-probe"]:
+                raise LayerValidationError(
+                    "Installer YouTube holdout probe accepts no command-line payload."
+                )
+            root = _runtime_root().resolve()
+            validate_runtime_layer(root)
+            return run_frozen_probe(root)
         return launch_application()
     except LayerValidationError as exc:
         print(

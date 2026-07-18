@@ -101,13 +101,294 @@ param(
     [switch]$RunInstallerLegacyDataSmoke,
     [switch]$RunInstallerUpgradeSmoke,
     [switch]$RunInstallerUninstallSmoke,
-    [switch]$RunMediaPreparationSmoke
+    [switch]$RunMediaPreparationSmoke,
+    [string]$PythonExecutable = "",
+    [string]$ResearchBuildRoot = "",
+    [string]$ResearchToolchainManifest = ""
 )
 
 $ErrorActionPreference = "Stop"
-$releasePython = Join-Path $RepoRoot "venv\Scripts\python.exe"
-if (-not (Test-Path -LiteralPath $releasePython -PathType Leaf)) {
-    $releasePython = (Get-Command python -ErrorAction Stop).Source
+
+function Assert-ResearchToolFileIdentity {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][object]$Identity,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Label was not found."
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Label must not be a reparse point."
+    }
+    $expectedLength = [int64]$Identity.length
+    $expectedSha256 = [string]$Identity.sha256
+    if (
+        $expectedLength -le 0 -or
+        $expectedSha256 -notmatch '^[0-9a-f]{64}$' -or
+        [int64]$item.Length -ne $expectedLength -or
+        (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedSha256
+    ) {
+        throw "$Label drifted from the pinned research toolchain manifest."
+    }
+    return $item.FullName
+}
+
+function Assert-NoResearchReparsePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $resolvedRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+    $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+    $prefix = $resolvedRoot + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $resolvedPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label escaped its required root."
+    }
+    if (Test-Path -LiteralPath $resolvedRoot) {
+        $rootItem = Get-Item -LiteralPath $resolvedRoot -Force
+        if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Label safety root must not be a reparse point."
+        }
+    }
+    $relative = $resolvedPath.Substring($resolvedRoot.Length).TrimStart('\', '/')
+    $current = $resolvedRoot
+    foreach ($part in $relative.Split([char[]]@('\', '/'), [System.StringSplitOptions]::RemoveEmptyEntries)) {
+        $current = Join-Path $current $part
+        if (-not (Test-Path -LiteralPath $current)) {
+            continue
+        }
+        $item = Get-Item -LiteralPath $current -Force
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Label contains a reparse point."
+        }
+    }
+    return $resolvedPath
+}
+
+function Get-ResearchPlainTreeIdentity {
+    param([Parameter(Mandatory = $true)][string]$Root)
+
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        throw "Research toolchain tree was not found."
+    }
+    $rootItem = Get-Item -LiteralPath $Root -Force
+    if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Research toolchain tree root must not be a reparse point."
+    }
+    $rootFull = [System.IO.Path]::GetFullPath($rootItem.FullName).TrimEnd('\', '/')
+    $entries = [System.Collections.Generic.List[string]]::new()
+    $fileCount = 0
+    $totalBytes = [int64]0
+    foreach ($item in @(Get-ChildItem -LiteralPath $rootFull -Recurse -Force -ErrorAction Stop)) {
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Research toolchain tree contains a reparse point."
+        }
+        $relative = $item.FullName.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
+        if ($item.PSIsContainer) {
+            $entries.Add("D|$relative")
+        } else {
+            $length = [int64]$item.Length
+            $sha256 = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $entries.Add("F|$relative|$length|$sha256")
+            $fileCount += 1
+            $totalBytes += $length
+        }
+    }
+    $entries.Sort([System.StringComparer]::Ordinal)
+    $canonical = $entries -join "`n"
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $treeSha256 = ([System.BitConverter]::ToString($algorithm.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $algorithm.Dispose()
+    }
+    return [ordered]@{
+        fileCount = [int]$fileCount
+        totalBytes = [int64]$totalBytes
+        treeSha256 = $treeSha256
+    }
+}
+
+function Assert-ResearchTreeIdentity {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][object]$Identity,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $actual = Get-ResearchPlainTreeIdentity -Root $Root
+    if (
+        [int]$actual.fileCount -ne [int]$Identity.fileCount -or
+        [int64]$actual.totalBytes -ne [int64]$Identity.totalBytes -or
+        [string]$actual.treeSha256 -ne [string]$Identity.treeSha256
+    ) {
+        throw "$Label drifted from the pinned research toolchain manifest."
+    }
+}
+
+$RepoRoot = (Resolve-Path -LiteralPath $RepoRoot -ErrorAction Stop).Path
+$pythonExecutableWasExplicit = -not [string]::IsNullOrWhiteSpace($PythonExecutable)
+if ($pythonExecutableWasExplicit) {
+    $pythonCandidate = if ([System.IO.Path]::IsPathRooted($PythonExecutable)) {
+        $PythonExecutable
+    } else {
+        Join-Path $RepoRoot $PythonExecutable
+    }
+    if (-not (Test-Path -LiteralPath $pythonCandidate -PathType Leaf)) {
+        throw "Explicit Python executable was not found: $pythonCandidate"
+    }
+    $pythonCandidateItem = Get-Item -LiteralPath $pythonCandidate -Force
+    if (($pythonCandidateItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Explicit Python executable must not be a reparse point."
+    }
+    $releasePython = (Resolve-Path -LiteralPath $pythonCandidate).Path
+} else {
+    $releasePython = Join-Path $RepoRoot "venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $releasePython -PathType Leaf)) {
+        $releasePython = (Get-Command python -ErrorAction Stop).Source
+    }
+}
+$resolvedResearchBuildRoot = ""
+if (-not [string]::IsNullOrWhiteSpace($ResearchBuildRoot)) {
+    if (-not $pythonExecutableWasExplicit) {
+        throw "-ResearchBuildRoot requires an explicit -PythonExecutable."
+    }
+    $researchRootCandidate = if ([System.IO.Path]::IsPathRooted($ResearchBuildRoot)) {
+        $ResearchBuildRoot
+    } else {
+        Join-Path $RepoRoot $ResearchBuildRoot
+    }
+    $resolvedResearchBuildRoot = [System.IO.Path]::GetFullPath($researchRootCandidate).TrimEnd('\', '/')
+    $repoPrefix = $RepoRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $resolvedResearchBuildRoot.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "ResearchBuildRoot must be a strict descendant of RepoRoot."
+    }
+    $resolvedResearchBuildRoot = Assert-NoResearchReparsePath -Root $RepoRoot -Path $resolvedResearchBuildRoot -Label "ResearchBuildRoot"
+    if (Test-Path -LiteralPath $resolvedResearchBuildRoot) {
+        $researchRootItem = Get-Item -LiteralPath $resolvedResearchBuildRoot -Force
+        if (-not $researchRootItem.PSIsContainer) {
+            throw "ResearchBuildRoot must be a directory: $resolvedResearchBuildRoot"
+        }
+        if (($researchRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "ResearchBuildRoot must not be a reparse point."
+        }
+    } else {
+        New-Item -ItemType Directory -Path $resolvedResearchBuildRoot -Force | Out-Null
+    }
+    $null = Assert-NoResearchReparsePath -Root $RepoRoot -Path $resolvedResearchBuildRoot -Label "ResearchBuildRoot"
+    foreach ($researchChildName in @("dist", "work", "sidecar-cache", "runtime-cache", "payload")) {
+        $researchChild = Join-Path $resolvedResearchBuildRoot $researchChildName
+        if (Test-Path -LiteralPath $researchChild) {
+            $researchChildItem = Get-Item -LiteralPath $researchChild -Force
+            if (-not $researchChildItem.PSIsContainer) {
+                throw "Research build child must be a directory: $researchChild"
+            }
+            if (($researchChildItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Research build child must not be a reparse point: $researchChild"
+            }
+        }
+    }
+}
+$researchToolchainExplicit = -not [string]::IsNullOrWhiteSpace($ResearchToolchainManifest)
+if ($resolvedResearchBuildRoot -and -not $researchToolchainExplicit) {
+    throw "-ResearchBuildRoot requires an explicit -ResearchToolchainManifest."
+}
+$researchToolchainHash = $null
+$researchNsisRoot = $null
+$priorResearchPath = $env:PATH
+$priorResearchRustToolchain = $env:RUSTUP_TOOLCHAIN
+$priorResearchPipNoIndex = $env:PIP_NO_INDEX
+$priorResearchPipDisableVersionCheck = $env:PIP_DISABLE_PIP_VERSION_CHECK
+if ($researchToolchainExplicit) {
+    if (-not $resolvedResearchBuildRoot -or -not $pythonExecutableWasExplicit) {
+        throw "-ResearchToolchainManifest requires -ResearchBuildRoot and -PythonExecutable."
+    }
+    $toolchainManifestCandidate = if ([System.IO.Path]::IsPathRooted($ResearchToolchainManifest)) {
+        $ResearchToolchainManifest
+    } else {
+        Join-Path $RepoRoot $ResearchToolchainManifest
+    }
+    if (-not (Test-Path -LiteralPath $toolchainManifestCandidate -PathType Leaf)) {
+        throw "Research toolchain manifest was not found."
+    }
+    $toolchainManifestCandidateItem = Get-Item -LiteralPath $toolchainManifestCandidate -Force
+    if (($toolchainManifestCandidateItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "ResearchToolchainManifest must not be a reparse point."
+    }
+    $resolvedToolchainManifest = (Resolve-Path -LiteralPath $toolchainManifestCandidate).Path
+    $repoPrefix = $RepoRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $resolvedToolchainManifest.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "ResearchToolchainManifest must stay under RepoRoot."
+    }
+    $manifestItem = Get-Item -LiteralPath $resolvedToolchainManifest -Force
+    if (($manifestItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "ResearchToolchainManifest must not be a reparse point."
+    }
+    $toolchain = Get-Content -LiteralPath $resolvedToolchainManifest -Raw | ConvertFrom-Json
+    if (
+        [int]$toolchain.schemaVersion -ne 1 -or
+        [string]$toolchain.kind -ne "scriber-installer-research-toolchain" -or
+        [string]$toolchain.runId -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
+        [string]$toolchain.rustToolchain -ne "1.97.0"
+    ) {
+        throw "Research toolchain manifest contract or Rust pin is invalid."
+    }
+    $toolchainRoot = Split-Path -Parent $resolvedToolchainManifest
+    $toolchainRunRoot = Split-Path -Parent $toolchainRoot
+    $expectedToolchainRunRoot = [System.IO.Path]::GetFullPath(
+        (Join-Path $RepoRoot "autoresearch-results\installer-size\$([string]$toolchain.runId)")
+    ).TrimEnd('\', '/')
+    if (-not $toolchainRunRoot.Equals($expectedToolchainRunRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Research toolchain manifest is outside its canonical run namespace."
+    }
+    $toolchainRunPrefix = $toolchainRunRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $resolvedResearchBuildRoot.StartsWith($toolchainRunPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "ResearchBuildRoot and ResearchToolchainManifest must belong to the same run."
+    }
+    $researchNodeRoot = Join-Path $toolchainRoot "node"
+    $researchNode = Assert-ResearchToolFileIdentity -Path (Join-Path $researchNodeRoot "node.exe") -Identity $toolchain.node -Label "Pinned Node executable"
+    $null = Assert-ResearchToolFileIdentity -Path (Join-Path $researchNodeRoot "node_modules\npm\bin\npm-cli.js") -Identity $toolchain.npm -Label "Pinned npm CLI"
+    $null = Assert-ResearchToolFileIdentity -Path (Join-Path $RepoRoot "Frontend\node_modules\@tauri-apps\cli\tauri.js") -Identity $toolchain.tauri -Label "Pinned Tauri CLI"
+    $null = Assert-ResearchToolFileIdentity -Path (Join-Path $RepoRoot "Frontend\package-lock.json") -Identity $toolchain.frontendPackageLock -Label "Pinned frontend lockfile"
+    $expectedNodeVersion = (Get-Content -LiteralPath (Join-Path $RepoRoot ".node-version") -Raw).Trim()
+    if ([string]$toolchain.node.version -ne "v$expectedNodeVersion") {
+        throw "Research Node version differs from .node-version."
+    }
+    $rustup = (Get-Command rustup -ErrorAction Stop).Source
+    $researchRustc = (& $rustup which --toolchain $toolchain.rustToolchain rustc).Trim()
+    if ($LASTEXITCODE -ne 0) { throw "Pinned rustc could not be resolved." }
+    $researchCargo = (& $rustup which --toolchain $toolchain.rustToolchain cargo).Trim()
+    if ($LASTEXITCODE -ne 0) { throw "Pinned cargo could not be resolved." }
+    $null = Assert-ResearchToolFileIdentity -Path $researchRustc -Identity $toolchain.rustc -Label "Pinned rustc"
+    $null = Assert-ResearchToolFileIdentity -Path $researchCargo -Identity $toolchain.cargo -Label "Pinned cargo"
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        throw "LOCALAPPDATA is required to bind the pinned Tauri NSIS tree."
+    }
+    $researchNsisRoot = Join-Path $env:LOCALAPPDATA "tauri\NSIS"
+    $researchNsisRoot = Assert-NoResearchReparsePath -Root $env:LOCALAPPDATA -Path $researchNsisRoot -Label "Pinned Tauri NSIS tree"
+    $makensisRelativePath = ([string]$toolchain.nsis.relativePath).Replace('/', '\')
+    if ($makensisRelativePath -notin @("Bin\makensis.exe", "makensis.exe")) {
+        throw "Pinned NSIS manifest has an invalid executable binding."
+    }
+    $researchMakensis = Join-Path $researchNsisRoot $makensisRelativePath
+    $null = Assert-ResearchToolFileIdentity -Path $researchMakensis -Identity $toolchain.nsis -Label "Pinned NSIS"
+    Assert-ResearchTreeIdentity -Root $researchNsisRoot -Identity $toolchain.nsisTree -Label "Pinned NSIS tree"
+    $env:PATH = "$researchNodeRoot$([System.IO.Path]::PathSeparator)$priorResearchPath"
+    $env:RUSTUP_TOOLCHAIN = [string]$toolchain.rustToolchain
+    $env:PIP_NO_INDEX = "1"
+    $env:PIP_DISABLE_PIP_VERSION_CHECK = "1"
+    $nodeVersionActual = (& $researchNode --version).Trim()
+    $rustVersionActual = (& $researchRustc --version).Trim()
+    if ($nodeVersionActual -ne "v$expectedNodeVersion" -or $rustVersionActual -notmatch '^rustc 1\.97\.0\b') {
+        throw "Pinned research Node or Rust failed its active-environment probe."
+    }
+    $researchToolchainHash = (Get-FileHash -LiteralPath $resolvedToolchainManifest -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 $script:BuildTimingStarted = [System.Diagnostics.Stopwatch]::StartNew()
 $script:BuildTimingPhases = [System.Collections.Generic.List[object]]::new()
@@ -325,13 +606,17 @@ function New-SidecarBuildScriptArguments {
         "Bypass",
         "-File",
         "scripts\build_tauri_backend_sidecar.ps1",
+        "-PythonPath",
+        $releasePython,
         "-SkipFrontendBuild",
-        "-InstallPyInstaller",
         "-BundleMediaTools",
         "-BundleRustAudioSidecar",
         "-BundleRustDiarizationSidecar",
         "-CopyToTauriRelease"
     )
+    if (-not $resolvedResearchBuildRoot) {
+        $sidecarArgs += "-InstallPyInstaller"
+    }
     if ($SkipBundledFfprobe) {
         $sidecarArgs += "-SkipBundledFfprobe"
     }
@@ -343,6 +628,15 @@ function New-SidecarBuildScriptArguments {
     }
     if ($MediaToolsDir) {
         $sidecarArgs += @("-MediaToolsDir", $MediaToolsDir)
+    }
+    if ($resolvedResearchBuildRoot) {
+        $sidecarArgs += @(
+            "-DistRoot", (Join-Path $resolvedResearchBuildRoot "dist"),
+            "-WorkRoot", (Join-Path $resolvedResearchBuildRoot "work"),
+            "-SidecarCacheRoot", (Join-Path $resolvedResearchBuildRoot "sidecar-cache"),
+            "-RuntimeCacheRoot", (Join-Path $resolvedResearchBuildRoot "runtime-cache"),
+            "-DeterministicResearchMetadata"
+        )
     }
     if ($ReuseSidecarIfUnchanged) {
         $sidecarArgs += "-ReuseSidecarIfUnchanged"
@@ -545,7 +839,6 @@ function New-TauriBundleLogSummary {
     return $payload
 }
 
-$RepoRoot = (Resolve-Path $RepoRoot).Path
 $frontendRoot = Join-Path $RepoRoot "Frontend"
 $bundleArg = ($Bundles -join ",")
 $tauriConfigPath = Join-Path $RepoRoot "Frontend\src-tauri\tauri.conf.json"
@@ -832,6 +1125,10 @@ try {
         Invoke-Checked -Label "Tauri Windows bundle" -Command {
             Push-Location $frontendRoot
             try {
+                if ($researchToolchainExplicit) {
+                    $null = Assert-NoResearchReparsePath -Root $env:LOCALAPPDATA -Path $researchNsisRoot -Label "Pinned NSIS tree before bundle"
+                    Assert-ResearchTreeIdentity -Root $researchNsisRoot -Identity $toolchain.nsisTree -Label "Pinned NSIS tree before bundle"
+                }
                 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $tauriBundleLogPath) | Out-Null
                 $bundleExistingTauriApp = $UsePrebuiltTauriApp -or $tauriAppBuiltBeforeBundle
                 if (-not $tauriAppBuiltBeforeBundle -and (Test-Path -LiteralPath $tauriBundleLogPath -PathType Leaf)) {
@@ -859,6 +1156,10 @@ try {
                         }
                 } finally {
                     $tauriLogWriter.Dispose()
+                    if ($researchToolchainExplicit) {
+                        $null = Assert-NoResearchReparsePath -Root $env:LOCALAPPDATA -Path $researchNsisRoot -Label "Pinned NSIS tree after bundle"
+                        Assert-ResearchTreeIdentity -Root $researchNsisRoot -Identity $toolchain.nsisTree -Label "Pinned NSIS tree after bundle"
+                    }
                 }
                 $tauriExitCode = $LASTEXITCODE
                 if ($tauriExitCode -ne 0) {
@@ -963,6 +1264,22 @@ try {
                 "Release artifacts selected for metadata: " +
                 (($artifacts | ForEach-Object { Split-Path -Leaf $_ }) -join ", ")
             )
+        }
+    }
+
+    $researchPayloadRoot = $null
+    if ($resolvedResearchBuildRoot) {
+        $researchPayloadRoot = Join-Path $resolvedResearchBuildRoot "payload"
+        Invoke-Checked -Label "Stage exact installer research payload" -Command {
+            Push-Location $RepoRoot
+            try {
+                & $releasePython scripts\stage_installer_research_payload.py `
+                    --release-root $targetRelease `
+                    --notices (Join-Path $RepoRoot "THIRD_PARTY_NOTICES.md") `
+                    --output $researchPayloadRoot
+            } finally {
+                Pop-Location
+            }
         }
     }
 
@@ -1356,6 +1673,10 @@ try {
         localPyInstallerNoClean = [bool]$LocalPyInstallerNoClean
         rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
         runtimeAttested = [bool]$runtimeAttestationPath
+        pythonExecutableExplicit = $pythonExecutableWasExplicit
+        researchBuildIsolated = [bool]$resolvedResearchBuildRoot
+        researchToolchainExplicit = $researchToolchainExplicit
+        researchToolchainHash = $researchToolchainHash
     }
     $sidecarMetadataPath = Join-Path $targetRelease "backend\sidecar-build-metadata.json"
     $buildTimingPath = Write-BuildTimingReport -MetadataDir $metadataDir -SidecarMetadataPath $sidecarMetadataPath -BuildMode $buildMode
@@ -1366,6 +1687,7 @@ try {
         updaterEnabled = [bool]$EnableTauriUpdater
         updaterRuntimeConfigured = [bool]($EnableTauriUpdater -or $ConfigureTauriUpdaterRuntime)
         releaseExe = $releaseExe
+        researchPayloadRoot = $researchPayloadRoot
         artifacts = $artifacts
         metadataDir = $metadataDir
         sizeReport = Join-Path $metadataDir "size-report.json"
@@ -1405,9 +1727,31 @@ try {
         localPyInstallerNoClean = [bool]$LocalPyInstallerNoClean
         rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
         failed = $true
+        pythonExecutableExplicit = $pythonExecutableWasExplicit
+        researchBuildIsolated = [bool]$resolvedResearchBuildRoot
+        researchToolchainExplicit = $researchToolchainExplicit
+        researchToolchainHash = $researchToolchainHash
     }
     $sidecarMetadataPath = Join-Path $targetRelease "backend\sidecar-build-metadata.json"
     Write-BuildTimingReport -MetadataDir $metadataDir -SidecarMetadataPath $sidecarMetadataPath -BuildMode $failureBuildMode | Out-Null
     throw
 } finally {
+    if ($researchToolchainExplicit) {
+        $env:PATH = $priorResearchPath
+        if ($null -eq $priorResearchRustToolchain) {
+            Remove-Item Env:RUSTUP_TOOLCHAIN -ErrorAction SilentlyContinue
+        } else {
+            $env:RUSTUP_TOOLCHAIN = $priorResearchRustToolchain
+        }
+        if ($null -eq $priorResearchPipNoIndex) {
+            Remove-Item Env:PIP_NO_INDEX -ErrorAction SilentlyContinue
+        } else {
+            $env:PIP_NO_INDEX = $priorResearchPipNoIndex
+        }
+        if ($null -eq $priorResearchPipDisableVersionCheck) {
+            Remove-Item Env:PIP_DISABLE_PIP_VERSION_CHECK -ErrorAction SilentlyContinue
+        } else {
+            $env:PIP_DISABLE_PIP_VERSION_CHECK = $priorResearchPipDisableVersionCheck
+        }
+    }
 }

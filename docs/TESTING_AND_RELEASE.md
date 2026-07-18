@@ -199,8 +199,9 @@ scripts\project-python.cmd scripts\smoke_diarization_worker_resource.py `
   module and `onnx_asr`. This protects the installed AssemblyAI Universal-3.5
   realtime path and the bundled ONNX local-ASR path. The exact-module AST gate
   additionally requires every direct `pipecat.*` import under `src` to be in the
-  frozen contract; revision 3 specifically protects
-  `pipecat.transports.base_input` used by microphone and audio-file transports.
+  frozen contract; revision 4 preserves the revision-3
+  `pipecat.transports.base_input` transport boundary and adds the bounded
+  installer-research YouTube holdout probe executed by the frozen backend.
 - Provider tests for custom Pipecat services must run with deprecation warnings
   promoted to errors and assert complete Pipecat 1.5 `STTSettings`. Lifecycle
   coverage also verifies that only the expected Windows Proactor WinError 10054

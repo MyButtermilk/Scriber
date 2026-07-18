@@ -49,11 +49,15 @@ param(
     [switch]$RustDiarizationPrestageOnly,
     [string]$RustDiarizationResultPath = "",
     [string]$RustDiarizationPrestageBackendDir = "",
+    [switch]$DeterministicResearchMetadata,
     [switch]$LocalPyInstallerNoClean,
     [switch]$CopyToTauriRelease
 )
 
 $ErrorActionPreference = "Stop"
+if ($DeterministicResearchMetadata -and $InstallPyInstaller) {
+    throw "Deterministic research builds require PyInstaller to be preinstalled; network installation is forbidden."
+}
 $script:BuildTimingStarted = [System.Diagnostics.Stopwatch]::StartNew()
 $script:BuildTimingPhases = [System.Collections.Generic.List[object]]::new()
 
@@ -83,13 +87,47 @@ function Assert-UnderRoot {
     param(
         [string]$Root,
         [string]$Path,
-        [string]$Label
+        [string]$Label,
+        [switch]$Recurse
     )
 
-    $rootFull = Convert-ToFullPath -Path $Root
-    $pathFull = Convert-ToFullPath -Path $Path
-    if (-not $pathFull.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $rootFull = (Convert-ToFullPath -Path $Root).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $pathFull = (Convert-ToFullPath -Path $Path).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $prefix = $rootFull + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $pathFull.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "$Label must stay under repo root. Got: $pathFull"
+    }
+    if (Test-Path -LiteralPath $rootFull) {
+        $rootItem = Get-Item -LiteralPath $rootFull -Force
+        if (($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Label root must not be a reparse point: $rootFull"
+        }
+    }
+    $relative = $pathFull.Substring($rootFull.Length).TrimStart('\', '/')
+    $current = $rootFull
+    foreach ($part in $relative.Split([char[]]@('\', '/'), [System.StringSplitOptions]::RemoveEmptyEntries)) {
+        $current = Join-Path $current $part
+        if (-not (Test-Path -LiteralPath $current)) {
+            break
+        }
+        $item = Get-Item -LiteralPath $current -Force
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Label path must not contain a reparse point: $current"
+        }
+    }
+    if ($Recurse -and (Test-Path -LiteralPath $pathFull -PathType Container)) {
+        $nested = Get-ChildItem -LiteralPath $pathFull -Recurse -Force -ErrorAction Stop |
+            Where-Object { ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 } |
+            Select-Object -First 1
+        if ($nested) {
+            throw "$Label tree must not contain a reparse point: $($nested.FullName)"
+        }
     }
 }
 
@@ -846,6 +884,7 @@ function Initialize-BackendRuntimeStableMediaTools {
 
     $stableRoot = Join-Path $CacheRoot "media-tools"
     if (Test-Path -LiteralPath $stableRoot -PathType Container) {
+        $null = Assert-UnderRoot -Root $RepoRoot -Path $stableRoot -Label "Stable media tools cleanup" -Recurse
         Remove-Item -LiteralPath $stableRoot -Recurse -Force
     }
     New-Item -ItemType Directory -Force -Path $stableRoot | Out-Null
@@ -1254,7 +1293,7 @@ function Sync-DirectoryContents {
         [string]$TargetLabel
     )
 
-    Assert-UnderRoot -Root $RepoRoot -Path $TargetDir -Label $TargetLabel
+    $null = Assert-UnderRoot -Root $RepoRoot -Path $TargetDir -Label $TargetLabel -Recurse
     if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
         throw "Source directory was not found for ${TargetLabel}: ${SourceDir}"
     }
@@ -1433,7 +1472,7 @@ function Copy-RustAudioSidecarToTauriRelease {
     if (Test-Path -LiteralPath $staleResourceDir -PathType Container) {
         foreach ($staleItem in Get-ChildItem -LiteralPath $staleResourceDir -Force -ErrorAction SilentlyContinue) {
             if ($staleItem.Name -ne ".gitkeep") {
-                Assert-UnderRoot -Root $staleResourceDir -Path $staleItem.FullName -Label "Stale audio sidecar resource"
+                $null = Assert-UnderRoot -Root $staleResourceDir -Path $staleItem.FullName -Label "Stale audio sidecar resource" -Recurse
                 Remove-Item -LiteralPath $staleItem.FullName -Recurse -Force
             }
         }
@@ -1444,7 +1483,7 @@ function Copy-RustAudioSidecarToTauriRelease {
     }
 
     if (Test-Path -LiteralPath $staleTargetResourceDir -PathType Container) {
-        Assert-UnderRoot -Root $targetDir -Path $staleTargetResourceDir -Label "Stale packaged audio sidecar resource"
+        $null = Assert-UnderRoot -Root $targetDir -Path $staleTargetResourceDir -Label "Stale packaged audio sidecar resource" -Recurse
         Remove-Item -LiteralPath $staleTargetResourceDir -Recurse -Force
     }
 
@@ -1762,7 +1801,7 @@ function Copy-RustDiarizationSidecarToBackend {
         }
         foreach ($staleItem in Get-ChildItem -LiteralPath $cacheResourceDir -Force -ErrorAction SilentlyContinue) {
             if ($staleItem.Name -notin @($exeName, $workerManifestName)) {
-                Assert-UnderRoot -Root $cacheResourceDir -Path $staleItem.FullName -Label "Stale diarization cache resource"
+                $null = Assert-UnderRoot -Root $cacheResourceDir -Path $staleItem.FullName -Label "Stale diarization cache resource" -Recurse
                 Remove-Item -LiteralPath $staleItem.FullName -Recurse -Force
             }
         }
@@ -1981,6 +2020,62 @@ function Test-SidecarTargetCurrent {
     return $true
 }
 
+function Convert-ToPathRedactedBuildMetadataValue {
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+    if ($Value -is [string]) {
+        $text = [string]$Value
+        if (
+            [System.IO.Path]::IsPathRooted($text) -or
+            $text.StartsWith("\\", [System.StringComparison]::Ordinal) -or
+            $text.StartsWith("/", [System.StringComparison]::Ordinal)
+        ) {
+            return "<redacted-absolute-path>"
+        }
+        return $text
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $result = [ordered]@{}
+        foreach ($key in $Value.Keys) {
+            $result[[string]$key] = Convert-ToPathRedactedBuildMetadataValue -Value $Value[$key]
+        }
+        return $result
+    }
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        $result = [ordered]@{}
+        foreach ($property in $Value.PSObject.Properties) {
+            $result[$property.Name] = Convert-ToPathRedactedBuildMetadataValue -Value $property.Value
+        }
+        return $result
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        return @($Value | ForEach-Object { Convert-ToPathRedactedBuildMetadataValue -Value $_ })
+    }
+    return $Value
+}
+
+function Get-DeterministicResearchSidecarIdentity {
+    param(
+        [object]$Value,
+        [string[]]$Fields
+    )
+
+    if ($null -eq $Value) {
+        return $null
+    }
+    $identity = [ordered]@{}
+    foreach ($field in $Fields) {
+        $fieldValue = Get-ObjectPropertyValue -Object $Value -Name $field
+        if ($null -ne $fieldValue) {
+            $identity[$field] = $fieldValue
+        }
+    }
+    return $identity
+}
+
 function Write-SidecarBuildMetadata {
     param(
         [string]$SidecarDir,
@@ -2017,9 +2112,44 @@ function Write-SidecarBuildMetadata {
     }
 
     $script:BuildTimingStarted.Stop()
+    $metadataGeneratedAt = if ($DeterministicResearchMetadata) {
+        "1970-01-01T00:00:00.0000000Z"
+    } else {
+        (Get-Date).ToUniversalTime().ToString("o")
+    }
+    $metadataPreparedMediaTools = $PreparedMediaTools
+    $metadataMediaToolsCopied = $MediaToolsCopied
+    $metadataRustAudioSidecarCopied = $RustAudioSidecarCopied
+    $metadataRustDiarizationSidecarCopied = $RustDiarizationSidecarCopied
+    $metadataTotalDurationMs = [int64]$script:BuildTimingStarted.ElapsedMilliseconds
+    $metadataPhases = @($script:BuildTimingPhases)
+    if ($DeterministicResearchMetadata) {
+        # The packaged metadata is diagnostic-only. Research replicas retain
+        # the functional identities used by Test-SidecarTargetCurrent while
+        # excluding cache history, absolute paths, wall-clock timestamps, and
+        # timing jitter that can otherwise perturb NSIS compression size.
+        $metadataPreparedMediaTools = Get-DeterministicResearchSidecarIdentity `
+            -Value $PreparedMediaTools `
+            -Fields @("profile", "profileName", "manifestSha256", "manifestLength")
+        $metadataMediaToolsCopied = @(
+            $MediaToolsCopied | ForEach-Object {
+                if ($_ -is [string]) { Split-Path -Leaf ([string]$_) } else { $_ }
+            }
+        )
+        $metadataRustAudioSidecarCopied = Get-DeterministicResearchSidecarIdentity `
+            -Value $RustAudioSidecarCopied `
+            -Fields @("cacheKey", "sha256", "length", "isolatedCargoTarget")
+        $metadataRustDiarizationSidecarCopied = Get-DeterministicResearchSidecarIdentity `
+            -Value $RustDiarizationSidecarCopied `
+            -Fields @("cacheKey", "sha256", "length", "manifestSha256", "manifestLength")
+        $metadataTotalDurationMs = [int64]0
+        $metadataPhases = @()
+    }
+
     $metadata = [ordered]@{
         apiVersion = "1"
-        generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+        generatedAt = $metadataGeneratedAt
+        deterministicResearchMetadata = [bool]$DeterministicResearchMetadata
         sidecarDir = $SidecarDir
         sidecarExe = $SidecarExe
         sidecar = [ordered]@{
@@ -2062,15 +2192,16 @@ function Write-SidecarBuildMetadata {
             pyInstallerClean = -not [bool]$LocalPyInstallerNoClean
             rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
         }
-        preparedMediaTools = $PreparedMediaTools
-        mediaToolsCopied = $MediaToolsCopied
-        rustAudioSidecarCopied = $RustAudioSidecarCopied
-        rustDiarizationSidecarCopied = $RustDiarizationSidecarCopied
-        totalDurationMs = [int64]$script:BuildTimingStarted.ElapsedMilliseconds
-        phases = @($script:BuildTimingPhases)
+        preparedMediaTools = $metadataPreparedMediaTools
+        mediaToolsCopied = $metadataMediaToolsCopied
+        rustAudioSidecarCopied = $metadataRustAudioSidecarCopied
+        rustDiarizationSidecarCopied = $metadataRustDiarizationSidecarCopied
+        totalDurationMs = $metadataTotalDurationMs
+        phases = $metadataPhases
     }
     $metadataPath = Join-Path $SidecarDir "sidecar-build-metadata.json"
-    $metadata | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $metadataPath -Encoding utf8
+    $redactedMetadata = Convert-ToPathRedactedBuildMetadataValue -Value $metadata
+    $redactedMetadata | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $metadataPath -Encoding utf8
     return $metadataPath
 }
 
@@ -2609,6 +2740,7 @@ if ($RustDiarizationPrestageOnly) {
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $RustDiarizationResultPath) | Out-Null
     if (Test-Path -LiteralPath $RustDiarizationPrestageBackendDir -PathType Container) {
+        $null = Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationPrestageBackendDir -Label "Rust diarization prestage cleanup" -Recurse
         Remove-Item -LiteralPath $RustDiarizationPrestageBackendDir -Recurse -Force
     }
 
@@ -2630,6 +2762,7 @@ if ($RustDiarizationPrestageOnly) {
     } finally {
         $rustDiarizationWatch.Stop()
         if (Test-Path -LiteralPath $RustDiarizationPrestageBackendDir -PathType Container) {
+            $null = Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationPrestageBackendDir -Label "Rust diarization prestage final cleanup" -Recurse
             Remove-Item -LiteralPath $RustDiarizationPrestageBackendDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
@@ -3025,7 +3158,7 @@ if (($ParallelizeIndependentBuilds -or $ParallelizeRustDiarizationBuild) -and $B
     $rustDiarizationParallelBackendDir = Join-Path $rustDiarizationParallelRoot "backend"
     $rustDiarizationParallelStdoutPath = Join-Path $rustDiarizationParallelRoot "stdout.log"
     $rustDiarizationParallelStderrPath = Join-Path $rustDiarizationParallelRoot "stderr.log"
-    Assert-UnderRoot -Root $RepoRoot -Path $rustDiarizationParallelRoot -Label "Rust diarization parallel root"
+    $null = Assert-UnderRoot -Root $RepoRoot -Path $rustDiarizationParallelRoot -Label "Rust diarization parallel root" -Recurse
     if (Test-Path -LiteralPath $rustDiarizationParallelRoot -PathType Container) {
         Remove-Item -LiteralPath $rustDiarizationParallelRoot -Recurse -Force
     }
@@ -3099,7 +3232,7 @@ if (-not $cacheHit) {
         $runtimeBuildDistRoot = Join-Path $WorkRoot "runtime-dist"
         $runtimeBuildWorkRoot = Join-Path $WorkRoot "runtime-work"
         foreach ($runtimeBuildPath in @($runtimeBuildDistRoot, $runtimeBuildWorkRoot)) {
-            Assert-UnderRoot -Root $RepoRoot -Path $runtimeBuildPath -Label "Frozen backend runtime build path"
+            $null = Assert-UnderRoot -Root $RepoRoot -Path $runtimeBuildPath -Label "Frozen backend runtime build path" -Recurse
             if (Test-Path -LiteralPath $runtimeBuildPath -PathType Container) {
                 Remove-Item -LiteralPath $runtimeBuildPath -Recurse -Force
             }
@@ -3416,7 +3549,7 @@ if ($rustDiarizationParallelProcess) {
         $rustDiarizationParallelProcess = $null
     }
     if ($rustDiarizationParallelRoot -and (Test-Path -LiteralPath $rustDiarizationParallelRoot -PathType Container)) {
-        Assert-UnderRoot -Root $RepoRoot -Path $rustDiarizationParallelRoot -Label "Rust diarization parallel cleanup root"
+        $null = Assert-UnderRoot -Root $RepoRoot -Path $rustDiarizationParallelRoot -Label "Rust diarization parallel cleanup root" -Recurse
         Remove-Item -LiteralPath $rustDiarizationParallelRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }

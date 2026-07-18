@@ -1,0 +1,142 @@
+{
+  "contract": "ScriberQuickJsRuntimeProvenanceLockV1",
+  "schemaVersion": 1,
+  "campaign": "installer-size-v1",
+  "target": {
+    "os": "windows",
+    "architecture": "x86_64"
+  },
+  "entries": [
+    {
+      "id": "quickjs-ng-0.15.0-windows-x86_64",
+      "preference": 1,
+      "implementation": "quickjs-ng",
+      "version": "0.15.0",
+      "release": {
+        "id": "v0.15.0",
+        "sourceRevision": "433941b99fb3c5e7f98b7ebd78727972bcf467ee",
+        "url": "https://github.com/quickjs-ng/quickjs/releases/tag/v0.15.0"
+      },
+      "asset": {
+        "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.15.0/qjs-windows-x86_64.exe",
+        "fileName": "qjs-windows-x86_64.exe",
+        "format": "executable",
+        "length": 1800265,
+        "sha256": "f157d58a9e14e958991e4b0f01b3a6d1d7dc25f3ae78f85c6c8da01c19bf77bf",
+        "upstreamPublishedSha256": "f157d58a9e14e958991e4b0f01b3a6d1d7dc25f3ae78f85c6c8da01c19bf77bf"
+      },
+      "runtimeFiles": [
+        {
+          "role": "executable",
+          "assetPath": "qjs-windows-x86_64.exe",
+          "installedFileName": "qjs.exe",
+          "length": 1800265,
+          "sha256": "f157d58a9e14e958991e4b0f01b3a6d1d7dc25f3ae78f85c6c8da01c19bf77bf"
+        }
+      ],
+      "license": {
+        "spdx": "MIT",
+        "installedFileName": "LICENSE.quickjs-ng.txt",
+        "length": 1212,
+        "sha256": "96f73f9d2a16c21a36b418f06073be26e7d6d5e7c1bc99756b21a4f2c74ef171",
+        "source": {
+          "url": "https://raw.githubusercontent.com/quickjs-ng/quickjs/v0.15.0/LICENSE",
+          "fileName": "LICENSE",
+          "format": "file",
+          "length": 1212,
+          "sha256": "96f73f9d2a16c21a36b418f06073be26e7d6d5e7c1bc99756b21a4f2c74ef171",
+          "archivePath": null
+        }
+      },
+      "manifest": {
+        "contract": "ScriberYoutubeJsRuntimeManifestV1",
+        "schemaVersion": 1,
+        "runtime": {
+          "kind": "quickjs",
+          "version": "0.15.0",
+          "executable": "qjs.exe",
+          "length": 1800265,
+          "sha256": "f157d58a9e14e958991e4b0f01b3a6d1d7dc25f3ae78f85c6c8da01c19bf77bf",
+          "origin": "https://github.com/quickjs-ng/quickjs/releases/download/v0.15.0/qjs-windows-x86_64.exe",
+          "license": "MIT",
+          "licenseFile": "LICENSE.quickjs-ng.txt",
+          "provenanceLockEntry": "quickjs-ng-0.15.0-windows-x86_64"
+        },
+        "policy": {
+          "remoteComponents": false,
+          "firstRunDownloads": false
+        }
+      },
+      "manifestCanonicalSha256": "9190f928e84460939546bfc49beeb1cddf4e4b523ff4345e66c56df0bebd0e1a"
+    },
+    {
+      "id": "quickjs-2026-06-04-windows-x86_64",
+      "preference": 2,
+      "implementation": "quickjs",
+      "version": "2026-06-04",
+      "release": {
+        "id": "2026-06-04",
+        "sourceRevision": "2026-06-04",
+        "url": "https://bellard.org/quickjs/"
+      },
+      "asset": {
+        "url": "https://bellard.org/quickjs/binary_releases/quickjs-win-x86_64-2026-06-04.zip",
+        "fileName": "quickjs-win-x86_64-2026-06-04.zip",
+        "format": "zip",
+        "length": 537160,
+        "sha256": "8d10e75796656f49a3797e2c14465bd67c1f085dba505cf0c8d8a14bf5b19cb4",
+        "upstreamPublishedSha256": null
+      },
+      "runtimeFiles": [
+        {
+          "role": "executable",
+          "assetPath": "qjs.exe",
+          "installedFileName": "qjs.exe",
+          "length": 1085952,
+          "sha256": "433a35a59bd6ff8950c57e6c7e809cae3fa01302ff673c121488b45f738afe3a"
+        },
+        {
+          "role": "dependency",
+          "assetPath": "libwinpthread-1.dll",
+          "installedFileName": "libwinpthread-1.dll",
+          "length": 59041,
+          "sha256": "1933c3f02ede171b7d9432204a89dfbdd846b86819df3040b0804fe1d02a8b16"
+        }
+      ],
+      "license": {
+        "spdx": "MIT",
+        "installedFileName": "LICENSE.quickjs.txt",
+        "length": 1130,
+        "sha256": "598fd7fc928e4350abce36e337ba5a1346923c5c692f5be92c3d8e29ddd7c18d",
+        "source": {
+          "url": "https://bellard.org/quickjs/quickjs-2026-06-04.tar.xz",
+          "fileName": "quickjs-2026-06-04.tar.xz",
+          "format": "tar.xz",
+          "length": 621500,
+          "sha256": "b376e839b322978313d929fd20663b11ba58b75df5a46c126dd19ea2fa70ad2a",
+          "archivePath": "quickjs-2026-06-04/LICENSE"
+        }
+      },
+      "manifest": {
+        "contract": "ScriberYoutubeJsRuntimeManifestV1",
+        "schemaVersion": 1,
+        "runtime": {
+          "kind": "quickjs",
+          "version": "2026-06-04",
+          "executable": "qjs.exe",
+          "length": 1085952,
+          "sha256": "433a35a59bd6ff8950c57e6c7e809cae3fa01302ff673c121488b45f738afe3a",
+          "origin": "https://bellard.org/quickjs/binary_releases/quickjs-win-x86_64-2026-06-04.zip",
+          "license": "MIT",
+          "licenseFile": "LICENSE.quickjs.txt",
+          "provenanceLockEntry": "quickjs-2026-06-04-windows-x86_64"
+        },
+        "policy": {
+          "remoteComponents": false,
+          "firstRunDownloads": false
+        }
+      },
+      "manifestCanonicalSha256": "5d46d23cb2da69a56924006a81612f0033785ef47733e4094559fa9284a9ebae"
+    }
+  ]
+}

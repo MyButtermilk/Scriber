@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "youtube-runtime-holdouts-v1",
+  "frozenCaseContract": true,
+  "pairing": "deno-immediately-followed-by-candidate",
+  "externalInvalidationRule": "If both runtimes fail the same case, classify the case as externally invalid and do not promote from that sample.",
+  "cases": [
+    {
+      "id": "regular-audio",
+      "family": "regular",
+      "url": "https://www.youtube.com/watch?v=0wEjbSYNUM8",
+      "status": "pending_validation",
+      "provenance": "repository-default-real-workflow-url",
+      "requiredCapabilities": ["metadata", "audio-format-url", "deno-runtime"]
+    },
+    {
+      "id": "player-signature",
+      "family": "signature-challenge",
+      "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "status": "pending_validation",
+      "provenance": "public-route-candidate-requires-run-local-deno-jsc-proof",
+      "requiredCapabilities": ["player-js", "signature", "deno-jsc", "js-challenge-solved"]
+    },
+    {
+      "id": "shorts-route",
+      "family": "shorts",
+      "url": "https://www.youtube.com/shorts/FqkyMSDm-HY",
+      "status": "pending_validation",
+      "provenance": "public-shorts-route-candidate-requires-run-local-deno-proof",
+      "requiredCapabilities": ["metadata", "audio-format-url", "shorts-route"]
+    },
+    {
+      "id": "music-route",
+      "family": "music",
+      "url": "https://music.youtube.com/watch?v=GkIwR3JNArM",
+      "status": "pending_validation",
+      "provenance": "public-music-route-candidate-requires-run-local-deno-proof",
+      "requiredCapabilities": ["metadata", "audio-format-url", "music-route"]
+    },
+    {
+      "id": "caption-route",
+      "family": "captions",
+      "url": "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+      "status": "pending_validation",
+      "provenance": "public-caption-route-candidate-requires-run-local-deno-proof",
+      "requiredCapabilities": ["manual-or-automatic-captions", "audio-format-url"]
+    },
+    {
+      "id": "live-replay-route",
+      "family": "live-replay",
+      "url": "https://www.youtube.com/watch?v=SgcGqmm0j6s",
+      "status": "pending_validation",
+      "provenance": "public-completed-live-route-candidate-requires-run-local-deno-proof",
+      "requiredCapabilities": ["metadata", "audio-format-url", "completed-live-replay-shape"]
+    }
+  ]
+}

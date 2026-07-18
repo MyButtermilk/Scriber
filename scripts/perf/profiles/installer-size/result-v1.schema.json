@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.invalid/schemas/installer-research-result-v1.schema.json",
+  "title": "InstallerResearchResultV1",
+  "type": "object",
+  "required": [
+    "resultContract",
+    "schemaVersion",
+    "runId",
+    "packetId",
+    "parentChampionId",
+    "hypothesis",
+    "sourceCommit",
+    "comparisonKind",
+    "evaluatorHash",
+    "toolchainHash",
+    "compression",
+    "installer",
+    "payload",
+    "attribution",
+    "installMeasurements",
+    "gates",
+    "decision",
+    "reasonCodes"
+  ],
+  "properties": {
+    "resultContract": {"const": "InstallerResearchResultV1"},
+    "schemaVersion": {"const": 1},
+    "runId": {"type": "string", "format": "uuid"},
+    "packetId": {"type": "string", "minLength": 1},
+    "parentChampionId": {"type": ["string", "null"]},
+    "hypothesis": {"type": ["object", "string"]},
+    "sourceCommit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "comparisonKind": {"enum": ["payload", "compression"]},
+    "evaluatorHash": {"$ref": "#/$defs/sha256"},
+    "toolchainHash": {"$ref": "#/$defs/sha256"},
+    "compression": {"enum": ["bzip2", "zlib", "lzma"]},
+    "installer": {
+      "type": "object",
+      "required": ["path", "name", "length", "sha256", "deltaBytes", "deltaPercent"],
+      "properties": {
+        "path": {"type": "string"},
+        "name": {"type": "string", "pattern": "^Scriber_.+_x64-setup\\.exe$"},
+        "length": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "deltaBytes": {"type": ["integer", "null"]},
+        "deltaPercent": {"type": ["number", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "payload": {
+      "type": "object",
+      "required": ["stagedBytes", "installedBytes", "exactTreeSha256", "semanticTreeSha256", "fileListSha256", "deltaBytes"],
+      "properties": {
+        "stagedBytes": {"type": "integer", "minimum": 1},
+        "installedBytes": {"type": ["integer", "null"], "minimum": 1},
+        "exactTreeSha256": {"$ref": "#/$defs/sha256"},
+        "semanticTreeSha256": {"$ref": "#/$defs/sha256"},
+        "fileListSha256": {"$ref": "#/$defs/sha256"},
+        "deltaBytes": {"type": ["integer", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "attribution": {
+      "type": "object",
+      "required": ["componentMapSha256", "components", "pyzInventorySha256", "componentDeltas", "pyzRootDeltas"],
+      "properties": {
+        "componentMapSha256": {"$ref": "#/$defs/sha256"},
+        "components": {"type": "object", "minProperties": 1},
+        "pyzInventorySha256": {"$ref": "#/$defs/sha256"},
+        "componentDeltas": {"type": "object"},
+        "pyzRootDeltas": {"type": "object"}
+      },
+      "additionalProperties": true
+    },
+    "installMeasurements": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["evidenceSha256", "apiVersion", "kind", "pairCount"],
+          "properties": {
+            "evidenceSha256": {"$ref": "#/$defs/sha256"},
+            "apiVersion": {"const": "1"},
+            "kind": {"const": "installer-ab-timing"},
+            "pairCount": {"type": "integer", "minimum": 20}
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "gates": {"type": "object"},
+    "decision": {
+      "enum": ["baseline_accept", "keep", "discard", "checks_failed", "invalid_measurement", "crash", "measure_only"]
+    },
+    "reasonCodes": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

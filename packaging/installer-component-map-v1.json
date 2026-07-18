@@ -1,0 +1,250 @@
+{
+  "schemaVersion": 1,
+  "mapId": "installer-component-map-v1",
+  "pyinstallerVersion": "6.20.0",
+  "classificationPolicy": "all-explicit-matches-or-fallback",
+  "fallbackComponent": "other-payload",
+  "components": [
+    {
+      "id": "desktop-shell",
+      "exactPaths": ["scriber-desktop.exe"]
+    },
+    {
+      "id": "audio-sidecar",
+      "fileNames": [
+        "scriber-audio-sidecar.exe",
+        "scriber-audio-sidecar-x86_64-pc-windows-msvc.exe"
+      ]
+    },
+    {
+      "id": "diarization-sidecar",
+      "pathPrefixes": [
+        "backend/tools/diarization/",
+        "tools/diarization/"
+      ]
+    },
+    {
+      "id": "backend-executable",
+      "backendExecutable": true
+    },
+    {
+      "id": "backend-first-party",
+      "pathPrefixes": ["backend/app/", "app/"]
+    },
+    {
+      "id": "js-runtime",
+      "exactPaths": [
+        "backend/tools/ffmpeg/deno.exe",
+        "backend/tools/ffmpeg/qjs.exe",
+        "backend/tools/ffmpeg/qjs-ng.exe",
+        "backend/tools/ffmpeg/quickjs.exe",
+        "tools/ffmpeg/deno.exe",
+        "tools/ffmpeg/qjs.exe",
+        "tools/ffmpeg/qjs-ng.exe",
+        "tools/ffmpeg/quickjs.exe"
+      ]
+    },
+    {
+      "id": "yt-dlp-ejs",
+      "exactPaths": [
+        "backend/tools/ffmpeg/yt-dlp.exe",
+        "tools/ffmpeg/yt-dlp.exe"
+      ],
+      "pathPrefixes": [
+        "backend/_internal/yt_dlp/",
+        "backend/_internal/yt_dlp-",
+        "backend/_internal/yt_dlp_ejs/",
+        "backend/_internal/yt_dlp_ejs-",
+        "_internal/yt_dlp/",
+        "_internal/yt_dlp-",
+        "_internal/yt_dlp_ejs/",
+        "_internal/yt_dlp_ejs-"
+      ]
+    },
+    {
+      "id": "ffmpeg-ffprobe",
+      "pathGlobs": [
+        "backend/tools/ffmpeg/ffmpeg.exe",
+        "backend/tools/ffmpeg/ffprobe.exe",
+        "backend/tools/ffmpeg/ffmpeg-profile-manifest.json",
+        "backend/tools/ffmpeg/lib*.dll",
+        "tools/ffmpeg/ffmpeg.exe",
+        "tools/ffmpeg/ffprobe.exe",
+        "tools/ffmpeg/ffmpeg-profile-manifest.json",
+        "tools/ffmpeg/lib*.dll"
+      ]
+    },
+    {
+      "id": "nltk-data",
+      "pathPrefixes": [
+        "backend/_internal/nltk_data/",
+        "_internal/nltk_data/"
+      ]
+    },
+    {
+      "id": "nltk-code",
+      "pathPrefixes": [
+        "backend/_internal/nltk/",
+        "backend/_internal/nltk-",
+        "_internal/nltk/",
+        "_internal/nltk-"
+      ]
+    },
+    {
+      "id": "hugging-face",
+      "pathPrefixes": [
+        "backend/_internal/huggingface_hub/",
+        "backend/_internal/huggingface_hub-",
+        "backend/_internal/hf_xet/",
+        "backend/_internal/hf_xet-",
+        "_internal/huggingface_hub/",
+        "_internal/huggingface_hub-",
+        "_internal/hf_xet/",
+        "_internal/hf_xet-"
+      ]
+    },
+    {
+      "id": "onnx-runtime-asr",
+      "pathPrefixes": [
+        "backend/_internal/onnxruntime/",
+        "backend/_internal/onnxruntime-",
+        "backend/_internal/onnx_asr/",
+        "backend/_internal/onnx_asr-",
+        "_internal/onnxruntime/",
+        "_internal/onnxruntime-",
+        "_internal/onnx_asr/",
+        "_internal/onnx_asr-"
+      ]
+    },
+    {
+      "id": "numpy-openblas",
+      "pathPrefixes": [
+        "backend/_internal/numpy/",
+        "backend/_internal/numpy-",
+        "backend/_internal/numpy.libs/",
+        "_internal/numpy/",
+        "_internal/numpy-",
+        "_internal/numpy.libs/"
+      ]
+    },
+    {
+      "id": "silero-smartturn",
+      "pathPrefixes": [
+        "backend/_internal/pipecat/audio/vad/data/",
+        "backend/_internal/pipecat/audio/turn/smart_turn/data/",
+        "_internal/pipecat/audio/vad/data/",
+        "_internal/pipecat/audio/turn/smart_turn/data/"
+      ]
+    },
+    {
+      "id": "provider-sdks",
+      "pathPrefixes": [
+        "backend/_internal/google/",
+        "backend/_internal/google_",
+        "backend/_internal/grpc/",
+        "backend/_internal/grpc-",
+        "backend/_internal/deepgram",
+        "backend/_internal/openai",
+        "backend/_internal/groq",
+        "backend/_internal/speechmatics",
+        "_internal/google/",
+        "_internal/google_",
+        "_internal/grpc/",
+        "_internal/grpc-",
+        "_internal/deepgram",
+        "_internal/openai",
+        "_internal/groq",
+        "_internal/speechmatics"
+      ]
+    },
+    {
+      "id": "export-stack",
+      "pathPrefixes": [
+        "backend/_internal/pil/",
+        "backend/_internal/pillow-",
+        "backend/_internal/docx/",
+        "backend/_internal/python_docx-",
+        "backend/_internal/lxml/",
+        "backend/_internal/lxml-",
+        "backend/_internal/reportlab/",
+        "backend/_internal/reportlab-",
+        "_internal/pil/",
+        "_internal/pillow-",
+        "_internal/docx/",
+        "_internal/python_docx-",
+        "_internal/lxml/",
+        "_internal/lxml-",
+        "_internal/reportlab/",
+        "_internal/reportlab-"
+      ]
+    },
+    {
+      "id": "backend-metadata",
+      "exactPaths": [
+        "backend/runtime-layer-manifest.json",
+        "backend/sidecar-build-metadata.json",
+        "runtime-layer-manifest.json",
+        "sidecar-build-metadata.json"
+      ]
+    },
+    {
+      "id": "python-runtime-other"
+    },
+    {
+      "id": "legal-notices",
+      "exactPaths": ["third_party_notices.md"]
+    },
+    {
+      "id": "other-payload"
+    }
+  ],
+  "pyzPrefixComponents": [
+    {"prefix": "backend_runtime", "component": "backend-executable"},
+    {"prefix": "yt_dlp_ejs", "component": "yt-dlp-ejs"},
+    {"prefix": "yt_dlp", "component": "yt-dlp-ejs"},
+    {"prefix": "nltk", "component": "nltk-code"},
+    {"prefix": "huggingface_hub", "component": "hugging-face"},
+    {"prefix": "hf_xet", "component": "hugging-face"},
+    {"prefix": "onnxruntime", "component": "onnx-runtime-asr"},
+    {"prefix": "onnx_asr", "component": "onnx-runtime-asr"},
+    {"prefix": "numpy", "component": "numpy-openblas"},
+    {"prefix": "pipecat.audio.vad", "component": "silero-smartturn"},
+    {"prefix": "pipecat.audio.turn.smart_turn", "component": "silero-smartturn"},
+    {"prefix": "pipecat.services", "component": "provider-sdks"},
+    {"prefix": "google", "component": "provider-sdks"},
+    {"prefix": "grpc", "component": "provider-sdks"},
+    {"prefix": "deepgram", "component": "provider-sdks"},
+    {"prefix": "openai", "component": "provider-sdks"},
+    {"prefix": "groq", "component": "provider-sdks"},
+    {"prefix": "speechmatics", "component": "provider-sdks"},
+    {"prefix": "PIL", "component": "export-stack"},
+    {"prefix": "docx", "component": "export-stack"},
+    {"prefix": "lxml", "component": "export-stack"},
+    {"prefix": "reportlab", "component": "export-stack"}
+  ],
+  "allowedDistributions": [
+    "attrs",
+    "click",
+    "cryptography",
+    "deepgram-sdk",
+    "google-api-core",
+    "huggingface-hub",
+    "importlib-metadata",
+    "markupsafe",
+    "numpy",
+    "onnx-asr",
+    "pipecat-ai",
+    "pydantic",
+    "pyreadline3",
+    "speechmatics-rt",
+    "tqdm",
+    "websockets",
+    "werkzeug",
+    "yt-dlp",
+    "yt-dlp-ejs"
+  ],
+  "semanticNormalization": {
+    "sidecarMetadataFileNames": ["sidecar-build-metadata.json"],
+    "contract": "scriber-sidecar-build-metadata-v1"
+  }
+}

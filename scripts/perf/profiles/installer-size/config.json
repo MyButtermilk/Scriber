@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "profile": "installer-size",
+  "campaign": "installer-size-v1",
+  "durationSeconds": 43200,
+  "baselineReplicas": 2,
+  "referenceBandwidthBitsPerSecond": 50000000,
+  "minimumFreeBytes": 53687091200,
+  "referenceCompression": "bzip2",
+  "minimumInstallerReduction": {
+    "bytes": 262144,
+    "fraction": 0.0025
+  },
+  "finalCombinedImprovement": {
+    "nanoseconds": 500000000,
+    "fraction": 0.01
+  },
+  "maximumInstallRegressionFraction": 0.05,
+  "installTiming": {
+    "pairCount": 20,
+    "warmupPerVariant": 1
+  },
+  "finalization": {
+    "minimumReserveSeconds": 5400,
+    "ewmaMultiplier": 1.25
+  },
+  "lanePolicy": {
+    "betaPriorAlpha": 1.0,
+    "betaPriorBeta": 1.0,
+    "ewmaAlpha": 0.5,
+    "lockAfterValidDiscards": 3,
+    "plateauAfterValidDiscards": 10,
+    "explorationEveryPackets": 4,
+    "minimumExplorationPotentialBytes": 1048576
+  },
+  "protectedInputs": [
+    "scripts/perf/autoresearch_profiles.py",
+    "scripts/perf/installer_size/state.py",
+    "scripts/perf/installer_size/doctor.py",
+    "scripts/perf/installer_size/evaluator.py",
+    "scripts/perf/installer_size/runner.py",
+    "scripts/perf/profiles/installer-size/config.json",
+    "scripts/perf/profiles/installer-size/GOAL.md",
+    "scripts/perf/profiles/installer-size/youtube-holdouts.json",
+    "scripts/perf/profiles/installer-size/quickjs-runtime-lock-v1.json",
+    "scripts/perf/profiles/installer-size/result-v1.schema.json",
+    "packaging/installer-component-map-v1.json",
+    "scripts/installer_research.py",
+    "scripts/installer_research/__init__.py",
+    "scripts/installer_research/inventory.py",
+    "scripts/installer_research/comparator.py",
+    "scripts/project-python.cmd",
+    "scripts/prepare_installer_research_environment.ps1",
+    "scripts/prepare_installer_research_toolchain.ps1",
+    "scripts/run_installer_size_packet.ps1",
+    "scripts/stage_installer_research_payload.py",
+    "scripts/validate_installer_youtube_holdouts.py",
+    "scripts/validate_installer_youtube_candidate_holdouts.py",
+    "scripts/write_installer_research_environment_manifest.py",
+    "scripts/measure_installer_research.ps1",
+    "scripts/smoke_windows_installer.ps1",
+    "scripts/smoke_rust_audio_sidecar.py",
+    "scripts/smoke_diarization_worker_resource.py",
+    "scripts/smoke_tauri_desktop.ps1",
+    "backend_runtime/contract.py",
+    "packaging/backend-sidecar-output-contract.json",
+    "tests/test_meeting_export.py",
+    "tests/perf/test_upload_export_baseline_script.py",
+    "tests/test_sidecar_metadata_privacy.py",
+    "backend_runtime/launcher.py",
+    "backend_runtime/installer_youtube_holdout_probe.py",
+    "tests/test_installer_youtube_candidate_holdouts.py",
+    "tests/test_installer_youtube_frozen_holdout_probe.py"
+  ],
+  "requiredBaselineBindings": [
+    "sourceCommit",
+    "evaluatorHash",
+    "toolchainHash",
+    "compression",
+    "installer.length",
+    "payload.semanticTreeSha256",
+    "payload.fileListSha256",
+    "attribution.componentMapSha256",
+    "attribution.pyzInventorySha256"
+  ]
+}
