@@ -3902,7 +3902,7 @@ fn should_show_initializing_overlay_for_hotkey(path: &str, recording_active: boo
 }
 
 fn should_wait_for_hotkey_backend(ready: bool, starting: bool) -> bool {
-    !ready && starting
+    starting && !ready
 }
 
 fn start_backend_supervisor(app: AppHandle) {
