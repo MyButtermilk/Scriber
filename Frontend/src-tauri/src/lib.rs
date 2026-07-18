@@ -4773,14 +4773,18 @@ fn find_repo_root() -> Option<PathBuf> {
     None
 }
 
+fn bind_loopback_listener(port: u16) -> std::io::Result<TcpListener> {
+    TcpListener::bind((DEFAULT_HOST, port))
+}
+
 fn allocate_loopback_port() -> Option<u16> {
-    TcpListener::bind((DEFAULT_HOST, 0))
+    bind_loopback_listener(0)
         .ok()
         .and_then(|listener| listener.local_addr().ok().map(|addr| addr.port()))
 }
 
 fn port_appears_free(port: u16) -> bool {
-    TcpListener::bind((DEFAULT_HOST, port)).is_ok()
+    bind_loopback_listener(port).is_ok()
 }
 
 fn base_url(port: u16) -> String {
