@@ -1026,6 +1026,9 @@ def test_release_workflow_uses_only_the_bounded_feature_ref_envelope() -> None:
     dependency_prune_index = workflow.index(
         "Remove app outputs from restored Rust dependency state"
     )
+    desktop_identity_index = workflow.index(
+        "Compute ref-local Desktop Rust incremental cache identity"
+    )
     desktop_restore_index = workflow.index(
         "Restore ref-local Desktop Rust incremental envelope"
     )
@@ -1035,18 +1038,28 @@ def test_release_workflow_uses_only_the_bounded_feature_ref_envelope() -> None:
     assert (
         rust_preparation_index
         < dependency_prune_index
+        < desktop_identity_index
         < desktop_restore_index
         < desktop_import_index
         < workflow.index("Build Windows installer")
     )
-    restore_block = workflow.split(
-        "- name: Restore ref-local Desktop Rust incremental envelope", 1
-    )[1].split("\n      - name:", 1)[0]
-    import_block = workflow.split(
-        "- name: Import ref-local Desktop Rust incremental envelope", 1
-    )[1].split("\n      - name:", 1)[0]
-    for block in (restore_block, import_block):
-        assert "steps.rust-preparation.outputs.required == 'true'" in block
+    desktop_steps = (
+        "Compute ref-local Desktop Rust incremental cache identity",
+        "Restore ref-local Desktop Rust incremental envelope",
+        "Import ref-local Desktop Rust incremental envelope",
+        "Export bounded Desktop Rust incremental envelope",
+        "Save bounded Desktop Rust incremental envelope",
+    )
+    desktop_blocks = {}
+    for name in desktop_steps:
+        block = workflow.split(f"- name: {name}", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+        desktop_blocks[name] = block
+        assert (
+            "steps.rust-preparation.outputs.main-cargo-required == 'true'" in block
+        )
+        assert "steps.rust-preparation.outputs.required == 'true'" not in block
         assert "steps.frontend-preparation.outputs.use-prebuilt != 'true'" in block
     assert workflow.index("Build Windows installer") < workflow.index(
         "Export bounded Desktop Rust incremental envelope"
@@ -1054,9 +1067,7 @@ def test_release_workflow_uses_only_the_bounded_feature_ref_envelope() -> None:
     assert workflow.index("Save exact Tauri app binary") < workflow.index(
         "Write passive Tauri cache-promotion evidence"
     ) < workflow.index("Upload passive Tauri cache-promotion evidence")
-    save_block = workflow.split("- name: Save bounded Desktop Rust incremental envelope", 1)[1].split(
-        "\n      - name:", 1
-    )[0]
+    save_block = desktop_blocks["Save bounded Desktop Rust incremental envelope"]
     assert "build/desktop-rust-incremental-cache" in save_block
     assert "target/release/incremental" not in save_block
     assert "steps.desktop-rust-incremental-export.outputs.staged == 'true'" in save_block

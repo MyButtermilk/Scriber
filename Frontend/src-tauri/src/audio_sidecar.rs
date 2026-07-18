@@ -1867,7 +1867,7 @@ fn validate_synthetic_pcm_fixture_len(byte_len: u64) -> Result<(), String> {
             "{SYNTHETIC_MIC_PCM_ENV} exceeds the bounded synthetic PCM size"
         ));
     }
-    if !byte_len.is_multiple_of(2) {
+    if byte_len % 2 != 0 {
         return Err(format!(
             "{SYNTHETIC_MIC_PCM_ENV} must contain aligned signed 16-bit PCM"
         ));

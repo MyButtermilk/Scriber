@@ -181,6 +181,11 @@ def test_release_workflow_defers_rust_setup_until_every_finished_product_is_cove
         "- name: Select Rust build preparation\n",
         "- name: Set up Rust\n",
         "- name: Restore Rust build cache\n",
+        "- name: Remove app outputs from restored Rust dependency state\n",
+        "- name: Compute ref-local Desktop Rust incremental cache identity\n",
+        "- name: Restore ref-local Desktop Rust incremental envelope\n",
+        "- name: Import ref-local Desktop Rust incremental envelope\n",
+        "- name: Restore Sherpa ONNX static archive cache\n",
     )
     positions = [build_workflow.index(step) for step in ordered_steps]
     assert positions == sorted(positions)
@@ -213,7 +218,9 @@ def test_release_workflow_defers_rust_setup_until_every_finished_product_is_cove
     assert "--frozen `" in selection_step
     assert "--manifest-path Frontend\\src-tauri\\Cargo.toml" in selection_step
     assert '[string]$_.name -eq "scriber-desktop"' in selection_step
-    assert "-not ($tauriCovered -and $cargoMetadataUsable -and $audioCovered -and $diarizationCovered)" in selection_step
+    assert "$mainCargoRequired = $maintenanceRequiresRust -or -not (" in selection_step
+    assert "$required = $mainCargoRequired -or -not $diarizationCovered" in selection_step
+    assert '"main-cargo-required=' in selection_step
     assert '"cargo-metadata-usable=' in selection_step
 
     frontend_selection = build_workflow.split(
@@ -227,20 +234,88 @@ def test_release_workflow_defers_rust_setup_until_every_finished_product_is_cove
     )[1].split("\n      - name:", 1)[0]
     assert "continue-on-error: true" in component_fallback
 
+    rust_setup = build_workflow.split("- name: Set up Rust\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert "steps.rust-preparation.outputs.required == 'true'" in rust_setup
+    assert "steps.rust-preparation.outputs.main-cargo-required" not in rust_setup
+
     for name in (
-        "Set up Rust",
         "Restore Rust build cache",
         "Restore Rust build release artifact",
         "Import Rust build release artifact",
         "Remove app outputs from restored Rust dependency state",
+        "Export Rust build release artifact",
+        "Publish Rust build release artifact",
+        "Remove app outputs before saving Rust dependency cache",
+        "Save Rust build cache",
     ):
-        step = build_workflow.split(f"- name: {name}\n", 1)[1].split("\n      - name:", 1)[0]
-        assert "steps.rust-preparation.outputs.required == 'true'" in step
+        step = build_workflow.split(f"- name: {name}\n", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+        assert "steps.rust-preparation.outputs.main-cargo-required == 'true'" in step
+        assert "steps.rust-preparation.outputs.required == 'true'" not in step
+
+    for name in (
+        "Compute ref-local Desktop Rust incremental cache identity",
+        "Restore ref-local Desktop Rust incremental envelope",
+        "Import ref-local Desktop Rust incremental envelope",
+        "Export bounded Desktop Rust incremental envelope",
+        "Save bounded Desktop Rust incremental envelope",
+    ):
+        step = build_workflow.split(f"- name: {name}\n", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+        assert "steps.rust-preparation.outputs.main-cargo-required == 'true'" in step
+        assert "steps.rust-preparation.outputs.required == 'true'" not in step
+
+    assert build_workflow.index(
+        "- name: Remove app outputs from restored Rust dependency state\n"
+    ) < build_workflow.index(
+        "- name: Compute ref-local Desktop Rust incremental cache identity\n"
+    ) < build_workflow.index(
+        "- name: Restore ref-local Desktop Rust incremental envelope\n"
+    ) < build_workflow.index(
+        "- name: Import ref-local Desktop Rust incremental envelope\n"
+    )
 
     sherpa_restore = build_workflow.split(
         "- name: Restore Sherpa ONNX static archive cache\n", 1
     )[1].split("\n      - name:", 1)[0]
     assert "if: steps.rust-preparation.outputs.diarization-covered != 'true'" in sherpa_restore
+
+    # The split is algebraically identical to the previous fail-closed
+    # toolchain decision while giving exactly one new lane: a trusted
+    # diarization-only miss needs Rust, but not the shared Tauri Cargo state.
+    isolated_diarization_lane_count = 0
+    for mask in range(32):
+        maintenance, tauri, metadata, audio, diarization = (
+            bool(mask & (1 << bit)) for bit in range(5)
+        )
+        previous_required = maintenance or not (
+            tauri and metadata and audio and diarization
+        )
+        main_cargo_required = maintenance or not (tauri and metadata and audio)
+        toolchain_required = main_cargo_required or not diarization
+        assert toolchain_required == previous_required
+        if toolchain_required and not main_cargo_required:
+            isolated_diarization_lane_count += 1
+            assert (
+                tauri and metadata and audio and not diarization and not maintenance
+            )
+    assert isolated_diarization_lane_count == 1
+
+    sidecar_builder = _read("scripts/build_tauri_backend_sidecar.ps1")
+    build_script = _read("scripts/build_windows.ps1")
+    assert (
+        '$RustDiarizationTargetRoot = Join-Path $RepoRoot "build\\rust-diarization-sidecar-target"'
+        in sidecar_builder
+    )
+    assert '$sidecarArgs += "-ParallelizeRustDiarizationBuild"' in build_script
+    assert (
+        'Write-Host "Starting Rust diarization sidecar prestage in parallel with the Python backend."'
+        in sidecar_builder
+    )
 
 
 def test_finished_rust_product_validation_is_toolchain_free_and_fails_closed() -> None:

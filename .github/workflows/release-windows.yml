@@ -695,15 +695,6 @@ jobs:
             Write-Warning "Linux planner and Windows packager cache keys differed; cold artifacts will be ignored and the normal path retained."
           }
 
-      - name: Compute ref-local Desktop Rust incremental cache identity
-        id: desktop-rust-incremental-key
-        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true'
-        shell: pwsh
-        run: |
-          & .\scripts\ci\write_desktop_rust_incremental_cache_key.ps1 `
-            -CacheKeyDir "build\cache-keys" `
-            -GitRef $env:GITHUB_REF
-
       - name: Download cold products in parallel
         id: cold-products-download
         if: >-
@@ -952,14 +943,27 @@ jobs:
             $env:SCRIBER_SAVE_ACTIONS_CACHES -eq "true" -or
             $env:SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS -eq "true"
           )
-          $required = $maintenanceRequiresRust -or -not ($tauriCovered -and $cargoMetadataUsable -and $audioCovered -and $diarizationCovered)
+          # The diarization worker owns an isolated Cargo target. A narrow
+          # worker miss still needs the pinned toolchain and Sherpa archive,
+          # but must not download/import/prune the multi-GB Tauri target when
+          # the desktop metadata path and shared-target audio product are
+          # already covered. Keep every uncertainty and maintenance request on
+          # the established main-Cargo lane.
+          $mainCargoRequired = $maintenanceRequiresRust -or -not (
+            $tauriCovered -and
+            $cargoMetadataUsable -and
+            $audioCovered
+          )
+          $required = $mainCargoRequired -or -not $diarizationCovered
           "required=$(if ($required) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "main-cargo-required=$(if ($mainCargoRequired) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "tauri-covered=$(if ($tauriCovered) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "cargo-metadata-usable=$(if ($cargoMetadataUsable) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "audio-covered=$(if ($audioCovered) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "diarization-covered=$(if ($diarizationCovered) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Existing Cargo metadata probe usable: $($cargoMetadataUsable.ToString().ToLowerInvariant())"
-          Write-Host "Rust toolchain/dependency preparation required: $($required.ToString().ToLowerInvariant())"
+          Write-Host "Pinned Rust toolchain required: $($required.ToString().ToLowerInvariant())"
+          Write-Host "Main Tauri Cargo dependency state required: $($mainCargoRequired.ToString().ToLowerInvariant())"
 
       - name: Set up Rust
         if: steps.rust-preparation.outputs.required == 'true'
@@ -967,7 +971,7 @@ jobs:
 
       - name: Restore Rust build cache
         id: rust-build-cache
-        if: steps.rust-preparation.outputs.required == 'true'
+        if: steps.rust-preparation.outputs.main-cargo-required == 'true'
         uses: actions/cache/restore@v6
         with:
           path: |
@@ -987,7 +991,7 @@ jobs:
         # A restore-key hit already supplied a useful incremental target. Do
         # not replace it with a 1.6 GB durable fallback merely because
         # actions/cache reports cache-hit=false for partial matches.
-        if: steps.rust-preparation.outputs.required == 'true' && steps.rust-build-cache.outputs.cache-matched-key == ''
+        if: steps.rust-preparation.outputs.main-cargo-required == 'true' && steps.rust-build-cache.outputs.cache-matched-key == ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1001,7 +1005,7 @@ jobs:
 
       - name: Import Rust build release artifact
         id: rust-build-artifact-import
-        if: steps.rust-preparation.outputs.required == 'true' && steps.rust-build-artifact.outputs.restored == 'true'
+        if: steps.rust-preparation.outputs.main-cargo-required == 'true' && steps.rust-build-artifact.outputs.restored == 'true'
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\sync_rust_release_cache_artifact.ps1 `
@@ -1011,14 +1015,23 @@ jobs:
             -TargetDir Frontend\src-tauri\target
 
       - name: Remove app outputs from restored Rust dependency state
-        if: steps.rust-preparation.outputs.required == 'true'
+        if: steps.rust-preparation.outputs.main-cargo-required == 'true'
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\prune_rust_dependency_cache.ps1
 
+      - name: Compute ref-local Desktop Rust incremental cache identity
+        id: desktop-rust-incremental-key
+        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true' && steps.rust-preparation.outputs.main-cargo-required == 'true' && steps.frontend-preparation.outputs.use-prebuilt != 'true'
+        shell: pwsh
+        run: |
+          & .\scripts\ci\write_desktop_rust_incremental_cache_key.ps1 `
+            -CacheKeyDir "build\cache-keys" `
+            -GitRef $env:GITHUB_REF
+
       - name: Restore ref-local Desktop Rust incremental envelope
         id: desktop-rust-incremental-cache
-        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true' && steps.rust-preparation.outputs.required == 'true' && steps.frontend-preparation.outputs.use-prebuilt != 'true'
+        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true' && steps.rust-preparation.outputs.main-cargo-required == 'true' && steps.frontend-preparation.outputs.use-prebuilt != 'true'
         uses: actions/cache/restore@v6
         with:
           path: build/desktop-rust-incremental-cache
@@ -1028,7 +1041,7 @@ jobs:
 
       - name: Import ref-local Desktop Rust incremental envelope
         id: desktop-rust-incremental-import
-        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true' && steps.rust-preparation.outputs.required == 'true' && steps.frontend-preparation.outputs.use-prebuilt != 'true' && steps.desktop-rust-incremental-cache.outputs.cache-matched-key != ''
+        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true' && steps.rust-preparation.outputs.main-cargo-required == 'true' && steps.frontend-preparation.outputs.use-prebuilt != 'true' && steps.desktop-rust-incremental-cache.outputs.cache-matched-key != ''
         shell: pwsh
         run: |
           & .\scripts\ci\sync_desktop_rust_incremental_cache.ps1 `
@@ -1912,7 +1925,7 @@ jobs:
 
       - name: Export bounded Desktop Rust incremental envelope
         id: desktop-rust-incremental-export
-        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true' && steps.frontend-preparation.outputs.use-prebuilt != 'true' && steps.desktop-rust-incremental-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true' && steps.rust-preparation.outputs.main-cargo-required == 'true' && steps.frontend-preparation.outputs.use-prebuilt != 'true' && steps.desktop-rust-incremental-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           & .\scripts\ci\sync_desktop_rust_incremental_cache.ps1 `
@@ -1923,7 +1936,7 @@ jobs:
             -SourceCommit "${{ github.sha }}"
 
       - name: Save bounded Desktop Rust incremental envelope
-        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true' && steps.frontend-preparation.outputs.use-prebuilt != 'true' && steps.desktop-rust-incremental-cache.outputs.cache-hit != 'true' && steps.desktop-rust-incremental-export.outputs.staged == 'true'
+        if: env.SCRIBER_SAVE_REF_LOCAL_DESKTOP_INCREMENTAL_CACHE == 'true' && steps.rust-preparation.outputs.main-cargo-required == 'true' && steps.frontend-preparation.outputs.use-prebuilt != 'true' && steps.desktop-rust-incremental-cache.outputs.cache-hit != 'true' && steps.desktop-rust-incremental-export.outputs.staged == 'true'
         uses: actions/cache/save@v6
         with:
           path: build/desktop-rust-incremental-cache
@@ -2171,7 +2184,7 @@ jobs:
 
       - name: Export Rust build release artifact
         id: rust-build-artifact-export
-        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true' && steps.rust-preparation.outputs.required == 'true'
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true' && steps.rust-preparation.outputs.main-cargo-required == 'true'
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\sync_rust_release_cache_artifact.ps1 `
@@ -2181,7 +2194,7 @@ jobs:
             -TargetDir Frontend\src-tauri\target
 
       - name: Publish Rust build release artifact
-        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true' && steps.rust-preparation.outputs.required == 'true' && steps.rust-build-artifact-export.outputs.staged == 'true'
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true' && steps.rust-preparation.outputs.main-cargo-required == 'true' && steps.rust-build-artifact-export.outputs.staged == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -2194,13 +2207,13 @@ jobs:
             -Title "Scriber Rust Build Cache v2"
 
       - name: Remove app outputs before saving Rust dependency cache
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.rust-preparation.outputs.required == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.rust-preparation.outputs.main-cargo-required == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\prune_rust_dependency_cache.ps1
 
       - name: Save Rust build cache
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.rust-preparation.outputs.required == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.rust-preparation.outputs.main-cargo-required == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true'
         # Save stable dependency output only. App/library fingerprints and
         # objects are covered by the small exact Tauri binary cache instead.
         uses: actions/cache/save@v6
