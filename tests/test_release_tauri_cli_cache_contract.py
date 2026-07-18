@@ -239,7 +239,9 @@ def _node_binary_fixture(root: Path) -> tuple[Path, str]:
 
 def test_checked_in_contract_is_the_exact_external_trust_anchor() -> None:
     contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+    attributes = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
 
+    assert "packaging/tauri-cli-cache-contract.json text eol=lf" in attributes.splitlines()
     assert contract["schemaVersion"] == 1
     assert contract["name"] == "scriber-tauri-cli-cache-contract"
     assert contract["revision"] == "tauri-cli-2.11.3-win32-x64-msvc-v1"
