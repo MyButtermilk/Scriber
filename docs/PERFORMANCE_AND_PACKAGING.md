@@ -286,10 +286,7 @@ Packaging/build:
   `Frontend\package-lock.json`; only the package-store cache key is normalized.
   On an exact `node_modules` cache hit, the workflow checks
   `node_modules\.package-lock.json` instead of running `npm ls`; the actual
-  TypeScript gate remains `npm run check` in the Windows build script. An exact
-  v3 Tauri-product hit is narrower still: its separately attested, lock-bound
-  Windows CLI is sufficient for `tauri bundle`, so neither full frontend layer
-  is restored on that path.
+  TypeScript gate remains `npm run check` in the Windows build script.
 - Cargo package metadata for `scriber-desktop` is intentionally stable and is
   not rewritten for every app release. Tauri receives the concrete app version
   from a generated minimal release config overlay, and the Rust shell passes
@@ -626,16 +623,15 @@ Release workflow:
   version. Cache hits and restore-key hits still run the relevant validation
   gates before the installer consumes restored outputs. If a restored Profile B
   output fails validation, the workflow falls back to a fresh MSYS2 build.
-- The bounded exact Tauri app product uses a v3 content key over the concrete
+- The bounded exact Tauri app product uses a v2 content key over the concrete
   version, frontend/Rust/config sources, Node version, the binary-producing
   workflow/helper scripts, toolchain/target, updater runtime, and Outlook
   configuration. Its manifest preserves the producing commit and
   validates the executable length, SHA-256, native version, target, and profile,
-  but an unrelated Python-only commit no longer invalidates the product. The v3
-  manifest also inventories the minimal Windows x64 Tauri CLI tree and binds it
-  to the exact package-lock version and both package SHA-512 integrity records.
-  An attested hit runs bundle-only packaging through that build-local CLI and
-  skips both full frontend dependency layers and the redundant type check. An
+  but an unrelated Python-only commit no longer invalidates the product. An
+  attested hit still restores and validates `Frontend\node_modules` because the
+  bundle-only path needs the repository-local Tauri CLI, but skips the redundant
+  frontend type check already covered by the exact product inputs. An
   explicit non-main workflow dispatch may bootstrap only this product in the
   ref-local Actions-cache namespace; it cannot warm main/tags or publish a
   shared internal cache release.

@@ -805,7 +805,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: build/tauri-app-binary-cache
-          key: scriber-tauri-app-binary-v3-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
+          key: scriber-tauri-app-binary-v2-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
 
       - name: Import exact Tauri app binary
         id: tauri-app-binary-import
@@ -817,37 +817,6 @@ jobs:
             -Mode Import `
             -CacheKey "${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}" `
             -Version $version
-
-      - name: Select frontend dependency preparation
-        id: frontend-preparation
-        shell: pwsh
-        run: |
-          $coldProductUsable = "${{ steps.cold-products.outputs.usable }}" -eq "true"
-          $normalCacheUsable = "${{ steps.tauri-app-binary-import.outputs.usable }}" -eq "true"
-          $exactProductUsable = $coldProductUsable -or $normalCacheUsable
-          $requiresFreshAuthenticodeSignature = $env:SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE -eq "1"
-          $usePrebuiltTauriApp = $exactProductUsable -and -not $requiresFreshAuthenticodeSignature
-          $cliEntrypoint = ""
-          if ($usePrebuiltTauriApp) {
-            $cliEntrypoint = if ($coldProductUsable) {
-              "${{ steps.cold-tauri-import.outputs.cli-entrypoint }}"
-            } else {
-              "${{ steps.tauri-app-binary-import.outputs.cli-entrypoint }}"
-            }
-            if ([string]::IsNullOrWhiteSpace($cliEntrypoint) -or -not (Test-Path -LiteralPath $cliEntrypoint -PathType Leaf)) {
-              throw "An exact Tauri app product was selected without its attested CLI entrypoint."
-            }
-            $resolvedCliEntrypoint = [System.IO.Path]::GetFullPath($cliEntrypoint)
-            $buildPrefix = ([System.IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE "build"))).TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
-            if (-not $resolvedCliEntrypoint.StartsWith($buildPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-              throw "The attested Tauri CLI entrypoint must remain under the workflow build directory."
-            }
-            $cliEntrypoint = $resolvedCliEntrypoint
-          }
-          "required=$(if ($usePrebuiltTauriApp) { 'false' } else { 'true' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "use-prebuilt=$(if ($usePrebuiltTauriApp) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "cli-entrypoint=$cliEntrypoint" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          Write-Host "Full frontend dependency preparation required: $(-not $usePrebuiltTauriApp)"
 
       - name: Remove app outputs from restored Rust dependency state
         if: steps.cold-products.outputs.usable != 'true'
@@ -1007,7 +976,6 @@ jobs:
 
       - name: Restore frontend dependency cache
         id: frontend-node-modules-cache
-        if: steps.frontend-preparation.outputs.required == 'true'
         uses: actions/cache/restore@v6
         with:
           path: Frontend/node_modules
@@ -1015,7 +983,7 @@ jobs:
 
       - name: Restore npm package store
         id: npm-package-store-cache
-        if: steps.frontend-preparation.outputs.required == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
+        if: steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v6
         with:
           path: ${{ steps.package-store-paths.outputs.npm }}
@@ -1346,8 +1314,6 @@ jobs:
               actionsCacheExact = $tauriAppBinaryCacheHit -eq "true"
               importUsable = $tauriAppBinaryImportUsable -eq "true"
               importedSha256 = $tauriAppBinaryImportSha256
-              cliAttested = -not [string]::IsNullOrWhiteSpace("${{ steps.frontend-preparation.outputs.cli-entrypoint }}")
-              frontendDependenciesRequired = "${{ steps.frontend-preparation.outputs.required }}" -eq "true"
             }
             pythonVenvValidated = $pythonVenvValidated
           } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $cacheSummaryPath -Encoding utf8
@@ -1494,12 +1460,12 @@ jobs:
           key: scriber-python-pip-store-v1-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
 
       - name: Install frontend dependencies
-        if: steps.frontend-preparation.outputs.required == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
+        if: steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
         working-directory: Frontend
         run: npm ci --prefer-offline --no-audit --fund=false
 
       - name: Use cached frontend dependencies
-        if: steps.frontend-preparation.outputs.required == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit == 'true'
+        if: steps.frontend-node-modules-cache.outputs.cache-hit == 'true'
         working-directory: Frontend
         shell: pwsh
         run: |
@@ -1510,14 +1476,14 @@ jobs:
           Write-Host "Using cached Frontend/node_modules with npm install metadata."
 
       - name: Save frontend dependency cache
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.frontend-preparation.outputs.required == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: Frontend/node_modules
           key: scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}
 
       - name: Save npm package store
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.frontend-preparation.outputs.required == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true' && steps.npm-package-store-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.frontend-node-modules-cache.outputs.cache-hit != 'true' && steps.npm-package-store-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: ${{ steps.package-store-paths.outputs.npm }}
@@ -1695,16 +1661,14 @@ jobs:
           }
           $isTagRelease = $env:GITHUB_REF_TYPE -eq "tag"
           $coldProductsUsable = "${{ steps.cold-products.outputs.usable }}" -eq "true"
-          $usePrebuiltTauriApp = "${{ steps.frontend-preparation.outputs.use-prebuilt }}" -eq "true"
+          $usePrebuiltTauriApp = (
+            ($coldProductsUsable -or "${{ steps.tauri-app-binary-import.outputs.usable }}" -eq "true") -and
+            $env:SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE -ne "1"
+          )
           if ($usePrebuiltTauriApp) {
             $buildArgs += "-UsePrebuiltTauriApp"
             $buildArgs += "-SkipFrontendTypeCheck"
-            $tauriCliEntrypoint = "${{ steps.frontend-preparation.outputs.cli-entrypoint }}"
-            if ([string]::IsNullOrWhiteSpace($tauriCliEntrypoint)) {
-              throw "The exact Tauri app fast path did not provide its attested CLI entrypoint."
-            }
-            $buildArgs += @("-TauriCliEntrypoint", $tauriCliEntrypoint)
-            Write-Host "Using exact attested Tauri app binary and lock-bound CLI; full frontend dependencies and the covered type check will not be repeated."
+            Write-Host "Using exact attested Tauri app binary; frontend dependencies remain available for the Tauri CLI, but the covered type check will not be repeated."
           } elseif ($coldProductsUsable) {
             $buildArgs += "-SkipFrontendTypeCheck"
             Write-Host "Cold preparation already completed the frontend type check; the packaging runner will not repeat it."
@@ -1766,30 +1730,17 @@ jobs:
         shell: pwsh
         run: |
           $version = (python -c "from scripts.create_release_metadata import read_version; print(read_version())").Trim()
-          $exportArgs = @(
-            "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-File", "scripts\ci\sync_tauri_app_binary_cache.ps1",
-            "-Mode", "Export",
-            "-CacheKey", "${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}",
-            "-Version", $version
-          )
-          $importedCliEntrypoint = "${{ steps.frontend-preparation.outputs.cli-entrypoint }}"
-          if (-not [string]::IsNullOrWhiteSpace($importedCliEntrypoint)) {
-            $cliPackagePath = Split-Path -Parent $importedCliEntrypoint
-            $tauriAppsRoot = Split-Path -Parent $cliPackagePath
-            $exportArgs += @(
-              "-TauriCliPackagePath", $cliPackagePath,
-              "-TauriCliPlatformPackagePath", (Join-Path $tauriAppsRoot "cli-win32-x64-msvc")
-            )
-          }
-          powershell @exportArgs
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\sync_tauri_app_binary_cache.ps1 `
+            -Mode Export `
+            -CacheKey "${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}" `
+            -Version $version
 
       - name: Save exact Tauri app binary
         if: (env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' || env.SCRIBER_SAVE_REF_LOCAL_TAURI_CACHE == 'true') && steps.tauri-app-binary-cache.outputs.cache-hit != 'true' && steps.tauri-app-binary-export.outputs.usable == 'true'
         uses: actions/cache/save@v6
         with:
           path: build/tauri-app-binary-cache
-          key: scriber-tauri-app-binary-v3-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
+          key: scriber-tauri-app-binary-v2-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
 
       - name: Report Windows installer timing
         if: always()

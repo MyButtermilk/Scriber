@@ -966,7 +966,7 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert tauri_contract == {
         "schemaVersion": 1,
         "name": "scriber-tauri-app-binary",
-        "revision": 2,
+        "revision": 1,
     }
 
     assert "frontend-dependencies.txt" in script
@@ -1036,7 +1036,7 @@ def test_release_cache_gc_keeps_exactly_one_current_generation() -> None:
     assert "release-cache-backend-sidecar-v2" in gc
     assert "release-cache-rust-build-v2" in gc
     assert "ffmpeg-profile-b-n7.0-v4" in gc
-    assert "^scriber-tauri-app-binary-v[123]-Windows-" in gc
+    assert "^scriber-tauri-app-binary-v[12]-Windows-" in gc
     obsolete_block = gc.split("$obsoletePatterns = @(", 1)[1].split(")", 1)[0]
     assert "^scriber-tauri-app-binary-v1-Windows-" not in obsolete_block
     assert "$null = $protectedRefs.Add('refs/heads/main')" in gc
@@ -1048,7 +1048,7 @@ def test_release_cache_gc_keeps_exactly_one_current_generation() -> None:
     assert '$null = $prunableRefs.Add($currentRef)' in gc
     assert '$null = $protectedRefs.Add($currentRef)' in gc
     assert "Cache ref cannot be both protected and prunable" in gc
-    assert "GenerationPattern = '^scriber-tauri-app-binary-v(?<generation>[123])-Windows-'" in gc
+    assert "GenerationPattern = '^scriber-tauri-app-binary-v(?<generation>[12])-Windows-'" in gc
     assert "$parsedCaches = $json | ConvertFrom-Json" in gc
     assert "$parsedReleases = $releaseJson | ConvertFrom-Json" in gc
     assert "Dictionary[int64, object]" in gc

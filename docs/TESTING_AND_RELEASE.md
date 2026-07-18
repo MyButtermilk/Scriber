@@ -779,12 +779,10 @@ It:
   incremental state instead of downloading and expanding another 1.6 GB,
 - stores Cargo dependency state under a toolchain/Cargo-metadata key that does
   not change for ordinary app source or UI edits. A separate exact Tauri app
-  product cache is keyed by the complete app inputs, concrete version,
-  toolchain, target/profile, and updater-runtime fingerprint; the producing
-  commit remains provenance rather than identity. Its v3 attestation includes
-  the minimal Windows x64 Tauri CLI tree plus the package-lock version and
-  SHA-512 integrity records. A validated hit skips full frontend dependency
-  restore and the product-covered type check, then uses that CLI for `tauri bundle`. On a
+  binary cache is keyed by the complete app inputs, concrete version, commit,
+  toolchain, target/profile, and updater-runtime fingerprint. A validated hit
+  keeps the restored frontend dependencies available for the local Tauri CLI,
+  skips the product-covered frontend type check, and uses `tauri bundle`. On a
   miss, the compile-only overlay allows `tauri build --no-bundle` to overlap the
   sidecar producer; the same full-config `tauri bundle` path runs only after
   both complete,
@@ -966,7 +964,7 @@ release workflow. Its explicit inputs and dynamic rows still bind frontend and
 Rust source, native configuration, concrete version, updater public runtime,
 Outlook client identity, toolchain/target, and import/attestation helpers. Bump
 the contract revision for an otherwise-unrepresented change that can alter the
-produced EXE or attested CLI tree; do not bump it for cache probes, runner scheduling, diagnostics,
+produced EXE; do not bump it for cache probes, runner scheduling, diagnostics,
 or setup steps that cannot change the attested binary.
 
 The reusable FFmpeg Profile B artifact is published to the internal prerelease
