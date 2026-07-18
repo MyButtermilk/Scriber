@@ -120,7 +120,12 @@ function Assert-SafeItem {
 }
 
 function Assert-SafePathAncestry {
-    param([string]$BoundaryRoot, [string]$Path, [string]$Label)
+    param(
+        [string]$BoundaryRoot,
+        [string]$Path,
+        [string]$Label,
+        [switch]$AllowLeafHardLink
+    )
     $root = [System.IO.Path]::GetFullPath($BoundaryRoot).TrimEnd("\", "/")
     $candidate = [System.IO.Path]::GetFullPath($Path)
     Assert-UnderRoot -Root $root -Path $candidate -Label $Label -AllowEqual
@@ -142,7 +147,12 @@ function Assert-SafePathAncestry {
         if (-not (Test-Path -LiteralPath $current)) {
             break
         }
-        Assert-SafeItem -Item (Get-Item -LiteralPath $current -Force) -Label $Label
+        $item = Get-Item -LiteralPath $current -Force
+        $isLeaf = $current.Equals($candidate, [System.StringComparison]::OrdinalIgnoreCase)
+        Assert-SafeItem `
+            -Item $item `
+            -Label $Label `
+            -AllowRegularFileHardLink:($AllowLeafHardLink -and $isLeaf)
     }
 }
 
@@ -515,8 +525,9 @@ if ($Mode -eq "Export") {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw "Desktop Rust incremental export requires completed app-build evidence: $path"
         }
-        Assert-SafePathAncestry -BoundaryRoot $repoRoot -Path $path -Label "Desktop app-build evidence"
     }
+    Assert-SafePathAncestry -BoundaryRoot $repoRoot -Path $resolvedBuildTimingPath -Label "Desktop app-build timing evidence"
+    Assert-SafePathAncestry -BoundaryRoot $repoRoot -Path $resolvedBinaryPath -Label "Desktop executable build evidence" -AllowLeafHardLink
     try {
         $timing = Get-Content -LiteralPath $resolvedBuildTimingPath -Raw | ConvertFrom-Json
     } catch {

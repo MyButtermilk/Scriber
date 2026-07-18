@@ -261,6 +261,9 @@ def test_desktop_incremental_envelope_roundtrip_contains_only_desktop_state() ->
     (target / "release/deps").mkdir(parents=True)
     (target / "release/deps/scriber_desktop.pdb").write_bytes(b"pdb")
     _write_build_evidence(fixture_root)
+    binary_hardlink = fixture_root / "scriber-desktop-cargo-hardlink.exe"
+    os.link(fixture_root / "scriber-desktop.exe", binary_hardlink)
+    assert (fixture_root / "scriber-desktop.exe").stat().st_nlink >= 2
     try:
         exported, export_outputs = _invoke_sync(fixture_root, "Export")
         assert exported.returncode == 0, exported.stdout + exported.stderr
@@ -452,6 +455,22 @@ def test_desktop_incremental_import_rejects_miss_tamper_wrong_key_and_foreign_pa
             assert linked.returncode == 0
             assert linked_outputs["usable"] == "false"
             assert not desktop.exists()
+
+        restore()
+        payload = cache_root / "payload/scriber_desktop-feed01/query-cache.bin"
+        payload_hardlink = fixture_root / "cached-payload-hardlink.bin"
+        os.link(payload, payload_hardlink)
+        assert payload.stat().st_nlink >= 2
+        try:
+            hardlinked, hardlinked_outputs = _invoke_sync(
+                fixture_root, "Import", matched_key=_full_key()
+            )
+        finally:
+            payload_hardlink.unlink(missing_ok=True)
+        assert hardlinked.returncode == 0
+        assert hardlinked_outputs["usable"] == "false"
+        assert "hard link" in (hardlinked.stdout + hardlinked.stderr).lower()
+        assert not desktop.exists()
     finally:
         shutil.rmtree(fixture_root, ignore_errors=True)
 
