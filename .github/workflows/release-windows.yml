@@ -531,6 +531,10 @@ jobs:
       SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}
+      # The early finished-product decision must see the same signing policy as
+      # the final build. A required fresh Authenticode signature invalidates a
+      # reusable desktop EXE and therefore keeps Rust preparation enabled.
+      SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE: ${{ vars.SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE }}
       SCRIBER_OUTLOOK_CLIENT_ID: ${{ vars.SCRIBER_OUTLOOK_CLIENT_ID }}
       CARGO_HOME: ${{ github.workspace }}/.cargo
       CARGO_INCREMENTAL: "1"
@@ -750,55 +754,6 @@ jobs:
             Write-Host "Cold products were not requested or did not both validate; using the established single-runner path."
           }
 
-      - name: Set up Rust
-        if: steps.cold-products.outputs.usable != 'true'
-        uses: dtolnay/rust-toolchain@1.97.0
-
-      - name: Restore Rust build cache
-        id: rust-build-cache
-        if: steps.cold-products.outputs.usable != 'true'
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            .cargo/registry/index
-            .cargo/registry/cache
-            .cargo/git/db
-            Frontend/src-tauri/target/release/.fingerprint
-            Frontend/src-tauri/target/release/build
-            Frontend/src-tauri/target/release/deps
-            Frontend/src-tauri/target/release/incremental
-          key: scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}
-          restore-keys: |
-            scriber-rust-dependencies-v1-${{ runner.os }}-
-
-      - name: Restore Rust build release artifact
-        id: rust-build-artifact
-        # A restore-key hit already supplied a useful incremental target. Do
-        # not replace it with a 1.6 GB durable fallback merely because
-        # actions/cache reports cache-hit=false for partial matches.
-        if: steps.cold-products.outputs.usable != 'true' && steps.rust-build-cache.outputs.cache-matched-key == ''
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\restore_release_cache_artifact.ps1 `
-            -Repo "${{ github.repository }}" `
-            -Tag $env:SCRIBER_RUST_BUILD_ARTIFACT_TAG `
-            -AssetName "scriber-rust-build-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-release.txt') }}.zip" `
-            -FallbackAssetNamePrefix "scriber-rust-build-${{ runner.os }}-" `
-            -DestinationPath build\rust-release-cache
-
-      - name: Import Rust build release artifact
-        id: rust-build-artifact-import
-        if: steps.cold-products.outputs.usable != 'true' && steps.rust-build-artifact.outputs.restored == 'true'
-        shell: pwsh
-        run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\sync_rust_release_cache_artifact.ps1 `
-            -Mode Import `
-            -CacheRoot build\rust-release-cache `
-            -CargoHome $env:CARGO_HOME `
-            -TargetDir Frontend\src-tauri\target
-
       - name: Restore exact Tauri app binary
         id: tauri-app-binary-cache
         if: steps.cold-products.outputs.usable != 'true'
@@ -849,12 +804,6 @@ jobs:
           "cli-entrypoint=$cliEntrypoint" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Full frontend dependency preparation required: $(-not $usePrebuiltTauriApp)"
 
-      - name: Remove app outputs from restored Rust dependency state
-        if: steps.cold-products.outputs.usable != 'true'
-        shell: pwsh
-        run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\prune_rust_dependency_cache.ps1
-
       - name: Restore Rust audio sidecar cache
         id: rust-audio-sidecar-cache
         if: steps.cold-products.outputs.usable != 'true'
@@ -871,9 +820,192 @@ jobs:
           path: build/rust-diarization-sidecar-cache
           key: scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}
 
+      - name: Restore FFmpeg Profile B cache
+        id: ffmpeg-profile-b-cache
+        if: steps.cold-products.outputs.usable != 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            build/ffmpeg-profile-b-msys2/dist/scriber-ffmpeg-profile-b
+            build/ffmpeg-profile-b-msys2/ffmpeg-profile-b-manifest.json
+            build/ffmpeg-profile-b-msys2/ffmpeg-profile-b-fixtures.json
+            build/ffmpeg-profile-b-msys2/media-preparation-smoke-profile-b.json
+            build/ffmpeg-profile-b-msys2/profile-b-msys2-build-report.json
+          key: scriber-ffmpeg-profile-b-msys2-n7.0-v4-${{ runner.os }}
+
+      - name: Restore independent release-cache fallbacks in parallel
+        id: component-cache-artifacts
+        if: >-
+          steps.cold-products.outputs.usable != 'true' &&
+          (steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' ||
+           steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true' ||
+           steps.ffmpeg-profile-b-cache.outputs.cache-hit != 'true')
+        timeout-minutes: 10
+        # A corrupt or unavailable durable fallback is a cache miss, not a
+        # reason to suppress the established local toolchain/build path.
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $restoreArgs = @{
+            Repo = "${{ github.repository }}"
+            RustAudioTag = $env:SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG
+            RustAudioAssetName = "scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}.zip"
+            RustDiarizationTag = $env:SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG
+            RustDiarizationAssetName = "scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}.zip"
+            FfmpegTag = $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG
+            FfmpegAssetName = $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME
+          }
+          if ("${{ steps.rust-audio-sidecar-cache.outputs.cache-hit }}" -ne "true") {
+            $restoreArgs.RestoreRustAudio = $true
+          }
+          if ("${{ steps.rust-diarization-sidecar-cache.outputs.cache-hit }}" -ne "true") {
+            $restoreArgs.RestoreRustDiarization = $true
+          }
+          if ("${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}" -ne "true") {
+            $restoreArgs.RestoreFfmpeg = $true
+          }
+          & .\scripts\ci\restore_component_cache_artifacts_parallel.ps1 @restoreArgs
+
+      - name: Validate finished Rust products before toolchain setup
+        id: finished-rust-products
+        if: steps.cold-products.outputs.usable != 'true'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          & .\scripts\build_tauri_backend_sidecar.ps1 `
+            -PythonPath python `
+            -ValidateFinishedRustProductsOnly
+
+      - name: Select Rust build preparation
+        id: rust-preparation
+        shell: pwsh
+        run: |
+          $coldProductsCovered = "${{ steps.cold-products.outputs.usable }}" -eq "true"
+          $validationSucceeded = "${{ steps.finished-rust-products.outcome }}" -eq "success"
+          $tauriCovered = $coldProductsCovered -or "${{ steps.frontend-preparation.outputs.use-prebuilt }}" -eq "true"
+          # Tauri's bundle-only command still asks Cargo for package metadata.
+          # Probe the runner's existing Cargo before skipping the pinned setup;
+          # absence, parse failure, or an unexpected package falls back to the
+          # established setup/build lane without trusting any generated code.
+          $cargoMetadataUsable = $false
+          if ($tauriCovered) {
+            try {
+              $cargoCommand = Get-Command cargo -ErrorAction SilentlyContinue
+              if ($cargoCommand) {
+                $metadataJson = & $cargoCommand.Source metadata `
+                  --no-deps `
+                  --locked `
+                  --frozen `
+                  --format-version 1 `
+                  --manifest-path Frontend\src-tauri\Cargo.toml 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                  $metadata = $metadataJson | ConvertFrom-Json
+                  $cargoMetadataUsable = @(
+                    $metadata.packages | Where-Object { [string]$_.name -eq "scriber-desktop" }
+                  ).Count -eq 1
+                }
+              }
+            } catch {
+              $cargoMetadataUsable = $false
+            }
+          }
+          $audioTrustedRestore = (
+            "${{ steps.rust-audio-sidecar-cache.outputs.cache-hit }}" -eq "true" -or
+            (
+              "${{ steps.component-cache-artifacts.outputs.rust-audio-sidecar-restored }}" -eq "true" -and
+              "${{ steps.component-cache-artifacts.outputs.rust-audio-sidecar-exact }}" -eq "true"
+            )
+          )
+          $diarizationTrustedRestore = (
+            "${{ steps.rust-diarization-sidecar-cache.outputs.cache-hit }}" -eq "true" -or
+            (
+              "${{ steps.component-cache-artifacts.outputs.rust-diarization-sidecar-restored }}" -eq "true" -and
+              "${{ steps.component-cache-artifacts.outputs.rust-diarization-sidecar-exact }}" -eq "true"
+            )
+          )
+          $audioCovered = $coldProductsCovered -or (
+            $validationSucceeded -and
+            $audioTrustedRestore -and
+            "${{ steps.finished-rust-products.outputs.audio-usable }}" -eq "true"
+          )
+          $diarizationCovered = $coldProductsCovered -or (
+            $validationSucceeded -and
+            $diarizationTrustedRestore -and
+            "${{ steps.finished-rust-products.outputs.diarization-usable }}" -eq "true"
+          )
+          $maintenanceRequiresRust = (
+            $env:SCRIBER_SAVE_ACTIONS_CACHES -eq "true" -or
+            $env:SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS -eq "true"
+          )
+          $required = $maintenanceRequiresRust -or -not ($tauriCovered -and $cargoMetadataUsable -and $audioCovered -and $diarizationCovered)
+          "required=$(if ($required) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tauri-covered=$(if ($tauriCovered) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "cargo-metadata-usable=$(if ($cargoMetadataUsable) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "audio-covered=$(if ($audioCovered) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "diarization-covered=$(if ($diarizationCovered) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Existing Cargo metadata probe usable: $($cargoMetadataUsable.ToString().ToLowerInvariant())"
+          Write-Host "Rust toolchain/dependency preparation required: $($required.ToString().ToLowerInvariant())"
+
+      - name: Set up Rust
+        if: steps.rust-preparation.outputs.required == 'true'
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Restore Rust build cache
+        id: rust-build-cache
+        if: steps.rust-preparation.outputs.required == 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            .cargo/registry/index
+            .cargo/registry/cache
+            .cargo/git/db
+            Frontend/src-tauri/target/release/.fingerprint
+            Frontend/src-tauri/target/release/build
+            Frontend/src-tauri/target/release/deps
+            Frontend/src-tauri/target/release/incremental
+          key: scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}
+          restore-keys: |
+            scriber-rust-dependencies-v1-${{ runner.os }}-
+
+      - name: Restore Rust build release artifact
+        id: rust-build-artifact
+        # A restore-key hit already supplied a useful incremental target. Do
+        # not replace it with a 1.6 GB durable fallback merely because
+        # actions/cache reports cache-hit=false for partial matches.
+        if: steps.rust-preparation.outputs.required == 'true' && steps.rust-build-cache.outputs.cache-matched-key == ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\restore_release_cache_artifact.ps1 `
+            -Repo "${{ github.repository }}" `
+            -Tag $env:SCRIBER_RUST_BUILD_ARTIFACT_TAG `
+            -AssetName "scriber-rust-build-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-release.txt') }}.zip" `
+            -FallbackAssetNamePrefix "scriber-rust-build-${{ runner.os }}-" `
+            -DestinationPath build\rust-release-cache
+
+      - name: Import Rust build release artifact
+        id: rust-build-artifact-import
+        if: steps.rust-preparation.outputs.required == 'true' && steps.rust-build-artifact.outputs.restored == 'true'
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\sync_rust_release_cache_artifact.ps1 `
+            -Mode Import `
+            -CacheRoot build\rust-release-cache `
+            -CargoHome $env:CARGO_HOME `
+            -TargetDir Frontend\src-tauri\target
+
+      - name: Remove app outputs from restored Rust dependency state
+        if: steps.rust-preparation.outputs.required == 'true'
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\prune_rust_dependency_cache.ps1
+
       - name: Restore Sherpa ONNX static archive cache
         id: sherpa-onnx-archive-cache
-        if: steps.cold-products.outputs.usable != 'true'
+        if: steps.rust-preparation.outputs.diarization-covered != 'true'
         uses: actions/cache/restore@v6
         with:
           path: build/sherpa-onnx-archive-cache
@@ -1035,51 +1167,6 @@ jobs:
             -Tag $env:SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG `
             -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}.zip" `
             -DestinationPath build\python-wheelhouse
-
-      - name: Restore FFmpeg Profile B cache
-        id: ffmpeg-profile-b-cache
-        if: steps.cold-products.outputs.usable != 'true'
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            build/ffmpeg-profile-b-msys2/dist/scriber-ffmpeg-profile-b
-            build/ffmpeg-profile-b-msys2/ffmpeg-profile-b-manifest.json
-            build/ffmpeg-profile-b-msys2/ffmpeg-profile-b-fixtures.json
-            build/ffmpeg-profile-b-msys2/media-preparation-smoke-profile-b.json
-            build/ffmpeg-profile-b-msys2/profile-b-msys2-build-report.json
-          key: scriber-ffmpeg-profile-b-msys2-n7.0-v4-${{ runner.os }}
-
-      - name: Restore independent release-cache fallbacks in parallel
-        id: component-cache-artifacts
-        if: >-
-          steps.cold-products.outputs.usable != 'true' &&
-          (steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' ||
-           steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true' ||
-           steps.ffmpeg-profile-b-cache.outputs.cache-hit != 'true')
-        timeout-minutes: 10
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $restoreArgs = @{
-            Repo = "${{ github.repository }}"
-            RustAudioTag = $env:SCRIBER_RUST_AUDIO_SIDECAR_ARTIFACT_TAG
-            RustAudioAssetName = "scriber-rust-audio-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-audio-sidecar.txt') }}.zip"
-            RustDiarizationTag = $env:SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG
-            RustDiarizationAssetName = "scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}.zip"
-            FfmpegTag = $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG
-            FfmpegAssetName = $env:SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME
-          }
-          if ("${{ steps.rust-audio-sidecar-cache.outputs.cache-hit }}" -ne "true") {
-            $restoreArgs.RestoreRustAudio = $true
-          }
-          if ("${{ steps.rust-diarization-sidecar-cache.outputs.cache-hit }}" -ne "true") {
-            $restoreArgs.RestoreRustDiarization = $true
-          }
-          if ("${{ steps.ffmpeg-profile-b-cache.outputs.cache-hit }}" -ne "true") {
-            $restoreArgs.RestoreFfmpeg = $true
-          }
-          & .\scripts\ci\restore_component_cache_artifacts_parallel.ps1 @restoreArgs
 
       - name: Restore pip package store
         id: python-pip-store-cache
@@ -1890,7 +1977,7 @@ jobs:
 
       - name: Export Rust build release artifact
         id: rust-build-artifact-export
-        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true'
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true' && steps.rust-preparation.outputs.required == 'true'
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\sync_rust_release_cache_artifact.ps1 `
@@ -1900,7 +1987,7 @@ jobs:
             -TargetDir Frontend\src-tauri\target
 
       - name: Publish Rust build release artifact
-        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true' && steps.rust-build-artifact-export.outputs.staged == 'true'
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true' && steps.rust-preparation.outputs.required == 'true' && steps.rust-build-artifact-export.outputs.staged == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1913,13 +2000,13 @@ jobs:
             -Title "Scriber Rust Build Cache v2"
 
       - name: Remove app outputs before saving Rust dependency cache
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.rust-preparation.outputs.required == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\prune_rust_dependency_cache.ps1
 
       - name: Save Rust build cache
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.rust-preparation.outputs.required == 'true' && steps.rust-build-cache.outputs.cache-hit != 'true'
         # Save stable dependency output only. App/library fingerprints and
         # objects are covered by the small exact Tauri binary cache instead.
         uses: actions/cache/save@v6

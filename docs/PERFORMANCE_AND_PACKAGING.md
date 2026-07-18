@@ -468,6 +468,17 @@ Packaging/build:
   fresh 1.3+ GiB dependency cache. The separate exact Tauri app binary key
   covers concrete version, full frontend plus desktop/shared Rust inputs,
   resolved toolchain, target/profile, and updater runtime fingerprint.
+- Before installing the pinned Rust toolchain or restoring that multi-GB Cargo
+  state, the warm packaging path now imports the exact Tauri product and
+  restores the exact audio/diarization products. It skips Rust preparation only
+  when the reusable Tauri app is selected, both sidecar restores have exact
+  provenance and independently pass manifest, checksum, and native self-test
+  validation, the existing runner Cargo can answer a read-only `metadata
+  --no-deps --locked --frozen` probe for the desktop package without changing
+  the checkout or reaching the network, and the run is not explicit cache
+  maintenance. Empty outputs, corrupt caches, release-artifact uncertainty,
+  fresh Authenticode signing, a failed metadata probe, or any product miss fail
+  closed to the existing pinned toolchain and Cargo restore.
 - The Tauri shell library is built only as `rlib` for the Windows desktop
   release path. Tauri's `staticlib`/`cdylib` crate types are for mobile
   targets; keeping them in this Windows-first app produced extra library

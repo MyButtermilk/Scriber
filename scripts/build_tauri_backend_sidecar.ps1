@@ -38,6 +38,8 @@ param(
     [string]$RuntimeCacheRoot = "",
     [switch]$BundleRustAudioSidecar,
     [switch]$BundleRustDiarizationSidecar,
+    [switch]$ValidateFinishedRustProductsOnly,
+    [string]$RustAudioSidecarCacheRoot = "",
     [string]$RustDiarizationSidecarCacheRoot = "",
     [string]$SherpaOnnxArchiveCacheRoot = "",
     [string]$RustDiarizationTargetRoot = "",
@@ -1350,6 +1352,56 @@ function Get-RustAudioSidecarCacheKey {
     return Get-StringSha256 -Value $inputManifestJson
 }
 
+function Get-RustAudioSidecarCacheValidation {
+    param(
+        [string]$Root,
+        [string]$CacheRoot,
+        [switch]$RunSelfTest
+    )
+
+    $exeName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "scriber-audio-sidecar.exe" } else { "scriber-audio-sidecar" }
+    $cacheExe = Join-Path $CacheRoot $exeName
+    $cacheManifestPath = Join-Path $CacheRoot "audio-sidecar-cache-manifest.json"
+    $cacheKey = Get-RustAudioSidecarCacheKey -Root $Root
+    $result = [ordered]@{
+        usable = $false
+        cacheKey = $cacheKey
+        reason = "missing-files"
+    }
+
+    if (
+        -not (Test-Path -LiteralPath $cacheExe -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $cacheManifestPath -PathType Leaf)
+    ) {
+        return [pscustomobject]$result
+    }
+
+    try {
+        $cacheManifest = Get-Content -LiteralPath $cacheManifestPath -Raw | ConvertFrom-Json
+        $identityMatches = (
+            ([string]$cacheManifest.cacheKey) -eq $cacheKey -and
+            [string]$cacheManifest.executableSha256 -eq (Get-Sha256Hex -Path $cacheExe) -and
+            [int64]$cacheManifest.executableLength -eq [int64](Get-Item -LiteralPath $cacheExe).Length
+        )
+        if (-not $identityMatches) {
+            $result.reason = "identity-mismatch"
+            return [pscustomobject]$result
+        }
+        if ($RunSelfTest) {
+            & $cacheExe --self-test | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                $result.reason = "self-test-failed"
+                return [pscustomobject]$result
+            }
+        }
+        $result.usable = $true
+        $result.reason = "validated"
+    } catch {
+        $result.reason = "validation-error"
+    }
+    return [pscustomobject]$result
+}
+
 function Copy-RustAudioSidecarToTauriRelease {
     param(
         [string]$Root,
@@ -1375,20 +1427,8 @@ function Copy-RustAudioSidecarToTauriRelease {
     $inputManifest = Get-RustAudioSidecarInputManifest -Root $Root
     $inputManifestJson = $inputManifest | ConvertTo-Json -Depth 8 -Compress
     $cacheKey = Get-StringSha256 -Value $inputManifestJson
-    $cacheHit = $false
-
-    if ((Test-Path -LiteralPath $cacheExe -PathType Leaf) -and (Test-Path -LiteralPath $cacheManifestPath -PathType Leaf)) {
-        try {
-            $cacheManifest = Get-Content -LiteralPath $cacheManifestPath -Raw | ConvertFrom-Json
-            $cacheHit = (
-                ([string]$cacheManifest.cacheKey) -eq $cacheKey -and
-                [string]$cacheManifest.executableSha256 -eq (Get-Sha256Hex -Path $cacheExe) -and
-                [int64]$cacheManifest.executableLength -eq [int64](Get-Item -LiteralPath $cacheExe).Length
-            )
-        } catch {
-            $cacheHit = $false
-        }
-    }
+    $cacheValidation = Get-RustAudioSidecarCacheValidation -Root $Root -CacheRoot $cacheRoot
+    $cacheHit = [bool]$cacheValidation.usable
 
     if (-not $cacheHit) {
         Push-Location $tauriDir
@@ -1507,6 +1547,62 @@ function Get-RustDiarizationSidecarCacheKey {
     $inputManifest = Get-RustDiarizationSidecarInputManifest -Root $Root
     $inputManifestJson = $inputManifest | ConvertTo-Json -Depth 8 -Compress
     return Get-StringSha256 -Value $inputManifestJson
+}
+
+function Get-RustDiarizationSidecarCacheValidation {
+    param(
+        [string]$Root,
+        [string]$Python,
+        [string]$WorkerCacheRoot,
+        [switch]$RunSmoke
+    )
+
+    $cacheResourceRoot = Join-Path $WorkerCacheRoot "backend"
+    $cacheResourceDir = Join-Path $cacheResourceRoot "tools\diarization"
+    $cacheExe = Join-Path $cacheResourceDir "scriber-diarization-sidecar.exe"
+    $cacheWorkerManifest = Join-Path $cacheResourceDir "scriber-diarization-sidecar.manifest.json"
+    $cacheManifestPath = Join-Path $WorkerCacheRoot "diarization-sidecar-cache-manifest.json"
+    $buildMetadataPath = Join-Path $WorkerCacheRoot "diarization-sidecar-build-metadata.json"
+    $cacheKey = Get-RustDiarizationSidecarCacheKey -Root $Root
+    $result = [ordered]@{
+        usable = $false
+        cacheKey = $cacheKey
+        reason = "missing-files"
+        buildMetadata = $null
+    }
+
+    if (
+        -not (Test-Path -LiteralPath $cacheExe -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $cacheWorkerManifest -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $cacheManifestPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $buildMetadataPath -PathType Leaf)
+    ) {
+        return [pscustomobject]$result
+    }
+
+    try {
+        $cacheManifest = Get-Content -LiteralPath $cacheManifestPath -Raw | ConvertFrom-Json
+        $cachedBuildMetadata = Get-Content -LiteralPath $buildMetadataPath -Raw | ConvertFrom-Json
+        $cachedArchive = Get-ObjectPropertyValue -Object $cachedBuildMetadata -Name "archive"
+        $identityMatches = (
+            ([string]$cacheManifest.cacheKey) -eq $cacheKey -and
+            ([string]$cachedBuildMetadata.cacheKey) -eq $cacheKey -and
+            ([string](Get-ObjectPropertyValue -Object $cachedArchive -Name "sha256")) -eq "f6555701d6397d74f1302b0666a661f32708b599a14a5fde80835d4902fcd315"
+        )
+        if (-not $identityMatches) {
+            $result.reason = "identity-mismatch"
+            return [pscustomobject]$result
+        }
+        if ($RunSmoke) {
+            Invoke-DiarizationWorkerResourceSmoke -Root $Root -Python $Python -ResourceRoot $cacheResourceRoot | Out-Null
+        }
+        $result.usable = $true
+        $result.reason = "validated"
+        $result.buildMetadata = $cachedBuildMetadata
+    } catch {
+        $result.reason = "validation-error"
+    }
+    return [pscustomobject]$result
 }
 
 function Invoke-BoundedDownload {
@@ -1690,32 +1786,15 @@ function Copy-RustDiarizationSidecarToBackend {
     $inputManifest = Get-RustDiarizationSidecarInputManifest -Root $Root
     $inputManifestJson = $inputManifest | ConvertTo-Json -Depth 8 -Compress
     $cacheKey = Get-StringSha256 -Value $inputManifestJson
-    $cacheHit = $false
-    $cachedBuildMetadata = $null
-
-    if (
-        (Test-Path -LiteralPath $cacheExe -PathType Leaf) -and
-        (Test-Path -LiteralPath $cacheWorkerManifest -PathType Leaf) -and
-        (Test-Path -LiteralPath $cacheManifestPath -PathType Leaf) -and
-        (Test-Path -LiteralPath $buildMetadataPath -PathType Leaf)
-    ) {
-        try {
-            $cacheManifest = Get-Content -LiteralPath $cacheManifestPath -Raw | ConvertFrom-Json
-            $cachedBuildMetadata = Get-Content -LiteralPath $buildMetadataPath -Raw | ConvertFrom-Json
-            $cachedArchive = Get-ObjectPropertyValue -Object $cachedBuildMetadata -Name "archive"
-            $cacheHit = (
-                ([string]$cacheManifest.cacheKey) -eq $cacheKey -and
-                ([string]$cachedBuildMetadata.cacheKey) -eq $cacheKey -and
-                ([string](Get-ObjectPropertyValue -Object $cachedArchive -Name "sha256")) -eq "f6555701d6397d74f1302b0666a661f32708b599a14a5fde80835d4902fcd315"
-            )
-            if ($cacheHit) {
-                Invoke-DiarizationWorkerResourceSmoke -Root $Root -Python $Python -ResourceRoot $cacheResourceRoot | Out-Null
-            }
-        } catch {
-            Write-Host "Ignoring invalid Rust diarization sidecar cache."
-            $cacheHit = $false
-            $cachedBuildMetadata = $null
-        }
+    $cacheValidation = Get-RustDiarizationSidecarCacheValidation `
+        -Root $Root `
+        -Python $Python `
+        -WorkerCacheRoot $WorkerCacheRoot `
+        -RunSmoke
+    $cacheHit = [bool]$cacheValidation.usable
+    $cachedBuildMetadata = $cacheValidation.buildMetadata
+    if (-not $cacheHit -and $cacheValidation.reason -ne "missing-files") {
+        Write-Host "Ignoring invalid Rust diarization sidecar cache."
     }
 
     $archive = $null
@@ -2531,6 +2610,9 @@ if (-not $SidecarCacheRoot) {
 if (-not $RuntimeCacheRoot) {
     $RuntimeCacheRoot = Join-Path $RepoRoot "build\tauri-sidecar-runtime-cache"
 }
+if (-not $RustAudioSidecarCacheRoot) {
+    $RustAudioSidecarCacheRoot = Join-Path $RepoRoot "build\rust-audio-sidecar-cache"
+}
 if (-not $RustDiarizationSidecarCacheRoot) {
     $RustDiarizationSidecarCacheRoot = Join-Path $RepoRoot "build\rust-diarization-sidecar-cache"
 }
@@ -2544,6 +2626,7 @@ $DistRoot = Convert-ToFullPath -Path $DistRoot
 $WorkRoot = Convert-ToFullPath -Path $WorkRoot
 $SidecarCacheRoot = Convert-ToFullPath -Path $SidecarCacheRoot
 $RuntimeCacheRoot = Convert-ToFullPath -Path $RuntimeCacheRoot
+$RustAudioSidecarCacheRoot = Convert-ToFullPath -Path $RustAudioSidecarCacheRoot
 $RustDiarizationSidecarCacheRoot = Convert-ToFullPath -Path $RustDiarizationSidecarCacheRoot
 $SherpaOnnxArchiveCacheRoot = Convert-ToFullPath -Path $SherpaOnnxArchiveCacheRoot
 $RustDiarizationTargetRoot = Convert-ToFullPath -Path $RustDiarizationTargetRoot
@@ -2556,9 +2639,43 @@ Assert-UnderRoot -Root $RepoRoot -Path $DistRoot -Label "DistRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $WorkRoot -Label "WorkRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $SidecarCacheRoot -Label "SidecarCacheRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $RuntimeCacheRoot -Label "RuntimeCacheRoot"
+Assert-UnderRoot -Root $RepoRoot -Path $RustAudioSidecarCacheRoot -Label "RustAudioSidecarCacheRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationSidecarCacheRoot -Label "RustDiarizationSidecarCacheRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $SherpaOnnxArchiveCacheRoot -Label "SherpaOnnxArchiveCacheRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationTargetRoot -Label "RustDiarizationTargetRoot"
+
+if ($ValidateFinishedRustProductsOnly) {
+    $audioValidation = Get-RustAudioSidecarCacheValidation `
+        -Root $RepoRoot `
+        -CacheRoot $RustAudioSidecarCacheRoot `
+        -RunSelfTest
+    $diarizationValidation = Get-RustDiarizationSidecarCacheValidation `
+        -Root $RepoRoot `
+        -Python $PythonPath `
+        -WorkerCacheRoot $RustDiarizationSidecarCacheRoot `
+        -RunSmoke
+    $usable = [bool]$audioValidation.usable -and [bool]$diarizationValidation.usable
+    if ($env:GITHUB_OUTPUT) {
+        "audio-usable=$(if ($audioValidation.usable) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        "diarization-usable=$(if ($diarizationValidation.usable) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        "usable=$(if ($usable) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+    }
+    [ordered]@{
+        ok = $true
+        usable = $usable
+        audio = [ordered]@{
+            usable = [bool]$audioValidation.usable
+            cacheKey = [string]$audioValidation.cacheKey
+            reason = [string]$audioValidation.reason
+        }
+        diarization = [ordered]@{
+            usable = [bool]$diarizationValidation.usable
+            cacheKey = [string]$diarizationValidation.cacheKey
+            reason = [string]$diarizationValidation.reason
+        }
+    } | ConvertTo-Json -Depth 5 -Compress
+    return
+}
 
 if ($RustAudioOnly) {
     if (-not $RustAudioResultPath) {

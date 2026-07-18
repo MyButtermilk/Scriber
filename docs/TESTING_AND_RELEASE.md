@@ -771,9 +771,17 @@ It:
 - keeps GitHub-owned `actions/cache/restore` steps sequential within one job,
   but downloads the independent Rust-audio, Rust-diarization, and Profile B
   FFmpeg internal-artifact fallbacks concurrently after their Actions-cache
-  results are known. The helper uses fixed disjoint destinations and private
-  child output files; overlapping Rust/main-target, backend, `.venv`, and
-  wheelhouse restores remain serialized,
+  results are known. These bounded finished products are restored and validated
+  before the normal runner decides whether Rust setup is needed. An exact Tauri
+  product plus exact, self-tested audio and diarization products skips the
+  pinned toolchain and large Cargo dependency restore only after the runner's
+  existing Cargo passes a read-only `metadata --no-deps --locked --frozen`
+  package probe that cannot update the checkout or access the network;
+  validation uncertainty, a miss, fresh Authenticode signing, a failed probe,
+  or explicit cache maintenance preserves the established Rust path. The
+  helper uses fixed disjoint destinations and
+  private child output files; overlapping Rust/main-target, backend, `.venv`,
+  and wheelhouse restores remain serialized,
 - can import the newest internal Rust/Tauri cache artifact only when Actions
   restore reports no matched key. A partial `cache-matched-key` is retained as
   incremental state instead of downloading and expanding another 1.6 GB,

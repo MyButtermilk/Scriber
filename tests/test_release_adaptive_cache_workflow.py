@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -157,6 +158,145 @@ def test_attested_tauri_app_uses_its_lock_bound_cli_without_full_frontend_depend
     assert "-TauriCliEntrypoint requires -UsePrebuiltTauriApp" in build_script
     assert "must resolve under the repository build directory" in build_script
     assert "node \"{0}\" bundle --bundles" in build_script
+
+
+def test_release_workflow_defers_rust_setup_until_every_finished_product_is_covered() -> None:
+    workflow = _read(".github/workflows/release-windows.yml")
+    build_workflow = workflow.split("  build-windows:\n", 1)[1]
+    build_job_env = build_workflow.split("\n    steps:\n", 1)[0]
+
+    assert (
+        "SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE: "
+        "${{ vars.SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE }}"
+    ) in build_job_env
+
+    ordered_steps = (
+        "- name: Restore exact Tauri app binary\n",
+        "- name: Import exact Tauri app binary\n",
+        "- name: Select frontend dependency preparation\n",
+        "- name: Restore Rust audio sidecar cache\n",
+        "- name: Restore Rust diarization sidecar cache\n",
+        "- name: Restore independent release-cache fallbacks in parallel\n",
+        "- name: Validate finished Rust products before toolchain setup\n",
+        "- name: Select Rust build preparation\n",
+        "- name: Set up Rust\n",
+        "- name: Restore Rust build cache\n",
+    )
+    positions = [build_workflow.index(step) for step in ordered_steps]
+    assert positions == sorted(positions)
+
+    validation_step = build_workflow.split(
+        "- name: Validate finished Rust products before toolchain setup\n", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert "continue-on-error: true" in validation_step
+    assert "-ValidateFinishedRustProductsOnly" in validation_step
+
+    selection_step = build_workflow.split("- name: Select Rust build preparation\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert 'steps.finished-rust-products.outcome' in selection_step
+    assert 'steps.frontend-preparation.outputs.use-prebuilt' in selection_step
+    assert 'steps.rust-audio-sidecar-cache.outputs.cache-hit' in selection_step
+    assert 'steps.component-cache-artifacts.outputs.rust-audio-sidecar-restored' in selection_step
+    assert 'steps.component-cache-artifacts.outputs.rust-audio-sidecar-exact' in selection_step
+    assert 'steps.finished-rust-products.outputs.audio-usable' in selection_step
+    assert 'steps.rust-diarization-sidecar-cache.outputs.cache-hit' in selection_step
+    assert 'steps.component-cache-artifacts.outputs.rust-diarization-sidecar-restored' in selection_step
+    assert 'steps.component-cache-artifacts.outputs.rust-diarization-sidecar-exact' in selection_step
+    assert 'steps.finished-rust-products.outputs.diarization-usable' in selection_step
+    assert '$env:SCRIBER_SAVE_ACTIONS_CACHES -eq "true"' in selection_step
+    assert '$env:SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS -eq "true"' in selection_step
+    assert "Get-Command cargo -ErrorAction SilentlyContinue" in selection_step
+    assert "metadata `" in selection_step
+    assert "--no-deps `" in selection_step
+    assert "--locked `" in selection_step
+    assert "--frozen `" in selection_step
+    assert "--manifest-path Frontend\\src-tauri\\Cargo.toml" in selection_step
+    assert '[string]$_.name -eq "scriber-desktop"' in selection_step
+    assert "-not ($tauriCovered -and $cargoMetadataUsable -and $audioCovered -and $diarizationCovered)" in selection_step
+    assert '"cargo-metadata-usable=' in selection_step
+
+    frontend_selection = build_workflow.split(
+        "- name: Select frontend dependency preparation\n", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert '$env:SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE -eq "1"' in frontend_selection
+    assert "$exactProductUsable -and -not $requiresFreshAuthenticodeSignature" in frontend_selection
+
+    component_fallback = build_workflow.split(
+        "- name: Restore independent release-cache fallbacks in parallel\n", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert "continue-on-error: true" in component_fallback
+
+    for name in (
+        "Set up Rust",
+        "Restore Rust build cache",
+        "Restore Rust build release artifact",
+        "Import Rust build release artifact",
+        "Remove app outputs from restored Rust dependency state",
+    ):
+        step = build_workflow.split(f"- name: {name}\n", 1)[1].split("\n      - name:", 1)[0]
+        assert "steps.rust-preparation.outputs.required == 'true'" in step
+
+    sherpa_restore = build_workflow.split(
+        "- name: Restore Sherpa ONNX static archive cache\n", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert "if: steps.rust-preparation.outputs.diarization-covered != 'true'" in sherpa_restore
+
+
+def test_finished_rust_product_validation_is_toolchain_free_and_fails_closed() -> None:
+    builder = _read("scripts/build_tauri_backend_sidecar.ps1")
+    validation_mode = builder.split("if ($ValidateFinishedRustProductsOnly) {", 1)[1].split(
+        "\nif ($RustAudioOnly) {", 1
+    )[0]
+
+    assert "Get-RustAudioSidecarCacheValidation" in validation_mode
+    assert "Get-RustDiarizationSidecarCacheValidation" in validation_mode
+    assert '"audio-usable=' in validation_mode
+    assert '"diarization-usable=' in validation_mode
+    assert "cargo" not in validation_mode.casefold()
+    assert "rustc" not in validation_mode.casefold()
+    assert "& $cacheExe --self-test" in builder
+    assert "Invoke-DiarizationWorkerResourceSmoke" in builder
+
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell is required for finished Rust product validation")
+
+    suffix = uuid.uuid4().hex
+    audio_cache = REPO_ROOT / "build" / f"missing-rust-audio-cache-{suffix}"
+    diarization_cache = REPO_ROOT / "build" / f"missing-rust-diarization-cache-{suffix}"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-File",
+            str(REPO_ROOT / "scripts/build_tauri_backend_sidecar.ps1"),
+            "-RepoRoot",
+            str(REPO_ROOT),
+            "-PythonPath",
+            sys.executable,
+            "-RustAudioSidecarCacheRoot",
+            str(audio_cache),
+            "-RustDiarizationSidecarCacheRoot",
+            str(diarization_cache),
+            "-ValidateFinishedRustProductsOnly",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads([line for line in result.stdout.splitlines() if line.strip()][-1])
+    assert payload["ok"] is True
+    assert payload["usable"] is False
+    assert payload["audio"]["usable"] is False
+    assert payload["audio"]["reason"] == "missing-files"
+    assert payload["diarization"]["usable"] is False
+    assert payload["diarization"]["reason"] == "missing-files"
+    assert not audio_cache.exists()
+    assert not diarization_cache.exists()
 
 
 def test_runtime_tree_identity_is_compatible_with_windows_powershell() -> None:

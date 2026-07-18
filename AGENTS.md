@@ -144,8 +144,19 @@ Packaging and scripts:
   restored Tauri Cargo target after backend preparation by default; Cargo's
   target lock bounds a rare overlap with the app compile and avoids a cold
   duplicate dependency build. `-RustAudioIsolatedTarget` remains an explicit
-  diagnostic/local opt-in. NSIS, updater signing, and verification start only
-  after every producer succeeds.
+  diagnostic/local opt-in. On the normal packaging runner, restore and validate
+  the exact Tauri desktop product plus the independent Rust audio and
+  diarization products before setting up Rust. The pinned toolchain and large
+  Cargo dependency restore may be skipped only when the Tauri product is
+  selected for reuse, both Rust sidecars came from exact trusted restores and
+  pass their native validation/self-tests, and no explicit cache-maintenance
+  operation requires Rust. Any missing output, validation error, fresh
+  Authenticode requirement, product miss, or failed read-only `cargo metadata
+  --no-deps --locked --frozen` probe must retain the established Rust
+  setup/build path. The probe exists because Tauri's bundle-only command still
+  resolves package metadata; it may not update the checkout or use the network,
+  and it never substitutes an unpinned toolchain for a compile. NSIS, updater
+  signing, and verification start only after every producer succeeds.
 - `native/scriber-diarization-sidecar/`: isolated, statically linked
   Sherpa-ONNX worker; release preparation stages its attested EXE under backend
   `tools/diarization`. Its worker cache and pinned Sherpa archive cache remain
