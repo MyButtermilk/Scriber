@@ -30,6 +30,20 @@ class HoldoutError(RuntimeError):
     """Raised when a holdout cannot be attested without guessing."""
 
 
+def pinned_deno_version(stdout: str) -> str:
+    """Normalize the semantic version from Deno's stable first line."""
+
+    lines = str(stdout or "").splitlines()
+    first_line = lines[0].strip() if lines else ""
+    match = re.fullmatch(
+        r"deno\s+(\d+\.\d+\.\d+)(?:\s+\([^\r\n]+\))?",
+        first_line,
+    )
+    if match is None or match.group(1) != "2.9.2":
+        raise HoldoutError("Deno runtime did not report the pinned 2.9.2 version")
+    return match.group(1)
+
+
 def _canonical_json(value: Any) -> bytes:
     return json.dumps(
         value,
@@ -311,11 +325,12 @@ def main(argv: list[str] | None = None) -> int:
             check=False,
             timeout=30,
         )
-        if deno_version.returncode != 0 or not deno_version.stdout.startswith("deno 2.9.2"):
+        if deno_version.returncode != 0:
             raise HoldoutError("Deno runtime did not report the pinned 2.9.2 version")
+        normalized_deno_version = pinned_deno_version(deno_version.stdout)
         runtime_identity = {
             "name": "deno",
-            "version": deno_version.stdout.splitlines()[0].removeprefix("deno ").strip(),
+            "version": normalized_deno_version,
             "length": deno_executable.stat().st_size,
             "sha256": _sha256_file(deno_executable),
         }

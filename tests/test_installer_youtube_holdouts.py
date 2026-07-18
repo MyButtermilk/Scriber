@@ -5,7 +5,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.validate_installer_youtube_holdouts import observed_capabilities
+import pytest
+
+from scripts.validate_installer_youtube_holdouts import (
+    HoldoutError,
+    observed_capabilities,
+    pinned_deno_version,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -115,3 +121,29 @@ def test_invalid_run_id_fails_before_network_access() -> None:
 
     assert completed.returncode == 2
     assert json.loads(completed.stdout)["ok"] is False
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    (
+        "deno 2.9.2\nv8 14.9.107.11-rusty\ntypescript 6.0.2\n",
+        "deno 2.9.2 (stable, release, x86_64-pc-windows-msvc)\n",
+    ),
+)
+def test_pinned_deno_version_normalizes_supported_stable_output(stdout: str) -> None:
+    assert pinned_deno_version(stdout) == "2.9.2"
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    (
+        "deno 2.9.3\n",
+        "deno 2.9.2-rc.0\n",
+        "2.9.2\n",
+        "deno 2.9.2 unexpected trailing text\n",
+        "",
+    ),
+)
+def test_pinned_deno_version_rejects_unpinned_or_ambiguous_output(stdout: str) -> None:
+    with pytest.raises(HoldoutError, match="pinned 2.9.2"):
+        pinned_deno_version(stdout)

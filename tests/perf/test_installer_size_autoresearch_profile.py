@@ -2992,7 +2992,17 @@ def test_complete_final_evidence_cannot_end_the_fixed_clock_early(
 
 def test_ux_evaluator_and_doctor_files_remain_byte_identical() -> None:
     for relative, expected in UX_FILE_HASHES.items():
-        actual = hashlib.sha256((REPO_ROOT / relative).read_bytes()).hexdigest()
+        worktree_diff = subprocess.run(
+            ["git", "diff", "--quiet", "HEAD", "--", relative],
+            cwd=REPO_ROOT,
+            check=False,
+        )
+        assert worktree_diff.returncode == 0, relative
+        blob = subprocess.check_output(
+            ["git", "cat-file", "blob", f"HEAD:{relative}"],
+            cwd=REPO_ROOT,
+        )
+        actual = hashlib.sha256(blob).hexdigest()
         assert actual == expected, relative
 
 
