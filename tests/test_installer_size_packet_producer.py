@@ -418,6 +418,20 @@ def test_reused_python_environment_is_fully_reattested() -> None:
     assert 'throw "environment_missing_after_build"' in body
 
 
+def test_packet_builds_pin_and_restore_all_known_entropy_inputs() -> None:
+    for setting in (
+        'PYTHONHASHSEED = "0"',
+        'SOURCE_DATE_EPOCH = "946684800"',
+        'RUSTFLAGS = "-C link-arg=/Brepro"',
+        'CARGO_INCREMENTAL = "0"',
+    ):
+        assert setting in SOURCE
+    assert 'Remove-Item -LiteralPath "Env:CARGO_ENCODED_RUSTFLAGS"' in SOURCE
+    assert "$savedDeterministicBuildEnvironment" in SOURCE
+    restore = SOURCE.rsplit("} finally {", 1)[1]
+    assert "foreach ($name in $savedDeterministicBuildEnvironment.Keys)" in restore
+
+
 def test_build_output_is_accepted_only_after_environment_and_toolchain_recheck() -> None:
     build = SOURCE.index("$buildCommandEvidenceSha = Invoke-FullInstallerBuild")
     reattest = SOURCE.index("$postBuildEnvironment = Ensure-HermeticEnvironment")

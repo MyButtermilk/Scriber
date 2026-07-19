@@ -129,4 +129,7 @@ def test_research_builds_remove_volatile_packaged_sidecar_metadata() -> None:
     assert "$metadataTotalDurationMs = [int64]0" in sidecar
     assert "$metadataPhases = @()" in sidecar
     assert '"cacheKey", "sha256", "length"' in sidecar
+    assert '"--deterministic-research-metadata"' in sidecar
+    assert "$null = Invoke-ScriberFfmpegFixtureSmoke" in sidecar
+    assert "$null = Invoke-ScriberFfmpegProfileManifest" in sidecar
     assert '"-DeterministicResearchMetadata"' in windows_build

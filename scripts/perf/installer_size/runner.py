@@ -1949,10 +1949,12 @@ def _accept_baseline(context) -> subprocess.CompletedProcess[str] | None:
     paths = paths_for(context)
     if paths.baseline.is_file():
         return None
-    launcher = context.repo_root / "scripts" / "project-python.cmd"
+    baseline_python = (
+        paths.environment_manifest.parent / ".venv" / "Scripts" / "python.exe"
+    )
     evaluator = context.repo_root / "scripts" / "installer_research.py"
     command = [
-            str(launcher),
+            str(baseline_python),
             str(evaluator),
             "accept-baseline",
             "--first-inventory",

@@ -2570,7 +2570,8 @@ function Invoke-ScriberFfmpegProfileManifest {
     param(
         [string]$FfmpegPath,
         [string]$FfprobePath,
-        [string]$OutputPath
+        [string]$OutputPath,
+        [bool]$DeterministicMetadata = $false
     )
 
     $validator = Join-Path $RepoRoot "scripts\ffmpeg\validate_ffmpeg_profile.py"
@@ -2589,6 +2590,9 @@ function Invoke-ScriberFfmpegProfileManifest {
     )
     if ($FfprobePath) {
         $validatorArgs += @("--ffprobe", $FfprobePath)
+    }
+    if ($DeterministicMetadata) {
+        $validatorArgs += "--deterministic-research-metadata"
     }
 
     & $PythonPath @validatorArgs
@@ -2651,12 +2655,16 @@ function Copy-MediaTools {
     }
 
     if ($ValidateSlimBundle) {
-        Invoke-ScriberFfmpegFixtureSmoke `
+        $null = Invoke-ScriberFfmpegFixtureSmoke `
             -FfmpegPath $copiedFfmpeg `
             -FfprobePath $copiedFfprobe `
             -Label "copied"
         $profileManifestPath = Join-Path $toolsTarget "ffmpeg-profile-manifest.json"
-        Invoke-ScriberFfmpegProfileManifest -FfmpegPath $copiedFfmpeg -FfprobePath $copiedFfprobe -OutputPath $profileManifestPath
+        $null = Invoke-ScriberFfmpegProfileManifest `
+            -FfmpegPath $copiedFfmpeg `
+            -FfprobePath $copiedFfprobe `
+            -OutputPath $profileManifestPath `
+            -DeterministicMetadata ([bool]$DeterministicResearchMetadata)
         $copied += $profileManifestPath
     }
 

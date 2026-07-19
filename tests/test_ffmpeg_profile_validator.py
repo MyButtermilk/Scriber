@@ -75,3 +75,23 @@ configuration:
     assert "--enable-gpl" in flags
     assert "--enable-libopus" in flags
     assert "--disable-network" in flags
+
+
+def test_deterministic_research_metadata_removes_time_and_staging_roots() -> None:
+    payload = {
+        "generatedAt": "2026-07-19T06:48:58Z",
+        "tools": {
+            "ffmpeg": {"path": r"C:\\volatile\\baseline-2\\ffmpeg.exe", "sizeBytes": 1},
+            "ffprobe": {"path": r"C:\\volatile\\baseline-2\\ffprobe.exe", "sizeBytes": 2},
+            "totalSizeBytes": 3,
+        },
+    }
+
+    normalized = validator.apply_deterministic_research_metadata(payload)
+
+    assert normalized is payload
+    assert payload["generatedAt"] == "1970-01-01T00:00:00Z"
+    assert payload["tools"]["ffmpeg"]["path"] == "ffmpeg.exe"
+    assert payload["tools"]["ffprobe"]["path"] == "ffprobe.exe"
+    assert payload["tools"]["totalSizeBytes"] == 3
+    assert validator.parse_args(["--deterministic-research-metadata"]).deterministic_research_metadata

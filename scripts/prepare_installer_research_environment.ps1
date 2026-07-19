@@ -239,6 +239,16 @@ Invoke-Checked -Label "Validating the research Python dependency graph" -Command
     & $venvPython -m pip check
 }
 
+# Importing comtypes.client creates the otherwise wheel-external
+# comtypes/gen/__init__.py package on first use.  PyInstaller imports that
+# module while analysing Scriber, so leaving this mutation to the first
+# replica makes the second replica contain one additional PYZ entry.  Seed the
+# generated package before the immutable environment manifest is written so
+# every baseline, candidate, and final replica starts from the same graph.
+Invoke-Checked -Label "Seeding the deterministic comtypes generated package" -Command {
+    & $venvPython -c "import comtypes.client, comtypes.gen; assert comtypes.gen.__file__"
+}
+
 $manifestWriter = Join-Path $RepoRoot "scripts\write_installer_research_environment_manifest.py"
 $manifestArgs = @(
     $manifestWriter,

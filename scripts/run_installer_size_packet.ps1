@@ -1610,6 +1610,7 @@ $scratchRoot = $null
 $installRoot = $null
 $dataRoot = $null
 $savedSigningEnvironment = @{}
+$savedDeterministicBuildEnvironment = @{}
 $exitCode = 2
 $summary = $null
 $failureCode = "packet_producer_failed"
@@ -1619,6 +1620,27 @@ foreach ($name in $SigningEnvironmentNames) {
     $savedSigningEnvironment[$name] = if ($null -eq $item) { $null } else { $item.Value }
     Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
 }
+
+# Installer research compares independently rebuilt payloads byte-for-byte and
+# by compressed length.  Pin all build-time entropy before any Python, Rust,
+# Vite, or Tauri producer runs. /Brepro makes the MSVC PE timestamp and CodeView
+# identity content-derived; the fixed hash seed stabilizes PyInstaller archive
+# order. CARGO_ENCODED_RUSTFLAGS must be absent because Cargo gives it
+# precedence over RUSTFLAGS.
+$deterministicBuildEnvironment = [ordered]@{
+    PYTHONHASHSEED = "0"
+    SOURCE_DATE_EPOCH = "946684800"
+    RUSTFLAGS = "-C link-arg=/Brepro"
+    CARGO_INCREMENTAL = "0"
+}
+foreach ($name in @($deterministicBuildEnvironment.Keys) + @("CARGO_ENCODED_RUSTFLAGS")) {
+    $item = Get-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+    $savedDeterministicBuildEnvironment[$name] = if ($null -eq $item) { $null } else { $item.Value }
+}
+foreach ($name in $deterministicBuildEnvironment.Keys) {
+    Set-Item -LiteralPath "Env:$name" -Value ([string]$deterministicBuildEnvironment[$name])
+}
+Remove-Item -LiteralPath "Env:CARGO_ENCODED_RUSTFLAGS" -ErrorAction SilentlyContinue
 
 try {
     $canonicalRunId = Resolve-CanonicalRunId -Value $RunId
@@ -2437,6 +2459,13 @@ try {
     foreach ($name in $SigningEnvironmentNames) {
         if ($savedSigningEnvironment.ContainsKey($name) -and $null -ne $savedSigningEnvironment[$name]) {
             Set-Item -LiteralPath "Env:$name" -Value $savedSigningEnvironment[$name]
+        } else {
+            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        }
+    }
+    foreach ($name in $savedDeterministicBuildEnvironment.Keys) {
+        if ($null -ne $savedDeterministicBuildEnvironment[$name]) {
+            Set-Item -LiteralPath "Env:$name" -Value $savedDeterministicBuildEnvironment[$name]
         } else {
             Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
         }

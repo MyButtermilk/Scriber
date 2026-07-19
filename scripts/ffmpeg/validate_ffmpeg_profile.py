@@ -339,7 +339,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--require-lgpl", action="store_true")
     parser.add_argument("--strict-profile", action="store_true")
     parser.add_argument("--print-json", action="store_true")
+    parser.add_argument("--deterministic-research-metadata", action="store_true")
     return parser.parse_args(argv)
+
+
+def apply_deterministic_research_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    """Remove measurement-irrelevant time and staging-root entropy in place."""
+    payload["generatedAt"] = "1970-01-01T00:00:00Z"
+    tools = payload.get("tools")
+    if isinstance(tools, dict):
+        for name in ("ffmpeg", "ffprobe"):
+            tool = tools.get(name)
+            if isinstance(tool, dict) and isinstance(tool.get("path"), str):
+                tool["path"] = Path(tool["path"].replace("\\", "/")).name
+    return payload
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -380,6 +393,8 @@ def main(argv: list[str] | None = None) -> int:
             "failures": ["ffmpeg was not found"],
             "warnings": [],
         }
+        if args.deterministic_research_metadata:
+            apply_deterministic_research_metadata(payload)
         write_json(args.output, payload)
         print_summary(payload, args.output, print_json=args.print_json)
         return 1
@@ -405,6 +420,9 @@ def main(argv: list[str] | None = None) -> int:
             "failures": [f"{type(exc).__name__}: {exc}"],
             "warnings": [],
         }
+
+    if args.deterministic_research_metadata:
+        apply_deterministic_research_metadata(payload)
 
     write_json(args.output, payload)
     print_summary(payload, args.output, print_json=args.print_json)

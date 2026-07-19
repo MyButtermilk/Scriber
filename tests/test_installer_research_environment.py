@@ -28,6 +28,11 @@ def test_environment_preparer_is_scoped_and_has_no_unsafe_powershell() -> None:
     assert '"autoresearch-results\\installer-size\\$canonicalRunId"' in script
     assert "--no-index" in script
     assert "pip check" in script
+    assert "Seeding the deterministic comtypes generated package" in script
+    assert "import comtypes.client, comtypes.gen" in script
+    assert script.index("import comtypes.client, comtypes.gen") < script.index(
+        "write_installer_research_environment_manifest.py"
+    )
     assert "Invoke-Expression" not in script
     assert "EncodedCommand" not in script
     assert "ExecutionPolicy Bypass" not in script
@@ -92,6 +97,19 @@ def test_environment_manifest_is_path_redacted_and_stable(
         "_distribution_entries",
         lambda *, environment_root: distributions,
     )
+    generated_trees = [
+        {
+            "id": "comtypes.gen",
+            "fileCount": 1,
+            "installedBytes": 56,
+            "contentSha256": "3" * 64,
+        }
+    ]
+    monkeypatch.setattr(
+        environment_manifest,
+        "_generated_tree_entries",
+        lambda *, environment_root: generated_trees,
+    )
     arguments = {
         "run_id": RUN_ID,
         "environment_name": "baseline",
@@ -112,3 +130,34 @@ def test_environment_manifest_is_path_redacted_and_stable(
     assert first_payload["productDependenciesSha256"]
     assert all(entry["contentSha256"] for entry in first_payload["distributions"])
     assert all(entry["fileCount"] > 0 for entry in first_payload["distributions"])
+    assert first_payload["generatedTrees"] == generated_trees
+
+
+def test_generated_comtypes_tree_identity_detects_unrecorded_modules(
+    tmp_path: Path,
+) -> None:
+    environment_root = tmp_path / "environment"
+    generated_root = environment_root / "Lib" / "site-packages" / "comtypes" / "gen"
+    generated_root.mkdir(parents=True)
+    (generated_root / "__init__.py").write_text(
+        "# deterministic generated package\n", encoding="utf-8"
+    )
+    pycache = generated_root / "__pycache__"
+    pycache.mkdir()
+    (pycache / "__init__.pyc").write_bytes(b"volatile bytecode")
+
+    first = environment_manifest._generated_tree_identity(
+        generated_root,
+        tree_id="comtypes.gen",
+        environment_root=environment_root.resolve(),
+    )
+    (generated_root / "extra.py").write_text("VALUE = 1\n", encoding="utf-8")
+    second = environment_manifest._generated_tree_identity(
+        generated_root,
+        tree_id="comtypes.gen",
+        environment_root=environment_root.resolve(),
+    )
+
+    assert first["fileCount"] == 1
+    assert second["fileCount"] == 2
+    assert first["contentSha256"] != second["contentSha256"]

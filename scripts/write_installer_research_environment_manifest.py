@@ -81,6 +81,26 @@ def _plain_file(path: Path, *, label: str) -> Path:
     return resolved
 
 
+def _plain_directory(path: Path, *, label: str, environment_root: Path) -> Path:
+    candidate = Path(path.absolute())
+    info = candidate.lstat()
+    if candidate.is_symlink() or bool(
+        getattr(info, "st_file_attributes", 0) & REPARSE_POINT
+    ):
+        raise ValueError(f"{label} must be a plain directory")
+    resolved = candidate.resolve(strict=True)
+    resolved_info = resolved.lstat()
+    if not resolved.is_dir() or resolved.is_symlink() or bool(
+        getattr(resolved_info, "st_file_attributes", 0) & REPARSE_POINT
+    ):
+        raise ValueError(f"{label} must be a plain directory")
+    try:
+        resolved.relative_to(environment_root)
+    except ValueError as exc:
+        raise ValueError(f"{label} escaped the research environment") from exc
+    return resolved
+
+
 def _distribution_content_identity(
     distribution: importlib.metadata.Distribution,
     *,
@@ -146,6 +166,68 @@ def _distribution_entries(*, environment_root: Path) -> list[dict[str, object]]:
     return entries
 
 
+def _generated_tree_identity(
+    root: Path,
+    *,
+    tree_id: str,
+    environment_root: Path,
+) -> dict[str, object]:
+    root = _plain_directory(
+        root,
+        label=f"generated tree {tree_id}",
+        environment_root=environment_root,
+    )
+    rows: list[dict[str, object]] = []
+    for candidate in sorted(root.rglob("*"), key=lambda item: item.as_posix().encode("utf-8")):
+        relative = candidate.relative_to(root)
+        if "__pycache__" in relative.parts:
+            continue
+        if candidate.is_dir():
+            _plain_directory(
+                candidate,
+                label=f"generated tree directory {tree_id}/{relative.as_posix()}",
+                environment_root=environment_root,
+            )
+            continue
+        plain = _plain_file(
+            candidate,
+            label=f"generated tree file {tree_id}/{relative.as_posix()}",
+        )
+        try:
+            plain.relative_to(environment_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"Generated tree file escaped the research environment: {tree_id}"
+            ) from exc
+        rows.append(
+            {
+                "path": relative.as_posix(),
+                "length": plain.stat().st_size,
+                "sha256": _sha256_file(plain),
+            }
+        )
+    if not rows:
+        raise ValueError(f"Generated tree has no attestable files: {tree_id}")
+    return {
+        "id": tree_id,
+        "fileCount": len(rows),
+        "installedBytes": sum(int(item["length"]) for item in rows),
+        "contentSha256": _canonical_sha256(rows),
+    }
+
+
+def _generated_tree_entries(*, environment_root: Path) -> list[dict[str, object]]:
+    comtypes = importlib.metadata.distribution("comtypes")
+    comtypes_root = Path(comtypes.locate_file("comtypes"))
+    return [
+        _generated_tree_identity(
+            comtypes_root / "gen",
+            tree_id="comtypes.gen",
+            environment_root=environment_root,
+        )
+    ]
+
+
 def _file_entries(paths: Iterable[Path], *, label: str) -> list[dict[str, object]]:
     entries: list[dict[str, object]] = []
     for path in sorted(paths, key=lambda item: item.name.lower()):
@@ -174,6 +256,7 @@ def build_manifest(
     requirement_entries = _file_entries(requirements, label="requirements")
     environment_root = Path(sys.prefix).resolve(strict=True)
     distributions = _distribution_entries(environment_root=environment_root)
+    generated_trees = _generated_tree_entries(environment_root=environment_root)
     python_entry = {
         "implementation": platform.python_implementation(),
         "version": platform.python_version(),
@@ -193,7 +276,10 @@ def build_manifest(
         "wheelhouse": wheel_entries,
         "wheelhouseSha256": _canonical_sha256(wheel_entries),
         "distributions": distributions,
-        "productDependenciesSha256": _canonical_sha256(distributions),
+        "generatedTrees": generated_trees,
+        "productDependenciesSha256": _canonical_sha256(
+            {"distributions": distributions, "generatedTrees": generated_trees}
+        ),
     }
 
 

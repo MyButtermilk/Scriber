@@ -1948,6 +1948,35 @@ def test_missing_baseline_pair_artifact_is_retryable(
     assert not paths.manifest.exists()
 
 
+def test_baseline_acceptance_uses_attested_run_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _repo_root, context = make_repo(tmp_path)
+    state.initialize_run(context, resume=False, now=FIXED_NOW)
+    paths = state.paths_for(context)
+    captured: dict[str, object] = {}
+
+    def capture_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(runner.subprocess, "run", capture_run)
+
+    result = runner._accept_baseline(context)
+
+    assert result is not None and result.returncode == 0
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert Path(command[0]) == (
+        paths.environment_manifest.parent / ".venv" / "Scripts" / "python.exe"
+    )
+    assert Path(command[0]) != context.repo_root / "scripts" / "project-python.cmd"
+    assert Path(command[1]) == context.repo_root / "scripts" / "installer_research.py"
+    assert command[2] == "accept-baseline"
+
+
 def test_clock_arms_after_pre_arm_doctor_finishes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
