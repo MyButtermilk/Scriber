@@ -218,6 +218,16 @@ def test_captured_command_uses_native_exit_code_under_windows_powershell_51(
             assert "-PowerShellScript -Command" in SOURCE[wrapper:invocation]
 
 
+def test_installed_media_preparation_uses_the_emitted_smoke_contract() -> None:
+    assert (
+        'PropertyPath @("mediaPreparation", "verified")' in SOURCE
+    )
+    assert (
+        'PropertyPath @("mediaPreparation", "report", "ok")' in SOURCE
+    )
+    assert 'PropertyPath @("mediaPreparation", "ok")' not in SOURCE
+
+
 def test_registry_cleanup_tolerates_only_a_disappearing_exact_entry(
     tmp_path: Path,
 ) -> None:

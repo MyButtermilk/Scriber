@@ -1934,7 +1934,11 @@ try {
         (Test-NestedTrue -Value $installedSmoke -PropertyPath @("ok")) -and
         (Test-NestedTrue -Value $installedSmoke -PropertyPath @("frontend", "verified"))
     )
-    $mediaSmokePassed = $desktopSmokePassed -and (Test-NestedTrue -Value $installedSmoke -PropertyPath @("mediaPreparation", "ok"))
+    $mediaSmokePassed = (
+        $desktopSmokePassed -and
+        (Test-NestedTrue -Value $installedSmoke -PropertyPath @("mediaPreparation", "verified")) -and
+        (Test-NestedTrue -Value $installedSmoke -PropertyPath @("mediaPreparation", "report", "ok"))
+    )
     $meetingSmokePassed = $desktopSmokePassed -and (Test-NestedTrue -Value $installedSmoke -PropertyPath @("meetingAudioDeviceTest", "verified"))
     if (-not (Test-Path -LiteralPath $installRoot -PathType Container)) {
         throw "installed_payload_missing"
