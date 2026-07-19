@@ -2020,6 +2020,37 @@ function Test-SidecarTargetCurrent {
     return $true
 }
 
+function Test-IsRootedBuildMetadataPath {
+    param([string]$Text)
+
+    if ([string]::IsNullOrEmpty($Text)) {
+        return $false
+    }
+
+    # Windows PowerShell 5.1 delegates IsPathRooted to .NET Framework, where
+    # diagnostic strings containing characters such as '<', '>', or '|' throw
+    # instead of returning false. Recognize the privacy-sensitive prefixes
+    # before that call so even malformed absolute paths are still redacted.
+    if (
+        $Text[0] -eq [char]92 -or
+        $Text[0] -eq [char]47 -or
+        (
+            $Text.Length -ge 2 -and
+            [char]::IsLetter($Text[0]) -and
+            $Text[1] -eq [char]58
+        )
+    ) {
+        return $true
+    }
+
+    try {
+        return [System.IO.Path]::IsPathRooted($Text)
+    } catch {
+        # Non-path metadata is allowed to contain path-illegal characters.
+        return $false
+    }
+}
+
 function Convert-ToPathRedactedBuildMetadataValue {
     param([object]$Value)
 
@@ -2028,11 +2059,7 @@ function Convert-ToPathRedactedBuildMetadataValue {
     }
     if ($Value -is [string]) {
         $text = [string]$Value
-        if (
-            [System.IO.Path]::IsPathRooted($text) -or
-            $text.StartsWith("\\", [System.StringComparison]::Ordinal) -or
-            $text.StartsWith("/", [System.StringComparison]::Ordinal)
-        ) {
+        if (Test-IsRootedBuildMetadataPath -Text $text) {
             return "<redacted-absolute-path>"
         }
         return $text
