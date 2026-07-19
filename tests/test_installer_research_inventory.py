@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import json
@@ -13,6 +14,7 @@ import pytest
 from scripts.installer_research.inventory import (
     InventoryError,
     _build_tree_inventory,
+    _normalize_unbundled_console_launcher_records,
     _normalize_sidecar_build_metadata,
     _normalize_tauri_bundle_type,
     build_root_identity_sha256,
@@ -33,6 +35,50 @@ SOURCE_COMMIT = "a" * 40
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _record_digest(content: bytes) -> str:
+    return base64.urlsafe_b64encode(hashlib.sha256(content).digest()).decode(
+        "ascii"
+    ).rstrip("=")
+
+
+def _write_console_record_fixture(
+    root: Path,
+    *,
+    launcher_digest: str,
+    launcher_length: int = 108_467,
+    launcher_path: str = "../../Scripts/yt-dlp.exe",
+    console_name: str = "yt-dlp",
+    retained_row: str = "yt_dlp-2026.7.4.dist-info/RECORD,,",
+    bundle_recorded_target: bool = False,
+) -> Path:
+    dist_info = root / "backend/_internal/yt_dlp-2026.7.4.dist-info"
+    dist_info.mkdir(parents=True, exist_ok=True)
+    (dist_info / "entry_points.txt").write_text(
+        f"[console_scripts]\n{console_name} = yt_dlp:main\n",
+        encoding="utf-8",
+    )
+    record = dist_info / "RECORD"
+    record.write_text(
+        f"{launcher_path},sha256={launcher_digest},{launcher_length}\n"
+        f"{retained_row}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    if bundle_recorded_target:
+        target = root / "backend/Scripts/yt-dlp.exe"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"bundled-console-launcher")
+    return record
+
+
+def _bundled_relative_paths(root: Path) -> frozenset[str]:
+    return frozenset(
+        path.relative_to(root).as_posix().casefold()
+        for path in root.rglob("*")
+        if path.is_file()
+    )
 
 
 def _sidecar_metadata(
@@ -462,6 +508,160 @@ def test_tree_exact_hash_changes_but_semantic_hash_ignores_only_allowlisted_meta
     assert first["exactTreeSha256"] != second["exactTreeSha256"]
     assert first["semanticTreeSha256"] == second["semanticTreeSha256"]
     assert first["fileListSha256"] == second["fileListSha256"]
+
+
+def test_dist_info_record_semantics_ignore_only_unbundled_declared_console_launcher(
+    minimal_pyinstaller_payload: Path,
+    tmp_path: Path,
+) -> None:
+    first_root = tmp_path / "first-record"
+    second_root = tmp_path / "second-record"
+    shutil.copytree(minimal_pyinstaller_payload, first_root)
+    shutil.copytree(minimal_pyinstaller_payload, second_root)
+    first_record = _write_console_record_fixture(
+        first_root,
+        launcher_digest=_record_digest(b"first launcher"),
+        launcher_length=108_467,
+    )
+    second_record = _write_console_record_fixture(
+        second_root,
+        launcher_digest=_record_digest(b"second launcher"),
+        launcher_length=108_452,
+    )
+    component_map, _ = load_component_map(COMPONENT_MAP)
+    first_backend = inspect_pyinstaller_executable(
+        first_root / "backend" / "scriber-backend.exe",
+        component_map=component_map,
+    )
+    second_backend = inspect_pyinstaller_executable(
+        second_root / "backend" / "scriber-backend.exe",
+        component_map=component_map,
+    )
+
+    first = _build_tree_inventory(
+        first_root,
+        component_map=component_map,
+        backend_relative_path="backend/scriber-backend.exe",
+        backend_attribution=first_backend,
+    )
+    second = _build_tree_inventory(
+        second_root,
+        component_map=component_map,
+        backend_relative_path="backend/scriber-backend.exe",
+        backend_attribution=second_backend,
+    )
+    record_relative = "backend/_internal/yt_dlp-2026.7.4.dist-info/RECORD"
+    first_entry = next(item for item in first["files"] if item["path"] == record_relative)
+    second_entry = next(item for item in second["files"] if item["path"] == record_relative)
+
+    assert first_entry["length"] == first_record.stat().st_size
+    assert second_entry["length"] == second_record.stat().st_size
+    assert first_entry["sha256"] == _sha256(first_record)
+    assert second_entry["sha256"] == _sha256(second_record)
+    assert first_entry["sha256"] != second_entry["sha256"]
+    assert first_entry["semanticLength"] == second_entry["semanticLength"]
+    assert first_entry["semanticSha256"] == second_entry["semanticSha256"]
+    assert first["exactTreeSha256"] != second["exactTreeSha256"]
+    assert first["semanticTreeSha256"] == second["semanticTreeSha256"]
+    assert first["fileListSha256"] == second["fileListSha256"]
+
+
+@pytest.mark.parametrize(
+    ("launcher_path", "console_name", "bundle_recorded_target"),
+    [
+        ("../../Scripts/yt-dlp.exe", "another-command", False),
+        ("../../../Scripts/yt-dlp.exe", "yt-dlp", False),
+        ("../../Scripts/yt-dlp-script.py", "yt-dlp", False),
+        ("../../Scripts/yt-dlp.exe", "yt-dlp", True),
+    ],
+)
+def test_dist_info_record_semantics_retain_out_of_scope_launcher_rows(
+    tmp_path: Path,
+    launcher_path: str,
+    console_name: str,
+    bundle_recorded_target: bool,
+) -> None:
+    root = tmp_path / "payload"
+    record = _write_console_record_fixture(
+        root,
+        launcher_digest=_record_digest(b"out-of-scope launcher"),
+        launcher_path=launcher_path,
+        console_name=console_name,
+        bundle_recorded_target=bundle_recorded_target,
+    )
+
+    assert (
+        _normalize_unbundled_console_launcher_records(
+            path=record,
+            relative_path=record.relative_to(root).as_posix(),
+            raw=record.read_bytes(),
+            bundled_relative_paths=_bundled_relative_paths(root),
+        )
+        is None
+    )
+
+
+def test_dist_info_record_semantics_retain_noncanonical_record_digest(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "payload"
+    canonical = _record_digest(b"launcher")
+    noncanonical = canonical[:-1] + "B"
+    record = _write_console_record_fixture(
+        root,
+        launcher_digest=noncanonical,
+    )
+
+    assert len(noncanonical) == 43
+    assert (
+        _normalize_unbundled_console_launcher_records(
+            path=record,
+            relative_path=record.relative_to(root).as_posix(),
+            raw=record.read_bytes(),
+            bundled_relative_paths=_bundled_relative_paths(root),
+        )
+        is None
+    )
+
+
+def test_dist_info_record_semantics_preserve_every_non_launcher_row(tmp_path: Path) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_record = _write_console_record_fixture(
+        first_root,
+        launcher_digest=_record_digest(b"first launcher"),
+        retained_row=(
+            "yt_dlp/__init__.py,sha256=" + _record_digest(b"first retained") + ",123"
+        ),
+    )
+    second_record = _write_console_record_fixture(
+        second_root,
+        launcher_digest=_record_digest(b"second launcher"),
+        retained_row=(
+            "yt_dlp/__init__.py,sha256=" + _record_digest(b"second retained") + ",123"
+        ),
+    )
+
+    first_semantic = _normalize_unbundled_console_launcher_records(
+        path=first_record,
+        relative_path=first_record.relative_to(first_root).as_posix(),
+        raw=first_record.read_bytes(),
+        bundled_relative_paths=_bundled_relative_paths(first_root),
+    )
+    second_semantic = _normalize_unbundled_console_launcher_records(
+        path=second_record,
+        relative_path=second_record.relative_to(second_root).as_posix(),
+        raw=second_record.read_bytes(),
+        bundled_relative_paths=_bundled_relative_paths(second_root),
+    )
+
+    assert first_semantic is not None
+    assert second_semantic is not None
+    assert b"../../Scripts/yt-dlp.exe" not in first_semantic
+    assert b"../../Scripts/yt-dlp.exe" not in second_semantic
+    assert first_semantic != second_semantic
+    assert b"yt_dlp/__init__.py" in first_semantic
+    assert b"yt_dlp/__init__.py" in second_semantic
 
 
 def test_artifact_directory_selects_only_one_exact_versioned_nsis_setup(

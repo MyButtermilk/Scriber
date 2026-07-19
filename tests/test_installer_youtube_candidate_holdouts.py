@@ -39,6 +39,8 @@ def _bound_stack_fixture(
                 "path": relative,
                 "length": len(content),
                 "sha256": holdouts._sha256_file(path),
+                "semanticLength": len(content),
+                "semanticSha256": holdouts._sha256_file(path),
                 "component": component,
             }
         )
@@ -162,6 +164,8 @@ def _locked_candidate_fixture(
                 "path": relative,
                 "length": path.stat().st_size,
                 "sha256": holdouts._sha256_file(path),
+                "semanticLength": path.stat().st_size,
+                "semanticSha256": holdouts._sha256_file(path),
             }
         )
     inventory: dict[str, object] = {"payload": {"staged": {"files": entries}}}
@@ -176,7 +180,7 @@ def _locked_candidate_fixture(
     )
 
 
-def test_pair_requires_exact_semantic_capability_parity() -> None:
+def test_pair_requires_all_predeclared_capabilities() -> None:
     baseline = _outcome()
     candidate = _outcome(capabilities=("audio-format-url", "js-runtime"))
 
@@ -188,6 +192,70 @@ def test_pair_requires_exact_semantic_capability_parity() -> None:
 
     assert status == "fail"
     assert reason == "candidate_capability_regression"
+
+
+def test_pair_allows_optional_capability_differences_and_records_them() -> None:
+    baseline = _outcome(
+        capabilities=(
+            "audio-format-url",
+            "js-runtime",
+            "metadata",
+            "manual-or-automatic-captions",
+        )
+    )
+    candidate = _outcome(
+        capabilities=("audio-format-url", "js-runtime", "metadata", "signature")
+    )
+
+    classification = holdouts.classify_pair(
+        baseline,
+        candidate,
+        required_capabilities=("metadata", "audio-format-url", "deno-runtime"),
+    )
+    diagnostics = holdouts._capability_diagnostics(
+        baseline,
+        candidate,
+        required_capabilities=("metadata", "audio-format-url", "deno-runtime"),
+    )
+
+    assert classification == ("pass", None)
+    assert diagnostics == {
+        "comparisonPolicy": "required-capabilities-v2",
+        "requiredCapabilities": ["audio-format-url", "js-runtime", "metadata"],
+        "baselineObservedCapabilities": [
+            "audio-format-url",
+            "js-runtime",
+            "manual-or-automatic-captions",
+            "metadata",
+        ],
+        "candidateObservedCapabilities": [
+            "audio-format-url",
+            "js-runtime",
+            "metadata",
+            "signature",
+        ],
+        "baselineMissingRequiredCapabilities": [],
+        "candidateMissingRequiredCapabilities": [],
+        "optionalOnlyInBaseline": ["manual-or-automatic-captions"],
+        "optionalOnlyInCandidate": ["signature"],
+        "optionalParity": False,
+    }
+
+
+def test_public_candidate_failure_code_is_strictly_allowlisted() -> None:
+    assert (
+        holdouts._public_failure_code(
+            _outcome(status="fail", failure_code="network_timeout")
+        )
+        == "network_timeout"
+    )
+    assert (
+        holdouts._public_failure_code(
+            _outcome(status="fail", failure_code="provider-secret-detail")
+        )
+        == "unclassified_failure"
+    )
+    assert holdouts._public_failure_code(_outcome()) is None
 
 
 def test_only_same_paired_failure_is_external_invalid() -> None:
@@ -347,6 +415,56 @@ def test_protected_quickjs_lock_prefers_ng_and_pins_official_bytes() -> None:
     assert fallback["license"]["sha256"] == (
         "598fd7fc928e4350abce36e337ba5a1346923c5c692f5be92c3d8e29ddd7c18d"
     )
+
+
+def test_protected_denort_lock_pins_wrapper_and_compiled_output() -> None:
+    entry, lock_sha256 = holdouts._load_denort_provenance_lock()
+
+    assert len(lock_sha256) == 64
+    assert entry["implementation"] == holdouts.DENORT_IMPLEMENTATION
+    assert entry["protocol"] == holdouts.DENORT_PROTOCOL
+    assert entry["wrapper"]["sha256"] == (
+        "10b251b09237bf38e03d1890528e94dac1203dc2f10ac84b4e1873b8ff8d7987"
+    )
+    assert entry["output"] == {
+        "installedFileName": "deno.exe",
+        "length": 80_416_159,
+        "sha256": "9179466207b9495035200cf8f153780f0d9d43248cb2eaa154d0af375952e10e",
+    }
+    assert entry["manifestCanonicalSha256"] == hashlib.sha256(
+        holdouts._canonical_manifest_bytes(entry["manifest"])
+    ).hexdigest()
+
+
+def test_compiled_denort_lifecycle_uses_the_exact_stdin_protocol() -> None:
+    runtime = holdouts.RuntimeIdentity(
+        kind="deno",
+        version="2.9.2",
+        executable=Path("deno.exe"),
+        length=80_416_159,
+        sha256="9" * 64,
+        origin="https://example.test/denort.zip",
+        license="MIT",
+        provenance="protected-denort-provenance-lock",
+        manifest_sha256="a" * 64,
+        provenance_lock_entry="denort-2.9.2-scriber-youtube-v1",
+        provenance_lock_sha256="b" * 64,
+        implementation=holdouts.DENORT_IMPLEMENTATION,
+        protocol=holdouts.DENORT_PROTOCOL,
+    )
+
+    error_command, error_input = holdouts._runtime_error_invocation(runtime)
+    long_command, long_input = holdouts._runtime_long_invocation(runtime)
+
+    assert error_command == [
+        "deno.exe",
+        "run",
+        *holdouts.DENORT_RUN_OPTIONS,
+        "-",
+    ]
+    assert long_command == error_command
+    assert error_input == b"throw new Error('holdout');\n"
+    assert b"setTimeout" in (long_input or b"")
 
 
 def test_candidate_manifest_and_files_must_match_protected_lock_bytes(
@@ -534,6 +652,288 @@ def test_probe_outcome_rejects_policy_or_version_drift() -> None:
     assert outcome.failure_code == "probe_contract_invalid"
 
 
+def test_probe_outcome_rejects_non_allowlisted_failure_code() -> None:
+    payload = {
+        "probeContract": holdouts.FROZEN_PROBE_CONTRACT,
+        "schemaVersion": 1,
+        "caseId": "regular-audio",
+        "runtimeKind": "deno",
+        "ytDlpVersion": "2026.7.4",
+        "ejsVersion": "0.8.0",
+        "policy": {
+            "configDiscovery": False,
+            "externalPlugins": False,
+            "remoteComponents": False,
+            "download": False,
+            "explicitSingleRuntime": True,
+        },
+        "status": "fail",
+        "failureCode": "raw-provider-detail",
+        "durationNs": 5,
+        "observedCapabilities": [],
+    }
+    result = holdouts.CommandResult(
+        status="completed",
+        return_code=1,
+        elapsed_ns=10,
+        stdout=json.dumps(payload).encode(),
+        stderr=b"",
+        cleanup_verified=True,
+        workspace_fingerprint="c" * 64,
+    )
+
+    outcome = holdouts._probe_outcome(
+        result,
+        case_id="regular-audio",
+        expected_video_id="abcdefghijk",
+        runtime_kind="deno",
+        yt_dlp_version="2026.7.4",
+        ejs_version="0.8.0",
+    )
+
+    assert outcome.status == "fail"
+    assert outcome.failure_code == "probe_contract_invalid"
+
+
+def test_case_rows_persist_and_accept_one_candidate_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    baseline_pass = _outcome(
+        capabilities=("audio-format-url", "metadata", "player-js")
+    )
+    candidate_pass = _outcome(
+        capabilities=("audio-format-url", "metadata", "signature")
+    )
+    candidate_failure = _outcome(status="fail", failure_code="http_403")
+    outcomes = [
+        baseline_pass, candidate_pass,  # prime
+        baseline_pass, candidate_pass,  # cold 1
+        baseline_pass, candidate_failure,  # cold 2 original
+        baseline_pass, candidate_pass,  # cold 2 confirmation
+        baseline_pass, candidate_pass,  # warm 1
+        baseline_pass, candidate_pass,  # warm 2
+    ]
+
+    def fake_probe(**_kwargs: object) -> holdouts.ProbeOutcome:
+        return outcomes.pop(0)
+
+    class FakeFactory:
+        def create(self, purpose: str) -> Path:
+            path = tmp_path / purpose
+            path.mkdir()
+            return path
+
+        def remove(self, _path: Path) -> None:
+            return None
+
+    monkeypatch.setattr(holdouts, "_probe", fake_probe)
+    rows, baseline_ns, candidate_ns, reasons = holdouts._case_rows(
+        cases=(
+            {
+                "id": "regular-audio",
+                "family": "regular",
+                "requiredCapabilities": ["metadata", "audio-format-url"],
+            },
+        ),
+        baseline=object(),  # type: ignore[arg-type]
+        candidate=object(),  # type: ignore[arg-type]
+        factory=FakeFactory(),  # type: ignore[arg-type]
+        timeout_seconds=30,
+    )
+
+    assert outcomes == []
+    assert rows[0]["primeStatus"] == "pass"
+    assert rows[0]["primeCapabilityDiagnostics"]["optionalParity"] is False
+    assert rows[0]["primeCandidateFailureCode"] is None
+    assert rows[0]["pairs"][0]["status"] == "pass"
+    assert rows[0]["pairs"][0]["capabilityDiagnostics"][
+        "optionalOnlyInBaseline"
+    ] == ["player-js"]
+    recovered_pair = rows[0]["pairs"][1]
+    assert recovered_pair["status"] == "pass"
+    assert recovered_pair["reasonCode"] is None
+    assert recovered_pair["candidateFailureCode"] is None
+    assert recovered_pair["selectedAttempt"] == "confirmation"
+    assert recovered_pair["recovery"] == {
+        "eligible": True,
+        "attempted": True,
+        "accepted": True,
+        "budgetOrdinal": 1,
+        "budgetExhausted": False,
+        "triggerReasonCode": "candidate_probe_failed",
+        "confirmationReasonCode": None,
+    }
+    assert len(recovered_pair["attempts"]) == 2
+    assert recovered_pair["attempts"][0]["candidateFailureCode"] == "http_403"
+    assert recovered_pair["attempts"][1]["order"] == ["baseline", "candidate"]
+    assert len(baseline_ns) == len(candidate_ns) == 4
+    assert reasons == []
+
+
+def test_parallel_probe_treats_only_required_capabilities_as_parity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate, _inventory = _bound_stack_fixture(tmp_path)
+    outcomes = [
+        _outcome(capabilities=("audio-format-url", "metadata", "player-js")),
+        _outcome(capabilities=("audio-format-url", "metadata", "signature")),
+    ]
+    outcome_lock = threading.Lock()
+
+    def fake_probe(**_kwargs: object) -> holdouts.ProbeOutcome:
+        with outcome_lock:
+            return outcomes.pop(0)
+
+    monkeypatch.setattr(holdouts, "_probe", fake_probe)
+    monkeypatch.setattr(holdouts, "_require_runtime_security_boundary", lambda _runtime: None)
+
+    result = holdouts._parallel_candidate_probe(
+        candidate=candidate,
+        case={"requiredCapabilities": ["metadata", "audio-format-url"]},
+        factory=object(),  # type: ignore[arg-type]
+        timeout_seconds=30,
+    )
+
+    assert result["capabilityParity"] is True
+    assert result["capabilityComparisonPolicy"] == "required-capabilities-v2"
+    assert result["capabilityDiagnostics"]["optionalParity"] is False
+
+
+def test_global_candidate_recovery_budget_cannot_heal_a_second_disturbance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline_pass = _outcome()
+    candidate_pass = _outcome()
+    candidate_failure = _outcome(status="fail", failure_code="network_timeout")
+    outcomes = [
+        baseline_pass,
+        candidate_failure,
+        baseline_pass,
+        candidate_pass,
+        baseline_pass,
+        candidate_failure,
+    ]
+
+    monkeypatch.setattr(holdouts, "_probe", lambda **_kwargs: outcomes.pop(0))
+    budget = holdouts.CandidateRecoveryBudget()
+    common = {
+        "case": {
+            "id": "regular-audio",
+            "requiredCapabilities": ["metadata", "audio-format-url", "deno-runtime"],
+        },
+        "baseline": object(),
+        "candidate": object(),
+        "factory": object(),
+        "timeout_seconds": 30,
+        "baseline_cache_dir": None,
+        "candidate_cache_dir": None,
+        "recovery_budget": budget,
+    }
+
+    recovered, recovered_timing = holdouts._logical_pair(
+        logical_sample_id="regular-audio:cold:1",
+        purpose="first",
+        **common,  # type: ignore[arg-type]
+    )
+    rejected, rejected_timing = holdouts._logical_pair(
+        logical_sample_id="regular-audio:cold:2",
+        purpose="second",
+        **common,  # type: ignore[arg-type]
+    )
+
+    assert outcomes == []
+    assert recovered["status"] == "pass"
+    assert recovered["selectedAttempt"] == "confirmation"
+    assert recovered_timing == (100, 100)
+    assert rejected["status"] == "fail"
+    assert rejected["reasonCode"] == "candidate_probe_recovery_budget_exhausted"
+    assert rejected["selectedAttempt"] is None
+    assert rejected["baselineDurationNs"] is None
+    assert rejected["candidateDurationNs"] is None
+    assert rejected_timing is None
+    assert len(rejected["attempts"]) == 1
+    assert rejected["recovery"]["budgetExhausted"] is True
+    assert budget.public() == {
+        "maximumCandidateOnlyRecoveries": 1,
+        "candidateOnlyDisturbanceCount": 2,
+        "usedCandidateOnlyRecoveries": 1,
+        "acceptedCandidateOnlyRecoveries": 1,
+        "failedCandidateOnlyRecoveries": 0,
+        "recoveredLogicalSampleId": "regular-audio:cold:1",
+    }
+
+
+def test_capability_regression_never_consumes_recovery_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcomes = [
+        _outcome(),
+        _outcome(capabilities=("audio-format-url", "js-runtime")),
+    ]
+    monkeypatch.setattr(holdouts, "_probe", lambda **_kwargs: outcomes.pop(0))
+    budget = holdouts.CandidateRecoveryBudget()
+
+    row, timing = holdouts._logical_pair(
+        logical_sample_id="regular-audio:warm:1",
+        purpose="capability-regression",
+        case={
+            "id": "regular-audio",
+            "requiredCapabilities": ["metadata", "audio-format-url", "deno-runtime"],
+        },
+        baseline=object(),  # type: ignore[arg-type]
+        candidate=object(),  # type: ignore[arg-type]
+        factory=object(),  # type: ignore[arg-type]
+        timeout_seconds=30,
+        baseline_cache_dir=None,
+        candidate_cache_dir=None,
+        recovery_budget=budget,
+    )
+
+    assert row["reasonCode"] == "candidate_capability_regression"
+    assert row["recovery"]["eligible"] is False
+    assert len(row["attempts"]) == 1
+    assert timing is None
+    assert budget.used == budget.disturbance_count == 0
+
+
+def test_parallel_probe_may_repeat_the_complete_two_worker_probe_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate, _inventory = _bound_stack_fixture(tmp_path)
+    outcomes = [
+        _outcome(status="fail", failure_code="network_timeout"),
+        _outcome(),
+        _outcome(),
+        _outcome(),
+    ]
+    outcome_lock = threading.Lock()
+
+    def fake_probe(**_kwargs: object) -> holdouts.ProbeOutcome:
+        with outcome_lock:
+            return outcomes.pop(0)
+
+    monkeypatch.setattr(holdouts, "_probe", fake_probe)
+    monkeypatch.setattr(holdouts, "_require_runtime_security_boundary", lambda _runtime: None)
+    budget = holdouts.CandidateRecoveryBudget()
+
+    result = holdouts._parallel_candidate_probe(
+        candidate=candidate,
+        case={"requiredCapabilities": ["metadata", "audio-format-url"]},
+        factory=object(),  # type: ignore[arg-type]
+        timeout_seconds=30,
+        recovery_budget=budget,
+    )
+
+    assert outcomes == []
+    assert result["status"] == "pass"
+    assert result["selectedAttempt"] == "confirmation"
+    assert len(result["attempts"]) == 2
+    assert result["attempts"][0]["reasonCode"] == "candidate_parallel_probe_failed"
+    assert result["attempts"][1]["workerCount"] == 2
+    assert result["recovery"]["accepted"] is True
+    assert budget.used == budget.accepted == budget.disturbance_count == 1
+
+
 def test_private_runner_cleans_success_error_timeout_and_cancel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -648,6 +1048,93 @@ def test_bound_input_snapshot_rehashes_all_relevant_payload_files(
     assert any(relative.endswith("js-runtime-manifest.json") for relative, *_ in snapshot.files)
 
 
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("semanticLength", True),
+        ("semanticLength", -1),
+        ("semanticLength", "7"),
+        ("semanticSha256", "A" * 64),
+        ("semanticSha256", None),
+    ],
+)
+def test_inventory_entries_require_strict_semantic_identity(
+    field: str, invalid: object
+) -> None:
+    entry: dict[str, object] = {
+        "path": "backend/scriber-backend.exe",
+        "length": 7,
+        "sha256": "a" * 64,
+        "semanticLength": 7,
+        "semanticSha256": "b" * 64,
+    }
+    entry[field] = invalid
+
+    with pytest.raises(holdouts.HoldoutError, match="inventory file entry is unsafe"):
+        holdouts._inventory_entries(
+            {"payload": {"staged": {"files": [entry]}}},
+            installed=False,
+        )
+
+
+def test_public_youtube_identities_use_semantic_inventory_values(
+    tmp_path: Path,
+) -> None:
+    metadata = (
+        b"Metadata-Version: 2.4\n"
+        b"Name: yt-dlp\n"
+        b"Version: 2026.7.4\n"
+        b"License-Expression: Unlicense\n"
+        b"Project-URL: Source, https://github.com/yt-dlp/yt-dlp\n\n"
+    )
+    raw_record = b"../../Scripts/yt-dlp.exe,raw-wrapper-hash,123\n"
+    semantic_record = b"../../Scripts/yt-dlp.exe,<normalized>,0\n"
+    contents = {
+        "backend/_internal/yt_dlp-2026.7.4.dist-info/METADATA": (
+            metadata,
+            metadata,
+        ),
+        "backend/_internal/yt_dlp-2026.7.4.dist-info/RECORD": (
+            raw_record,
+            semantic_record,
+        ),
+    }
+    files = []
+    semantic_rows = []
+    for relative, (raw, semantic) in contents.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        entry = {
+            "path": relative,
+            "length": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "semanticLength": len(semantic),
+            "semanticSha256": hashlib.sha256(semantic).hexdigest(),
+            "component": "yt-dlp-ejs",
+        }
+        files.append(entry)
+        semantic_rows.append(
+            {
+                "path": relative,
+                "length": entry["semanticLength"],
+                "sha256": entry["semanticSha256"],
+            }
+        )
+    inventory = {"payload": {"staged": {"files": files}}}
+    expected = holdouts._canonical_sha256(sorted(semantic_rows, key=lambda row: row["path"]))
+
+    distribution = holdouts._metadata_identity(
+        root=tmp_path,
+        inventory=inventory,
+        distribution="yt-dlp",
+        installed=False,
+    )
+
+    assert distribution.content_sha256 == expected
+    assert holdouts._component_identity(inventory, "yt-dlp-ejs") == expected
+
+
 def test_bound_input_snapshot_rejects_changed_file_even_when_inventory_is_unchanged(
     tmp_path: Path,
 ) -> None:
@@ -741,12 +1228,20 @@ def test_write_immutable_loses_publish_race_without_overwriting(
 
 
 def test_evidence_redaction_rejects_urls_paths_and_raw_streams() -> None:
-    holdouts._assert_redacted({"caseId": "regular-audio", "status": "pass"})
+    holdouts._assert_redacted(
+        {
+            "caseId": "regular-audio",
+            "status": "pass",
+            "candidateFailureCode": "network_timeout",
+        }
+    )
 
     with pytest.raises(holdouts.HoldoutError, match="forbidden"):
         holdouts._assert_redacted({"stdout": "raw"})
     with pytest.raises(holdouts.HoldoutError, match="unredacted"):
         holdouts._assert_redacted({"origin": "https://www.youtube.com/watch?v=secret"})
+    with pytest.raises(holdouts.HoldoutError, match="non-allowlisted"):
+        holdouts._assert_redacted({"candidateFailureCode": "raw-provider-detail"})
 
 
 def test_validator_invokes_only_inventory_bound_frozen_backend_probe() -> None:

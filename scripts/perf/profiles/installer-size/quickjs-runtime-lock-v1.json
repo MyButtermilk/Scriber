@@ -1,7 +1,7 @@
 {
   "contract": "ScriberQuickJsRuntimeProvenanceLockV1",
   "schemaVersion": 1,
-  "campaign": "installer-size-v1",
+  "campaign": "installer-size-v2",
   "target": {
     "os": "windows",
     "architecture": "x86_64"

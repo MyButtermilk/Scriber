@@ -37,6 +37,250 @@ def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def _candidate_youtube_evidence(
+    *,
+    run_id: str,
+    packet_id: str,
+    parent_champion_id: str,
+    source_commit: str,
+    recovered_sample_id: str | None = None,
+) -> dict:
+    required = ["audio-format-url", "metadata"]
+
+    def diagnostics(*, candidate_passed: bool = True) -> dict:
+        candidate = required if candidate_passed else []
+        return {
+            "comparisonPolicy": "required-capabilities-v2",
+            "requiredCapabilities": required,
+            "baselineObservedCapabilities": required,
+            "candidateObservedCapabilities": candidate,
+            "baselineMissingRequiredCapabilities": [],
+            "candidateMissingRequiredCapabilities": [] if candidate_passed else required,
+            "optionalOnlyInBaseline": [],
+            "optionalOnlyInCandidate": [],
+            "optionalParity": True,
+        }
+
+    def pass_attempt(logical_id: str, index: int, kind: str) -> dict:
+        return {
+            "attemptIndex": index,
+            "attemptKind": kind,
+            "logicalSampleId": logical_id,
+            "order": ["baseline", "candidate"],
+            "status": "pass",
+            "reasonCode": None,
+            "baselineDurationNs": 100,
+            "candidateDurationNs": 100,
+            "semanticCapabilities": required,
+            "capabilityDiagnostics": diagnostics(),
+            "baselineFailureCode": None,
+            "candidateFailureCode": None,
+            "cleanupVerified": True,
+        }
+
+    def pair_sample(logical_id: str) -> dict:
+        recovered = logical_id == recovered_sample_id
+        selected = pass_attempt(
+            logical_id,
+            2 if recovered else 1,
+            "confirmation" if recovered else "original",
+        )
+        attempts = [selected]
+        if recovered:
+            attempts.insert(
+                0,
+                {
+                    "attemptIndex": 1,
+                    "attemptKind": "original",
+                    "logicalSampleId": logical_id,
+                    "order": ["baseline", "candidate"],
+                    "status": "fail",
+                    "reasonCode": "candidate_probe_failed",
+                    "baselineDurationNs": 100,
+                    "candidateDurationNs": 100,
+                    "semanticCapabilities": [],
+                    "capabilityDiagnostics": diagnostics(candidate_passed=False),
+                    "baselineFailureCode": None,
+                    "candidateFailureCode": "network_timeout",
+                    "cleanupVerified": True,
+                },
+            )
+        return {
+            "logicalSampleId": logical_id,
+            "order": ["baseline", "candidate"],
+            "status": "pass",
+            "reasonCode": None,
+            "selectedAttempt": "confirmation" if recovered else "original",
+            "baselineDurationNs": selected["baselineDurationNs"],
+            "candidateDurationNs": selected["candidateDurationNs"],
+            "semanticCapabilities": selected["semanticCapabilities"],
+            "capabilityDiagnostics": selected["capabilityDiagnostics"],
+            "baselineFailureCode": None,
+            "candidateFailureCode": None,
+            "cleanupVerified": True,
+            "attempts": attempts,
+            "recovery": {
+                "eligible": recovered,
+                "attempted": recovered,
+                "accepted": recovered,
+                "budgetOrdinal": 1 if recovered else None,
+                "budgetExhausted": False,
+                "triggerReasonCode": "candidate_probe_failed" if recovered else None,
+                "confirmationReasonCode": None,
+            },
+        }
+
+    cases = []
+    for case_index in range(6):
+        case_id = f"case-{case_index}"
+        prime = pair_sample(f"{case_id}:prime")
+        pairs = []
+        for mode in ("cold", "warm"):
+            for pair_index in (1, 2):
+                pair = pair_sample(f"{case_id}:{mode}:{pair_index}")
+                pair.update({"mode": mode, "pairIndex": pair_index})
+                pairs.append(pair)
+        cases.append(
+            {
+                "id": case_id,
+                "family": "fixture",
+                "primeStatus": prime["status"],
+                "primeReasonCode": prime["reasonCode"],
+                "primeSelectedAttempt": prime["selectedAttempt"],
+                "primeCapabilityDiagnostics": prime["capabilityDiagnostics"],
+                "primeBaselineFailureCode": prime["baselineFailureCode"],
+                "primeCandidateFailureCode": prime["candidateFailureCode"],
+                "primeCleanupVerified": prime["cleanupVerified"],
+                "primeAttempts": prime["attempts"],
+                "primeRecovery": prime["recovery"],
+                "coldPairCount": 2,
+                "warmPairCount": 2,
+                "pairs": pairs,
+            }
+        )
+
+    parallel_attempt = {
+        "attemptIndex": 1,
+        "attemptKind": "original",
+        "logicalSampleId": "parallel:two-worker",
+        "status": "pass",
+        "reasonCode": None,
+        "workerCount": 2,
+        "workers": [
+            {
+                "workerIndex": index,
+                "status": "pass",
+                "durationNs": 100,
+                "semanticCapabilities": required,
+                "missingRequiredCapabilities": [],
+                "failureCode": None,
+                "cleanupVerified": True,
+            }
+            for index in (1, 2)
+        ],
+        "capabilityParity": True,
+        "capabilityDiagnostics": diagnostics(),
+        "cleanupVerified": True,
+    }
+    recovered_count = int(recovered_sample_id is not None)
+    return {
+        "holdoutSnapshotContract": "InstallerSizeYoutubeCandidateHoldoutsV2",
+        "schemaVersion": 2,
+        "status": "pass",
+        "reasonCodes": [],
+        "capturedAtUtc": "2026-07-19T10:00:00Z",
+        "runId": run_id,
+        "packetId": packet_id,
+        "parentChampionId": parent_champion_id,
+        "sourceCommit": source_commit,
+        "bindings": {"baseline": {}, "parent": {}, "candidate": {}},
+        "baseline": {},
+        "candidate": {},
+        "inputImmutabilityVerified": True,
+        "executionPolicy": {
+            "pairing": "baseline-immediately-followed-by-candidate",
+            "capabilityComparisonPolicy": "required-capabilities-v2",
+            "optionalCapabilityDifferencesBlocking": False,
+            "candidateProbeFailuresBlocking": True,
+            "candidateProbeRetryCount": 1,
+            "candidateProbeRetryScope": "global-candidate-only",
+            "candidateFailureConfirmationPolicy": (
+                "single-immediate-complete-confirmation-v1"
+            ),
+            "maximumCandidateOnlyRecoveries": 1,
+            "confirmationAttemptsPersisted": True,
+            "normalPairConfirmationOrder": ["baseline", "candidate"],
+            "parallelConfirmationMode": "repeat-complete-two-worker-probe",
+            "confirmationRequiresAllRequiredCapabilities": True,
+            "confirmationRequiresCleanup": True,
+            "performanceCountsLogicalSamplesOnly": True,
+            "primeCount": 6,
+            "logicalPairCount": 24,
+            "parallelLogicalProbeCount": 1,
+            "coldPairsPerCase": 2,
+            "warmPairsPerCase": 2,
+            "remoteComponents": False,
+            "externalPlugins": False,
+            "firstRunDownloads": False,
+            "exactlyOneCandidateRuntime": True,
+            "frozenBackendProbe": "InstallerYoutubeFrozenHoldoutProbeV1",
+            "privateRandomWorkspaces": True,
+            "reparsePointsAllowed": False,
+            "aclMode": "test-private",
+            "workspaceCount": 100,
+            "cleanupCount": 100,
+        },
+        "parallelIsolation": {
+            "logicalSampleId": "parallel:two-worker",
+            "status": "pass",
+            "reasonCode": None,
+            "selectedAttempt": "original",
+            "workerCount": 2,
+            "distinctPrivateWorkspaces": True,
+            "capabilityParity": True,
+            "capabilityComparisonPolicy": "required-capabilities-v2",
+            "capabilityDiagnostics": diagnostics(),
+            "cleanupVerified": True,
+            "attempts": [parallel_attempt],
+            "recovery": {
+                "eligible": False,
+                "attempted": False,
+                "accepted": False,
+                "budgetOrdinal": None,
+                "budgetExhausted": False,
+                "triggerReasonCode": None,
+                "confirmationReasonCode": None,
+            },
+        },
+        "lifecycle": {
+            "successCleanup": True,
+            "errorCleanup": True,
+            "timeoutCleanup": True,
+            "cancellationCleanup": True,
+            "parallelWorkers": 2,
+            "parallelWorkspaceIsolation": True,
+        },
+        "recoverySummary": {
+            "maximumCandidateOnlyRecoveries": 1,
+            "candidateOnlyDisturbanceCount": recovered_count,
+            "usedCandidateOnlyRecoveries": recovered_count,
+            "acceptedCandidateOnlyRecoveries": recovered_count,
+            "failedCandidateOnlyRecoveries": 0,
+            "recoveredLogicalSampleId": recovered_sample_id,
+        },
+        "performance": {
+            "baselineP95Ns": 100,
+            "candidateP95Ns": 100,
+            "maximumCandidateP95Ns": 110,
+            "maximumRatioBasisPoints": 11_000,
+            "pairedSampleCount": 24,
+            "passed": True,
+        },
+        "cases": cases,
+        "inputIntegrity": {},
+    }
+
+
 def git(repo_root: Path, *arguments: str) -> str:
     result = subprocess.run(
         ["git", *arguments],
@@ -2647,18 +2891,12 @@ def test_keep_gate_hashes_must_rehash_retained_packet_artifacts(tmp_path: Path) 
     youtube_detail_path = evidence_root / "youtube-holdouts-candidate.json"
     write_json(
         youtube_detail_path,
-        {
-            "holdoutSnapshotContract": "InstallerSizeYoutubeCandidateHoldoutsV1",
-            "schemaVersion": 1,
-            "status": "pass",
-            "reasonCodes": [],
-            "runId": RUN_ID,
-            "packetId": packet["packetId"],
-            "parentChampionId": "baseline",
-            "sourceCommit": packet["sourceCommit"],
-            "inputImmutabilityVerified": True,
-            "cases": [{"id": f"case-{index}"} for index in range(6)],
-        },
+        _candidate_youtube_evidence(
+            run_id=RUN_ID,
+            packet_id=packet["packetId"],
+            parent_champion_id="baseline",
+            source_commit=packet["sourceCommit"],
+        ),
     )
     gates: dict[str, dict[str, str]] = {}
     for name in sorted(runner.FINAL_EXTERNAL_GATES):
@@ -2737,6 +2975,52 @@ def test_keep_gate_hashes_must_rehash_retained_packet_artifacts(tmp_path: Path) 
     assert any(
         item["code"] == "youtube_detail_evidence_hash_mismatch"
         for item in findings
+    )
+
+
+def test_candidate_youtube_v2_reader_enforces_policy_and_global_recovery() -> None:
+    base = _candidate_youtube_evidence(
+        run_id=RUN_ID,
+        packet_id="candidate-v2-reader",
+        parent_champion_id="baseline",
+        source_commit="a" * 40,
+    )
+    recovered = _candidate_youtube_evidence(
+        run_id=RUN_ID,
+        packet_id="candidate-v2-reader",
+        parent_champion_id="baseline",
+        source_commit="a" * 40,
+        recovered_sample_id="case-0:cold:1",
+    )
+
+    assert runner._candidate_youtube_v2_contract_valid(base) is True
+    assert runner._candidate_youtube_v2_contract_valid(recovered) is True
+
+    retry_policy_drift = json.loads(json.dumps(base))
+    retry_policy_drift["executionPolicy"]["candidateProbeRetryCount"] = 0
+    assert runner._candidate_youtube_v2_contract_valid(retry_policy_drift) is False
+
+    invented_recovery = json.loads(json.dumps(base))
+    invented_recovery["recoverySummary"].update(
+        {
+            "candidateOnlyDisturbanceCount": 1,
+            "usedCandidateOnlyRecoveries": 1,
+            "acceptedCandidateOnlyRecoveries": 1,
+            "recoveredLogicalSampleId": "case-0:cold:1",
+        }
+    )
+    assert runner._candidate_youtube_v2_contract_valid(invented_recovery) is False
+
+    cap_regression_confirmation = json.loads(json.dumps(recovered))
+    confirmation = cap_regression_confirmation["cases"][0]["pairs"][0][
+        "attempts"
+    ][1]
+    confirmation["capabilityDiagnostics"][
+        "candidateMissingRequiredCapabilities"
+    ] = ["metadata"]
+    assert (
+        runner._candidate_youtube_v2_contract_valid(cap_regression_confirmation)
+        is False
     )
 
 
@@ -3229,6 +3513,7 @@ def test_profile_config_protects_every_existing_evaluator_input() -> None:
         "scripts/smoke_diarization_worker_resource.py",
         "scripts/smoke_tauri_desktop.ps1",
         "scripts/validate_installer_youtube_holdouts.py",
+        "tests/test_installer_research_inventory.py",
         "tests/test_meeting_export.py",
         "tests/perf/test_upload_export_baseline_script.py",
         "tests/test_sidecar_metadata_privacy.py",

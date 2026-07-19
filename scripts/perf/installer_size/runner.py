@@ -95,6 +95,31 @@ FINAL_FULL_SUITE_GATES = frozenset(
         "rustClippy",
     }
 )
+YOUTUBE_CANDIDATE_CONTRACT = "InstallerSizeYoutubeCandidateHoldoutsV2"
+YOUTUBE_CAPABILITY_COMPARISON_POLICY = "required-capabilities-v2"
+YOUTUBE_CANDIDATE_RECOVERY_POLICY = "single-immediate-complete-confirmation-v1"
+YOUTUBE_PUBLIC_FAILURE_CODES = frozenset(
+    {
+        "http_429",
+        "http_403",
+        "login_required",
+        "geo_restricted",
+        "media_unavailable",
+        "network_timeout",
+        "tls_failure",
+        "dns_failure",
+        "extractor_error",
+        "unknown_failure",
+        "probe_boundary_invalid",
+        "probe_response_limit",
+        "timeout",
+        "cancelled",
+        "output_limit",
+        "invalid_json",
+        "probe_contract_invalid",
+        "unclassified_failure",
+    }
+)
 
 
 def _print_json(payload: dict[str, Any], *, compact: bool = False) -> None:
@@ -619,6 +644,636 @@ def _evidence_value_is_path_redacted(value: Any, repo_root: Path) -> bool:
     )
 
 
+def _youtube_nonnegative_int(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and value >= 0
+
+
+def _youtube_exact_policy_value(value: Any, expected: Any) -> bool:
+    if isinstance(expected, bool):
+        return value is expected
+    if isinstance(expected, int):
+        return _youtube_nonnegative_int(value) and value == expected
+    return value == expected
+
+
+def _youtube_capability_list(value: Any, *, nonempty: bool = False) -> bool:
+    return (
+        isinstance(value, list)
+        and (bool(value) or not nonempty)
+        and value == sorted(set(value))
+        and all(
+            isinstance(item, str)
+            and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", item)
+            for item in value
+        )
+    )
+
+
+def _youtube_diagnostics_valid(value: Any) -> bool:
+    fields = {
+        "comparisonPolicy",
+        "requiredCapabilities",
+        "baselineObservedCapabilities",
+        "candidateObservedCapabilities",
+        "baselineMissingRequiredCapabilities",
+        "candidateMissingRequiredCapabilities",
+        "optionalOnlyInBaseline",
+        "optionalOnlyInCandidate",
+        "optionalParity",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        return False
+    list_fields = fields - {"comparisonPolicy", "optionalParity"}
+    if (
+        value.get("comparisonPolicy") != YOUTUBE_CAPABILITY_COMPARISON_POLICY
+        or not isinstance(value.get("optionalParity"), bool)
+        or any(
+            not _youtube_capability_list(
+                value.get(field), nonempty=field == "requiredCapabilities"
+            )
+            for field in list_fields
+        )
+    ):
+        return False
+    required = set(value["requiredCapabilities"])
+    baseline = set(value["baselineObservedCapabilities"])
+    candidate = set(value["candidateObservedCapabilities"])
+    baseline_optional = baseline - required
+    candidate_optional = candidate - required
+    only_baseline = sorted(baseline_optional - candidate_optional)
+    only_candidate = sorted(candidate_optional - baseline_optional)
+    return (
+        value["baselineMissingRequiredCapabilities"] == sorted(required - baseline)
+        and value["candidateMissingRequiredCapabilities"]
+        == sorted(required - candidate)
+        and value["optionalOnlyInBaseline"] == only_baseline
+        and value["optionalOnlyInCandidate"] == only_candidate
+        and value["optionalParity"] == (not only_baseline and not only_candidate)
+    )
+
+
+def _youtube_pair_attempt_valid(
+    attempt: Any,
+    *,
+    logical_sample_id: str,
+    attempt_index: int,
+    attempt_kind: str,
+    expected_status: str,
+) -> bool:
+    fields = {
+        "attemptIndex",
+        "attemptKind",
+        "logicalSampleId",
+        "order",
+        "status",
+        "reasonCode",
+        "baselineDurationNs",
+        "candidateDurationNs",
+        "semanticCapabilities",
+        "capabilityDiagnostics",
+        "baselineFailureCode",
+        "candidateFailureCode",
+        "cleanupVerified",
+    }
+    if (
+        not isinstance(attempt, dict)
+        or set(attempt) != fields
+        or not _youtube_nonnegative_int(attempt.get("attemptIndex"))
+        or attempt.get("attemptIndex") != attempt_index
+        or attempt.get("attemptKind") != attempt_kind
+        or attempt.get("logicalSampleId") != logical_sample_id
+        or attempt.get("order") != ["baseline", "candidate"]
+        or attempt.get("status") != expected_status
+        or not _youtube_nonnegative_int(attempt.get("baselineDurationNs"))
+        or not _youtube_nonnegative_int(attempt.get("candidateDurationNs"))
+        or not _youtube_capability_list(attempt.get("semanticCapabilities"))
+        or not _youtube_diagnostics_valid(attempt.get("capabilityDiagnostics"))
+        or not isinstance(attempt.get("cleanupVerified"), bool)
+    ):
+        return False
+    diagnostics = attempt["capabilityDiagnostics"]
+    if expected_status == "pass":
+        return (
+            attempt.get("reasonCode") is None
+            and attempt.get("baselineFailureCode") is None
+            and attempt.get("candidateFailureCode") is None
+            and attempt.get("cleanupVerified") is True
+            and diagnostics["baselineMissingRequiredCapabilities"] == []
+            and diagnostics["candidateMissingRequiredCapabilities"] == []
+            and attempt["semanticCapabilities"]
+            == diagnostics["baselineObservedCapabilities"]
+        )
+    return (
+        attempt.get("reasonCode") == "candidate_probe_failed"
+        and attempt.get("baselineFailureCode") is None
+        and attempt.get("candidateFailureCode") in YOUTUBE_PUBLIC_FAILURE_CODES
+        and diagnostics["baselineMissingRequiredCapabilities"] == []
+        and diagnostics["candidateObservedCapabilities"] == []
+        and diagnostics["candidateMissingRequiredCapabilities"]
+        == diagnostics["requiredCapabilities"]
+        and attempt["semanticCapabilities"] == []
+    )
+
+
+def _youtube_recovery_valid(
+    value: Any,
+    *,
+    recovered: bool,
+    trigger_reason: str,
+) -> bool:
+    fields = {
+        "eligible",
+        "attempted",
+        "accepted",
+        "budgetOrdinal",
+        "budgetExhausted",
+        "triggerReasonCode",
+        "confirmationReasonCode",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        return False
+    if recovered:
+        return (
+            value.get("eligible") is True
+            and value.get("attempted") is True
+            and value.get("accepted") is True
+            and _youtube_nonnegative_int(value.get("budgetOrdinal"))
+            and value.get("budgetOrdinal") == 1
+            and value.get("budgetExhausted") is False
+            and value.get("triggerReasonCode") == trigger_reason
+            and value.get("confirmationReasonCode") is None
+        )
+    return value == {
+        "eligible": False,
+        "attempted": False,
+        "accepted": False,
+        "budgetOrdinal": None,
+        "budgetExhausted": False,
+        "triggerReasonCode": None,
+        "confirmationReasonCode": None,
+    }
+
+
+def _youtube_pair_sample_valid(
+    sample: Any,
+    *,
+    logical_sample_id: str,
+    include_timings: bool,
+) -> tuple[bool, bool]:
+    attempts = sample.get("attempts") if isinstance(sample, dict) else None
+    if not isinstance(attempts, list) or len(attempts) not in {1, 2}:
+        return False, False
+    recovered = len(attempts) == 2
+    if recovered:
+        if not _youtube_pair_attempt_valid(
+            attempts[0],
+            logical_sample_id=logical_sample_id,
+            attempt_index=1,
+            attempt_kind="original",
+            expected_status="fail",
+        ) or not _youtube_pair_attempt_valid(
+            attempts[1],
+            logical_sample_id=logical_sample_id,
+            attempt_index=2,
+            attempt_kind="confirmation",
+            expected_status="pass",
+        ):
+            return False, False
+        if (
+            attempts[0]["capabilityDiagnostics"]["requiredCapabilities"]
+            != attempts[1]["capabilityDiagnostics"]["requiredCapabilities"]
+        ):
+            return False, False
+        selected = attempts[1]
+        selected_name = "confirmation"
+    else:
+        if not _youtube_pair_attempt_valid(
+            attempts[0],
+            logical_sample_id=logical_sample_id,
+            attempt_index=1,
+            attempt_kind="original",
+            expected_status="pass",
+        ):
+            return False, False
+        selected = attempts[0]
+        selected_name = "original"
+    if (
+        sample.get("status") != "pass"
+        or sample.get("reasonCode") is not None
+        or sample.get("selectedAttempt") != selected_name
+        or sample.get("capabilityDiagnostics") != selected["capabilityDiagnostics"]
+        or sample.get("baselineFailureCode") is not None
+        or sample.get("candidateFailureCode") is not None
+        or sample.get("cleanupVerified") is not True
+        or not _youtube_recovery_valid(
+            sample.get("recovery"),
+            recovered=recovered,
+            trigger_reason="candidate_probe_failed",
+        )
+    ):
+        return False, False
+    if include_timings and (
+        sample.get("order") != ["baseline", "candidate"]
+        or not _youtube_nonnegative_int(sample.get("baselineDurationNs"))
+        or not _youtube_nonnegative_int(sample.get("candidateDurationNs"))
+        or sample.get("baselineDurationNs") != selected["baselineDurationNs"]
+        or sample.get("candidateDurationNs") != selected["candidateDurationNs"]
+        or sample.get("semanticCapabilities") != selected["semanticCapabilities"]
+    ):
+        return False, False
+    return True, recovered
+
+
+def _youtube_parallel_attempt_valid(
+    attempt: Any,
+    *,
+    attempt_index: int,
+    attempt_kind: str,
+    expected_status: str,
+) -> bool:
+    fields = {
+        "attemptIndex",
+        "attemptKind",
+        "logicalSampleId",
+        "status",
+        "reasonCode",
+        "workerCount",
+        "workers",
+        "capabilityParity",
+        "capabilityDiagnostics",
+        "cleanupVerified",
+    }
+    if (
+        not isinstance(attempt, dict)
+        or set(attempt) != fields
+        or not _youtube_nonnegative_int(attempt.get("attemptIndex"))
+        or attempt.get("attemptIndex") != attempt_index
+        or attempt.get("attemptKind") != attempt_kind
+        or attempt.get("logicalSampleId") != "parallel:two-worker"
+        or attempt.get("status") != expected_status
+        or attempt.get("workerCount") != 2
+        or not isinstance(attempt.get("workers"), list)
+        or len(attempt["workers"]) != 2
+        or not isinstance(attempt.get("capabilityParity"), bool)
+        or not isinstance(attempt.get("cleanupVerified"), bool)
+        or not _youtube_diagnostics_valid(attempt.get("capabilityDiagnostics"))
+    ):
+        return False
+    worker_fields = {
+        "workerIndex",
+        "status",
+        "durationNs",
+        "semanticCapabilities",
+        "missingRequiredCapabilities",
+        "failureCode",
+        "cleanupVerified",
+    }
+    required = set(attempt["capabilityDiagnostics"]["requiredCapabilities"])
+    for index, worker in enumerate(attempt["workers"], start=1):
+        if (
+            not isinstance(worker, dict)
+            or set(worker) != worker_fields
+            or not _youtube_nonnegative_int(worker.get("workerIndex"))
+            or worker.get("workerIndex") != index
+            or worker.get("status") not in {"pass", "fail"}
+            or not _youtube_nonnegative_int(worker.get("durationNs"))
+            or not _youtube_capability_list(worker.get("semanticCapabilities"))
+            or not _youtube_capability_list(worker.get("missingRequiredCapabilities"))
+            or worker["missingRequiredCapabilities"]
+            != sorted(required - set(worker["semanticCapabilities"]))
+            or not isinstance(worker.get("cleanupVerified"), bool)
+            or (
+                worker["status"] == "pass"
+                and worker.get("failureCode") is not None
+            )
+            or (
+                worker["status"] == "fail"
+                and worker.get("failureCode") not in YOUTUBE_PUBLIC_FAILURE_CODES
+            )
+        ):
+            return False
+    workers_pass = all(worker["status"] == "pass" for worker in attempt["workers"])
+    caps_pass = all(not worker["missingRequiredCapabilities"] for worker in attempt["workers"])
+    cleanup_pass = all(worker["cleanupVerified"] for worker in attempt["workers"])
+    diagnostics = attempt["capabilityDiagnostics"]
+    if (
+        diagnostics["baselineObservedCapabilities"]
+        != attempt["workers"][0]["semanticCapabilities"]
+        or diagnostics["candidateObservedCapabilities"]
+        != attempt["workers"][1]["semanticCapabilities"]
+        or diagnostics["baselineMissingRequiredCapabilities"]
+        != attempt["workers"][0]["missingRequiredCapabilities"]
+        or diagnostics["candidateMissingRequiredCapabilities"]
+        != attempt["workers"][1]["missingRequiredCapabilities"]
+    ):
+        return False
+    if expected_status == "pass":
+        return (
+            attempt.get("reasonCode") is None
+            and workers_pass
+            and caps_pass
+            and cleanup_pass
+            and attempt.get("capabilityParity") is True
+            and attempt.get("cleanupVerified") is True
+        )
+    return (
+        attempt.get("reasonCode") == "candidate_parallel_probe_failed"
+        and not workers_pass
+    )
+
+
+def _candidate_youtube_v2_contract_valid(payload: dict[str, Any]) -> bool:
+    policy = payload.get("executionPolicy")
+    fixed_policy = {
+        "pairing": "baseline-immediately-followed-by-candidate",
+        "capabilityComparisonPolicy": YOUTUBE_CAPABILITY_COMPARISON_POLICY,
+        "optionalCapabilityDifferencesBlocking": False,
+        "candidateProbeFailuresBlocking": True,
+        "candidateProbeRetryCount": 1,
+        "candidateProbeRetryScope": "global-candidate-only",
+        "candidateFailureConfirmationPolicy": YOUTUBE_CANDIDATE_RECOVERY_POLICY,
+        "maximumCandidateOnlyRecoveries": 1,
+        "confirmationAttemptsPersisted": True,
+        "normalPairConfirmationOrder": ["baseline", "candidate"],
+        "parallelConfirmationMode": "repeat-complete-two-worker-probe",
+        "confirmationRequiresAllRequiredCapabilities": True,
+        "confirmationRequiresCleanup": True,
+        "performanceCountsLogicalSamplesOnly": True,
+        "primeCount": 6,
+        "logicalPairCount": 24,
+        "parallelLogicalProbeCount": 1,
+        "coldPairsPerCase": 2,
+        "warmPairsPerCase": 2,
+        "remoteComponents": False,
+        "externalPlugins": False,
+        "firstRunDownloads": False,
+        "exactlyOneCandidateRuntime": True,
+        "frozenBackendProbe": "InstallerYoutubeFrozenHoldoutProbeV1",
+        "privateRandomWorkspaces": True,
+        "reparsePointsAllowed": False,
+    }
+    policy_fields = set(fixed_policy) | {"aclMode", "workspaceCount", "cleanupCount"}
+    if (
+        not isinstance(policy, dict)
+        or set(policy) != policy_fields
+        or any(
+            not _youtube_exact_policy_value(policy.get(field), expected)
+            for field, expected in fixed_policy.items()
+        )
+        or not isinstance(policy.get("aclMode"), str)
+        or not policy["aclMode"].strip()
+        or not _youtube_nonnegative_int(policy.get("workspaceCount"))
+        or policy["workspaceCount"] <= 0
+        or not _youtube_nonnegative_int(policy.get("cleanupCount"))
+        or policy.get("cleanupCount") != policy["workspaceCount"]
+    ):
+        return False
+
+    recovered_ids: list[str] = []
+    cases = payload.get("cases")
+    if not isinstance(cases, list) or len(cases) != 6:
+        return False
+    seen_cases: set[str] = set()
+    pair_count = 0
+    first_case_required: list[str] | None = None
+    case_fields = {
+        "id",
+        "family",
+        "primeStatus",
+        "primeReasonCode",
+        "primeSelectedAttempt",
+        "primeCapabilityDiagnostics",
+        "primeBaselineFailureCode",
+        "primeCandidateFailureCode",
+        "primeCleanupVerified",
+        "primeAttempts",
+        "primeRecovery",
+        "coldPairCount",
+        "warmPairCount",
+        "pairs",
+    }
+    pair_fields = {
+        "logicalSampleId",
+        "order",
+        "status",
+        "reasonCode",
+        "selectedAttempt",
+        "baselineDurationNs",
+        "candidateDurationNs",
+        "semanticCapabilities",
+        "capabilityDiagnostics",
+        "baselineFailureCode",
+        "candidateFailureCode",
+        "cleanupVerified",
+        "attempts",
+        "recovery",
+        "mode",
+        "pairIndex",
+    }
+    for case in cases:
+        case_id = case.get("id") if isinstance(case, dict) else None
+        if (
+            not isinstance(case, dict)
+            or set(case) != case_fields
+            or not isinstance(case_id, str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", case_id)
+            or case_id in seen_cases
+            or not isinstance(case.get("family"), str)
+            or not case["family"]
+            or not _youtube_nonnegative_int(case.get("coldPairCount"))
+            or case.get("coldPairCount") != 2
+            or not _youtube_nonnegative_int(case.get("warmPairCount"))
+            or case.get("warmPairCount") != 2
+            or not isinstance(case.get("pairs"), list)
+            or len(case["pairs"]) != 4
+        ):
+            return False
+        seen_cases.add(case_id)
+        prime = {
+            "status": case["primeStatus"],
+            "reasonCode": case["primeReasonCode"],
+            "selectedAttempt": case["primeSelectedAttempt"],
+            "capabilityDiagnostics": case["primeCapabilityDiagnostics"],
+            "baselineFailureCode": case["primeBaselineFailureCode"],
+            "candidateFailureCode": case["primeCandidateFailureCode"],
+            "cleanupVerified": case["primeCleanupVerified"],
+            "attempts": case["primeAttempts"],
+            "recovery": case["primeRecovery"],
+        }
+        prime_valid, prime_recovered = _youtube_pair_sample_valid(
+            prime,
+            logical_sample_id=f"{case_id}:prime",
+            include_timings=False,
+        )
+        if not prime_valid:
+            return False
+        case_required = prime["capabilityDiagnostics"]["requiredCapabilities"]
+        if first_case_required is None:
+            first_case_required = case_required
+        if prime_recovered:
+            recovered_ids.append(f"{case_id}:prime")
+        expected_pairs = [("cold", 1), ("cold", 2), ("warm", 1), ("warm", 2)]
+        for pair, (mode, index) in zip(case["pairs"], expected_pairs, strict=True):
+            logical_id = f"{case_id}:{mode}:{index}"
+            if (
+                not isinstance(pair, dict)
+                or set(pair) != pair_fields
+                or pair.get("mode") != mode
+                or not _youtube_nonnegative_int(pair.get("pairIndex"))
+                or pair.get("pairIndex") != index
+                or pair.get("logicalSampleId") != logical_id
+            ):
+                return False
+            pair_valid, pair_recovered = _youtube_pair_sample_valid(
+                pair,
+                logical_sample_id=logical_id,
+                include_timings=True,
+            )
+            if not pair_valid:
+                return False
+            if pair["capabilityDiagnostics"]["requiredCapabilities"] != case_required:
+                return False
+            pair_count += 1
+            if pair_recovered:
+                recovered_ids.append(logical_id)
+    if pair_count != 24:
+        return False
+
+    parallel = payload.get("parallelIsolation")
+    parallel_fields = {
+        "logicalSampleId",
+        "status",
+        "reasonCode",
+        "selectedAttempt",
+        "workerCount",
+        "distinctPrivateWorkspaces",
+        "capabilityParity",
+        "capabilityComparisonPolicy",
+        "capabilityDiagnostics",
+        "cleanupVerified",
+        "attempts",
+        "recovery",
+    }
+    attempts = parallel.get("attempts") if isinstance(parallel, dict) else None
+    if (
+        not isinstance(parallel, dict)
+        or set(parallel) != parallel_fields
+        or parallel.get("logicalSampleId") != "parallel:two-worker"
+        or parallel.get("status") != "pass"
+        or parallel.get("reasonCode") is not None
+        or parallel.get("workerCount") != 2
+        or parallel.get("distinctPrivateWorkspaces") is not True
+        or parallel.get("capabilityParity") is not True
+        or parallel.get("capabilityComparisonPolicy")
+        != YOUTUBE_CAPABILITY_COMPARISON_POLICY
+        or parallel.get("cleanupVerified") is not True
+        or not isinstance(attempts, list)
+        or len(attempts) not in {1, 2}
+        or not _youtube_diagnostics_valid(parallel.get("capabilityDiagnostics"))
+        or parallel["capabilityDiagnostics"]["requiredCapabilities"]
+        != first_case_required
+    ):
+        return False
+    parallel_recovered = len(attempts) == 2
+    if parallel_recovered:
+        parallel_valid = _youtube_parallel_attempt_valid(
+            attempts[0],
+            attempt_index=1,
+            attempt_kind="original",
+            expected_status="fail",
+        ) and _youtube_parallel_attempt_valid(
+            attempts[1],
+            attempt_index=2,
+            attempt_kind="confirmation",
+            expected_status="pass",
+        )
+        selected_parallel = attempts[1]
+        selected_name = "confirmation"
+        recovered_ids.append("parallel:two-worker")
+    else:
+        parallel_valid = _youtube_parallel_attempt_valid(
+            attempts[0],
+            attempt_index=1,
+            attempt_kind="original",
+            expected_status="pass",
+        )
+        selected_parallel = attempts[0]
+        selected_name = "original"
+    if (
+        not parallel_valid
+        or parallel.get("selectedAttempt") != selected_name
+        or parallel.get("capabilityDiagnostics")
+        != selected_parallel["capabilityDiagnostics"]
+        or not _youtube_recovery_valid(
+            parallel.get("recovery"),
+            recovered=parallel_recovered,
+            trigger_reason="candidate_parallel_probe_failed",
+        )
+    ):
+        return False
+    if parallel_recovered and (
+        attempts[0]["capabilityDiagnostics"]["requiredCapabilities"]
+        != attempts[1]["capabilityDiagnostics"]["requiredCapabilities"]
+    ):
+        return False
+
+    summary = payload.get("recoverySummary")
+    summary_fields = {
+        "maximumCandidateOnlyRecoveries",
+        "candidateOnlyDisturbanceCount",
+        "usedCandidateOnlyRecoveries",
+        "acceptedCandidateOnlyRecoveries",
+        "failedCandidateOnlyRecoveries",
+        "recoveredLogicalSampleId",
+    }
+    recovered_count = len(recovered_ids)
+    if (
+        not isinstance(summary, dict)
+        or set(summary) != summary_fields
+        or not _youtube_nonnegative_int(summary.get("maximumCandidateOnlyRecoveries"))
+        or summary.get("maximumCandidateOnlyRecoveries") != 1
+        or not _youtube_nonnegative_int(summary.get("candidateOnlyDisturbanceCount"))
+        or summary.get("candidateOnlyDisturbanceCount") != recovered_count
+        or not _youtube_nonnegative_int(summary.get("usedCandidateOnlyRecoveries"))
+        or summary.get("usedCandidateOnlyRecoveries") != recovered_count
+        or not _youtube_nonnegative_int(summary.get("acceptedCandidateOnlyRecoveries"))
+        or summary.get("acceptedCandidateOnlyRecoveries") != recovered_count
+        or not _youtube_nonnegative_int(summary.get("failedCandidateOnlyRecoveries"))
+        or summary.get("failedCandidateOnlyRecoveries") != 0
+        or recovered_count > 1
+        or summary.get("recoveredLogicalSampleId")
+        != (recovered_ids[0] if recovered_ids else None)
+    ):
+        return False
+    performance = payload.get("performance")
+    return (
+        isinstance(performance, dict)
+        and set(performance)
+        == {
+            "baselineP95Ns",
+            "candidateP95Ns",
+            "maximumCandidateP95Ns",
+            "maximumRatioBasisPoints",
+            "pairedSampleCount",
+            "passed",
+        }
+        and _youtube_nonnegative_int(performance.get("pairedSampleCount"))
+        and performance.get("pairedSampleCount") == 24
+        and performance.get("passed") is True
+        and _youtube_nonnegative_int(performance.get("maximumRatioBasisPoints"))
+        and performance.get("maximumRatioBasisPoints") == 11_000
+        and all(
+            _youtube_nonnegative_int(performance.get(field))
+            for field in (
+                "baselineP95Ns",
+                "candidateP95Ns",
+                "maximumCandidateP95Ns",
+            )
+        )
+        and performance["candidateP95Ns"] <= performance["maximumCandidateP95Ns"]
+    )
+
+
 def _validate_youtube_detail_evidence(
     context,
     packet: dict[str, Any],
@@ -704,8 +1359,8 @@ def _validate_youtube_detail_evidence(
     findings: list[dict[str, Any]] = []
     if kind == "candidate-youtube-holdout":
         bindings = {
-            "holdoutSnapshotContract": "InstallerSizeYoutubeCandidateHoldoutsV1",
-            "schemaVersion": 1,
+            "holdoutSnapshotContract": YOUTUBE_CANDIDATE_CONTRACT,
+            "schemaVersion": 2,
             "status": "pass",
             "runId": context.run_id,
             "packetId": packet_id,
@@ -720,11 +1375,20 @@ def _validate_youtube_detail_evidence(
                     "candidate YouTube evidence differs from this packet",
                 )
             )
-        if payload.get("reasonCodes") != [] or len(payload.get("cases", [])) != 6:
+        if payload.get("reasonCodes") != [] or not _candidate_youtube_v2_contract_valid(
+            payload
+        ):
             findings.append(
                 _finding(
-                    "youtube_detail_evidence_cases_invalid",
-                    "candidate YouTube evidence is not a complete passing six-case matrix",
+                    "youtube_detail_evidence_v2_policy_invalid",
+                    "candidate YouTube evidence violates the exact V2 matrix, recovery, or timing policy",
+                )
+            )
+        if not _evidence_value_is_path_redacted(payload, context.repo_root):
+            findings.append(
+                _finding(
+                    "youtube_detail_evidence_contains_path",
+                    "candidate YouTube evidence contains a local path",
                 )
             )
     else:

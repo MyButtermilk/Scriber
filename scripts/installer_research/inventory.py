@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import configparser
 import copy
+import csv
 import fnmatch
 import hashlib
 import json
@@ -24,6 +28,12 @@ VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
 DIST_INFO_RE = re.compile(r"^(?P<name>.+)-(?P<version>[0-9][^-]*)\.dist-info$", re.IGNORECASE)
 ISO_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$")
 READ_CHUNK_BYTES = 1024 * 1024
+CONSOLE_SCRIPT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+WINDOWS_RECORD_LAUNCHER_RE = re.compile(
+    r"^\.\./\.\./Scripts/(?P<name>[A-Za-z0-9][A-Za-z0-9._-]{0,127})\.exe$",
+    re.IGNORECASE,
+)
+RECORD_SHA256_RE = re.compile(r"^sha256=[A-Za-z0-9_-]{43}$")
 
 
 class InventoryError(ValueError):
@@ -594,12 +604,27 @@ def _semantic_bytes_for_file(
     relative_path: str,
     raw: bytes | None,
     component_map: Mapping[str, Any],
+    bundled_relative_paths: frozenset[str],
 ) -> bytes | None:
     normalized_path = relative_path.casefold()
     if PurePosixPath(normalized_path).name == "sidecar-build-metadata.json":
         return _normalize_sidecar_build_metadata(
             raw if raw is not None else _read_stable_bytes(path)
         )
+    relative = PurePosixPath(relative_path)
+    if (
+        relative.name.casefold() == "record"
+        and DIST_INFO_RE.fullmatch(relative.parent.name) is not None
+    ):
+        record_bytes = raw if raw is not None else _read_stable_bytes(path)
+        normalized_record = _normalize_unbundled_console_launcher_records(
+            path=path,
+            relative_path=relative_path,
+            raw=record_bytes,
+            bundled_relative_paths=bundled_relative_paths,
+        )
+        if normalized_record is not None:
+            return normalized_record
     normalization = component_map["semanticNormalization"]
     tauri_marker = normalization["tauriBundleTypeMarker"]
     if normalized_path == str(tauri_marker["desktopExecutablePath"]).casefold():
@@ -608,6 +633,121 @@ def _semantic_bytes_for_file(
             tauri_marker,
         )
     return None
+
+
+def _console_script_names(entry_points_path: Path) -> frozenset[str]:
+    try:
+        _ensure_plain_path(entry_points_path, description="entry_points.txt")
+        text = _read_stable_bytes(entry_points_path).decode("utf-8")
+        parser = configparser.ConfigParser(
+            interpolation=None,
+            strict=True,
+            delimiters=("=",),
+        )
+        parser.optionxform = str
+        parser.read_string(text)
+    except (InventoryError, UnicodeDecodeError, configparser.Error, OSError):
+        return frozenset()
+    if not parser.has_section("console_scripts"):
+        return frozenset()
+
+    names: set[str] = set()
+    for raw_name, raw_target in parser.items("console_scripts", raw=True):
+        name = raw_name.strip()
+        folded = name.casefold()
+        if (
+            not CONSOLE_SCRIPT_NAME_RE.fullmatch(name)
+            or not raw_target.strip()
+            or folded in names
+        ):
+            return frozenset()
+        names.add(folded)
+    return frozenset(names)
+
+
+def _payload_relative_target(record_relative_path: str, recorded_path: str) -> str | None:
+    parts = list(PurePosixPath(record_relative_path).parent.parts)
+    for part in PurePosixPath(recorded_path).parts:
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+        elif part not in ("", "."):
+            parts.append(part)
+    return PurePosixPath(*parts).as_posix() if parts else None
+
+
+def _is_canonical_record_sha256(value: str) -> bool:
+    if RECORD_SHA256_RE.fullmatch(value) is None:
+        return False
+    encoded = value.removeprefix("sha256=")
+    try:
+        decoded = base64.urlsafe_b64decode(encoded + "=")
+    except (binascii.Error, ValueError):
+        return False
+    return (
+        len(decoded) == hashlib.sha256().digest_size
+        and base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=") == encoded
+    )
+
+
+def _normalize_unbundled_console_launcher_records(
+    *,
+    path: Path,
+    relative_path: str,
+    raw: bytes,
+    bundled_relative_paths: frozenset[str],
+) -> bytes | None:
+    relative = PurePosixPath(relative_path)
+    if (
+        relative.name.casefold() != "record"
+        or DIST_INFO_RE.fullmatch(relative.parent.name) is None
+    ):
+        return None
+
+    entry_points_relative = (relative.parent / "entry_points.txt").as_posix()
+    if entry_points_relative.casefold() not in bundled_relative_paths:
+        return None
+    console_scripts = _console_script_names(path.with_name("entry_points.txt"))
+    if not console_scripts:
+        return None
+
+    retained: list[bytes] = []
+    ignored_targets: set[str] = set()
+    ignored_count = 0
+    for raw_line in raw.splitlines(keepends=True):
+        try:
+            decoded_line = raw_line.decode("utf-8")
+            rows = list(csv.reader([decoded_line], strict=True))
+        except (UnicodeDecodeError, csv.Error):
+            return None
+        if len(rows) != 1 or len(rows[0]) != 3:
+            return None
+        recorded_path, recorded_digest, recorded_length = rows[0]
+        launcher = WINDOWS_RECORD_LAUNCHER_RE.fullmatch(recorded_path)
+        if launcher is None or launcher.group("name").casefold() not in console_scripts:
+            retained.append(raw_line)
+            continue
+        if (
+            not _is_canonical_record_sha256(recorded_digest)
+            or not recorded_length.isascii()
+            or not recorded_length.isdecimal()
+        ):
+            retained.append(raw_line)
+            continue
+        target = _payload_relative_target(relative_path, recorded_path)
+        if target is None or target.casefold() in bundled_relative_paths:
+            retained.append(raw_line)
+            continue
+        folded_target = target.casefold()
+        if folded_target in ignored_targets:
+            return None
+        ignored_targets.add(folded_target)
+        ignored_count += 1
+
+    if ignored_count == 0:
+        return None
+    return b"".join(retained)
 
 
 def _distribution_name(relative_path: str) -> str | None:
@@ -633,9 +773,20 @@ def _build_tree_inventory(
     duplicate_candidates: dict[tuple[int, str], list[str]] = defaultdict(list)
     distributions: set[str] = set()
 
-    for relative_path, path in _iter_plain_files(root):
+    plain_files = tuple(_iter_plain_files(root))
+    bundled_relative_paths = frozenset(
+        relative_path.casefold() for relative_path, _path in plain_files
+    )
+    for relative_path, path in plain_files:
         raw: bytes | None = None
-        if PurePosixPath(relative_path.casefold()).name == "sidecar-build-metadata.json":
+        relative = PurePosixPath(relative_path)
+        if (
+            relative.name.casefold() == "sidecar-build-metadata.json"
+            or (
+                relative.name.casefold() == "record"
+                and DIST_INFO_RE.fullmatch(relative.parent.name) is not None
+            )
+        ):
             raw = _read_stable_bytes(path)
             length = len(raw)
             sha256 = _sha256_bytes(raw)
@@ -646,6 +797,7 @@ def _build_tree_inventory(
             relative_path=relative_path,
             raw=raw,
             component_map=component_map,
+            bundled_relative_paths=bundled_relative_paths,
         )
         semantic_length = length if semantic_bytes is None else len(semantic_bytes)
         semantic_sha256 = sha256 if semantic_bytes is None else _sha256_bytes(semantic_bytes)

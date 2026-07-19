@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -535,12 +537,18 @@ def test_final_modes_require_all_external_gates() -> None:
 
 def test_every_candidate_and_final_runs_the_installed_paired_validator() -> None:
     evidence = _function_source("Test-CandidateHoldoutEvidence")
-    assert "InstallerSizeYoutubeCandidateHoldoutsV1" in evidence
+    assert "InstallerSizeYoutubeCandidateHoldoutsV2" in evidence
+    assert 'candidateFailureConfirmationPolicy -ne "single-immediate-complete-confirmation-v1"' in evidence
+    assert 'candidateProbeRetryScope -ne "global-candidate-only"' in evidence
+    assert 'performanceCountsLogicalSamplesOnly -ne $true' in evidence
+    assert 'normalPairConfirmationOrder' in evidence
+    assert 'candidate_parallel_probe_failed' in evidence
+    assert '$recoveredCount -gt 1' in evidence
     assert 'ExpectedPacketId' in evidence
     assert 'ExpectedParentChampionId' in evidence
     assert 'ExpectedSourceCommit' in evidence
     assert 'pairedSampleCount -ne 24' in evidence
-    assert 'workspaceCount -ne [int]$payload.executionPolicy.cleanupCount' in evidence
+    assert '[int64]$payload.executionPolicy.workspaceCount -ne [int64]$payload.executionPolicy.cleanupCount' in evidence
     assert 'Test-HoldoutInventoryBinding' in evidence
 
     assert 'validate_installer_youtube_candidate_holdouts.py' in SOURCE
@@ -558,6 +566,74 @@ def test_every_candidate_and_final_runs_the_installed_paired_validator() -> None
     assert "currentJs" not in SOURCE
     assert "currentYtdlp" not in SOURCE
     assert 'baseline-prechange-stack' in SOURCE
+
+
+def test_powershell_candidate_holdout_reader_accepts_only_exact_v2_policy() -> None:
+    if os.name != "nt":
+        pytest.skip("The installer packet producer is Windows-only.")
+    fixture_module = runpy.run_path(
+        str(ROOT / "tests" / "perf" / "test_installer_size_autoresearch_profile.py")
+    )
+    evidence = fixture_module["_candidate_youtube_evidence"](
+        run_id="123e4567-e89b-42d3-a456-426614174000",
+        packet_id="candidate-reader-v2",
+        parent_champion_id="baseline",
+        source_commit="a" * 40,
+        recovered_sample_id="case-0:cold:1",
+    )
+    payload_base64 = base64.b64encode(
+        json.dumps(evidence, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    reader = "function Test-CandidateHoldoutEvidence {" + _function_source(
+        "Test-CandidateHoldoutEvidence"
+    )
+    harness = f"""
+$script:payload = [System.Text.Encoding]::UTF8.GetString(
+    [System.Convert]::FromBase64String('{payload_base64}')
+) | ConvertFrom-Json
+function Read-JsonObject {{
+    param([string]$Path, [string]$Code)
+    if ($Path -eq 'evidence') {{ return $script:payload }}
+    return [pscustomobject]@{{}}
+}}
+function Test-HoldoutInventoryBinding {{
+    param($Binding, $Inventory, [string]$InventoryPath)
+    return $true
+}}
+{reader}
+$common = @{{
+    Path = 'evidence'
+    ExpectedRunId = '123e4567-e89b-42d3-a456-426614174000'
+    ExpectedPacketId = 'candidate-reader-v2'
+    ExpectedParentChampionId = 'baseline'
+    ExpectedSourceCommit = '{'a' * 40}'
+    BaselineInventoryPath = 'baseline'
+    ParentInventoryPath = 'parent'
+    CandidateInventoryPath = 'candidate'
+}}
+if ((Test-CandidateHoldoutEvidence @common) -ne $true) {{ exit 11 }}
+$script:payload.cases[0].pairs[0].attempts[1].cleanupVerified = $false
+if ((Test-CandidateHoldoutEvidence @common) -ne $false) {{ exit 12 }}
+$script:payload.cases[0].pairs[0].attempts[1].cleanupVerified = $true
+$script:payload.executionPolicy.candidateProbeRetryCount = 0
+if ((Test-CandidateHoldoutEvidence @common) -ne $false) {{ exit 13 }}
+$script:payload.executionPolicy.candidateProbeRetryCount = 1
+$script:payload.recoverySummary.usedCandidateOnlyRecoveries = 2
+if ((Test-CandidateHoldoutEvidence @common) -ne $false) {{ exit 14 }}
+exit 0
+"""
+    completed = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "-"],
+        cwd=ROOT,
+        input=harness,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_preexisting_candidate_holdout_is_never_accepted() -> None:

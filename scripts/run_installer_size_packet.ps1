@@ -288,6 +288,294 @@ function Get-ExactInstalledProcesses {
     )
 }
 
+function Test-IsScriberUpdaterCommand {
+    param([string]$CommandLine)
+
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+        return $false
+    }
+    return (
+        $CommandLine -match '(?i)Scriber' -and
+        $CommandLine -match '(?i)(?:^|\s)/(?:UPDATE|P|R|ARGS)(?:\s|$)'
+    )
+}
+
+function Get-RelatedInstallerProcesses {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Generic.HashSet[int]]$KnownProcessIds,
+        [Parameter(Mandatory = $true)][string]$TargetRoot,
+        [Parameter(Mandatory = $true)][string[]]$InstallerPaths
+    )
+
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    $changed = $true
+    while ($changed) {
+        $changed = $false
+        foreach ($process in $processes) {
+            $processId = [int]$process.ProcessId
+            $parentProcessId = [int]$process.ParentProcessId
+            if (
+                $processId -ne $PID -and
+                $KnownProcessIds.Contains($parentProcessId) -and
+                -not $KnownProcessIds.Contains($processId)
+            ) {
+                [void]$KnownProcessIds.Add($processId)
+                $changed = $true
+            }
+        }
+    }
+
+    $targetNeedle = (Convert-ToFullPath -Path $TargetRoot).ToLowerInvariant()
+    $installerPathSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($installerPath in $InstallerPaths) {
+        if (-not [string]::IsNullOrWhiteSpace($installerPath)) {
+            [void]$installerPathSet.Add([System.IO.Path]::GetFullPath($installerPath))
+        }
+    }
+
+    return @(
+        $processes | Where-Object {
+            $processId = [int]$_.ProcessId
+            if ($processId -eq $PID) {
+                return $false
+            }
+            $commandLine = [string]$_.CommandLine
+            $executablePath = [string]$_.ExecutablePath
+            $exactInstaller = $false
+            if (-not [string]::IsNullOrWhiteSpace($executablePath)) {
+                try {
+                    $exactInstaller = $installerPathSet.Contains([System.IO.Path]::GetFullPath($executablePath))
+                } catch {
+                    $exactInstaller = $false
+                }
+            }
+            if (-not $exactInstaller -and -not [string]::IsNullOrWhiteSpace($commandLine)) {
+                foreach ($installerPath in $installerPathSet) {
+                    if ($commandLine.IndexOf($installerPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                        $exactInstaller = $true
+                        break
+                    }
+                }
+            }
+            $executableUnderTarget = (
+                -not [string]::IsNullOrWhiteSpace($executablePath) -and
+                $executablePath.ToLowerInvariant().StartsWith($targetNeedle + '\')
+            )
+            $commandTargetsRoot = (
+                -not [string]::IsNullOrWhiteSpace($commandLine) -and
+                $commandLine.ToLowerInvariant().Contains($targetNeedle)
+            )
+            $scopedUpdater = (
+                $commandTargetsRoot -and
+                (Test-IsScriberUpdaterCommand -CommandLine $commandLine)
+            )
+            return (
+                $KnownProcessIds.Contains($processId) -or
+                $executableUnderTarget -or
+                $commandTargetsRoot -or
+                $scopedUpdater -or
+                $exactInstaller
+            )
+        }
+    )
+}
+
+function Get-RemainingDeadlineMilliseconds {
+    param([Parameter(Mandatory = $true)][DateTimeOffset]$Deadline)
+
+    $remaining = [Math]::Ceiling(($Deadline - [DateTimeOffset]::UtcNow).TotalMilliseconds)
+    if ($remaining -le 0) {
+        return 0
+    }
+    return [int][Math]::Min([double][int]::MaxValue, [double]$remaining)
+}
+
+function Stop-ScopedProcessTree {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Generic.HashSet[int]]$KnownProcessIds,
+        [Parameter(Mandatory = $true)][string]$TargetRoot,
+        [Parameter(Mandatory = $true)][string[]]$InstallerPaths
+    )
+
+    $related = @(
+        Get-RelatedInstallerProcesses `
+            -KnownProcessIds $KnownProcessIds `
+            -TargetRoot $TargetRoot `
+            -InstallerPaths $InstallerPaths |
+            Sort-Object { [int]$_.ProcessId } -Descending
+    )
+    foreach ($process in $related) {
+        $processId = [int]$process.ProcessId
+        if ($processId -ne $PID) {
+            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Wait-ScopedProcessTreeExit {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Generic.HashSet[int]]$KnownProcessIds,
+        [Parameter(Mandatory = $true)][string]$TargetRoot,
+        [Parameter(Mandatory = $true)][string[]]$InstallerPaths,
+        [Parameter(Mandatory = $true)][DateTimeOffset]$Deadline
+    )
+
+    while ([DateTimeOffset]::UtcNow -lt $Deadline) {
+        $related = @(
+            Get-RelatedInstallerProcesses `
+                -KnownProcessIds $KnownProcessIds `
+                -TargetRoot $TargetRoot `
+                -InstallerPaths $InstallerPaths
+        )
+        if ($related.Count -eq 0) {
+            return
+        }
+        # Re-issue the bounded force-stop for a child discovered after the
+        # initial process-tree snapshot.
+        foreach ($process in ($related | Sort-Object { [int]$_.ProcessId } -Descending)) {
+            Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
+        }
+        $remainingMs = Get-RemainingDeadlineMilliseconds -Deadline $Deadline
+        if ($remainingMs -le 0) {
+            break
+        }
+        Start-Sleep -Milliseconds ([Math]::Min(250, $remainingMs))
+    }
+    throw "upgrade_scoped_process_cleanup_timeout"
+}
+
+function Invoke-ScopedInstallerProcessCleanup {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Generic.HashSet[int]]$KnownProcessIds,
+        [Parameter(Mandatory = $true)][string]$TargetRoot,
+        [Parameter(Mandatory = $true)][string[]]$InstallerPaths,
+        [ValidateRange(1, 60)][int]$TimeoutSec = 10
+    )
+
+    Stop-ScopedProcessTree `
+        -KnownProcessIds $KnownProcessIds `
+        -TargetRoot $TargetRoot `
+        -InstallerPaths $InstallerPaths
+    Wait-ScopedProcessTreeExit `
+        -KnownProcessIds $KnownProcessIds `
+        -TargetRoot $TargetRoot `
+        -InstallerPaths $InstallerPaths `
+        -Deadline ([DateTimeOffset]::UtcNow.AddSeconds($TimeoutSec))
+}
+
+function Get-ExclusiveInstalledIdentity {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [System.IO.File]::Open(
+        $Path,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::None
+    )
+    try {
+        $length = [int64]$stream.Length
+        $algorithm = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $sha256 = ([System.BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+        } finally {
+            $algorithm.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+    return [ordered]@{
+        length = $length
+        sha256 = $sha256
+        key = "$length|$sha256"
+    }
+}
+
+function Get-CandidateInstalledAppIdentity {
+    param([Parameter(Mandatory = $true)][object]$Inventory)
+
+    $matches = @(
+        @($Inventory.payload.installed.files) | Where-Object {
+            [string]$_.path -in @("Scriber.exe", "scriber-desktop.exe")
+        }
+    )
+    if (
+        $matches.Count -ne 1 -or
+        [int64]$matches[0].length -le 0 -or
+        [string]$matches[0].sha256 -notmatch '^[0-9a-f]{64}$'
+    ) {
+        throw "candidate_inventory_app_identity_invalid"
+    }
+    return $matches[0]
+}
+
+function Wait-CandidateUpgradeInstallStable {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Generic.HashSet[int]]$KnownProcessIds,
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
+        [Parameter(Mandatory = $true)][string[]]$InstallerPaths,
+        [Parameter(Mandatory = $true)][object]$CandidateInventory,
+        [Parameter(Mandatory = $true)][DateTimeOffset]$Deadline,
+        [ValidateRange(2, 10)][int]$RequiredStableSamples = 3,
+        [ValidateRange(50, 2000)][int]$ObservationIntervalMs = 250
+    )
+
+    $expectedIdentity = Get-CandidateInstalledAppIdentity -Inventory $CandidateInventory
+    $stableCount = 0
+    $lastIdentityKey = ""
+    while ([DateTimeOffset]::UtcNow -lt $Deadline) {
+        $related = @(
+            Get-RelatedInstallerProcesses `
+                -KnownProcessIds $KnownProcessIds `
+                -TargetRoot $InstallRoot `
+                -InstallerPaths $InstallerPaths
+        )
+        if ($related.Count -eq 0) {
+            try {
+                $installedExe = Resolve-InstalledAppExecutable -InstallRoot $InstallRoot
+                $identity = Get-ExclusiveInstalledIdentity -Path $installedExe
+                if (
+                    [int64]$identity.length -eq [int64]$expectedIdentity.length -and
+                    [string]$identity.sha256 -eq [string]$expectedIdentity.sha256
+                ) {
+                    # The desktop EXE can be byte-identical across a backend-only
+                    # optimization. Treat it only as a cheap readiness prefilter:
+                    # every stable sample must prove the complete candidate tree.
+                    Assert-InstalledPayloadMatchesInventory `
+                        -InstallRoot $InstallRoot `
+                        -Inventory $CandidateInventory
+                    if ([DateTimeOffset]::UtcNow -ge $Deadline) {
+                        break
+                    }
+                    if ([string]$identity.key -eq $lastIdentityKey) {
+                        $stableCount += 1
+                    } else {
+                        $lastIdentityKey = [string]$identity.key
+                        $stableCount = 1
+                    }
+                    if ($stableCount -ge $RequiredStableSamples) {
+                        return
+                    }
+                } else {
+                    $stableCount = 0
+                    $lastIdentityKey = ""
+                }
+            } catch {
+                $stableCount = 0
+                $lastIdentityKey = ""
+            }
+        } else {
+            $stableCount = 0
+            $lastIdentityKey = ""
+        }
+        $remainingMs = Get-RemainingDeadlineMilliseconds -Deadline $Deadline
+        if ($remainingMs -le 0) {
+            break
+        }
+        Start-Sleep -Milliseconds ([Math]::Min($ObservationIntervalMs, $remainingMs))
+    }
+    throw "candidate_upgrade_completion_timeout"
+}
+
 function Stop-ExactInstalledProcesses {
     param([Parameter(Mandatory = $true)][string]$InstallRoot)
 
@@ -303,7 +591,8 @@ function Stop-ExactInstalledProcesses {
 function Invoke-ExactUninstaller {
     param(
         [Parameter(Mandatory = $true)][string]$InstallRoot,
-        [switch]$RequireUninstaller
+        [switch]$RequireUninstaller,
+        [ValidateRange(1, 300)][int]$TimeoutSec = 60
     )
 
     if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) {
@@ -328,9 +617,29 @@ function Invoke-ExactUninstaller {
         if (($uninstaller.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "unsafe_uninstaller"
         }
-        $process = Start-Process -FilePath $uninstaller.FullName -ArgumentList @("/S") -PassThru -Wait -WindowStyle Hidden
-        if ($process.ExitCode -ne 0) {
-            throw "uninstaller_failed"
+        $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSec)
+        $process = $null
+        try {
+            $process = Start-Process `
+                -FilePath $uninstaller.FullName `
+                -ArgumentList @("/S") `
+                -PassThru `
+                -WindowStyle Hidden
+            $null = $process.Handle
+            $remainingMs = Get-RemainingDeadlineMilliseconds -Deadline $deadline
+            if ($remainingMs -le 0 -or -not $process.WaitForExit($remainingMs)) {
+                throw "uninstaller_timeout"
+            }
+            if ([int]$process.ExitCode -ne 0) {
+                throw "uninstaller_failed"
+            }
+        } finally {
+            if ($null -ne $process) {
+                if (-not $process.HasExited) {
+                    Stop-Process -Id ([int]$process.Id) -Force -ErrorAction SilentlyContinue
+                }
+                $process.Dispose()
+            }
         }
     }
     Stop-ExactInstalledProcesses -InstallRoot $InstallRoot
@@ -728,6 +1037,255 @@ function Assert-InstalledPayloadMatchesInventory {
     }
 }
 
+function New-RedactedInstalledPayloadDifference {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet("missing", "unexpected", "identity")][string]$Kind,
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [int64]$ExpectedLength = -1,
+        [int64]$ActualLength = -1,
+        [string]$ExpectedSha256 = "",
+        [string]$ActualSha256 = ""
+    )
+
+    $safeRelativePath = $RelativePath.Replace('\', '/')
+    if (
+        $safeRelativePath -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,255}$' -or
+        $safeRelativePath -match '(^|/)\.\.(/|$)'
+    ) {
+        $safeRelativePath = "redacted"
+    }
+    foreach ($sha256 in @($ExpectedSha256, $ActualSha256)) {
+        if ($sha256 -and $sha256 -notmatch '^[0-9a-f]{64}$') {
+            throw "installed_payload_difference_hash_invalid"
+        }
+    }
+    return [ordered]@{
+        kind = $Kind
+        relativePath = $safeRelativePath
+        expectedLength = $ExpectedLength
+        actualLength = $ActualLength
+        expectedSha256 = $ExpectedSha256
+        actualSha256 = $ActualSha256
+    }
+}
+
+function Get-InstalledPayloadFirstDifference {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
+        [Parameter(Mandatory = $true)][object]$Inventory
+    )
+
+    $expectedEntries = @($Inventory.payload.installed.files)
+    $actualFiles = @(Get-ChildItem -LiteralPath $InstallRoot -Recurse -File -Force -ErrorAction Stop)
+    $rootFull = Convert-ToFullPath -Path $InstallRoot
+    $expectedByPath = [System.Collections.Generic.SortedDictionary[string, object]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($entry in $expectedEntries) {
+        $relative = [string]$entry.path
+        if (
+            -not $relative -or
+            $relative.Contains("..") -or
+            $relative.Contains("\") -or
+            $relative.StartsWith("/") -or
+            $expectedByPath.ContainsKey($relative)
+        ) {
+            throw "unsafe_installed_inventory_path"
+        }
+        $expectedByPath.Add($relative, $entry)
+    }
+
+    $actualByPath = [System.Collections.Generic.SortedDictionary[string, object]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($file in $actualFiles) {
+        $relative = $file.FullName.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
+        if ($actualByPath.ContainsKey($relative)) {
+            throw "installed_payload_actual_path_ambiguous"
+        }
+        $actualByPath.Add($relative, $file)
+    }
+
+    $allPaths = [System.Collections.Generic.SortedSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($relative in $expectedByPath.Keys) {
+        [void]$allPaths.Add($relative)
+    }
+    foreach ($relative in $actualByPath.Keys) {
+        [void]$allPaths.Add($relative)
+    }
+    $countReasonCode = if ($actualFiles.Count -ne $expectedEntries.Count) {
+        "installed_payload_file_count_drift"
+    } else {
+        ""
+    }
+    foreach ($relative in $allPaths) {
+        $hasExpected = $expectedByPath.ContainsKey($relative)
+        $hasActual = $actualByPath.ContainsKey($relative)
+        if (-not $hasExpected) {
+            $actual = $actualByPath[$relative]
+            $actualIsReparse = ($actual.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+            $actualLength = if ($actualIsReparse) { [int64]-1 } else { [int64]$actual.Length }
+            $actualSha256 = if ($actualIsReparse) { "" } else { Get-Sha256File -Path $actual.FullName }
+            return [ordered]@{
+                reasonCode = if ($countReasonCode) { $countReasonCode } else { "installed_payload_inventory_extra_file" }
+                firstDifference = New-RedactedInstalledPayloadDifference `
+                    -Kind "unexpected" `
+                    -RelativePath $relative `
+                    -ActualLength $actualLength `
+                    -ActualSha256 $actualSha256
+            }
+        }
+        if (-not $hasActual) {
+            $expected = $expectedByPath[$relative]
+            return [ordered]@{
+                reasonCode = if ($countReasonCode) { $countReasonCode } else { "installed_payload_inventory_drift" }
+                firstDifference = New-RedactedInstalledPayloadDifference `
+                    -Kind "missing" `
+                    -RelativePath $relative `
+                    -ExpectedLength ([int64]$expected.length) `
+                    -ExpectedSha256 ([string]$expected.sha256)
+            }
+        }
+
+        $expected = $expectedByPath[$relative]
+        $actual = $actualByPath[$relative]
+        $actualSha256 = if (($actual.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            ""
+        } else {
+            Get-Sha256File -Path $actual.FullName
+        }
+        if (
+            ($actual.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            [int64]$actual.Length -ne [int64]$expected.length -or
+            $actualSha256 -ne [string]$expected.sha256
+        ) {
+            return [ordered]@{
+                reasonCode = if ($countReasonCode) { $countReasonCode } else { "installed_payload_inventory_drift" }
+                firstDifference = New-RedactedInstalledPayloadDifference `
+                    -Kind "identity" `
+                    -RelativePath $relative `
+                    -ExpectedLength ([int64]$expected.length) `
+                    -ActualLength ([int64]$actual.Length) `
+                    -ExpectedSha256 ([string]$expected.sha256) `
+                    -ActualSha256 $actualSha256
+            }
+        }
+    }
+    return $null
+}
+
+function Get-RedactedUpgradeGateReasonCode {
+    param(
+        [Parameter(Mandatory = $true)][System.Exception]$Exception,
+        [Parameter(Mandatory = $true)][string]$ActiveCheck
+    )
+
+    $allowed = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($reasonCode in @(
+        "baseline_upgrade_source_install_failed",
+        "baseline_upgrade_source_smoke_failed",
+        "candidate_upgrade_launcher_timeout",
+        "candidate_upgrade_installer_failed",
+        "candidate_upgrade_completion_timeout",
+        "candidate_upgrade_sentinel_drift",
+        "installed_payload_file_count_drift",
+        "installed_payload_inventory_drift",
+        "installed_payload_inventory_extra_file",
+        "candidate_upgrade_desktop_failed",
+        "candidate_upgrade_frontend_failed",
+        "candidate_upgrade_meeting_failed",
+        "candidate_upgrade_runtime_cleanup_failed",
+        "candidate_upgrade_strict_uninstall_failed",
+        "upgrade_gate_cleanup_failed"
+    )) {
+        [void]$allowed.Add($reasonCode)
+    }
+    $message = [string]$Exception.Message
+    if ($allowed.Contains($message)) {
+        return $message
+    }
+    switch ($ActiveCheck) {
+        "baseline-install" { return "baseline_upgrade_source_failed" }
+        "data-sentinel" { return "upgrade_data_sentinel_failed" }
+        "candidate-upgrade-install" { return "candidate_upgrade_install_failed" }
+        "candidate-installed-payload" { return "candidate_installed_payload_failed" }
+        "candidate-desktop-frontend" { return "candidate_upgrade_desktop_failed" }
+        "candidate-meeting-capture" { return "candidate_upgrade_meeting_failed" }
+        "candidate-runtime-cleanup" { return "candidate_upgrade_runtime_cleanup_failed" }
+        "strict-uninstall" { return "candidate_upgrade_strict_uninstall_failed" }
+        "gate-cleanup" { return "upgrade_gate_cleanup_failed" }
+        default { return "upgrade_gate_failed" }
+    }
+}
+
+function Write-UpgradeGateDetailArtifact {
+    param(
+        [Parameter(Mandatory = $true)][string]$EvidenceRoot,
+        [Parameter(Mandatory = $true)][string]$PacketId,
+        [Parameter(Mandatory = $true)][string]$ParentChampionId,
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][ValidateSet("pass", "fail")][string]$Status,
+        [string]$FailedCheck = "",
+        [string]$ReasonCode = "",
+        [int]$InstallerExitCode = -1,
+        [AllowNull()][object]$FirstDifference = $null
+    )
+
+    if (
+        $InstallerExitCode -lt -1 -or
+        ($Status -eq "pass" -and ($FailedCheck -or $ReasonCode -or $null -ne $FirstDifference)) -or
+        ($Status -eq "fail" -and (
+            $FailedCheck -notmatch '^[a-z0-9][a-z0-9._-]{0,95}$' -or
+            $ReasonCode -notmatch '^[a-z0-9][a-z0-9._-]{0,95}$'
+        ))
+    ) {
+        throw "invalid_upgrade_gate_detail"
+    }
+    if ($null -ne $FirstDifference) {
+        if (
+            [string]$FirstDifference.kind -notin @("missing", "unexpected", "identity") -or
+            [string]$FirstDifference.relativePath -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,255}$' -or
+            [string]$FirstDifference.relativePath -match '(^|/)\.\.(/|$)' -or
+            [int64]$FirstDifference.expectedLength -lt -1 -or
+            [int64]$FirstDifference.actualLength -lt -1 -or
+            (([string]$FirstDifference.expectedSha256) -and [string]$FirstDifference.expectedSha256 -notmatch '^[0-9a-f]{64}$') -or
+            (([string]$FirstDifference.actualSha256) -and [string]$FirstDifference.actualSha256 -notmatch '^[0-9a-f]{64}$')
+        ) {
+            throw "invalid_upgrade_gate_difference"
+        }
+    }
+
+    $path = Join-Path $EvidenceRoot "upgrade-installed-payload.json"
+    $artifact = [ordered]@{
+        upgradeGateDetailContract = "InstallerResearchUpgradeGateDetailV1"
+        schemaVersion = 1
+        runId = $RunId
+        packetId = $PacketId
+        parentChampionId = $ParentChampionId
+        sourceCommit = $SourceCommit
+        status = $Status
+        failedCheck = $FailedCheck
+        reasonCode = $ReasonCode
+        installerExitCode = $InstallerExitCode
+        firstDifference = $FirstDifference
+    }
+    Write-JsonAtomic -Path $path -Payload $artifact
+    $raw = Get-Content -LiteralPath $path -Raw
+    if (
+        ([System.Text.Encoding]::UTF8.GetByteCount($raw)) -gt 65536 -or
+        $raw -match '(?i)file://' -or
+        $raw -match '(?i)[a-z]:[\\/]' -or
+        $raw -match '\\\\[^\\]'
+    ) {
+        throw "unsafe_upgrade_gate_detail"
+    }
+    return [ordered]@{
+        kind = "same-version-upgrade-tree"
+        relativePath = "packet-evidence/$PacketId/upgrade-installed-payload.json"
+        sha256 = Get-Sha256File -Path $path
+    }
+}
+
 function Copy-PlainPayload {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
@@ -996,16 +1554,353 @@ function Test-CandidateHoldoutEvidence {
     )
 
     try {
+        $hasExactFields = {
+            param($Object, [string[]]$Expected)
+            if ($null -eq $Object) {
+                return $false
+            }
+            $actual = @($Object.PSObject.Properties.Name)
+            if ($actual.Count -ne $Expected.Count) {
+                return $false
+            }
+            $expectedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+            foreach ($name in $Expected) {
+                [void]$expectedSet.Add($name)
+            }
+            foreach ($name in $actual) {
+                if (-not $expectedSet.Contains([string]$name)) {
+                    return $false
+                }
+            }
+            return $true
+        }
+        $isInteger = {
+            param($Value)
+            return (
+                $Value -is [byte] -or $Value -is [sbyte] -or
+                $Value -is [int16] -or $Value -is [uint16] -or
+                $Value -is [int32] -or $Value -is [uint32] -or
+                $Value -is [int64] -or $Value -is [uint64]
+            )
+        }
+        $isNonnegativeInteger = {
+            param($Value)
+            return ((& $isInteger $Value) -and [decimal]$Value -ge 0)
+        }
+        $arraysEqual = {
+            param($Left, $Right)
+            if ($Left -isnot [System.Array] -or $Right -isnot [System.Array]) {
+                return $false
+            }
+            $leftItems = @($Left)
+            $rightItems = @($Right)
+            if ($leftItems.Count -ne $rightItems.Count) {
+                return $false
+            }
+            for ($index = 0; $index -lt $leftItems.Count; $index++) {
+                if (-not [string]::Equals([string]$leftItems[$index], [string]$rightItems[$index], [System.StringComparison]::Ordinal)) {
+                    return $false
+                }
+            }
+            return $true
+        }
+        $isCapabilityArray = {
+            param($Value, [bool]$RequireNonempty = $false)
+            if ($Value -isnot [System.Array]) {
+                return $false
+            }
+            $items = @($Value)
+            if ($RequireNonempty -and $items.Count -eq 0) {
+                return $false
+            }
+            $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+            $previous = $null
+            foreach ($item in $items) {
+                if ($item -isnot [string] -or [string]$item -notmatch '^[a-z0-9][a-z0-9-]{0,63}$') {
+                    return $false
+                }
+                if (-not $seen.Add([string]$item)) {
+                    return $false
+                }
+                if ($null -ne $previous -and [string]::CompareOrdinal([string]$previous, [string]$item) -ge 0) {
+                    return $false
+                }
+                $previous = [string]$item
+            }
+            return $true
+        }
+        $diagnosticFields = @(
+            "comparisonPolicy", "requiredCapabilities",
+            "baselineObservedCapabilities", "candidateObservedCapabilities",
+            "baselineMissingRequiredCapabilities", "candidateMissingRequiredCapabilities",
+            "optionalOnlyInBaseline", "optionalOnlyInCandidate", "optionalParity"
+        )
+        $testDiagnostics = {
+            param($Diagnostics)
+            if (
+                -not (& $hasExactFields $Diagnostics $diagnosticFields) -or
+                [string]$Diagnostics.comparisonPolicy -ne "required-capabilities-v2" -or
+                $Diagnostics.optionalParity -isnot [bool] -or
+                -not (& $isCapabilityArray $Diagnostics.requiredCapabilities $true) -or
+                -not (& $isCapabilityArray $Diagnostics.baselineObservedCapabilities $false) -or
+                -not (& $isCapabilityArray $Diagnostics.candidateObservedCapabilities $false) -or
+                -not (& $isCapabilityArray $Diagnostics.baselineMissingRequiredCapabilities $false) -or
+                -not (& $isCapabilityArray $Diagnostics.candidateMissingRequiredCapabilities $false) -or
+                -not (& $isCapabilityArray $Diagnostics.optionalOnlyInBaseline $false) -or
+                -not (& $isCapabilityArray $Diagnostics.optionalOnlyInCandidate $false)
+            ) {
+                return $false
+            }
+            return $true
+        }
+        $failureCodes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+        foreach ($failureCode in @(
+            "http_429", "http_403", "login_required", "geo_restricted",
+            "media_unavailable", "network_timeout", "tls_failure", "dns_failure",
+            "extractor_error", "unknown_failure", "probe_boundary_invalid",
+            "probe_response_limit", "timeout", "cancelled", "output_limit",
+            "invalid_json", "probe_contract_invalid", "unclassified_failure"
+        )) {
+            [void]$failureCodes.Add($failureCode)
+        }
+        $pairAttemptFields = @(
+            "attemptIndex", "attemptKind", "logicalSampleId", "order", "status",
+            "reasonCode", "baselineDurationNs", "candidateDurationNs",
+            "semanticCapabilities", "capabilityDiagnostics", "baselineFailureCode",
+            "candidateFailureCode", "cleanupVerified"
+        )
+        $testPairAttempt = {
+            param($Attempt, [string]$LogicalSampleId, [int]$AttemptIndex, [string]$AttemptKind, [string]$ExpectedStatus)
+            if (
+                -not (& $hasExactFields $Attempt $pairAttemptFields) -or
+                -not (& $isInteger $Attempt.attemptIndex) -or
+                [int]$Attempt.attemptIndex -ne $AttemptIndex -or
+                [string]$Attempt.attemptKind -ne $AttemptKind -or
+                [string]$Attempt.logicalSampleId -ne $LogicalSampleId -or
+                $Attempt.order -isnot [System.Array] -or
+                @($Attempt.order).Count -ne 2 -or
+                [string]$Attempt.order[0] -ne "baseline" -or
+                [string]$Attempt.order[1] -ne "candidate" -or
+                [string]$Attempt.status -ne $ExpectedStatus -or
+                -not (& $isNonnegativeInteger $Attempt.baselineDurationNs) -or
+                -not (& $isNonnegativeInteger $Attempt.candidateDurationNs) -or
+                -not (& $isCapabilityArray $Attempt.semanticCapabilities $false) -or
+                -not (& $testDiagnostics $Attempt.capabilityDiagnostics) -or
+                $Attempt.cleanupVerified -isnot [bool]
+            ) {
+                return $false
+            }
+            if ($ExpectedStatus -eq "pass") {
+                return (
+                    $null -eq $Attempt.reasonCode -and
+                    $null -eq $Attempt.baselineFailureCode -and
+                    $null -eq $Attempt.candidateFailureCode -and
+                    $Attempt.cleanupVerified -eq $true -and
+                    @($Attempt.capabilityDiagnostics.baselineMissingRequiredCapabilities).Count -eq 0 -and
+                    @($Attempt.capabilityDiagnostics.candidateMissingRequiredCapabilities).Count -eq 0 -and
+                    (& $arraysEqual $Attempt.semanticCapabilities $Attempt.capabilityDiagnostics.baselineObservedCapabilities)
+                )
+            }
+            return (
+                [string]$Attempt.reasonCode -eq "candidate_probe_failed" -and
+                $null -eq $Attempt.baselineFailureCode -and
+                $Attempt.candidateFailureCode -is [string] -and
+                $failureCodes.Contains([string]$Attempt.candidateFailureCode) -and
+                @($Attempt.capabilityDiagnostics.baselineMissingRequiredCapabilities).Count -eq 0 -and
+                @($Attempt.capabilityDiagnostics.candidateObservedCapabilities).Count -eq 0 -and
+                (& $arraysEqual $Attempt.capabilityDiagnostics.candidateMissingRequiredCapabilities $Attempt.capabilityDiagnostics.requiredCapabilities) -and
+                @($Attempt.semanticCapabilities).Count -eq 0
+            )
+        }
+        $recoveryFields = @(
+            "eligible", "attempted", "accepted", "budgetOrdinal", "budgetExhausted",
+            "triggerReasonCode", "confirmationReasonCode"
+        )
+        $testRecovery = {
+            param($Recovery, [bool]$Recovered, [string]$TriggerReason)
+            if (-not (& $hasExactFields $Recovery $recoveryFields)) {
+                return $false
+            }
+            if ($Recovered) {
+                return (
+                    $Recovery.eligible -is [bool] -and $Recovery.eligible -eq $true -and
+                    $Recovery.attempted -is [bool] -and $Recovery.attempted -eq $true -and
+                    $Recovery.accepted -is [bool] -and $Recovery.accepted -eq $true -and
+                    (& $isInteger $Recovery.budgetOrdinal) -and [int]$Recovery.budgetOrdinal -eq 1 -and
+                    $Recovery.budgetExhausted -is [bool] -and $Recovery.budgetExhausted -eq $false -and
+                    [string]$Recovery.triggerReasonCode -eq $TriggerReason -and
+                    $null -eq $Recovery.confirmationReasonCode
+                )
+            }
+            return (
+                $Recovery.eligible -is [bool] -and $Recovery.eligible -eq $false -and
+                $Recovery.attempted -is [bool] -and $Recovery.attempted -eq $false -and
+                $Recovery.accepted -is [bool] -and $Recovery.accepted -eq $false -and
+                $null -eq $Recovery.budgetOrdinal -and
+                $Recovery.budgetExhausted -is [bool] -and $Recovery.budgetExhausted -eq $false -and
+                $null -eq $Recovery.triggerReasonCode -and
+                $null -eq $Recovery.confirmationReasonCode
+            )
+        }
+        $testPairSample = {
+            param($Sample, [string]$LogicalSampleId, [bool]$IncludeTimings)
+            if ($Sample.attempts -isnot [System.Array]) {
+                return $false
+            }
+            $attempts = @($Sample.attempts)
+            if ($attempts.Count -notin @(1, 2)) {
+                return $false
+            }
+            $recovered = $attempts.Count -eq 2
+            if ($recovered) {
+                if (
+                    -not (& $testPairAttempt $attempts[0] $LogicalSampleId 1 "original" "fail") -or
+                    -not (& $testPairAttempt $attempts[1] $LogicalSampleId 2 "confirmation" "pass") -or
+                    -not (& $arraysEqual $attempts[0].capabilityDiagnostics.requiredCapabilities $attempts[1].capabilityDiagnostics.requiredCapabilities)
+                ) {
+                    return $false
+                }
+                $selected = $attempts[1]
+                $selectedName = "confirmation"
+            } else {
+                if (-not (& $testPairAttempt $attempts[0] $LogicalSampleId 1 "original" "pass")) {
+                    return $false
+                }
+                $selected = $attempts[0]
+                $selectedName = "original"
+            }
+            if (
+                [string]$Sample.status -ne "pass" -or
+                $null -ne $Sample.reasonCode -or
+                [string]$Sample.selectedAttempt -ne $selectedName -or
+                $null -ne $Sample.baselineFailureCode -or
+                $null -ne $Sample.candidateFailureCode -or
+                $Sample.cleanupVerified -isnot [bool] -or
+                $Sample.cleanupVerified -ne $true -or
+                -not (& $testDiagnostics $Sample.capabilityDiagnostics) -or
+                -not (& $arraysEqual $Sample.capabilityDiagnostics.requiredCapabilities $selected.capabilityDiagnostics.requiredCapabilities) -or
+                -not (& $arraysEqual $Sample.capabilityDiagnostics.baselineObservedCapabilities $selected.capabilityDiagnostics.baselineObservedCapabilities) -or
+                -not (& $arraysEqual $Sample.capabilityDiagnostics.candidateObservedCapabilities $selected.capabilityDiagnostics.candidateObservedCapabilities) -or
+                -not (& $testRecovery $Sample.recovery $recovered "candidate_probe_failed")
+            ) {
+                return $false
+            }
+            if ($IncludeTimings) {
+                if (
+                    $Sample.order -isnot [System.Array] -or
+                    @($Sample.order).Count -ne 2 -or
+                    [string]$Sample.order[0] -ne "baseline" -or
+                    [string]$Sample.order[1] -ne "candidate" -or
+                    -not (& $isNonnegativeInteger $Sample.baselineDurationNs) -or
+                    -not (& $isNonnegativeInteger $Sample.candidateDurationNs) -or
+                    [int64]$Sample.baselineDurationNs -ne [int64]$selected.baselineDurationNs -or
+                    [int64]$Sample.candidateDurationNs -ne [int64]$selected.candidateDurationNs -or
+                    -not (& $arraysEqual $Sample.semanticCapabilities $selected.semanticCapabilities)
+                ) {
+                    return $false
+                }
+            }
+            return $true
+        }
+        $parallelAttemptFields = @(
+            "attemptIndex", "attemptKind", "logicalSampleId", "status", "reasonCode",
+            "workerCount", "workers", "capabilityParity", "capabilityDiagnostics",
+            "cleanupVerified"
+        )
+        $parallelWorkerFields = @(
+            "workerIndex", "status", "durationNs", "semanticCapabilities",
+            "missingRequiredCapabilities", "failureCode", "cleanupVerified"
+        )
+        $testParallelAttempt = {
+            param($Attempt, [int]$AttemptIndex, [string]$AttemptKind, [string]$ExpectedStatus)
+            if (
+                -not (& $hasExactFields $Attempt $parallelAttemptFields) -or
+                -not (& $isInteger $Attempt.attemptIndex) -or
+                [int]$Attempt.attemptIndex -ne $AttemptIndex -or
+                [string]$Attempt.attemptKind -ne $AttemptKind -or
+                [string]$Attempt.logicalSampleId -ne "parallel:two-worker" -or
+                [string]$Attempt.status -ne $ExpectedStatus -or
+                -not (& $isInteger $Attempt.workerCount) -or
+                [int]$Attempt.workerCount -ne 2 -or
+                $Attempt.workers -isnot [System.Array] -or
+                @($Attempt.workers).Count -ne 2 -or
+                $Attempt.capabilityParity -isnot [bool] -or
+                $Attempt.cleanupVerified -isnot [bool] -or
+                -not (& $testDiagnostics $Attempt.capabilityDiagnostics)
+            ) {
+                return $false
+            }
+            $allWorkersPass = $true
+            $allRequired = $true
+            $allCleanup = $true
+            for ($workerIndex = 0; $workerIndex -lt 2; $workerIndex++) {
+                $worker = @($Attempt.workers)[$workerIndex]
+                if (
+                    -not (& $hasExactFields $worker $parallelWorkerFields) -or
+                    -not (& $isInteger $worker.workerIndex) -or
+                    [int]$worker.workerIndex -ne ($workerIndex + 1) -or
+                    [string]$worker.status -notin @("pass", "fail") -or
+                    -not (& $isNonnegativeInteger $worker.durationNs) -or
+                    -not (& $isCapabilityArray $worker.semanticCapabilities $false) -or
+                    -not (& $isCapabilityArray $worker.missingRequiredCapabilities $false) -or
+                    $worker.cleanupVerified -isnot [bool]
+                ) {
+                    return $false
+                }
+                if ([string]$worker.status -eq "pass") {
+                    if ($null -ne $worker.failureCode) {
+                        return $false
+                    }
+                } elseif ($worker.failureCode -isnot [string] -or -not $failureCodes.Contains([string]$worker.failureCode)) {
+                    return $false
+                }
+                $allWorkersPass = $allWorkersPass -and [string]$worker.status -eq "pass"
+                $allRequired = $allRequired -and @($worker.missingRequiredCapabilities).Count -eq 0
+                $allCleanup = $allCleanup -and $worker.cleanupVerified -eq $true
+            }
+            $workers = @($Attempt.workers)
+            if (
+                -not (& $arraysEqual $Attempt.capabilityDiagnostics.baselineObservedCapabilities $workers[0].semanticCapabilities) -or
+                -not (& $arraysEqual $Attempt.capabilityDiagnostics.candidateObservedCapabilities $workers[1].semanticCapabilities) -or
+                -not (& $arraysEqual $Attempt.capabilityDiagnostics.baselineMissingRequiredCapabilities $workers[0].missingRequiredCapabilities) -or
+                -not (& $arraysEqual $Attempt.capabilityDiagnostics.candidateMissingRequiredCapabilities $workers[1].missingRequiredCapabilities)
+            ) {
+                return $false
+            }
+            if ($ExpectedStatus -eq "pass") {
+                return (
+                    $null -eq $Attempt.reasonCode -and $allWorkersPass -and $allRequired -and
+                    $allCleanup -and $Attempt.capabilityParity -eq $true -and
+                    $Attempt.cleanupVerified -eq $true
+                )
+            }
+            return (
+                [string]$Attempt.reasonCode -eq "candidate_parallel_probe_failed" -and
+                -not $allWorkersPass
+            )
+        }
+
         $payload = Read-JsonObject -Path $Path -Code "candidate_holdout_missing"
+        $topFields = @(
+            "holdoutSnapshotContract", "schemaVersion", "status", "reasonCodes",
+            "capturedAtUtc", "runId", "packetId", "parentChampionId", "sourceCommit",
+            "bindings", "baseline", "candidate", "executionPolicy", "lifecycle",
+            "parallelIsolation", "recoverySummary", "performance", "cases",
+            "inputIntegrity", "inputImmutabilityVerified"
+        )
         if (
-            [string]$payload.holdoutSnapshotContract -ne "InstallerSizeYoutubeCandidateHoldoutsV1" -or
-            [int]$payload.schemaVersion -ne 1 -or
+            -not (& $hasExactFields $payload $topFields) -or
+            [string]$payload.holdoutSnapshotContract -ne "InstallerSizeYoutubeCandidateHoldoutsV2" -or
+            -not (& $isInteger $payload.schemaVersion) -or
+            [int]$payload.schemaVersion -ne 2 -or
             [string]$payload.status -ne "pass" -or
             [string]$payload.runId -ne $ExpectedRunId -or
             [string]$payload.packetId -ne $ExpectedPacketId -or
             [string]$payload.parentChampionId -ne $ExpectedParentChampionId -or
             [string]$payload.sourceCommit -ne $ExpectedSourceCommit -or
+            $payload.reasonCodes -isnot [System.Array] -or
             @($payload.reasonCodes).Count -ne 0 -or
+            $payload.inputImmutabilityVerified -isnot [bool] -or
             $payload.inputImmutabilityVerified -ne $true
         ) {
             return $false
@@ -1022,77 +1917,273 @@ function Test-CandidateHoldoutEvidence {
             return $false
         }
 
+        $policyFields = @(
+            "pairing", "capabilityComparisonPolicy", "optionalCapabilityDifferencesBlocking",
+            "candidateProbeFailuresBlocking", "candidateProbeRetryCount",
+            "candidateProbeRetryScope", "candidateFailureConfirmationPolicy",
+            "maximumCandidateOnlyRecoveries", "confirmationAttemptsPersisted",
+            "normalPairConfirmationOrder", "parallelConfirmationMode",
+            "confirmationRequiresAllRequiredCapabilities", "confirmationRequiresCleanup",
+            "performanceCountsLogicalSamplesOnly", "primeCount", "logicalPairCount",
+            "parallelLogicalProbeCount", "coldPairsPerCase", "warmPairsPerCase",
+            "remoteComponents", "externalPlugins", "firstRunDownloads",
+            "exactlyOneCandidateRuntime", "frozenBackendProbe", "privateRandomWorkspaces",
+            "reparsePointsAllowed", "aclMode", "workspaceCount", "cleanupCount"
+        )
+        $confirmationOrder = @($payload.executionPolicy.normalPairConfirmationOrder)
         if (
+            -not (& $hasExactFields $payload.executionPolicy $policyFields) -or
             [string]$payload.executionPolicy.pairing -ne "baseline-immediately-followed-by-candidate" -or
+            [string]$payload.executionPolicy.capabilityComparisonPolicy -ne "required-capabilities-v2" -or
+            $payload.executionPolicy.optionalCapabilityDifferencesBlocking -isnot [bool] -or
+            $payload.executionPolicy.optionalCapabilityDifferencesBlocking -ne $false -or
+            $payload.executionPolicy.candidateProbeFailuresBlocking -isnot [bool] -or
+            $payload.executionPolicy.candidateProbeFailuresBlocking -ne $true -or
+            -not (& $isInteger $payload.executionPolicy.candidateProbeRetryCount) -or
+            [int]$payload.executionPolicy.candidateProbeRetryCount -ne 1 -or
+            [string]$payload.executionPolicy.candidateProbeRetryScope -ne "global-candidate-only" -or
+            [string]$payload.executionPolicy.candidateFailureConfirmationPolicy -ne "single-immediate-complete-confirmation-v1" -or
+            -not (& $isInteger $payload.executionPolicy.maximumCandidateOnlyRecoveries) -or
+            [int]$payload.executionPolicy.maximumCandidateOnlyRecoveries -ne 1 -or
+            $payload.executionPolicy.confirmationAttemptsPersisted -isnot [bool] -or
+            $payload.executionPolicy.confirmationAttemptsPersisted -ne $true -or
+            $payload.executionPolicy.normalPairConfirmationOrder -isnot [System.Array] -or
+            $confirmationOrder.Count -ne 2 -or
+            [string]$confirmationOrder[0] -ne "baseline" -or
+            [string]$confirmationOrder[1] -ne "candidate" -or
+            [string]$payload.executionPolicy.parallelConfirmationMode -ne "repeat-complete-two-worker-probe" -or
+            $payload.executionPolicy.confirmationRequiresAllRequiredCapabilities -isnot [bool] -or
+            $payload.executionPolicy.confirmationRequiresAllRequiredCapabilities -ne $true -or
+            $payload.executionPolicy.confirmationRequiresCleanup -isnot [bool] -or
+            $payload.executionPolicy.confirmationRequiresCleanup -ne $true -or
+            $payload.executionPolicy.performanceCountsLogicalSamplesOnly -isnot [bool] -or
+            $payload.executionPolicy.performanceCountsLogicalSamplesOnly -ne $true -or
+            -not (& $isInteger $payload.executionPolicy.primeCount) -or
+            [int]$payload.executionPolicy.primeCount -ne 6 -or
+            -not (& $isInteger $payload.executionPolicy.logicalPairCount) -or
+            [int]$payload.executionPolicy.logicalPairCount -ne 24 -or
+            -not (& $isInteger $payload.executionPolicy.parallelLogicalProbeCount) -or
+            [int]$payload.executionPolicy.parallelLogicalProbeCount -ne 1 -or
+            -not (& $isInteger $payload.executionPolicy.coldPairsPerCase) -or
             [int]$payload.executionPolicy.coldPairsPerCase -ne 2 -or
+            -not (& $isInteger $payload.executionPolicy.warmPairsPerCase) -or
             [int]$payload.executionPolicy.warmPairsPerCase -ne 2 -or
+            $payload.executionPolicy.remoteComponents -isnot [bool] -or
             $payload.executionPolicy.remoteComponents -ne $false -or
+            $payload.executionPolicy.externalPlugins -isnot [bool] -or
             $payload.executionPolicy.externalPlugins -ne $false -or
+            $payload.executionPolicy.firstRunDownloads -isnot [bool] -or
             $payload.executionPolicy.firstRunDownloads -ne $false -or
+            $payload.executionPolicy.exactlyOneCandidateRuntime -isnot [bool] -or
             $payload.executionPolicy.exactlyOneCandidateRuntime -ne $true -or
             [string]$payload.executionPolicy.frozenBackendProbe -ne "InstallerYoutubeFrozenHoldoutProbeV1" -or
+            $payload.executionPolicy.privateRandomWorkspaces -isnot [bool] -or
             $payload.executionPolicy.privateRandomWorkspaces -ne $true -or
+            $payload.executionPolicy.reparsePointsAllowed -isnot [bool] -or
             $payload.executionPolicy.reparsePointsAllowed -ne $false -or
-            [int]$payload.executionPolicy.workspaceCount -le 0 -or
-            [int]$payload.executionPolicy.workspaceCount -ne [int]$payload.executionPolicy.cleanupCount -or
+            $payload.executionPolicy.aclMode -isnot [string] -or
+            [string]::IsNullOrWhiteSpace([string]$payload.executionPolicy.aclMode) -or
+            -not (& $isNonnegativeInteger $payload.executionPolicy.workspaceCount) -or
+            [int64]$payload.executionPolicy.workspaceCount -le 0 -or
+            -not (& $isNonnegativeInteger $payload.executionPolicy.cleanupCount) -or
+            [int64]$payload.executionPolicy.workspaceCount -ne [int64]$payload.executionPolicy.cleanupCount
+        ) {
+            return $false
+        }
+
+        if (
             $payload.lifecycle.successCleanup -ne $true -or
             $payload.lifecycle.errorCleanup -ne $true -or
             $payload.lifecycle.timeoutCleanup -ne $true -or
             $payload.lifecycle.cancellationCleanup -ne $true -or
             [int]$payload.lifecycle.parallelWorkers -ne 2 -or
-            $payload.lifecycle.parallelWorkspaceIsolation -ne $true -or
-            [int]$payload.parallelIsolation.workerCount -ne 2 -or
-            $payload.parallelIsolation.distinctPrivateWorkspaces -ne $true -or
-            $payload.parallelIsolation.capabilityParity -ne $true -or
-            $payload.parallelIsolation.cleanupVerified -ne $true -or
-            $payload.performance.passed -ne $true -or
-            [int]$payload.performance.pairedSampleCount -ne 24 -or
-            [int]$payload.performance.maximumRatioBasisPoints -ne 11000 -or
-            [int64]$payload.performance.baselineP95Ns -le 0 -or
-            [int64]$payload.performance.candidateP95Ns -le 0 -or
-            [int64]$payload.performance.candidateP95Ns -gt [int64]$payload.performance.maximumCandidateP95Ns
+            $payload.lifecycle.parallelWorkspaceIsolation -ne $true
         ) {
             return $false
         }
 
+        $caseFields = @(
+            "id", "family", "primeStatus", "primeReasonCode", "primeSelectedAttempt",
+            "primeCapabilityDiagnostics", "primeBaselineFailureCode",
+            "primeCandidateFailureCode", "primeCleanupVerified", "primeAttempts",
+            "primeRecovery", "coldPairCount", "warmPairCount", "pairs"
+        )
+        $pairFields = @(
+            "logicalSampleId", "order", "status", "reasonCode", "selectedAttempt",
+            "baselineDurationNs", "candidateDurationNs", "semanticCapabilities",
+            "capabilityDiagnostics", "baselineFailureCode", "candidateFailureCode",
+            "cleanupVerified", "attempts", "recovery", "mode", "pairIndex"
+        )
         $cases = @($payload.cases)
-        if ($cases.Count -ne 6) {
+        if ($payload.cases -isnot [System.Array] -or $cases.Count -ne 6) {
             return $false
         }
         $ids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+        $recoveredIds = [System.Collections.Generic.List[string]]::new()
+        $logicalPairCount = 0
+        $firstCaseRequired = $null
         foreach ($case in $cases) {
+            $caseId = [string]$case.id
             if (
-                [string]$case.id -notmatch '^[a-z0-9][a-z0-9-]{0,63}$' -or
-                -not $ids.Add([string]$case.id) -or
-                [string]$case.primeStatus -ne "pass" -or
-                [int]$case.coldPairCount -ne 2 -or
-                [int]$case.warmPairCount -ne 2
+                -not (& $hasExactFields $case $caseFields) -or
+                $case.id -isnot [string] -or
+                $caseId -notmatch '^[a-z0-9][a-z0-9-]{0,63}$' -or
+                -not $ids.Add($caseId) -or
+                $case.family -isnot [string] -or
+                [string]::IsNullOrWhiteSpace([string]$case.family) -or
+                -not (& $isInteger $case.coldPairCount) -or [int]$case.coldPairCount -ne 2 -or
+                -not (& $isInteger $case.warmPairCount) -or [int]$case.warmPairCount -ne 2
             ) {
                 return $false
+            }
+            $prime = [pscustomobject]@{
+                status = $case.primeStatus
+                reasonCode = $case.primeReasonCode
+                selectedAttempt = $case.primeSelectedAttempt
+                capabilityDiagnostics = $case.primeCapabilityDiagnostics
+                baselineFailureCode = $case.primeBaselineFailureCode
+                candidateFailureCode = $case.primeCandidateFailureCode
+                cleanupVerified = $case.primeCleanupVerified
+                attempts = $case.primeAttempts
+                recovery = $case.primeRecovery
+            }
+            $primeId = "$($caseId):prime"
+            if (-not (& $testPairSample $prime $primeId $false)) {
+                return $false
+            }
+            $caseRequired = $case.primeCapabilityDiagnostics.requiredCapabilities
+            if ($null -eq $firstCaseRequired) {
+                $firstCaseRequired = $caseRequired
+            }
+            if (@($case.primeAttempts).Count -eq 2) {
+                [void]$recoveredIds.Add($primeId)
             }
             $pairs = @($case.pairs)
-            if (
-                $pairs.Count -ne 4 -or
-                @($pairs | Where-Object { [string]$_.mode -eq "cold" }).Count -ne 2 -or
-                @($pairs | Where-Object { [string]$_.mode -eq "warm" }).Count -ne 2
-            ) {
+            if ($case.pairs -isnot [System.Array] -or $pairs.Count -ne 4) {
                 return $false
             }
-            foreach ($pair in $pairs) {
-                $order = @($pair.order)
+            $expectedModes = @("cold", "cold", "warm", "warm")
+            $expectedIndexes = @(1, 2, 1, 2)
+            for ($pairOffset = 0; $pairOffset -lt 4; $pairOffset++) {
+                $pair = $pairs[$pairOffset]
+                $mode = $expectedModes[$pairOffset]
+                $pairIndex = $expectedIndexes[$pairOffset]
+                $logicalId = "$($caseId):$($mode):$($pairIndex)"
                 if (
-                    [string]$pair.status -ne "pass" -or
-                    $pair.cleanupVerified -ne $true -or
-                    $order.Count -ne 2 -or
-                    [string]$order[0] -ne "baseline" -or
-                    [string]$order[1] -ne "candidate" -or
-                    [int64]$pair.baselineDurationNs -le 0 -or
-                    [int64]$pair.candidateDurationNs -le 0 -or
-                    @($pair.semanticCapabilities).Count -eq 0
+                    -not (& $hasExactFields $pair $pairFields) -or
+                    [string]$pair.mode -ne $mode -or
+                    -not (& $isInteger $pair.pairIndex) -or
+                    [int]$pair.pairIndex -ne $pairIndex -or
+                    [string]$pair.logicalSampleId -ne $logicalId -or
+                    -not (& $arraysEqual $pair.capabilityDiagnostics.requiredCapabilities $caseRequired) -or
+                    -not (& $testPairSample $pair $logicalId $true)
                 ) {
                     return $false
                 }
+                $logicalPairCount++
+                if (@($pair.attempts).Count -eq 2) {
+                    [void]$recoveredIds.Add($logicalId)
+                }
             }
+        }
+        if ($logicalPairCount -ne 24) {
+            return $false
+        }
+
+        $parallelFields = @(
+            "logicalSampleId", "status", "reasonCode", "selectedAttempt", "workerCount",
+            "distinctPrivateWorkspaces", "capabilityParity", "capabilityComparisonPolicy",
+            "capabilityDiagnostics", "cleanupVerified", "attempts", "recovery"
+        )
+        $parallel = $payload.parallelIsolation
+        if (
+            -not (& $hasExactFields $parallel $parallelFields) -or
+            [string]$parallel.logicalSampleId -ne "parallel:two-worker" -or
+            [string]$parallel.status -ne "pass" -or
+            $null -ne $parallel.reasonCode -or
+            -not (& $isInteger $parallel.workerCount) -or [int]$parallel.workerCount -ne 2 -or
+            $parallel.distinctPrivateWorkspaces -isnot [bool] -or $parallel.distinctPrivateWorkspaces -ne $true -or
+            $parallel.capabilityParity -isnot [bool] -or $parallel.capabilityParity -ne $true -or
+            [string]$parallel.capabilityComparisonPolicy -ne "required-capabilities-v2" -or
+            -not (& $testDiagnostics $parallel.capabilityDiagnostics) -or
+            -not (& $arraysEqual $parallel.capabilityDiagnostics.requiredCapabilities $firstCaseRequired) -or
+            $parallel.cleanupVerified -isnot [bool] -or $parallel.cleanupVerified -ne $true -or
+            $parallel.attempts -isnot [System.Array] -or
+            @($parallel.attempts).Count -notin @(1, 2)
+        ) {
+            return $false
+        }
+        $parallelAttempts = @($parallel.attempts)
+        $parallelRecovered = $parallelAttempts.Count -eq 2
+        if ($parallelRecovered) {
+            if (
+                -not (& $testParallelAttempt $parallelAttempts[0] 1 "original" "fail") -or
+                -not (& $testParallelAttempt $parallelAttempts[1] 2 "confirmation" "pass") -or
+                [string]$parallel.selectedAttempt -ne "confirmation" -or
+                -not (& $testRecovery $parallel.recovery $true "candidate_parallel_probe_failed")
+            ) {
+                return $false
+            }
+            $selectedParallel = $parallelAttempts[1]
+            [void]$recoveredIds.Add("parallel:two-worker")
+        } else {
+            if (
+                -not (& $testParallelAttempt $parallelAttempts[0] 1 "original" "pass") -or
+                [string]$parallel.selectedAttempt -ne "original" -or
+                -not (& $testRecovery $parallel.recovery $false "candidate_parallel_probe_failed")
+            ) {
+                return $false
+            }
+            $selectedParallel = $parallelAttempts[0]
+        }
+        if (
+            -not (& $arraysEqual $parallel.capabilityDiagnostics.requiredCapabilities $selectedParallel.capabilityDiagnostics.requiredCapabilities) -or
+            -not (& $arraysEqual $parallel.capabilityDiagnostics.baselineObservedCapabilities $selectedParallel.capabilityDiagnostics.baselineObservedCapabilities) -or
+            -not (& $arraysEqual $parallel.capabilityDiagnostics.candidateObservedCapabilities $selectedParallel.capabilityDiagnostics.candidateObservedCapabilities)
+        ) {
+            return $false
+        }
+
+        $summaryFields = @(
+            "maximumCandidateOnlyRecoveries", "candidateOnlyDisturbanceCount",
+            "usedCandidateOnlyRecoveries", "acceptedCandidateOnlyRecoveries",
+            "failedCandidateOnlyRecoveries", "recoveredLogicalSampleId"
+        )
+        $recoveredCount = $recoveredIds.Count
+        $expectedRecoveredId = if ($recoveredCount -eq 1) { $recoveredIds[0] } else { $null }
+        if (
+            -not (& $hasExactFields $payload.recoverySummary $summaryFields) -or
+            -not (& $isInteger $payload.recoverySummary.maximumCandidateOnlyRecoveries) -or
+            [int]$payload.recoverySummary.maximumCandidateOnlyRecoveries -ne 1 -or
+            -not (& $isInteger $payload.recoverySummary.candidateOnlyDisturbanceCount) -or
+            [int]$payload.recoverySummary.candidateOnlyDisturbanceCount -ne $recoveredCount -or
+            -not (& $isInteger $payload.recoverySummary.usedCandidateOnlyRecoveries) -or
+            [int]$payload.recoverySummary.usedCandidateOnlyRecoveries -ne $recoveredCount -or
+            -not (& $isInteger $payload.recoverySummary.acceptedCandidateOnlyRecoveries) -or
+            [int]$payload.recoverySummary.acceptedCandidateOnlyRecoveries -ne $recoveredCount -or
+            -not (& $isInteger $payload.recoverySummary.failedCandidateOnlyRecoveries) -or
+            [int]$payload.recoverySummary.failedCandidateOnlyRecoveries -ne 0 -or
+            $recoveredCount -gt 1 -or
+            -not [object]::Equals($payload.recoverySummary.recoveredLogicalSampleId, $expectedRecoveredId)
+        ) {
+            return $false
+        }
+
+        $performanceFields = @(
+            "baselineP95Ns", "candidateP95Ns", "maximumCandidateP95Ns",
+            "maximumRatioBasisPoints", "pairedSampleCount", "passed"
+        )
+        if (
+            -not (& $hasExactFields $payload.performance $performanceFields) -or
+            $payload.performance.passed -isnot [bool] -or $payload.performance.passed -ne $true -or
+            -not (& $isInteger $payload.performance.pairedSampleCount) -or [int]$payload.performance.pairedSampleCount -ne 24 -or
+            -not (& $isInteger $payload.performance.maximumRatioBasisPoints) -or [int]$payload.performance.maximumRatioBasisPoints -ne 11000 -or
+            -not (& $isNonnegativeInteger $payload.performance.baselineP95Ns) -or
+            -not (& $isNonnegativeInteger $payload.performance.candidateP95Ns) -or
+            -not (& $isNonnegativeInteger $payload.performance.maximumCandidateP95Ns) -or
+            [int64]$payload.performance.candidateP95Ns -gt [int64]$payload.performance.maximumCandidateP95Ns
+        ) {
+            return $false
         }
         return $true
     } catch {
@@ -1198,6 +2289,85 @@ function Write-GateArtifact {
     return Get-Sha256File -Path $path
 }
 
+function Test-RetainedUpgradeGateDetail {
+    param(
+        [Parameter(Mandatory = $true)][object]$Detail,
+        [Parameter(Mandatory = $true)][string]$ExpectedStatus,
+        [Parameter(Mandatory = $true)][string]$ExpectedPacketId,
+        [Parameter(Mandatory = $true)][string]$ExpectedParentChampionId,
+        [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit
+    )
+
+    try {
+        $expectedRelativePath = "packet-evidence/$ExpectedPacketId/upgrade-installed-payload.json"
+        if (
+            [string]$Detail.kind -ne "same-version-upgrade-tree" -or
+            [string]$Detail.relativePath -ne $expectedRelativePath -or
+            [string]$Detail.sha256 -notmatch '^[0-9a-f]{64}$'
+        ) {
+            return $false
+        }
+        $detailPath = Join-Path $runRoot $expectedRelativePath.Replace('/', '\')
+        if (
+            -not (Test-Path -LiteralPath $detailPath -PathType Leaf) -or
+            (Get-Sha256File -Path $detailPath) -ne [string]$Detail.sha256
+        ) {
+            return $false
+        }
+        $raw = Get-Content -LiteralPath $detailPath -Raw
+        if (
+            ([System.Text.Encoding]::UTF8.GetByteCount($raw)) -gt 65536 -or
+            $raw -match '(?i)file://' -or
+            $raw -match '(?i)[a-z]:[\\/]' -or
+            $raw -match '\\\\[^\\]'
+        ) {
+            return $false
+        }
+        $payload = $raw | ConvertFrom-Json
+        if (
+            [string]$payload.upgradeGateDetailContract -ne "InstallerResearchUpgradeGateDetailV1" -or
+            [int]$payload.schemaVersion -ne 1 -or
+            [string]$payload.runId -ne $RunId -or
+            [string]$payload.packetId -ne $ExpectedPacketId -or
+            [string]$payload.parentChampionId -ne $ExpectedParentChampionId -or
+            [string]$payload.sourceCommit -ne $ExpectedSourceCommit -or
+            [string]$payload.status -ne $ExpectedStatus -or
+            $null -eq $payload.PSObject.Properties["installerExitCode"] -or
+            [int]$payload.installerExitCode -lt -1
+        ) {
+            return $false
+        }
+        $failedCheck = [string]$payload.failedCheck
+        $reasonCode = [string]$payload.reasonCode
+        if (
+            ($ExpectedStatus -eq "pass" -and ($failedCheck -or $reasonCode -or $null -ne $payload.firstDifference)) -or
+            ($ExpectedStatus -ne "pass" -and (
+                $failedCheck -notmatch '^[a-z0-9][a-z0-9._-]{0,95}$' -or
+                $reasonCode -notmatch '^[a-z0-9][a-z0-9._-]{0,95}$'
+            ))
+        ) {
+            return $false
+        }
+        if ($null -ne $payload.firstDifference) {
+            $difference = $payload.firstDifference
+            if (
+                [string]$difference.kind -notin @("missing", "unexpected", "identity") -or
+                [string]$difference.relativePath -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,255}$' -or
+                [string]$difference.relativePath -match '(^|/)\.\.(/|$)' -or
+                [int64]$difference.expectedLength -lt -1 -or
+                [int64]$difference.actualLength -lt -1 -or
+                (([string]$difference.expectedSha256) -and [string]$difference.expectedSha256 -notmatch '^[0-9a-f]{64}$') -or
+                (([string]$difference.actualSha256) -and [string]$difference.actualSha256 -notmatch '^[0-9a-f]{64}$')
+            ) {
+                return $false
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Test-RetainedGateArtifact {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -1247,6 +2417,21 @@ function Test-RetainedGateArtifact {
                 -not (Test-Path -LiteralPath $detailPath -PathType Leaf) -or
                 (Get-Sha256File -Path $detailPath) -ne [string]$detail.sha256
             ) {
+                return $false
+            }
+        } elseif ($ExpectedGate -eq "cleanInstallUpgradeUninstall") {
+            if ($null -eq $payload.detailEvidence) {
+                if ($ExpectedStatus -ne "pass" -and $ExpectedPacketId -ne "baseline-1") {
+                    return $false
+                }
+            } elseif ($ExpectedStatus -eq "pass") {
+                return $false
+            } elseif (-not (Test-RetainedUpgradeGateDetail `
+                -Detail $payload.detailEvidence `
+                -ExpectedStatus $ExpectedStatus `
+                -ExpectedPacketId $ExpectedPacketId `
+                -ExpectedParentChampionId $ExpectedParentChampionId `
+                -ExpectedSourceCommit $ExpectedSourceCommit)) {
                 return $false
             }
         } elseif ($null -ne $payload.detailEvidence) {
@@ -1304,8 +2489,12 @@ function Invoke-BaselineToCandidateUpgradeGate {
         [Parameter(Mandatory = $true)][string]$InstallRoot,
         [Parameter(Mandatory = $true)][string]$DataRoot,
         [Parameter(Mandatory = $true)][string]$ScratchRoot,
+        [Parameter(Mandatory = $true)][string]$EvidenceRoot,
         [Parameter(Mandatory = $true)][string]$Python,
-        [Parameter(Mandatory = $true)][object]$CandidateInventory
+        [Parameter(Mandatory = $true)][object]$CandidateInventory,
+        [Parameter(Mandatory = $true)][string]$PacketId,
+        [Parameter(Mandatory = $true)][string]$ParentChampionId,
+        [Parameter(Mandatory = $true)][string]$SourceCommit
     )
 
     $outcomes = [ordered]@{
@@ -1317,9 +2506,16 @@ function Invoke-BaselineToCandidateUpgradeGate {
         "candidate-installed-payload" = "not_run"
         "candidate-runtime-cleanup" = "not_run"
         "strict-uninstall" = "not_run"
+        "gate-cleanup" = "not_run"
     }
     $activeCheck = "baseline-install"
     $cleanupFailed = $false
+    $failedCheck = ""
+    $failureReasonCode = ""
+    $firstDifference = $null
+    $candidateInstallerExitCode = -1
+    $knownInstallerProcessIds = [System.Collections.Generic.HashSet[int]]::new()
+    $installerPaths = @($BaselineInstaller, $CandidateInstaller)
     try {
         Invoke-ExactUninstaller -InstallRoot $InstallRoot
         Remove-ExactUninstallRegistryEntries -InstallRoot $InstallRoot
@@ -1359,16 +2555,38 @@ function Invoke-BaselineToCandidateUpgradeGate {
         $outcomes["data-sentinel"] = "pass"
 
         $activeCheck = "candidate-upgrade-install"
-        $candidateInstallLog = Join-Path $ScratchRoot "candidate-upgrade-install.log"
-        $candidateInstallCommand = Invoke-CapturedCommand -LogPath $candidateInstallLog -Command {
-            $process = Start-Process -FilePath $CandidateInstaller -ArgumentList @("/S", "/D=$InstallRoot") -PassThru -Wait -WindowStyle Hidden
-            if ($process.ExitCode -ne 0) {
+        $upgradeDeadline = [DateTimeOffset]::UtcNow.AddSeconds(60)
+        $process = $null
+        try {
+            $process = Start-Process -FilePath $CandidateInstaller `
+                -ArgumentList @("/S", "/D=$InstallRoot") `
+                -PassThru `
+                -WindowStyle Hidden
+            [void]$knownInstallerProcessIds.Add([int]$process.Id)
+            # Materialize the process handle immediately so PID/exit state stays
+            # bound to this exact launcher even after it exits.
+            $null = $process.Handle
+            $remainingLauncherMs = Get-RemainingDeadlineMilliseconds -Deadline $upgradeDeadline
+            if ($remainingLauncherMs -le 0 -or -not $process.WaitForExit($remainingLauncherMs)) {
+                throw "candidate_upgrade_launcher_timeout"
+            }
+            $candidateInstallerExitCode = [int]$process.ExitCode
+            if ($candidateInstallerExitCode -ne 0) {
                 throw "candidate_upgrade_installer_failed"
             }
+        } finally {
+            if ($null -ne $process) {
+                $process.Dispose()
+            }
         }
-        if ($candidateInstallCommand.exitCode -ne 0) {
-            throw "candidate_upgrade_installer_failed"
-        }
+        Wait-CandidateUpgradeInstallStable `
+            -KnownProcessIds $knownInstallerProcessIds `
+            -InstallRoot $InstallRoot `
+            -InstallerPaths $installerPaths `
+            -CandidateInventory $CandidateInventory `
+            -Deadline $upgradeDeadline `
+            -RequiredStableSamples 3 `
+            -ObservationIntervalMs 250
         if (-not (Test-Path -LiteralPath $sentinelPath -PathType Leaf) -or (Get-Sha256File -Path $sentinelPath) -ne $sentinelSha256) {
             throw "candidate_upgrade_sentinel_drift"
         }
@@ -1445,24 +2663,92 @@ function Invoke-BaselineToCandidateUpgradeGate {
         }
         $outcomes["strict-uninstall"] = "pass"
     } catch {
+        $failedCheck = $activeCheck
+        $failureReasonCode = Get-RedactedUpgradeGateReasonCode -Exception $_.Exception -ActiveCheck $activeCheck
         if ($outcomes.Contains($activeCheck) -and $outcomes[$activeCheck] -eq "not_run") {
             $outcomes[$activeCheck] = "fail"
         }
-    } finally {
+        $scopedCleanupReady = $true
         try {
-            Invoke-ExactUninstaller -InstallRoot $InstallRoot
-            Remove-ExactUninstallRegistryEntries -InstallRoot $InstallRoot
-            foreach ($path in @($InstallRoot, $DataRoot)) {
-                if (Test-Path -LiteralPath $path) {
-                    Remove-ScopedTree -Root $InstallerSmokeNamespace -Path $path -Code "upgrade_gate_cleanup_failed"
+            Invoke-ScopedInstallerProcessCleanup `
+                -KnownProcessIds $knownInstallerProcessIds `
+                -TargetRoot $InstallRoot `
+                -InstallerPaths $installerPaths `
+                -TimeoutSec 10
+        } catch {
+            $scopedCleanupReady = $false
+        }
+        if (
+            $activeCheck -in @("candidate-upgrade-install", "candidate-installed-payload") -and
+            $scopedCleanupReady -and
+            (Test-Path -LiteralPath $InstallRoot -PathType Container)
+        ) {
+            try {
+                $difference = Get-InstalledPayloadFirstDifference -InstallRoot $InstallRoot -Inventory $CandidateInventory
+                if ($null -ne $difference) {
+                    $firstDifference = $difference.firstDifference
+                    if ($activeCheck -eq "candidate-installed-payload") {
+                        $failureReasonCode = [string]$difference.reasonCode
+                    }
                 }
+            } catch {
+                $firstDifference = $null
             }
+        }
+    } finally {
+        $scopedCleanupReady = $true
+        try {
+            Invoke-ScopedInstallerProcessCleanup `
+                -KnownProcessIds $knownInstallerProcessIds `
+                -TargetRoot $InstallRoot `
+                -InstallerPaths $installerPaths `
+                -TimeoutSec 10
         } catch {
             $cleanupFailed = $true
+            $scopedCleanupReady = $false
         }
-    }
-    if ($cleanupFailed) {
-        throw "upgrade_gate_cleanup_failed"
+        if ($scopedCleanupReady) {
+            try {
+                Invoke-ExactUninstaller -InstallRoot $InstallRoot
+            } catch {
+                $cleanupFailed = $true
+            }
+            # The uninstaller may detach its NSIS cleanup worker. Drain that
+            # related tree before registry or filesystem cleanup.
+            try {
+                Invoke-ScopedInstallerProcessCleanup `
+                    -KnownProcessIds $knownInstallerProcessIds `
+                    -TargetRoot $InstallRoot `
+                    -InstallerPaths $installerPaths `
+                    -TimeoutSec 10
+            } catch {
+                $cleanupFailed = $true
+                $scopedCleanupReady = $false
+            }
+        }
+        if ($scopedCleanupReady) {
+            try {
+                Remove-ExactUninstallRegistryEntries -InstallRoot $InstallRoot
+            } catch {
+                $cleanupFailed = $true
+            }
+            foreach ($path in @($InstallRoot, $DataRoot)) {
+                try {
+                    if (Test-Path -LiteralPath $path) {
+                        Remove-ScopedTree -Root $InstallerSmokeNamespace -Path $path -Code "upgrade_gate_cleanup_failed"
+                    }
+                } catch {
+                    $cleanupFailed = $true
+                }
+            }
+        }
+        if ($cleanupFailed) {
+            $outcomes["gate-cleanup"] = "fail"
+            $failedCheck = "gate-cleanup"
+            $failureReasonCode = "upgrade_gate_cleanup_failed"
+        } else {
+            $outcomes["gate-cleanup"] = "pass"
+        }
     }
     $checks = @(
         foreach ($name in $outcomes.Keys) {
@@ -1470,7 +2756,25 @@ function Invoke-BaselineToCandidateUpgradeGate {
         }
     )
     $status = if (@($outcomes.Values | Where-Object { $_ -ne "pass" }).Count -eq 0) { "pass" } else { "fail" }
-    return [ordered]@{ status = $status; checks = $checks }
+    $detailEvidence = if ($status -eq "fail") {
+        Write-UpgradeGateDetailArtifact `
+            -EvidenceRoot $EvidenceRoot `
+            -PacketId $PacketId `
+            -ParentChampionId $ParentChampionId `
+            -SourceCommit $SourceCommit `
+            -Status $status `
+            -FailedCheck $failedCheck `
+            -ReasonCode $failureReasonCode `
+            -InstallerExitCode $candidateInstallerExitCode `
+            -FirstDifference $firstDifference
+    } else {
+        $null
+    }
+    return [ordered]@{
+        status = $status
+        checks = $checks
+        detailEvidence = $detailEvidence
+    }
 }
 
 function Invoke-FinalFullSuite {
@@ -2182,8 +3486,12 @@ try {
             -InstallRoot $installRoot `
             -DataRoot $dataRoot `
             -ScratchRoot $scratchRoot `
+            -EvidenceRoot $evidenceRoot `
             -Python $environment.python `
-            -CandidateInventory $inventory
+            -CandidateInventory $inventory `
+            -PacketId $packetId `
+            -ParentChampionId $parentChampionId `
+            -SourceCommit $sourceCommit
     }
 
     $noticeOk = (
@@ -2233,7 +3541,12 @@ try {
         diarization = [ordered]@{ status = $diarizationStatus; reason = "diarization_smoke_failed"; checks = @([ordered]@{ name = "installed-diarization-worker"; status = $diarizationStatus }) }
         pdfDocxExport = [ordered]@{ status = $exportStatus; reason = "export_tests_failed"; checks = @([ordered]@{ name = "pdf-docx-export-tests"; status = $exportStatus }) }
         desktopFrontend = [ordered]@{ status = $desktopStatus; reason = "desktop_frontend_failed"; checks = @([ordered]@{ name = "installed-desktop-frontend"; status = $desktopStatus }) }
-        cleanInstallUpgradeUninstall = [ordered]@{ status = [string]$upgradeGate.status; reason = "upgrade_uninstall_failed"; checks = @($upgradeGate.checks) }
+        cleanInstallUpgradeUninstall = [ordered]@{
+            status = [string]$upgradeGate.status
+            reason = "upgrade_uninstall_failed"
+            checks = @($upgradeGate.checks)
+            detailEvidence = if ($upgradeGate.Contains("detailEvidence")) { $upgradeGate["detailEvidence"] } else { $null }
+        }
         licenseSupplyChain = [ordered]@{
             status = $licenseStatus
             reason = "license_supply_chain_failed"

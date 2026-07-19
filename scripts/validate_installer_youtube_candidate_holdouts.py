@@ -6,6 +6,8 @@ to the repository environment or the non-portable pip console launcher copied
 as ``yt-dlp.exe``.  Every measured sample enables exactly one explicit
 JavaScript runtime, disables remote components and configuration discovery,
 and executes in a private random workspace removed on every exit path.
+Only each case's protected ``requiredCapabilities`` are functional parity
+criteria.  Other live-response capabilities are retained as diagnostics.
 
 Exit codes are intentionally small and producer-friendly:
 
@@ -42,11 +44,14 @@ from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, urlparse
 
 
-EVIDENCE_CONTRACT = "InstallerSizeYoutubeCandidateHoldoutsV1"
+EVIDENCE_CONTRACT = "InstallerSizeYoutubeCandidateHoldoutsV2"
 FROZEN_PROBE_CONTRACT = "InstallerYoutubeFrozenHoldoutProbeV1"
 RUNTIME_MANIFEST_CONTRACT = "ScriberYoutubeJsRuntimeManifestV1"
 PROVENANCE_LOCK_CONTRACT = "ScriberQuickJsRuntimeProvenanceLockV1"
-SCHEMA_VERSION = 1
+DENORT_RUNTIME_MANIFEST_CONTRACT = "ScriberYoutubeJsRuntimeManifestV2"
+DENORT_PROVENANCE_LOCK_CONTRACT = "ScriberDenortRuntimeProvenanceLockV1"
+CAPABILITY_COMPARISON_POLICY = "required-capabilities-v2"
+SCHEMA_VERSION = 2
 REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SOURCE_COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -58,7 +63,33 @@ MAX_STDOUT_BYTES = 32 * 1024 * 1024
 MAX_STDERR_BYTES = 4 * 1024 * 1024
 MIN_COLD_PAIRS = 2
 MIN_WARM_PAIRS = 2
+MAX_CANDIDATE_ONLY_RECOVERIES = 1
+CANDIDATE_RECOVERY_POLICY = "single-immediate-complete-confirmation-v1"
 MAX_P95_RATIO_BASIS_POINTS = 11_000
+FROZEN_PROBE_FAILURE_CODES = frozenset(
+    {
+        "http_429",
+        "http_403",
+        "login_required",
+        "geo_restricted",
+        "media_unavailable",
+        "network_timeout",
+        "tls_failure",
+        "dns_failure",
+        "extractor_error",
+        "unknown_failure",
+        "probe_boundary_invalid",
+        "probe_response_limit",
+    }
+)
+PUBLIC_FAILURE_CODES = FROZEN_PROBE_FAILURE_CODES | {
+    "timeout",
+    "cancelled",
+    "output_limit",
+    "invalid_json",
+    "probe_contract_invalid",
+    "unclassified_failure",
+}
 RUNTIME_FILE_KINDS = {
     "deno.exe": "deno",
     "deno": "deno",
@@ -77,6 +108,25 @@ SUPPORTED_RUNTIME_KINDS = {"deno", "quickjs"}
 RUNTIME_MANIFEST_RELATIVE = "backend/tools/ffmpeg/js-runtime-manifest.json"
 PROVENANCE_LOCK_RELATIVE = "scripts/perf/profiles/installer-size/quickjs-runtime-lock-v1.json"
 PROVENANCE_LOCK_PATH = Path(__file__).resolve().parent.parent / PROVENANCE_LOCK_RELATIVE
+DENORT_PROVENANCE_LOCK_RELATIVE = (
+    "scripts/perf/profiles/installer-size/denort-runtime-lock-v1.json"
+)
+DENORT_PROVENANCE_LOCK_PATH = (
+    Path(__file__).resolve().parent.parent / DENORT_PROVENANCE_LOCK_RELATIVE
+)
+DENORT_IMPLEMENTATION = "compiled-denort-wrapper"
+DENORT_PROTOCOL = "ScriberYtDlpDenoStdinV1"
+DENORT_RUN_OPTIONS = (
+    "--ext=js",
+    "--no-code-cache",
+    "--no-prompt",
+    "--no-remote",
+    "--no-lock",
+    "--node-modules-dir=none",
+    "--no-config",
+    "--cached-only",
+    "--no-npm",
+)
 INTERNAL_RELATIVE = "backend/_internal"
 BACKEND_EXE_RELATIVE = "backend/scriber-backend.exe"
 
@@ -109,6 +159,8 @@ class RuntimeIdentity:
     manifest_sha256: str | None
     provenance_lock_entry: str | None
     provenance_lock_sha256: str | None
+    implementation: str = "full-deno"
+    protocol: str | None = None
 
 
 @dataclass(frozen=True)
@@ -149,6 +201,42 @@ class BoundInputSnapshot:
     file_count: int
     content_sha256: str
     files: tuple[tuple[str, int, str], ...]
+
+
+@dataclass
+class CandidateRecoveryBudget:
+    """One global, predeclared confirmation budget for candidate-only noise."""
+
+    maximum: int = MAX_CANDIDATE_ONLY_RECOVERIES
+    disturbance_count: int = 0
+    used: int = 0
+    accepted: int = 0
+    failed: int = 0
+    recovered_logical_sample_id: str | None = None
+
+    def reserve(self, logical_sample_id: str) -> int | None:
+        self.disturbance_count += 1
+        if self.used >= self.maximum:
+            return None
+        self.used += 1
+        self.recovered_logical_sample_id = logical_sample_id
+        return self.used
+
+    def complete(self, *, accepted: bool) -> None:
+        if accepted:
+            self.accepted += 1
+        else:
+            self.failed += 1
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "maximumCandidateOnlyRecoveries": self.maximum,
+            "candidateOnlyDisturbanceCount": self.disturbance_count,
+            "usedCandidateOnlyRecoveries": self.used,
+            "acceptedCandidateOnlyRecoveries": self.accepted,
+            "failedCandidateOnlyRecoveries": self.failed,
+            "recoveredLogicalSampleId": self.recovered_logical_sample_id,
+        }
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -364,6 +452,8 @@ def _inventory_entries(
         relative = raw.get("path")
         length = raw.get("length")
         sha256 = raw.get("sha256")
+        semantic_length = raw.get("semanticLength")
+        semantic_sha256 = raw.get("semanticSha256")
         if (
             not isinstance(relative, str)
             or not relative
@@ -373,7 +463,13 @@ def _inventory_entries(
             or isinstance(length, bool)
             or not isinstance(length, int)
             or length < 0
-            or not SHA256_RE.fullmatch(str(sha256 or ""))
+            or not isinstance(sha256, str)
+            or SHA256_RE.fullmatch(sha256) is None
+            or isinstance(semantic_length, bool)
+            or not isinstance(semantic_length, int)
+            or semantic_length < 0
+            or not isinstance(semantic_sha256, str)
+            or SHA256_RE.fullmatch(semantic_sha256) is None
         ):
             raise HoldoutError("inventory file entry is unsafe")
         folded = relative.casefold()
@@ -571,8 +667,8 @@ def _component_identity(inventory: Mapping[str, Any], component: str) -> str:
             rows.append(
                 {
                     "path": path,
-                    "length": item["length"],
-                    "sha256": item["sha256"],
+                    "length": item["semanticLength"],
+                    "sha256": item["semanticSha256"],
                 }
             )
     rows.sort(key=lambda item: item["path"].encode("utf-8"))
@@ -656,8 +752,8 @@ def _metadata_identity(
     content_rows = [
         {
             "path": str(item["path"]),
-            "length": item["length"],
-            "sha256": item["sha256"],
+            "length": item["semanticLength"],
+            "sha256": item["semanticSha256"],
         }
         for item in _inventory_entries(inventory, installed=False).values()
         if str(item["path"]).casefold().replace("-", "_").startswith(prefix)
@@ -788,7 +884,7 @@ def _load_quickjs_provenance_lock(
     if (
         payload.get("contract") != PROVENANCE_LOCK_CONTRACT
         or payload.get("schemaVersion") != 1
-        or payload.get("campaign") != "installer-size-v1"
+        or payload.get("campaign") != "installer-size-v2"
         or payload.get("target") != {"os": "windows", "architecture": "x86_64"}
     ):
         raise HoldoutError("QuickJS provenance lock contract is invalid")
@@ -989,6 +1085,173 @@ def _load_quickjs_provenance_lock(
     return result, lock_sha256
 
 
+def _load_denort_provenance_lock(
+    path: Path | None = None,
+) -> tuple[Mapping[str, Any], str]:
+    lock_path = DENORT_PROVENANCE_LOCK_PATH if path is None else path
+    payload, lock_sha256 = _load_object(
+        lock_path, label="protected denort provenance lock"
+    )
+    if set(payload) != {"contract", "schemaVersion", "campaign", "target", "entry"}:
+        raise HoldoutError("denort provenance lock fields are not exact")
+    if (
+        payload.get("contract") != DENORT_PROVENANCE_LOCK_CONTRACT
+        or payload.get("schemaVersion") != 1
+        or payload.get("campaign") != "installer-size-v2"
+        or payload.get("target") != {"os": "windows", "architecture": "x86_64"}
+    ):
+        raise HoldoutError("denort provenance lock contract is invalid")
+    entry = payload.get("entry")
+    fields = {
+        "id",
+        "implementation",
+        "version",
+        "wrapperVersion",
+        "protocol",
+        "compiler",
+        "denortAsset",
+        "wrapper",
+        "compileArguments",
+        "output",
+        "license",
+        "manifest",
+        "manifestCanonicalSha256",
+    }
+    if not isinstance(entry, dict) or set(entry) != fields:
+        raise HoldoutError("denort provenance entry fields are not exact")
+    if (
+        entry.get("id") != "denort-2.9.2-scriber-youtube-v1"
+        or entry.get("implementation") != DENORT_IMPLEMENTATION
+        or entry.get("version") != "2.9.2"
+        or entry.get("wrapperVersion") != "1"
+        or entry.get("protocol") != DENORT_PROTOCOL
+    ):
+        raise HoldoutError("denort provenance identity is invalid")
+
+    compiler = entry.get("compiler")
+    denort_asset = entry.get("denortAsset")
+    wrapper = entry.get("wrapper")
+    output = entry.get("output")
+    license_value = entry.get("license")
+    if (
+        not isinstance(compiler, dict)
+        or set(compiler) != {"version", "length", "sha256"}
+        or compiler.get("version") != "2.9.2"
+        or _positive_length(compiler.get("length"), label="denort compiler length")
+        != 99_115_808
+        or not SHA256_RE.fullmatch(str(compiler.get("sha256") or ""))
+        or not isinstance(denort_asset, dict)
+        or set(denort_asset)
+        != {
+            "url",
+            "fileName",
+            "format",
+            "length",
+            "sha256",
+            "executableLength",
+            "executableSha256",
+        }
+        or denort_asset.get("url")
+        != "https://github.com/denoland/deno/releases/download/v2.9.2/denort-x86_64-pc-windows-msvc.zip"
+        or denort_asset.get("fileName") != "denort-x86_64-pc-windows-msvc.zip"
+        or denort_asset.get("format") != "zip"
+        or _positive_length(denort_asset.get("length"), label="denort asset length")
+        != 32_599_311
+        or not SHA256_RE.fullmatch(str(denort_asset.get("sha256") or ""))
+        or _positive_length(
+            denort_asset.get("executableLength"), label="denort executable length"
+        )
+        != 80_402_432
+        or not SHA256_RE.fullmatch(str(denort_asset.get("executableSha256") or ""))
+        or not isinstance(wrapper, dict)
+        or set(wrapper) != {"relativePath", "length", "sha256"}
+        or wrapper.get("relativePath")
+        != "packaging/deno-youtube-runtime/yt_dlp_runtime_wrapper.ts"
+        or _positive_length(wrapper.get("length"), label="denort wrapper length") != 5_002
+        or not SHA256_RE.fullmatch(str(wrapper.get("sha256") or ""))
+        or not isinstance(output, dict)
+        or set(output) != {"installedFileName", "length", "sha256"}
+        or output.get("installedFileName") != "deno.exe"
+        or _positive_length(output.get("length"), label="compiled denort length")
+        != 80_416_159
+        or not SHA256_RE.fullmatch(str(output.get("sha256") or ""))
+        or license_value
+        != {
+            "spdx": "MIT",
+            "url": "https://github.com/denoland/deno/blob/v2.9.2/LICENSE.md",
+        }
+    ):
+        raise HoldoutError("denort build provenance is invalid")
+    expected_arguments = [
+        "compile",
+        "--quiet",
+        "--no-config",
+        "--no-lock",
+        "--no-check",
+        "--no-remote",
+        "--no-npm",
+        "--cached-only",
+        "--target",
+        "x86_64-pc-windows-msvc",
+        "--app-name",
+        "scriber-youtube-js-runtime-v1",
+        "--deny-read",
+        "--deny-write",
+        "--deny-net",
+        "--deny-env",
+        "--deny-run",
+        "--deny-ffi",
+        "--deny-sys",
+        "--deny-import",
+        "--output",
+        "<OUTPUT>",
+        "<SOURCE>",
+    ]
+    if entry.get("compileArguments") != expected_arguments:
+        raise HoldoutError("denort compile recipe is invalid")
+    wrapper_path = Path(__file__).resolve().parent.parent / str(wrapper["relativePath"])
+    if (
+        not wrapper_path.is_file()
+        or wrapper_path.stat().st_size != wrapper["length"]
+        or _sha256_file(wrapper_path) != wrapper["sha256"]
+    ):
+        raise HoldoutError("denort wrapper source differs from its protected lock")
+
+    manifest = entry.get("manifest")
+    manifest_sha256 = str(entry.get("manifestCanonicalSha256") or "")
+    expected_manifest = {
+        "contract": DENORT_RUNTIME_MANIFEST_CONTRACT,
+        "schemaVersion": 2,
+        "runtime": {
+            "kind": "deno",
+            "implementation": DENORT_IMPLEMENTATION,
+            "version": entry["version"],
+            "wrapperVersion": entry["wrapperVersion"],
+            "protocol": entry["protocol"],
+            "executable": output["installedFileName"],
+            "length": output["length"],
+            "sha256": output["sha256"],
+            "origin": denort_asset["url"],
+            "license": license_value["spdx"],
+            "provenanceLockEntry": entry["id"],
+        },
+        "policy": {
+            "remoteComponents": False,
+            "firstRunDownloads": False,
+            "maximumStdinBytes": 32 * 1024 * 1024,
+            "exactArgumentProtocol": True,
+        },
+    }
+    if (
+        manifest != expected_manifest
+        or not SHA256_RE.fullmatch(manifest_sha256)
+        or hashlib.sha256(_canonical_manifest_bytes(expected_manifest)).hexdigest()
+        != manifest_sha256
+    ):
+        raise HoldoutError("denort locked manifest is not canonical")
+    return entry, lock_sha256
+
+
 def _runtime_manifest_identity(
     *,
     root: Path,
@@ -999,6 +1262,7 @@ def _runtime_manifest_identity(
     executable: Path,
     executable_item: Mapping[str, Any],
     provenance_lock_path: Path | None = None,
+    denort_provenance_lock_path: Path | None = None,
 ) -> RuntimeIdentity | None:
     manifest_candidate = root / PurePosixPath(RUNTIME_MANIFEST_RELATIVE)
     if not manifest_candidate.exists():
@@ -1014,6 +1278,40 @@ def _runtime_manifest_identity(
     runtime = manifest.get("runtime")
     if not isinstance(runtime, dict):
         raise HoldoutError("candidate JS-runtime manifest lacks a runtime identity")
+    executable_name = PurePosixPath(relative).name
+    if runtime.get("implementation") == DENORT_IMPLEMENTATION:
+        lock_entry, lock_sha256 = _load_denort_provenance_lock(
+            denort_provenance_lock_path
+        )
+        locked_manifest = lock_entry["manifest"]
+        if (
+            manifest != locked_manifest
+            or manifest_path.read_bytes() != _canonical_manifest_bytes(locked_manifest)
+            or manifest_sha != lock_entry["manifestCanonicalSha256"]
+            or runtime.get("kind") != kind
+            or kind != "deno"
+            or runtime.get("executable") != executable_name
+            or runtime.get("length") != executable_item.get("length")
+            or runtime.get("sha256") != executable_item.get("sha256")
+        ):
+            raise HoldoutError(
+                "candidate compiled denort manifest does not match its executable"
+            )
+        return RuntimeIdentity(
+            kind="deno",
+            version=str(lock_entry["version"]),
+            executable=executable,
+            length=int(executable_item["length"]),
+            sha256=str(executable_item["sha256"]),
+            origin=str(lock_entry["denortAsset"]["url"]),
+            license=str(lock_entry["license"]["spdx"]),
+            provenance="protected-denort-provenance-lock",
+            manifest_sha256=manifest_sha,
+            provenance_lock_entry=str(lock_entry["id"]),
+            provenance_lock_sha256=lock_sha256,
+            implementation=DENORT_IMPLEMENTATION,
+            protocol=DENORT_PROTOCOL,
+        )
     lock_entries, lock_sha256 = _load_quickjs_provenance_lock(provenance_lock_path)
     lock_entry_id = runtime.get("provenanceLockEntry")
     lock_entry = lock_entries.get(str(lock_entry_id or ""))
@@ -1028,7 +1326,6 @@ def _runtime_manifest_identity(
     ):
         raise HoldoutError("candidate JS-runtime manifest is not byte-exact with its lock entry")
 
-    executable_name = PurePosixPath(relative).name
     if (
         runtime.get("kind") != kind
         or kind != "quickjs"
@@ -1084,6 +1381,7 @@ def _runtime_manifest_identity(
         manifest_sha256=manifest_sha,
         provenance_lock_entry=str(lock_entry_id),
         provenance_lock_sha256=lock_sha256,
+        implementation=str(lock_entry["implementation"]),
     )
 
 
@@ -1136,21 +1434,38 @@ def _runtime_success_command(runtime: RuntimeIdentity) -> list[str]:
     return _runtime_version_command(runtime)
 
 
-def _runtime_error_command(runtime: RuntimeIdentity) -> list[str]:
-    if runtime.kind == "deno":
-        return [str(runtime.executable), "eval", "--no-config", "throw new Error('holdout')"]
-    return [str(runtime.executable), "-e", "throw new Error('holdout')"]
+def _denort_run_command(runtime: RuntimeIdentity) -> list[str]:
+    return [str(runtime.executable), "run", *DENORT_RUN_OPTIONS, "-"]
 
 
-def _runtime_long_command(runtime: RuntimeIdentity) -> list[str]:
+def _runtime_error_invocation(runtime: RuntimeIdentity) -> tuple[list[str], bytes | None]:
+    if runtime.implementation == DENORT_IMPLEMENTATION:
+        return _denort_run_command(runtime), b"throw new Error('holdout');\n"
     if runtime.kind == "deno":
-        return [
-            str(runtime.executable),
-            "eval",
-            "--no-config",
-            "await new Promise(resolve => setTimeout(resolve, 60000))",
-        ]
-    return [str(runtime.executable), "-e", "for (;;) {}"]
+        return (
+            [str(runtime.executable), "eval", "--no-config", "throw new Error('holdout')"],
+            None,
+        )
+    return [str(runtime.executable), "-e", "throw new Error('holdout')"], None
+
+
+def _runtime_long_invocation(runtime: RuntimeIdentity) -> tuple[list[str], bytes | None]:
+    if runtime.implementation == DENORT_IMPLEMENTATION:
+        return (
+            _denort_run_command(runtime),
+            b"await new Promise(resolve => setTimeout(resolve, 60000));\n",
+        )
+    if runtime.kind == "deno":
+        return (
+            [
+                str(runtime.executable),
+                "eval",
+                "--no-config",
+                "await new Promise(resolve => setTimeout(resolve, 60000))",
+            ],
+            None,
+        )
+    return [str(runtime.executable), "-e", "for (;;) {}"], None
 
 
 def _runtime_version_from_output(runtime: RuntimeIdentity, output: bytes) -> bool:
@@ -1486,6 +1801,41 @@ def _normalize_required(capabilities: Iterable[str]) -> tuple[str, ...]:
     return tuple(sorted({aliases.get(value, value) for value in capabilities}))
 
 
+def _public_failure_code(outcome: ProbeOutcome) -> str | None:
+    """Return only bounded, non-sensitive probe failure classifications."""
+    if outcome.status == "pass":
+        return None
+    code = outcome.failure_code
+    return code if code in PUBLIC_FAILURE_CODES else "unclassified_failure"
+
+
+def _capability_diagnostics(
+    baseline: ProbeOutcome,
+    candidate: ProbeOutcome,
+    *,
+    required_capabilities: Iterable[str],
+) -> dict[str, Any]:
+    """Describe optional differences without making them functional failures."""
+    required = set(_normalize_required(required_capabilities))
+    baseline_observed = set(baseline.semantic_capabilities)
+    candidate_observed = set(candidate.semantic_capabilities)
+    baseline_optional = baseline_observed - required
+    candidate_optional = candidate_observed - required
+    only_in_baseline = sorted(baseline_optional - candidate_optional)
+    only_in_candidate = sorted(candidate_optional - baseline_optional)
+    return {
+        "comparisonPolicy": CAPABILITY_COMPARISON_POLICY,
+        "requiredCapabilities": sorted(required),
+        "baselineObservedCapabilities": sorted(baseline_observed),
+        "candidateObservedCapabilities": sorted(candidate_observed),
+        "baselineMissingRequiredCapabilities": sorted(required - baseline_observed),
+        "candidateMissingRequiredCapabilities": sorted(required - candidate_observed),
+        "optionalOnlyInBaseline": only_in_baseline,
+        "optionalOnlyInCandidate": only_in_candidate,
+        "optionalParity": not only_in_baseline and not only_in_candidate,
+    }
+
+
 def _failure_code(result: CommandResult) -> str:
     if result.status == "timeout":
         return "timeout"
@@ -1580,7 +1930,7 @@ def _probe_outcome(
         if (
             result.return_code != 1
             or not isinstance(failure_code, str)
-            or not CASE_ID_RE.fullmatch(failure_code.replace("_", "-"))
+            or failure_code not in FROZEN_PROBE_FAILURE_CODES
         ):
             failure_code = "probe_contract_invalid"
         return ProbeOutcome(
@@ -1631,8 +1981,6 @@ def classify_pair(
             return "not_run", "baseline_capability_unproven"
         if not required.issubset(candidate_caps):
             return "fail", "candidate_capability_regression"
-        if baseline_caps != candidate_caps:
-            return "fail", "candidate_capability_parity_mismatch"
         if not baseline.cleanup_verified or not candidate.cleanup_verified:
             return "fail", "cleanup_unproven"
         return "pass", None
@@ -1677,6 +2025,8 @@ def _stack_public(identity: StackIdentity) -> dict[str, Any]:
     return {
         "runtime": {
             "kind": identity.runtime.kind,
+            "implementation": identity.runtime.implementation,
+            "protocol": identity.runtime.protocol,
             "version": identity.runtime.version,
             "length": identity.runtime.length,
             "sha256": identity.runtime.sha256,
@@ -1720,19 +2070,23 @@ def _runtime_self_tests(
         or not _runtime_version_from_output(runtime, version_output)
     ):
         raise HoldoutError("candidate runtime version command failed")
+    error_command, error_input = _runtime_error_invocation(runtime)
     error = _run_bounded(
-        _runtime_error_command(runtime),
+        error_command,
         factory=factory,
         purpose="runtime-error",
         timeout_seconds=15,
+        stdin_bytes=error_input,
     )
     if error.status != "completed" or error.return_code in (None, 0):
         raise HoldoutError("candidate runtime error cleanup path is unproven")
+    long_command, long_input = _runtime_long_invocation(runtime)
     timeout = _run_bounded(
-        _runtime_long_command(runtime),
+        long_command,
         factory=factory,
         purpose="runtime-timeout",
         timeout_seconds=0.35,
+        stdin_bytes=long_input,
     )
     if timeout.status != "timeout":
         raise HoldoutError("candidate runtime timeout cleanup path is unproven")
@@ -1741,11 +2095,12 @@ def _runtime_self_tests(
     timer.start()
     try:
         cancelled = _run_bounded(
-            _runtime_long_command(runtime),
+            long_command,
             factory=factory,
             purpose="runtime-cancel",
             timeout_seconds=15,
             cancel_event=cancel_event,
+            stdin_bytes=long_input,
         )
     finally:
         timer.cancel()
@@ -1839,6 +2194,205 @@ def _probe(
     )
 
 
+def _pair_attempt(
+    *,
+    attempt_index: int,
+    attempt_kind: str,
+    logical_sample_id: str,
+    purpose: str,
+    case: Mapping[str, Any],
+    baseline: StackIdentity,
+    candidate: StackIdentity,
+    factory: PrivateWorkspaceFactory,
+    timeout_seconds: int,
+    baseline_cache_dir: Path | None,
+    candidate_cache_dir: Path | None,
+) -> tuple[dict[str, Any], ProbeOutcome, ProbeOutcome]:
+    """Execute and persist one complete, immediate B-then-C attempt."""
+    baseline_probe = _probe(
+        stack=baseline,
+        case=case,
+        factory=factory,
+        timeout_seconds=timeout_seconds,
+        purpose=f"{purpose}-baseline",
+        cache_dir=baseline_cache_dir,
+    )
+    candidate_probe = _probe(
+        stack=candidate,
+        case=case,
+        factory=factory,
+        timeout_seconds=timeout_seconds,
+        purpose=f"{purpose}-candidate",
+        cache_dir=candidate_cache_dir,
+    )
+    required = tuple(str(value) for value in case["requiredCapabilities"])
+    status, reason = classify_pair(
+        baseline_probe,
+        candidate_probe,
+        required_capabilities=required,
+    )
+    return (
+        {
+            "attemptIndex": attempt_index,
+            "attemptKind": attempt_kind,
+            "logicalSampleId": logical_sample_id,
+            "order": ["baseline", "candidate"],
+            "status": status,
+            "reasonCode": reason,
+            "baselineDurationNs": baseline_probe.duration_ns,
+            "candidateDurationNs": candidate_probe.duration_ns,
+            "semanticCapabilities": list(
+                baseline_probe.semantic_capabilities if status == "pass" else ()
+            ),
+            "capabilityDiagnostics": _capability_diagnostics(
+                baseline_probe,
+                candidate_probe,
+                required_capabilities=required,
+            ),
+            "baselineFailureCode": _public_failure_code(baseline_probe),
+            "candidateFailureCode": _public_failure_code(candidate_probe),
+            "cleanupVerified": (
+                baseline_probe.cleanup_verified and candidate_probe.cleanup_verified
+            ),
+        },
+        baseline_probe,
+        candidate_probe,
+    )
+
+
+def _logical_pair(
+    *,
+    logical_sample_id: str,
+    purpose: str,
+    case: Mapping[str, Any],
+    baseline: StackIdentity,
+    candidate: StackIdentity,
+    factory: PrivateWorkspaceFactory,
+    timeout_seconds: int,
+    baseline_cache_dir: Path | None,
+    candidate_cache_dir: Path | None,
+    recovery_budget: CandidateRecoveryBudget,
+) -> tuple[dict[str, Any], tuple[int, int] | None]:
+    original, original_baseline, original_candidate = _pair_attempt(
+        attempt_index=1,
+        attempt_kind="original",
+        logical_sample_id=logical_sample_id,
+        purpose=f"{purpose}-original",
+        case=case,
+        baseline=baseline,
+        candidate=candidate,
+        factory=factory,
+        timeout_seconds=timeout_seconds,
+        baseline_cache_dir=baseline_cache_dir,
+        candidate_cache_dir=candidate_cache_dir,
+    )
+    attempts = [original]
+    selected_attempt: dict[str, Any] | None = original if original["status"] == "pass" else None
+    selected_outcomes: tuple[ProbeOutcome, ProbeOutcome] | None = (
+        (original_baseline, original_candidate)
+        if original["status"] == "pass"
+        else None
+    )
+    final_status = str(original["status"])
+    final_reason = original["reasonCode"]
+    recovery = {
+        "eligible": original["reasonCode"] == "candidate_probe_failed",
+        "attempted": False,
+        "accepted": False,
+        "budgetOrdinal": None,
+        "budgetExhausted": False,
+        "triggerReasonCode": (
+            "candidate_probe_failed"
+            if original["reasonCode"] == "candidate_probe_failed"
+            else None
+        ),
+        "confirmationReasonCode": None,
+    }
+    if original["reasonCode"] == "candidate_probe_failed":
+        budget_ordinal = recovery_budget.reserve(logical_sample_id)
+        if budget_ordinal is None:
+            final_status = "fail"
+            final_reason = "candidate_probe_recovery_budget_exhausted"
+            recovery["budgetExhausted"] = True
+        else:
+            recovery["attempted"] = True
+            recovery["budgetOrdinal"] = budget_ordinal
+            confirmation, confirmation_baseline, confirmation_candidate = _pair_attempt(
+                attempt_index=2,
+                attempt_kind="confirmation",
+                logical_sample_id=logical_sample_id,
+                purpose=f"{purpose}-confirmation",
+                case=case,
+                baseline=baseline,
+                candidate=candidate,
+                factory=factory,
+                timeout_seconds=timeout_seconds,
+                baseline_cache_dir=baseline_cache_dir,
+                candidate_cache_dir=candidate_cache_dir,
+            )
+            attempts.append(confirmation)
+            confirmation_accepted = confirmation["status"] == "pass"
+            recovery_budget.complete(accepted=confirmation_accepted)
+            recovery["accepted"] = confirmation_accepted
+            recovery["confirmationReasonCode"] = confirmation["reasonCode"]
+            if confirmation_accepted:
+                final_status = "pass"
+                final_reason = None
+                selected_attempt = confirmation
+                selected_outcomes = (confirmation_baseline, confirmation_candidate)
+            else:
+                final_status = "fail"
+                final_reason = "candidate_probe_confirmation_failed"
+
+    selected_baseline = selected_outcomes[0] if selected_outcomes is not None else None
+    selected_candidate = selected_outcomes[1] if selected_outcomes is not None else None
+    diagnostic_attempt = selected_attempt or attempts[-1]
+    row = {
+        "logicalSampleId": logical_sample_id,
+        "order": ["baseline", "candidate"],
+        "status": final_status,
+        "reasonCode": final_reason,
+        "selectedAttempt": (
+            selected_attempt["attemptKind"] if selected_attempt is not None else None
+        ),
+        "baselineDurationNs": (
+            selected_baseline.duration_ns if selected_baseline is not None else None
+        ),
+        "candidateDurationNs": (
+            selected_candidate.duration_ns if selected_candidate is not None else None
+        ),
+        "semanticCapabilities": list(
+            selected_baseline.semantic_capabilities
+            if selected_baseline is not None
+            else ()
+        ),
+        "capabilityDiagnostics": diagnostic_attempt["capabilityDiagnostics"],
+        "baselineFailureCode": (
+            _public_failure_code(selected_baseline)
+            if selected_baseline is not None
+            else attempts[-1]["baselineFailureCode"]
+        ),
+        "candidateFailureCode": (
+            _public_failure_code(selected_candidate)
+            if selected_candidate is not None
+            else attempts[-1]["candidateFailureCode"]
+        ),
+        "cleanupVerified": (
+            bool(diagnostic_attempt["cleanupVerified"])
+            if selected_attempt is not None
+            else False
+        ),
+        "attempts": attempts,
+        "recovery": recovery,
+    }
+    accepted_timing = (
+        (selected_baseline.duration_ns, selected_candidate.duration_ns)
+        if selected_baseline is not None and selected_candidate is not None
+        else None
+    )
+    return row, accepted_timing
+
+
 def _case_rows(
     *,
     cases: Sequence[Mapping[str, Any]],
@@ -1846,90 +2400,64 @@ def _case_rows(
     candidate: StackIdentity,
     factory: PrivateWorkspaceFactory,
     timeout_seconds: int,
+    recovery_budget: CandidateRecoveryBudget | None = None,
 ) -> tuple[list[dict[str, Any]], list[int], list[int], list[str]]:
     rows: list[dict[str, Any]] = []
     baseline_timings: list[int] = []
     candidate_timings: list[int] = []
     overall_reasons: list[str] = []
+    budget = recovery_budget or CandidateRecoveryBudget()
     for case in cases:
         case_id = str(case["id"])
-        required = tuple(str(value) for value in case["requiredCapabilities"])
         warm_baseline = factory.create(f"{case_id}-baseline-warm")
         warm_candidate = factory.create(f"{case_id}-candidate-warm")
         pairs: list[dict[str, Any]] = []
         try:
-            # Prime each warm cache with an immediate baseline/candidate pair.
-            prime_baseline = _probe(
-                stack=baseline,
+            prime, _prime_timing = _logical_pair(
+                logical_sample_id=f"{case_id}:prime",
+                purpose=f"{case_id}-prime",
                 case=case,
+                baseline=baseline,
+                candidate=candidate,
                 factory=factory,
                 timeout_seconds=timeout_seconds,
-                purpose=f"{case_id}-prime-baseline",
-                cache_dir=warm_baseline,
+                baseline_cache_dir=warm_baseline,
+                candidate_cache_dir=warm_candidate,
+                recovery_budget=budget,
             )
-            prime_candidate = _probe(
-                stack=candidate,
-                case=case,
-                factory=factory,
-                timeout_seconds=timeout_seconds,
-                purpose=f"{case_id}-prime-candidate",
-                cache_dir=warm_candidate,
-            )
-            prime_status, prime_reason = classify_pair(
-                prime_baseline, prime_candidate, required_capabilities=required
-            )
-            if prime_status != "pass":
+            if prime["status"] != "pass":
                 overall_reasons.append(
-                    "external_invalid" if prime_status == "external_invalid" else str(prime_reason)
+                    "external_invalid"
+                    if prime["status"] == "external_invalid"
+                    else str(prime["reasonCode"])
                 )
             for mode, count in (("cold", MIN_COLD_PAIRS), ("warm", MIN_WARM_PAIRS)):
                 for pair_index in range(1, count + 1):
-                    baseline_probe = _probe(
-                        stack=baseline,
+                    pair, accepted_timing = _logical_pair(
+                        logical_sample_id=f"{case_id}:{mode}:{pair_index}",
+                        purpose=f"{case_id}-{mode}-{pair_index}",
                         case=case,
+                        baseline=baseline,
+                        candidate=candidate,
                         factory=factory,
                         timeout_seconds=timeout_seconds,
-                        purpose=f"{case_id}-{mode}-baseline",
-                        cache_dir=warm_baseline if mode == "warm" else None,
+                        baseline_cache_dir=warm_baseline if mode == "warm" else None,
+                        candidate_cache_dir=warm_candidate if mode == "warm" else None,
+                        recovery_budget=budget,
                     )
-                    candidate_probe = _probe(
-                        stack=candidate,
-                        case=case,
-                        factory=factory,
-                        timeout_seconds=timeout_seconds,
-                        purpose=f"{case_id}-{mode}-candidate",
-                        cache_dir=warm_candidate if mode == "warm" else None,
-                    )
-                    status, reason = classify_pair(
-                        baseline_probe,
-                        candidate_probe,
-                        required_capabilities=required,
-                    )
-                    if status == "pass":
-                        baseline_timings.append(baseline_probe.duration_ns)
-                        candidate_timings.append(candidate_probe.duration_ns)
+                    pair["mode"] = mode
+                    pair["pairIndex"] = pair_index
+                    if accepted_timing is not None:
+                        baseline_ns, candidate_ns = accepted_timing
+                        baseline_timings.append(baseline_ns)
+                        candidate_timings.append(candidate_ns)
                     else:
                         overall_reasons.append(
-                            "external_invalid" if status == "external_invalid" else str(reason)
+                            "external_invalid"
+                            if pair["status"] == "external_invalid"
+                            else str(pair["reasonCode"])
                         )
-                    pairs.append(
-                        {
-                            "mode": mode,
-                            "pairIndex": pair_index,
-                            "order": ["baseline", "candidate"],
-                            "status": status,
-                            "reasonCode": reason,
-                            "baselineDurationNs": baseline_probe.duration_ns,
-                            "candidateDurationNs": candidate_probe.duration_ns,
-                            "semanticCapabilities": list(
-                                baseline_probe.semantic_capabilities
-                                if status == "pass"
-                                else ()
-                            ),
-                            "cleanupVerified": baseline_probe.cleanup_verified
-                            and candidate_probe.cleanup_verified,
-                        }
-                    )
+                    pairs.append(pair)
         finally:
             factory.remove(warm_baseline)
             factory.remove(warm_candidate)
@@ -1937,8 +2465,15 @@ def _case_rows(
             {
                 "id": case_id,
                 "family": case["family"],
-                "primeStatus": prime_status,
-                "primeReasonCode": prime_reason,
+                "primeStatus": prime["status"],
+                "primeReasonCode": prime["reasonCode"],
+                "primeSelectedAttempt": prime["selectedAttempt"],
+                "primeCapabilityDiagnostics": prime["capabilityDiagnostics"],
+                "primeBaselineFailureCode": prime["baselineFailureCode"],
+                "primeCandidateFailureCode": prime["candidateFailureCode"],
+                "primeCleanupVerified": prime["cleanupVerified"],
+                "primeAttempts": prime["attempts"],
+                "primeRecovery": prime["recovery"],
                 "coldPairCount": MIN_COLD_PAIRS,
                 "warmPairCount": MIN_WARM_PAIRS,
                 "pairs": pairs,
@@ -2089,14 +2624,15 @@ def _build_stack(
     )
 
 
-def _parallel_candidate_probe(
+def _parallel_probe_attempt(
     *,
+    attempt_index: int,
+    attempt_kind: str,
     candidate: StackIdentity,
     case: Mapping[str, Any],
     factory: PrivateWorkspaceFactory,
     timeout_seconds: int,
 ) -> dict[str, Any]:
-    _require_runtime_security_boundary(candidate.runtime)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
             executor.submit(
@@ -2105,26 +2641,138 @@ def _parallel_candidate_probe(
                 case=case,
                 factory=factory,
                 timeout_seconds=timeout_seconds,
-                purpose="candidate-parallel-probe",
+                purpose=f"candidate-parallel-{attempt_kind}-worker-{worker_index}",
                 cache_dir=None,
             )
-            for _ in range(2)
+            for worker_index in range(1, 3)
         ]
         outcomes = [future.result() for future in futures]
     required = set(_normalize_required(case["requiredCapabilities"]))
-    if any(
-        outcome.status != "pass"
-        or not required.issubset(outcome.semantic_capabilities)
-        or not outcome.cleanup_verified
-        for outcome in outcomes
-    ):
-        raise HoldoutError("candidate parallel frozen-probe isolation is unproven")
+    missing_required = [
+        sorted(required - set(outcome.semantic_capabilities)) for outcome in outcomes
+    ]
+    if any(outcome.status != "pass" for outcome in outcomes):
+        status, reason = "fail", "candidate_parallel_probe_failed"
+    elif any(missing_required):
+        status, reason = "fail", "candidate_parallel_capability_regression"
+    elif any(not outcome.cleanup_verified for outcome in outcomes):
+        status, reason = "fail", "candidate_parallel_cleanup_unproven"
+    else:
+        status, reason = "pass", None
+    diagnostics = _capability_diagnostics(
+        outcomes[0],
+        outcomes[1],
+        required_capabilities=required,
+    )
     return {
+        "attemptIndex": attempt_index,
+        "attemptKind": attempt_kind,
+        "logicalSampleId": "parallel:two-worker",
+        "status": status,
+        "reasonCode": reason,
+        "workerCount": 2,
+        "workers": [
+            {
+                "workerIndex": worker_index,
+                "status": outcome.status,
+                "durationNs": outcome.duration_ns,
+                "semanticCapabilities": list(outcome.semantic_capabilities),
+                "missingRequiredCapabilities": missing_required[worker_index - 1],
+                "failureCode": _public_failure_code(outcome),
+                "cleanupVerified": outcome.cleanup_verified,
+            }
+            for worker_index, outcome in enumerate(outcomes, start=1)
+        ],
+        "capabilityParity": not any(missing_required),
+        "capabilityDiagnostics": diagnostics,
+        "cleanupVerified": all(outcome.cleanup_verified for outcome in outcomes),
+    }
+
+
+def _parallel_candidate_probe(
+    *,
+    candidate: StackIdentity,
+    case: Mapping[str, Any],
+    factory: PrivateWorkspaceFactory,
+    timeout_seconds: int,
+    recovery_budget: CandidateRecoveryBudget | None = None,
+) -> dict[str, Any]:
+    _require_runtime_security_boundary(candidate.runtime)
+    budget = recovery_budget or CandidateRecoveryBudget()
+    original = _parallel_probe_attempt(
+        attempt_index=1,
+        attempt_kind="original",
+        candidate=candidate,
+        case=case,
+        factory=factory,
+        timeout_seconds=timeout_seconds,
+    )
+    attempts = [original]
+    selected_attempt: dict[str, Any] | None = original if original["status"] == "pass" else None
+    final_status = str(original["status"])
+    final_reason = original["reasonCode"]
+    recovery = {
+        "eligible": original["reasonCode"] == "candidate_parallel_probe_failed",
+        "attempted": False,
+        "accepted": False,
+        "budgetOrdinal": None,
+        "budgetExhausted": False,
+        "triggerReasonCode": (
+            "candidate_parallel_probe_failed"
+            if original["reasonCode"] == "candidate_parallel_probe_failed"
+            else None
+        ),
+        "confirmationReasonCode": None,
+    }
+    if original["reasonCode"] == "candidate_parallel_probe_failed":
+        budget_ordinal = budget.reserve("parallel:two-worker")
+        if budget_ordinal is None:
+            final_reason = "candidate_parallel_recovery_budget_exhausted"
+            recovery["budgetExhausted"] = True
+        else:
+            recovery["attempted"] = True
+            recovery["budgetOrdinal"] = budget_ordinal
+            confirmation = _parallel_probe_attempt(
+                attempt_index=2,
+                attempt_kind="confirmation",
+                candidate=candidate,
+                case=case,
+                factory=factory,
+                timeout_seconds=timeout_seconds,
+            )
+            attempts.append(confirmation)
+            confirmation_accepted = confirmation["status"] == "pass"
+            budget.complete(accepted=confirmation_accepted)
+            recovery["accepted"] = confirmation_accepted
+            recovery["confirmationReasonCode"] = confirmation["reasonCode"]
+            if confirmation_accepted:
+                final_status = "pass"
+                final_reason = None
+                selected_attempt = confirmation
+            else:
+                final_status = "fail"
+                final_reason = "candidate_parallel_confirmation_failed"
+
+    diagnostic_attempt = selected_attempt or attempts[-1]
+    return {
+        "logicalSampleId": "parallel:two-worker",
+        "status": final_status,
+        "reasonCode": final_reason,
+        "selectedAttempt": (
+            selected_attempt["attemptKind"] if selected_attempt is not None else None
+        ),
         "workerCount": 2,
         "distinctPrivateWorkspaces": True,
-        "capabilityParity": outcomes[0].semantic_capabilities
-        == outcomes[1].semantic_capabilities,
-        "cleanupVerified": True,
+        "capabilityParity": bool(diagnostic_attempt["capabilityParity"]),
+        "capabilityComparisonPolicy": CAPABILITY_COMPARISON_POLICY,
+        "capabilityDiagnostics": diagnostic_attempt["capabilityDiagnostics"],
+        "cleanupVerified": (
+            bool(diagnostic_attempt["cleanupVerified"])
+            if selected_attempt is not None
+            else False
+        ),
+        "attempts": attempts,
+        "recovery": recovery,
     }
 
 
@@ -2141,8 +2789,20 @@ def _assert_redacted(value: Any) -> None:
     }
     if isinstance(value, dict):
         for key, child in value.items():
-            if str(key).casefold() in forbidden_keys:
+            folded_key = str(key).casefold()
+            if folded_key in forbidden_keys:
                 raise HoldoutError("candidate evidence contains a forbidden field")
+            if (
+                folded_key.endswith("failurecode")
+                and child is not None
+                and (
+                    not isinstance(child, str)
+                    or child not in PUBLIC_FAILURE_CODES
+                )
+            ):
+                raise HoldoutError(
+                    "candidate evidence contains a non-allowlisted failure code"
+                )
             _assert_redacted(child)
     elif isinstance(value, list):
         for child in value:
@@ -2260,11 +2920,13 @@ def run_validator(args: argparse.Namespace) -> dict[str, Any]:
     evidence: dict[str, Any] | None = None
     try:
         runtime_tests = _runtime_self_tests(candidate.runtime, factory)
+        recovery_budget = CandidateRecoveryBudget()
         parallel = _parallel_candidate_probe(
             candidate=candidate,
             case=cases[0],
             factory=factory,
             timeout_seconds=args.timeout_seconds,
+            recovery_budget=recovery_budget,
         )
         rows, baseline_ns, candidate_ns, reasons = _case_rows(
             cases=cases,
@@ -2272,7 +2934,10 @@ def run_validator(args: argparse.Namespace) -> dict[str, Any]:
             candidate=candidate,
             factory=factory,
             timeout_seconds=args.timeout_seconds,
+            recovery_budget=recovery_budget,
         )
+        if parallel["status"] != "pass":
+            reasons.insert(0, str(parallel["reasonCode"]))
         expected_samples = len(cases) * (MIN_COLD_PAIRS + MIN_WARM_PAIRS)
         performance_ok = False
         if len(baseline_ns) == expected_samples and len(candidate_ns) == expected_samples:
@@ -2314,6 +2979,22 @@ def run_validator(args: argparse.Namespace) -> dict[str, Any]:
             "candidate": _stack_public(candidate),
             "executionPolicy": {
                 "pairing": "baseline-immediately-followed-by-candidate",
+                "capabilityComparisonPolicy": CAPABILITY_COMPARISON_POLICY,
+                "optionalCapabilityDifferencesBlocking": False,
+                "candidateProbeFailuresBlocking": True,
+                "candidateProbeRetryCount": 1,
+                "candidateProbeRetryScope": "global-candidate-only",
+                "candidateFailureConfirmationPolicy": CANDIDATE_RECOVERY_POLICY,
+                "maximumCandidateOnlyRecoveries": MAX_CANDIDATE_ONLY_RECOVERIES,
+                "confirmationAttemptsPersisted": True,
+                "normalPairConfirmationOrder": ["baseline", "candidate"],
+                "parallelConfirmationMode": "repeat-complete-two-worker-probe",
+                "confirmationRequiresAllRequiredCapabilities": True,
+                "confirmationRequiresCleanup": True,
+                "performanceCountsLogicalSamplesOnly": True,
+                "primeCount": len(cases),
+                "logicalPairCount": expected_samples,
+                "parallelLogicalProbeCount": 1,
                 "coldPairsPerCase": MIN_COLD_PAIRS,
                 "warmPairsPerCase": MIN_WARM_PAIRS,
                 "remoteComponents": False,
@@ -2327,6 +3008,7 @@ def run_validator(args: argparse.Namespace) -> dict[str, Any]:
             },
             "lifecycle": runtime_tests,
             "parallelIsolation": parallel,
+            "recoverySummary": recovery_budget.public(),
             "performance": {
                 **performance,
                 "pairedSampleCount": len(baseline_ns),

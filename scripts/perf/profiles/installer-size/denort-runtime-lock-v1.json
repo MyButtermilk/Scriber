@@ -1,0 +1,93 @@
+{
+  "contract": "ScriberDenortRuntimeProvenanceLockV1",
+  "schemaVersion": 1,
+  "campaign": "installer-size-v2",
+  "target": {
+    "os": "windows",
+    "architecture": "x86_64"
+  },
+  "entry": {
+    "id": "denort-2.9.2-scriber-youtube-v1",
+    "implementation": "compiled-denort-wrapper",
+    "version": "2.9.2",
+    "wrapperVersion": "1",
+    "protocol": "ScriberYtDlpDenoStdinV1",
+    "compiler": {
+      "version": "2.9.2",
+      "length": 99115808,
+      "sha256": "a5270c2bb75a2ec12fef53185730327267d9e9fe6be6a962c5d1d5a050f93c88"
+    },
+    "denortAsset": {
+      "url": "https://github.com/denoland/deno/releases/download/v2.9.2/denort-x86_64-pc-windows-msvc.zip",
+      "fileName": "denort-x86_64-pc-windows-msvc.zip",
+      "format": "zip",
+      "length": 32599311,
+      "sha256": "ea1ae8ce7af3824e59f6cd822836e863c775eff465343c7545268b38ed558bf4",
+      "executableLength": 80402432,
+      "executableSha256": "02555cedf53adda018295c741f5fa2fa95fd0424c487de344e03032bf2f81075"
+    },
+    "wrapper": {
+      "relativePath": "packaging/deno-youtube-runtime/yt_dlp_runtime_wrapper.ts",
+      "length": 5002,
+      "sha256": "10b251b09237bf38e03d1890528e94dac1203dc2f10ac84b4e1873b8ff8d7987"
+    },
+    "compileArguments": [
+      "compile",
+      "--quiet",
+      "--no-config",
+      "--no-lock",
+      "--no-check",
+      "--no-remote",
+      "--no-npm",
+      "--cached-only",
+      "--target",
+      "x86_64-pc-windows-msvc",
+      "--app-name",
+      "scriber-youtube-js-runtime-v1",
+      "--deny-read",
+      "--deny-write",
+      "--deny-net",
+      "--deny-env",
+      "--deny-run",
+      "--deny-ffi",
+      "--deny-sys",
+      "--deny-import",
+      "--output",
+      "<OUTPUT>",
+      "<SOURCE>"
+    ],
+    "output": {
+      "installedFileName": "deno.exe",
+      "length": 80416159,
+      "sha256": "9179466207b9495035200cf8f153780f0d9d43248cb2eaa154d0af375952e10e"
+    },
+    "license": {
+      "spdx": "MIT",
+      "url": "https://github.com/denoland/deno/blob/v2.9.2/LICENSE.md"
+    },
+    "manifest": {
+      "contract": "ScriberYoutubeJsRuntimeManifestV2",
+      "schemaVersion": 2,
+      "runtime": {
+        "kind": "deno",
+        "implementation": "compiled-denort-wrapper",
+        "version": "2.9.2",
+        "wrapperVersion": "1",
+        "protocol": "ScriberYtDlpDenoStdinV1",
+        "executable": "deno.exe",
+        "length": 80416159,
+        "sha256": "9179466207b9495035200cf8f153780f0d9d43248cb2eaa154d0af375952e10e",
+        "origin": "https://github.com/denoland/deno/releases/download/v2.9.2/denort-x86_64-pc-windows-msvc.zip",
+        "license": "MIT",
+        "provenanceLockEntry": "denort-2.9.2-scriber-youtube-v1"
+      },
+      "policy": {
+        "remoteComponents": false,
+        "firstRunDownloads": false,
+        "maximumStdinBytes": 33554432,
+        "exactArgumentProtocol": true
+      }
+    },
+    "manifestCanonicalSha256": "9fb1a3f96379d14f784ca28528d8868615904bec31a021f0959708b3f8d55e1f"
+  }
+}
