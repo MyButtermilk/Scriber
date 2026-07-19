@@ -1054,6 +1054,7 @@ def test_python_release_environment_is_exact_and_reproducible() -> None:
     assert "restore-keys:" not in venv_block
     assert "pyinstaller==6.20.0" in requirements
     assert "pyinstaller-hooks-contrib==2026.5" in requirements
+    assert "pytest-asyncio==1.3.0" in requirements
     assert "pytest==9.0.1" in requirements
     assert "setuptools==80.10.1" in requirements
     assert ">=" not in requirements
