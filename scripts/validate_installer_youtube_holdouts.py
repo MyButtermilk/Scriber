@@ -16,7 +16,7 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 
 
@@ -24,6 +24,23 @@ SNAPSHOT_CONTRACT = "InstallerSizeYoutubeHoldoutsV1"
 PROBE_CONTRACT = "InstallerSizeYoutubeHoldoutProbeV1"
 REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+PROBE_ENVIRONMENT_REMOVALS = frozenset(
+    {
+        "BUN_INSTALL",
+        "DENO_AUTH_TOKENS",
+        "DENO_INSTALL",
+        "NODE_OPTIONS",
+        "PYTHONBREAKPOINT",
+        "PYTHONHOME",
+        "PYTHONINSPECT",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "PYTHONUSERBASE",
+        "YTDLP_CONFIG",
+        "YTDLP_NO_LAZY_EXTRACTORS",
+        "YT_DLP_CONFIG",
+    }
+)
 
 
 class HoldoutError(RuntimeError):
@@ -229,13 +246,88 @@ def observed_capabilities(
     return sorted(capabilities), observations
 
 
-def _run_probe(*, url: str, deno_executable: Path, timeout_seconds: int) -> tuple[dict[str, Any], str]:
+def _sanitized_probe_environment(
+    inherited: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    environment = dict(os.environ if inherited is None else inherited)
+    for name in PROBE_ENVIRONMENT_REMOVALS:
+        environment.pop(name, None)
+    environment.update(
+        {
+            "DENO_NO_UPDATE_CHECK": "1",
+            "NO_COLOR": "1",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+            "YTDLP_NO_PLUGINS": "1",
+        }
+    )
+    return environment
+
+
+def _probe_policy(
+    *,
+    command: list[str],
+    environment: Mapping[str, str],
+    deno_executable: Path,
+) -> dict[str, bool]:
+    required_switches = (
+        "--no-config",
+        "--no-plugin-dirs",
+        "--no-cache-dir",
+        "--no-js-runtimes",
+        "--no-remote-components",
+    )
+    if any(command.count(switch) != 1 for switch in required_switches):
+        raise HoldoutError("yt-dlp Deno probe policy switches are not exact")
+    try:
+        runtime_index = command.index("--js-runtimes")
+        runtime_value = command[runtime_index + 1]
+    except (ValueError, IndexError) as exc:
+        raise HoldoutError("yt-dlp Deno runtime policy is missing") from exc
+    if (
+        command.count("--js-runtimes") != 1
+        or runtime_value != f"deno:{deno_executable}"
+    ):
+        raise HoldoutError("yt-dlp Deno runtime policy is not exact")
+    if any(name in environment for name in PROBE_ENVIRONMENT_REMOVALS):
+        raise HoldoutError("yt-dlp Deno probe inherited an unsafe environment")
+    required_environment = {
+        "DENO_NO_UPDATE_CHECK": "1",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONSAFEPATH": "1",
+        "YTDLP_NO_PLUGINS": "1",
+    }
+    if any(
+        environment.get(name) != value
+        for name, value in required_environment.items()
+    ):
+        raise HoldoutError("yt-dlp Deno probe environment policy is not exact")
+    return {
+        "configDiscovery": False,
+        "download": False,
+        "explicitSingleRuntime": True,
+        "externalPlugins": False,
+        "pythonPathInheritance": False,
+        "pythonUserSite": False,
+        "remoteComponents": False,
+        "ytDlpCache": False,
+    }
+
+
+def _run_probe(
+    *,
+    url: str,
+    deno_executable: Path,
+    timeout_seconds: int,
+    inherited_environment: Mapping[str, str] | None = None,
+) -> tuple[dict[str, Any], str, dict[str, bool]]:
     command = [
         sys.executable,
         "-m",
         "yt_dlp",
         "--verbose",
         "--no-config",
+        "--no-plugin-dirs",
         "--no-playlist",
         "--no-cache-dir",
         "--no-js-runtimes",
@@ -251,8 +343,15 @@ def _run_probe(*, url: str, deno_executable: Path, timeout_seconds: int) -> tupl
         "-J",
         url,
     ]
+    environment = _sanitized_probe_environment(inherited_environment)
+    policy = _probe_policy(
+        command=command,
+        environment=environment,
+        deno_executable=deno_executable,
+    )
     completed = subprocess.run(
         command,
+        env=environment,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -267,7 +366,7 @@ def _run_probe(*, url: str, deno_executable: Path, timeout_seconds: int) -> tupl
         raise HoldoutError("yt-dlp Deno probe did not emit one JSON object") from exc
     if not isinstance(payload, dict):
         raise HoldoutError("yt-dlp Deno probe payload is not an object")
-    return payload, completed.stderr
+    return payload, completed.stderr, policy
 
 
 def _canonical_run_id(value: str) -> str:
@@ -362,6 +461,7 @@ def main(argv: list[str] | None = None) -> int:
         video_ids: set[str] = set()
         snapshot_cases: list[dict[str, Any]] = []
         pending_probes: list[tuple[str, dict[str, Any]]] = []
+        snapshot_policy: dict[str, bool] | None = None
         captured_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         probes_dir = run_root / "preflight" / "youtube-holdout-probes"
         for row in rows:
@@ -383,11 +483,15 @@ def main(argv: list[str] | None = None) -> int:
             expected_video_id = _video_id_from_url(url)
             if not expected_video_id or expected_video_id in video_ids:
                 raise HoldoutError(f"holdout video id is missing or duplicated: {case_id}")
-            info, debug_log = _run_probe(
+            info, debug_log, policy = _run_probe(
                 url=url,
                 deno_executable=deno_executable,
                 timeout_seconds=args.timeout_seconds,
             )
+            if snapshot_policy is None:
+                snapshot_policy = policy
+            elif policy != snapshot_policy:
+                raise HoldoutError("yt-dlp Deno probe policy changed between cases")
             if info.get("id") != expected_video_id:
                 raise HoldoutError(f"yt-dlp returned another video for {case_id}")
             video_ids.add(expected_video_id)
@@ -414,6 +518,7 @@ def main(argv: list[str] | None = None) -> int:
                 "observations": observations,
                 "runtime": runtime_identity,
                 "distributions": distribution_identities,
+                "policy": policy,
             }
             pending_probes.append((case_id, probe))
             snapshot_cases.append(
@@ -454,6 +559,7 @@ def main(argv: list[str] | None = None) -> int:
             "capturedAtUtc": captured_at,
             "runtime": runtime_identity,
             "distributions": distribution_identities,
+            "policy": snapshot_policy,
             "cases": snapshot_cases,
         }
         output = run_root / "preflight" / "youtube-holdouts.snapshot.json"
