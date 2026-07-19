@@ -339,7 +339,11 @@ function Get-ExactUninstallRegistryEntries {
             if ($null -eq $entry) {
                 continue
             }
-            $location = ([string]$entry.InstallLocation).Trim().Trim('"').TrimEnd('\', '/')
+            $locationProperty = $entry.PSObject.Properties["InstallLocation"]
+            if ($null -eq $locationProperty) {
+                continue
+            }
+            $location = ([string]$locationProperty.Value).Trim().Trim('"').TrimEnd('\', '/')
             if (-not $location) {
                 continue
             }

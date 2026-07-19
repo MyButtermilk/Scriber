@@ -264,6 +264,54 @@ def test_registry_cleanup_tolerates_only_a_disappearing_exact_entry(
     }
 
 
+def test_registry_lookup_skips_entries_without_install_location_in_strict_mode(
+    tmp_path: Path,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("The installer packet producer is Windows-only.")
+
+    convert_source = "function Convert-ToFullPath {" + _function_source(
+        "Convert-ToFullPath"
+    )
+    lookup_source = "function Get-ExactUninstallRegistryEntries {" + _function_source(
+        "Get-ExactUninstallRegistryEntries"
+    )
+    probe = tmp_path / "registry-lookup-probe.ps1"
+    probe.write_text(
+        "\n".join(
+            (
+                '$ErrorActionPreference = "Stop"',
+                "Set-StrictMode -Version Latest",
+                convert_source,
+                lookup_source,
+                "$matches = @(Get-ExactUninstallRegistryEntries -InstallRoot 'C:\\strict-mode-nonexistent-scriber-install')",
+                "[ordered]@{ ok = $true; matches = $matches.Count } | ConvertTo-Json -Compress",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(probe),
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout.strip()) == {"ok": True, "matches": 0}
+
+
 def test_full_payload_build_is_explicit_hermetic_and_unsigned() -> None:
     body = _function_source("Invoke-FullInstallerBuild")
     required = {
