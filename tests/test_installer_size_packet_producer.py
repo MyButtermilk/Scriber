@@ -105,9 +105,7 @@ def test_captured_command_uses_native_exit_code_under_windows_powershell_51(
         "\n".join(
             (
                 "param([string]$Python, [string]$LogRoot)",
-                # Keep native stderr non-terminating so Windows PowerShell 5.1
-                # exposes the exact $? = False / LASTEXITCODE = 0 regression.
-                '$ErrorActionPreference = "Continue"',
+                '$ErrorActionPreference = "Stop"',
                 "function Get-Sha256File {",
                 "    param([string]$Path)",
                 "    $bytes = [System.IO.File]::ReadAllBytes($Path)",
@@ -175,12 +173,17 @@ def test_captured_command_uses_native_exit_code_under_windows_powershell_51(
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
+    assert "x" in completed.stderr
     assert json.loads(completed.stdout.strip()) == {
         "success": 0,
         "nativeFailure": 7,
         "powershellSuccess": 0,
         "powershellFailure": 2,
     }
+
+    captured = _function_source("Invoke-CapturedCommand")
+    assert "& $Command > $LogPath" in captured
+    assert "& $Command *> $LogPath" not in captured
 
 
 def test_full_payload_build_is_explicit_hermetic_and_unsigned() -> None:

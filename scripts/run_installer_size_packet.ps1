@@ -214,11 +214,13 @@ function Invoke-CapturedCommand {
         # A successful PowerShell-only command must not inherit a stale native
         # exit code from an earlier tool invocation in this process.
         $global:LASTEXITCODE = $null
-        & $Command *> $LogPath
+        # Redirect only stdout. Windows PowerShell 5.1 turns redirected native
+        # stderr into PowerShell ErrorRecords, which can make a nested script
+        # using ErrorActionPreference=Stop fail even when the process exits 0.
+        # The parent dispatcher drains and bounds stderr independently.
+        & $Command > $LogPath
         $commandSucceeded = $?
         $nativeExitCode = $LASTEXITCODE
-        # Windows PowerShell 5.1 can set $? to False when a successful native
-        # command writes diagnostics to stderr and all streams are redirected.
         # When a native process ran, its explicit exit code is authoritative.
         if ($null -ne $nativeExitCode) {
             $exitCode = [int]$nativeExitCode
