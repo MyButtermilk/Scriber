@@ -103,8 +103,8 @@ def _print_json(payload: dict[str, Any], *, compact: bool = False) -> None:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
-def _redact_output(value: str, repo_root: Path) -> str:
-    lines = [line for line in value.splitlines() if line.strip()]
+def _redact_output(value: str | None, repo_root: Path) -> str:
+    lines = [line for line in (value or "").splitlines() if line.strip()]
     redacted = "\n".join(lines[-8:]).replace(str(repo_root), "<repo>")
     redacted = re.sub(
         r"(?i)(?:[a-z]:[\\/]|\\\\)[^\r\n\"']+",
@@ -490,6 +490,14 @@ def _run_bounded_command(
     popen_kwargs: dict[str, Any] = {
         "cwd": str(cwd),
         "text": True,
+        # Packet producers emit an ASCII JSON authority line, but nested
+        # Windows tools may also write OEM or otherwise malformed diagnostic
+        # bytes.  Never let a background TextIO reader die and turn captured
+        # stdout/stderr into None; ASCII backslash escapes preserve the JSON
+        # boundary and keep untrusted diagnostics non-authoritative and safe
+        # for a legacy Windows console to print.
+        "encoding": "utf-8",
+        "errors": "backslashreplace",
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
     }

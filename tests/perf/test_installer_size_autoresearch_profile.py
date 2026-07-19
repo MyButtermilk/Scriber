@@ -2761,9 +2761,15 @@ def test_bounded_windows_powershell_dispatch_drops_cross_edition_module_path(
 
     assert result.returncode == 0
     assert captured["command"][0] == "powershell.exe"
+    assert captured["kwargs"]["encoding"] == "utf-8"
+    assert captured["kwargs"]["errors"] == "backslashreplace"
     environment = captured["kwargs"]["env"]
     assert not any(name.casefold() == "psmodulepath" for name in environment)
     assert environment["SCRIBER_RESEARCH_SENTINEL"] == "retained"
+
+
+def test_dispatch_output_redaction_tolerates_failed_reader_value(tmp_path: Path) -> None:
+    assert runner._redact_output(None, tmp_path) == ""
 
 
 def test_lane_learning_locks_plateaus_and_expands_final_reserve(tmp_path: Path) -> None:
