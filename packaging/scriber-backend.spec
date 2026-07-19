@@ -181,17 +181,6 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
-
-# PyInstaller's NLTK hook includes both the complete expanded punkt_tab tree
-# and its redundant source archive. Keep every expanded language resource and
-# remove only the byte-for-byte duplicate ZIP from the frozen payload.
-a.datas = [
-    entry
-    for entry in a.datas
-    if str(entry[0]).replace("\\", "/")
-    != "nltk_data/tokenizers/punkt_tab.zip"
-]
-
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz,

@@ -104,26 +104,6 @@ def test_runtime_build_and_cache_validators_read_the_contract_revision_from_sour
         assert "runtimeContract.revision -ne 1" not in content
 
 
-def test_backend_spec_removes_only_the_duplicate_punkt_tab_archive():
-    spec = (
-        Path(__file__).resolve().parents[1]
-        / "packaging"
-        / "scriber-backend.spec"
-    ).read_text(encoding="utf-8")
-    exact_filter = '''a.datas = [
-    entry
-    for entry in a.datas
-    if str(entry[0]).replace("\\\\", "/")
-    != "nltk_data/tokenizers/punkt_tab.zip"
-]'''
-
-    assert spec.count(exact_filter) == 1
-    assert spec.count('"nltk_data/tokenizers/punkt_tab.zip"') == 1
-    assert spec.index("a = Analysis(") < spec.index(exact_filter) < spec.index(
-        "pyz = PYZ(a.pure)"
-    )
-
-
 def test_backend_runtime_import_check_rejects_stale_pipecat():
     mismatches = check_package_versions(
         requirements=(("pipecat-ai", "1.5.0"),),
