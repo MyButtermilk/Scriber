@@ -359,7 +359,13 @@ function Remove-ExactUninstallRegistryEntries {
     param([Parameter(Mandatory = $true)][string]$InstallRoot)
 
     foreach ($key in @(Get-ExactUninstallRegistryEntries -InstallRoot $InstallRoot)) {
-        Remove-Item -LiteralPath $key.PSPath -Recurse -Force -ErrorAction Stop
+        # The NSIS cleanup process can remove its key after enumeration but
+        # before this fallback executes. Treat that disappearance as success,
+        # then fail closed if an exact entry is still present.
+        Remove-Item -LiteralPath $key.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (@(Get-ExactUninstallRegistryEntries -InstallRoot $InstallRoot).Count -ne 0) {
+        throw "uninstall_registry_cleanup_failed"
     }
 }
 

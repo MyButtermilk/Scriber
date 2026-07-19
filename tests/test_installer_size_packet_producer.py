@@ -186,6 +186,84 @@ def test_captured_command_uses_native_exit_code_under_windows_powershell_51(
     assert "& $Command *> $LogPath" not in captured
 
 
+def test_registry_cleanup_tolerates_only_a_disappearing_exact_entry(
+    tmp_path: Path,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("The installer packet producer is Windows-only.")
+
+    function_source = (
+        "function Remove-ExactUninstallRegistryEntries {"
+        + _function_source("Remove-ExactUninstallRegistryEntries")
+    )
+    probe = tmp_path / "registry-cleanup-probe.ps1"
+    probe.write_text(
+        "\n".join(
+            (
+                '$ErrorActionPreference = "Stop"',
+                "$script:mode = 'disappearing'",
+                "$script:lookupCount = 0",
+                "function Get-ExactUninstallRegistryEntries {",
+                "    param([string]$InstallRoot)",
+                "    $script:lookupCount += 1",
+                "    if ($script:mode -eq 'persistent' -or $script:lookupCount -eq 1) {",
+                "        return [pscustomobject]@{ PSPath = 'missing-test-key' }",
+                "    }",
+                "    return @()",
+                "}",
+                "function Remove-Item {",
+                "    param([string]$LiteralPath, [switch]$Recurse, [switch]$Force, [object]$ErrorAction)",
+                "    if ([string]$ErrorAction -ne 'SilentlyContinue') {",
+                "        throw 'registry-removal-was-not-race-safe'",
+                "    }",
+                "}",
+                function_source,
+                "$disappearing = 'not_run'",
+                "try {",
+                "    Remove-ExactUninstallRegistryEntries -InstallRoot 'C:\\scoped-test-install'",
+                "    $disappearing = 'pass'",
+                "} catch {",
+                "    $disappearing = 'fail'",
+                "}",
+                "$script:mode = 'persistent'",
+                "$script:lookupCount = 0",
+                "$persistent = 'not_run'",
+                "try {",
+                "    Remove-ExactUninstallRegistryEntries -InstallRoot 'C:\\scoped-test-install'",
+                "    $persistent = 'unexpected_pass'",
+                "} catch {",
+                "    $persistent = $_.Exception.Message",
+                "}",
+                "[ordered]@{ disappearing = $disappearing; persistent = $persistent } | ConvertTo-Json -Compress",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(probe),
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout.strip()) == {
+        "disappearing": "pass",
+        "persistent": "uninstall_registry_cleanup_failed",
+    }
+
+
 def test_full_payload_build_is_explicit_hermetic_and_unsigned() -> None:
     body = _function_source("Invoke-FullInstallerBuild")
     required = {
