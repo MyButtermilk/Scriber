@@ -2079,7 +2079,8 @@ function Convert-ToPathRedactedBuildMetadataValue {
         return $result
     }
     if ($Value -is [System.Collections.IEnumerable]) {
-        return @($Value | ForEach-Object { Convert-ToPathRedactedBuildMetadataValue -Value $_ })
+        $items = @($Value | ForEach-Object { Convert-ToPathRedactedBuildMetadataValue -Value $_ })
+        return ,$items
     }
     return $Value
 }

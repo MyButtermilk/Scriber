@@ -330,6 +330,30 @@ def test_semantic_metadata_normalization_is_narrow_and_schema_validated(
         _normalize_sidecar_build_metadata(json.dumps(invalid).encode())
 
 
+def test_semantic_metadata_accepts_an_explicitly_disabled_sidecar_cache(
+    minimal_pyinstaller_payload: Path,
+) -> None:
+    backend_exe = minimal_pyinstaller_payload / "backend" / "scriber-backend.exe"
+    metadata = _sidecar_metadata(backend_exe)
+    metadata["cache"] = {"enabled": False, "hit": False, "key": ""}
+
+    normalized = json.loads(
+        _normalize_sidecar_build_metadata(json.dumps(metadata).encode())
+    )
+
+    assert normalized["cache"] == {"enabled": False, "hit": False, "key": ""}
+
+    invalid_hit = copy.deepcopy(metadata)
+    invalid_hit["cache"]["hit"] = True
+    with pytest.raises(InventoryError, match="cache.hit cannot be true"):
+        _normalize_sidecar_build_metadata(json.dumps(invalid_hit).encode())
+
+    invalid_enabled_key = copy.deepcopy(metadata)
+    invalid_enabled_key["cache"] = {"enabled": True, "hit": False, "key": ""}
+    with pytest.raises(InventoryError, match="cache.key"):
+        _normalize_sidecar_build_metadata(json.dumps(invalid_enabled_key).encode())
+
+
 def test_tree_exact_hash_changes_but_semantic_hash_ignores_only_allowlisted_metadata(
     minimal_pyinstaller_payload: Path,
     tmp_path: Path,

@@ -284,9 +284,17 @@ def _normalize_sidecar_build_metadata(raw: bytes) -> bytes:
     _require_nonnegative_int(sidecar.get("length"), label="sidecar.length")
 
     cache = _require_mapping(metadata.get("cache"), label="cache")
-    _require_bool(cache.get("enabled"), label="cache.enabled")
-    _require_bool(cache.get("hit"), label="cache.hit")
-    _require_string(cache.get("key"), label="cache.key")
+    cache_enabled = _require_bool(cache.get("enabled"), label="cache.enabled")
+    cache_hit = _require_bool(cache.get("hit"), label="cache.hit")
+    cache_key = cache.get("key")
+    if cache_enabled:
+        cache_key = _require_string(cache_key, label="cache.key")
+        if not SHA256_RE.fullmatch(cache_key):
+            raise InventoryError("cache.key is not a lowercase SHA-256.")
+    elif cache_key != "":
+        raise InventoryError("cache.key must be empty when cache.enabled is false.")
+    if cache_hit and not cache_enabled:
+        raise InventoryError("cache.hit cannot be true when cache.enabled is false.")
     runtime = _require_mapping(metadata.get("runtimeLayer"), label="runtimeLayer")
     _require_bool(runtime.get("cacheHit"), label="runtimeLayer.cacheHit")
 

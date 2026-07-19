@@ -77,6 +77,45 @@ Convert-ToPathRedactedBuildMetadataValue -Value $payload |
     }
 
 
+def test_packaged_sidecar_metadata_preserves_collection_shapes() -> None:
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell 5.1 is unavailable")
+
+    script = (
+        REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1"
+    ).read_text(encoding="utf-8")
+    helper_start = script.index("function Test-IsRootedBuildMetadataPath")
+    writer_start = script.index("function Write-SidecarBuildMetadata", helper_start)
+    helper = script[helper_start:writer_start]
+    probe = f"""
+$ErrorActionPreference = 'Stop'
+{helper}
+$payload = [ordered]@{{
+    empty = @()
+    single = @('one')
+    multiple = @('one', 'two')
+}}
+Convert-ToPathRedactedBuildMetadataValue -Value $payload |
+    ConvertTo-Json -Compress -Depth 10
+"""
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", probe],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "empty": [],
+        "single": ["one"],
+        "multiple": ["one", "two"],
+    }
+
+
 def test_research_builds_remove_volatile_packaged_sidecar_metadata() -> None:
     sidecar = (
         REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1"
