@@ -1,0 +1,9 @@
+/.gitattributes text eol=lf
+packaging/installer-component-map-v1.json text eol=lf
+packaging/deno-youtube-runtime/yt_dlp_runtime_wrapper.ts text eol=lf
+native/scriber-quickjs-wrapper/** text eol=lf
+packaging/quickjs-youtube-runtime-lock-v1.json text eol=lf
+scripts/build_quickjs_youtube_runtime.py text eol=lf
+scripts/perf/profiles/installer-size/** text eol=lf
+scripts/validate_installer_youtube_candidate_holdouts.py text eol=lf
+tests/test_installer_youtube_candidate_holdouts.py text eol=lf

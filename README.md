@@ -63,7 +63,7 @@ Paste a video URL or search YouTube inside Scriber. Creator captions and automat
 ![Scriber YouTube transcription](docs/screenshots/youtube.png)
 
 - Caption-first behavior is configurable under **Settings > Summarization**
-- Current yt-dlp extraction with Deno and EJS support
+- Current yt-dlp extraction with EJS and a bundled offline QuickJS-ng wrapper
 - Bundled ffmpeg and ffprobe media preparation
 - Durable progress, retry, cancel, and recovery state
 - Transcript and summary saved beside every other source
@@ -224,7 +224,7 @@ The installed app is more than a packaged website:
 - **Rust audio sidecar** for crash-isolated WASAPI microphone capture and pre-warming
 - **React workspace** for fast navigation across Live Mic, YouTube, File, Settings, Console, and transcript details
 - **Python backend sidecar** for provider routing, job state, summaries, local storage, and support tooling
-- **Bundled media stack** with ffmpeg, ffprobe, yt-dlp extraction support, and Deno
+- **Bundled media stack** with ffmpeg, ffprobe, yt-dlp extraction support, and a bounded QuickJS-ng runtime
 - **Signed updater artifacts** with published checksums and release diagnostics
 
 ## Download and start

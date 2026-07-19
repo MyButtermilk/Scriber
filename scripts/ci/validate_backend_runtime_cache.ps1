@@ -213,11 +213,23 @@ try {
                 }
         )
     }
+    $requiredQuickJsFiles = @(
+        "media-tools/qjs.exe",
+        "media-tools/qjs-engine.exe",
+        "media-tools/LICENSE.quickjs-ng.txt",
+        "media-tools/js-runtime-manifest.json"
+    )
+    $quickJsRuntimeComplete = @(
+        $requiredQuickJsFiles | Where-Object {
+            $requiredPath = $_
+            @($stableMediaFiles | Where-Object { [string]$_.path -eq $requiredPath }).Count -eq 1
+        }
+    ).Count -eq $requiredQuickJsFiles.Count
     if (
         -not (Test-ExpectedEntries -Expected @($cacheManifest.stableMediaFiles) -ActualEntries $stableMediaFiles) -or
-        -not ($stableMediaFiles | Where-Object { [string]$_.path -eq "media-tools/deno.exe" })
+        -not $quickJsRuntimeComplete
     ) {
-        throw "stable media-tool inventory differs or deno.exe is absent"
+        throw "stable media-tool inventory differs or the QuickJS runtime is incomplete"
     }
 
     $runtimeExe = Get-Item -LiteralPath $runtimeExePath

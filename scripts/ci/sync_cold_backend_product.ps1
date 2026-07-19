@@ -403,7 +403,16 @@ try {
             $stableMediaValid = $false
         }
     }
-    $stableMediaValid = $stableMediaValid -and [bool]($expectedStableMedia | Where-Object { [string]$_.path -eq "media-tools/deno.exe" })
+    foreach ($requiredQuickJsPath in @(
+        "media-tools/qjs.exe",
+        "media-tools/qjs-engine.exe",
+        "media-tools/LICENSE.quickjs-ng.txt",
+        "media-tools/js-runtime-manifest.json"
+    )) {
+        $stableMediaValid = $stableMediaValid -and (
+            @($expectedStableMedia | Where-Object { [string]$_.path -eq $requiredQuickJsPath }).Count -eq 1
+        )
+    }
     if (
         [int]$runtimeManifest.apiVersion -ne 1 -or
         [string]$runtimeManifest.cacheKey -ne $runtimeCacheKey -or

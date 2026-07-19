@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import importlib
 import json
 import re
 import shutil
@@ -48,6 +49,12 @@ _FORMAT_SELECTORS = (
 _CONCURRENT_FRAGMENT_DOWNLOADS = 4
 _MAX_CAPTION_BYTES = 16 * 1024 * 1024
 _CAPTION_FORMAT_PRIORITY = {"json3": 0, "vtt": 1, "srv3": 2, "ttml": 3}
+
+
+def _apply_youtube_only_runtime_policy() -> None:
+    policy = importlib.import_module("backend_runtime.yt_dlp_policy")
+    apply_policy = getattr(policy, "apply_youtube_only_runtime_policy")
+    apply_policy()
 
 
 class DownloadProgress:
@@ -486,6 +493,8 @@ async def download_youtube_transcript(
         except ImportError as exc:
             raise YouTubeDownloadError("yt-dlp not installed") from exc
 
+        _apply_youtube_only_runtime_policy()
+
         options: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
@@ -495,10 +504,13 @@ async def download_youtube_transcript(
             "retries": 3,
             "fragment_retries": 3,
             "extractor_retries": 3,
+            "allowed_extractors": [r"youtube.*"],
+            "remote_components": [],
+            "js_runtimes": {},
         }
-        deno_path = find_media_tool("deno")
-        if deno_path:
-            options["js_runtimes"] = {"deno": {"path": deno_path}}
+        quickjs_path = find_media_tool("qjs")
+        if quickjs_path:
+            options["js_runtimes"] = {"quickjs": {"path": quickjs_path}}
 
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -661,10 +673,18 @@ async def download_youtube_audio(
 
     template = str(out_dir / "%(id)s.%(ext)s")
 
+    # Frozen QuickJS resolution verifies every locked file and runs the bound
+    # wrapper self-test.  Keep that synchronous filesystem/process work off the
+    # aiohttp event loop, then reuse the exact attested path for both yt-dlp's
+    # library path and the subprocess fallback.
+    quickjs_path = await asyncio.to_thread(find_media_tool, "qjs")
+
     # Try to use yt-dlp as a library first (better progress hooks)
     try:
         import yt_dlp
         import time
+
+        _apply_youtube_only_runtime_policy()
 
         final_path: Path | None = None
         cancel_event = threading.Event()
@@ -738,13 +758,15 @@ async def download_youtube_audio(
             "retries": 3,
             "fragment_retries": 3,
             "extractor_retries": 3,
+            "allowed_extractors": [r"youtube.*"],
+            "remote_components": [],
+            "js_runtimes": {},
             # Recent yt-dlp versions select clients based on EJS/runtime and
             # PO-token availability. Do not override those maintained defaults.
             "concurrent_fragment_downloads": _CONCURRENT_FRAGMENT_DOWNLOADS,
         }
-        deno_path = find_media_tool("deno")
-        if deno_path:
-            ydl_opts["js_runtimes"] = {"deno": {"path": deno_path}}
+        if quickjs_path:
+            ydl_opts["js_runtimes"] = {"quickjs": {"path": quickjs_path}}
 
         def _run_download():
             nonlocal final_path
@@ -841,6 +863,12 @@ async def download_youtube_audio(
     for format_selector in _FORMAT_SELECTORS:
         args = [
             *exe_cmd,
+            "--no-config",
+            "--no-plugin-dirs",
+            "--no-remote-components",
+            "--use-extractors",
+            "youtube.*",
+            "--no-js-runtimes",
             "--no-playlist",
             "-f",
             format_selector,
@@ -853,9 +881,8 @@ async def download_youtube_audio(
             str(_CONCURRENT_FRAGMENT_DOWNLOADS),
             url,
         ]
-        deno_path = find_media_tool("deno")
-        if deno_path:
-            args[-1:-1] = ["--js-runtimes", f"deno:{deno_path}"]
+        if quickjs_path:
+            args[-1:-1] = ["--js-runtimes", f"quickjs:{quickjs_path}"]
 
         for attempt in range(max_retries):
             proc = await asyncio.create_subprocess_exec(

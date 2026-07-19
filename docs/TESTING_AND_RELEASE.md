@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-07-16
+Last verified: 2026-07-19
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -637,12 +637,38 @@ media tools:
 - Azure MAI MP3 preparation,
 - optional duration probing.
 
-The frozen runtime gate also requires exact compatible yt-dlp/EJS versions, and
-sidecar preparation copies and executes bundled Deno before packaging. YouTube
-download unit coverage must reject malformed containers and audio-free fallback
-formats before a provider receives them. Caption coverage must verify manual
-caption priority over automatic tracks, original-language preference, markup removal,
-audio fallback, and the no-audio/no-provider fast path.
+The frozen runtime gate also requires exact compatible yt-dlp/EJS versions.
+Sidecar preparation builds or verifies the locked QuickJS-ng wrapper bundle,
+then copies and executes `qjs.exe` beside its patched `qjs-engine.exe`, license,
+and canonical runtime manifest before packaging. The verifier must exercise the
+exact argument protocol, engine identity, EJS JSON contract, internal timeout
+and child reap, and denial of native modules, file imports, and process launch.
+Frozen resolution must not consult `PATH` or the source-only
+`SCRIBER_QUICKJS_DEV_WRAPPER_PATH`. It must validate the complete quartet
+against the committed application-layer trust root, run the exact bound wrapper
+self-test off the aiohttp event loop, and reuse that result across library and
+subprocess fallback paths. Heartbeat coverage must fail if a slow or timing-out
+self-test stalls the loop. YouTube download unit coverage must reject
+malformed containers and audio-free fallback formats before a provider receives
+them. Caption coverage must verify manual caption priority over automatic
+tracks, original-language preference, markup removal, audio fallback, and the
+no-audio/no-provider fast path.
+
+The focused non-protected product gate runs all six public YouTube route
+families through the candidate's frozen backend without changing the immutable
+installer-size comparison inputs:
+
+```powershell
+scripts\project-python.cmd scripts\smoke_quickjs_youtube_runtime.py `
+  --candidate-payload build\candidate-payload `
+  --runtime build\candidate-payload\backend\tools\ffmpeg\qjs.exe `
+  --output build\quickjs-youtube-smoke.json
+```
+
+It requires a cold sequential probe, exact wrapper/engine/manifest identities,
+bounded output and deadlines, process-tree cleanup, and input immutability. Its
+evidence is intentionally redacted and is a product smoke, not a replacement
+for the protected paired AutoResearch validator.
 
 Support bundle smoke verifies:
 

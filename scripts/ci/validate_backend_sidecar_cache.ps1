@@ -187,7 +187,13 @@ try {
 
     $exe = Get-Item -LiteralPath $exePath
     $exeSha = Get-Sha256 -Path $exePath
-    $hasDeno = @($cacheManifest.mediaFiles | Where-Object { [string]$_.path -eq "deno.exe" }).Count -eq 1
+    $requiredQuickJsFiles = @("qjs.exe", "qjs-engine.exe", "LICENSE.quickjs-ng.txt", "js-runtime-manifest.json")
+    $hasQuickJsRuntime = @(
+        $requiredQuickJsFiles | Where-Object {
+            $requiredPath = $_
+            @($cacheManifest.mediaFiles | Where-Object { [string]$_.path -eq $requiredPath }).Count -eq 1
+        }
+    ).Count -eq $requiredQuickJsFiles.Count
     $usable = (
         [int]$runtimeManifest.content.fileCount -eq @($runtimeManifest.content.files).Count -and
         [string]$runtimeManifest.content.treeSha256 -eq (Get-FileIdentityTreeSha256 -Entries @($runtimeManifest.content.files)) -and
@@ -195,7 +201,7 @@ try {
         [int64]$runtimeManifest.executable.length -eq [int64]$exe.Length -and
         [string]$cacheManifest.sidecarSha256 -eq $exeSha -and
         [int64]$cacheManifest.sidecarLength -eq [int64]$exe.Length -and
-        $hasDeno
+        $hasQuickJsRuntime
     )
     if (-not $usable) { throw "full backend cache critical attestations differ" }
     $reason = "validated"

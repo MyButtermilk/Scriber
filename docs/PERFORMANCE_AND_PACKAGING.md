@@ -1,6 +1,6 @@
 # Performance And Packaging
 
-Last verified: 2026-07-15
+Last verified: 2026-07-19
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
@@ -43,14 +43,45 @@ Historical comparison points:
 - Removing ffprobe is still an experiment because standard workflows expect
   ffprobe availability.
 
-The measured baseline above predates the bundled Deno runtime. Current YouTube
-support intentionally adds Deno (about `99 MiB` installed before compression)
-because yt-dlp now requires an external JavaScript runtime plus EJS for full
-YouTube extraction. Profile B media-tool footprint gates allow `115 MiB`; the
-installer-size gate remains unchanged and must catch an excessive compressed
-size increase. Intentionally uncompressed non-tag cache/warmup builds still emit
-`size-report.json`, but do not compare that diagnostic artifact with the
-compressed release budget.
+The full-installer baseline above still contains the superseded Deno runtime.
+The 2026-07-19 high-impact prototype replaces it with QuickJS-ng `0.15.0`
+behind Scriber's bounded, offline `--script FILE` wrapper. The final staged
+quartet (`qjs.exe`, hardened `qjs-engine.exe`, license, and canonical manifest)
+is `2,119,089` bytes. Against the exact H10-derived staged payload, raw payload
+size falls from `294,922,093` to `216,634,372` bytes: `78,287,721` bytes
+(`74.661 MiB`) saved, with no Deno executable remaining. This candidate was
+restaged through the installer allowlist after composing the final application
+layer: the generated `15,792`-byte app-layer manifest binds `93` files, has
+SHA-256 `a3b83e063a6a9c90b4213c5d1fb9d9b3d5dc9943586832243ab7e3764f53c0a0`,
+and the complete application layer including that manifest is `3,001,527`
+bytes. It includes the frozen QuickJS trust root and final media-resolution and
+YouTube-download code; no pre-trust-root app layer was reused for this count.
+The fresh `638`-file allowlisted payload has tree SHA-256
+`60e946eda9f3bab872019da47d3ac0ea103e536ec9b716378944e648fb64356e`
+and file-list SHA-256
+`f5c1cafd36f7aa1a50250a42b15741b323bbedd59ca826682b2526a1d8ede82b`.
+Its byte-level measurement evidence has SHA-256
+`3394020b05154a20144e04ce762e5250f82016811d38e12f9b9ab718212c3f45`.
+
+The protected campaign component map intentionally remains unchanged during
+this experiment. Because it predates the four-file wrapper layout, its
+component breakdown can attribute part of the quartet to `other-payload`
+instead of `js-runtime`. Do not use that per-component split for this result;
+the staged total-byte delta and the non-protected runtime-file/bzip2 audit below
+are the authoritative prototype measurements.
+
+A Python bzip2-level-9 per-file proxy compresses the former `80,416,159`-byte
+Deno executable to `29,321,474` bytes and the final QuickJS quartet to `917,730`
+bytes, a proxy reduction of `28,403,744` bytes (`27.088 MiB`). This is not an
+NSIS-size claim: no installer was built for this prototype, so the next
+authorized installer build must measure the real compressed artifact and
+install time. The new non-protected frozen product smoke passed all six public
+route families with yt-dlp `2026.7.4` and EJS `0.8.0`, verified input
+immutability and process cleanup, and produced evidence SHA-256
+`61ca2014ccfecf89da4a15b77bee0fcfa80b2493f34f7ecaec6ca0e107bf1ee6`.
+This smoke proves current product behavior but is not a paired AutoResearch
+promotion result; the earlier protected paired diagnostic remained inconclusive
+because one baseline sample failed transiently.
 
 ## Implemented Performance Work
 
@@ -248,6 +279,13 @@ Packaging/build:
   diarization models.
 - Installed frontend assets are owned by the Tauri WebView bundle and are not
   embedded in the Python/PyInstaller backend sidecar.
+- YouTube EJS execution uses a four-file, manifest-bound QuickJS-ng runtime
+  instead of bundled Deno. The wrapper and deterministically hardened engine
+  are byte-locked, reproducible with `/Brepro`, buildable from a populated cache
+  with `--offline`, and verified before staging. Frozen runtime resolution
+  accepts only this bundle; source runs have a separate explicit developer
+  override. The NSIS postinstall hook deletes exactly the obsolete
+  `backend\tools\ffmpeg\deno.exe` during an in-place upgrade.
 - The Rust audio sidecar is bundled once as Tauri's install-root
   `scriber-audio-sidecar.exe`, not as a duplicate `audio-sidecar/` resource
   directory.
@@ -805,6 +843,33 @@ Current packaging choices:
   unused ONNXRuntime tooling are excluded from the standard sidecar. The
   installed local-ASR path keeps `onnx-asr[cpu,hub]` plus ONNXRuntime so the
   Settings ONNX path works without requiring NeMo/Torch.
+- The frozen PyInstaller PYZ is post-filtered after dependency analysis to
+  remove build-only PyInstaller/setuptools/Pygments support, their helper
+  packages, package-local keyboard/NumPy tests, and yt-dlp's PyInstaller hook.
+  CFFI, pycparser, cryptography, and Google service-account support remain
+  bundled. The frozen runtime gate requires those imports, initializes the
+  Google/CFFI, OpenAI, Deepgram, ElevenLabs, and Speechmatics paths, and rejects
+  every pruned module. Against an unchanged `e3384ebd` counterbuild this removes
+  561 PYZ entries, 3,133,946 bytes from the executable/PYZ archive, and
+  3,149,007 bytes from the complete staged sidecar tree. A bzip2 level-9 proxy
+  predicts 3,128,914 bytes of installer savings; this remains a forecast until
+  confirmed by a complete installer build.
+- The frozen NLTK `punkt_tab` payload retains the complete English and German
+  models plus root metadata, but no other language directories. Pipecat 1.5's
+  four sentence-boundary call sites all delegate to
+  `match_endofsentence()`, which invokes `sent_tokenize(text)` without a
+  language argument and therefore uses the English model. Scriber does not add
+  a language-specific Punkt call. Spanish, French, Italian, Portuguese, Dutch,
+  and provider auto-detection remain STT/summary/export features; those paths do
+  not load matching NLTK data. Frozen validation clears NLTK's tokenizer cache,
+  loads and segments with English and German explicitly from the bundle,
+  verifies all four files of both models, and rejects any third language or
+  download fallback. Identical `5e75a03c` sidecar counterbuilds remove 17
+  language directories / 68 files / 9,693,964 raw data bytes. Including the
+  smaller runtime manifest and the larger bilingual checker, the complete
+  staged sidecar is 9,716,218 bytes smaller. A deterministic bzip2 level-9
+  full-sidecar proxy predicts 2,983,281 bytes of installer savings; a complete
+  installer build is still required for a formal result.
 - AWS Transcribe is no longer exposed in frontend or backend settings. The
   standard sidecar excludes `boto3`, `botocore`, `s3transfer`, `aioboto3`,
   `aiobotocore`, and Pipecat AWS service modules.
@@ -825,10 +890,23 @@ Current packaging choices:
 - AssemblyAI uses Universal-3.5-Pro by default for both direct async/batch and
   realtime Pipecat paths. Runtime import checks include Pipecat's AssemblyAI
   realtime module.
-- Pillow AVIF binaries are excluded.
+- PDF and DOCX export are implemented with Python's standard library. The DOCX
+  writer emits a complete minimal OOXML package with Unicode text, styles,
+  numbering, and A4 layout. The PDF writer emits paginated A4 PDF 1.4 with the
+  same WinAnsi text range used by the previous default-font path. The frozen
+  runtime excludes the complete Pillow, lxml, python-docx, and ReportLab graphs.
+  A marker-only compatibility surface preserves the protected historical
+  `docx` and `reportlab.platypus` imports plus Pipecat/PyAutoGUI's eager Pillow
+  imports without shipping those libraries. Image/video and screenshot helpers
+  are not Scriber product features; the frozen surface fails explicitly if an
+  upstream dependency tries to invoke them. Pillow remains available to
+  development and icon tooling. Frozen validation renders and parses
+  140-paragraph English and German PDF/DOCX documents, checks five or more PDF
+  pages, preserves German umlauts/eszett and full DOCX Unicode, and rejects any
+  resolution to a real legacy export package.
 - Runtime dependency footprint gates reject SciPy, AWS SDK packages, PySide6,
-  customtkinter, Tk, and unused provider SDK reintroduction in the packaged
-  backend.
+  customtkinter, Tk, the legacy export stack, and unused provider SDK
+  reintroduction in the packaged backend.
 
 ## Meeting Performance Research And Implementation Status (2026-07-12)
 

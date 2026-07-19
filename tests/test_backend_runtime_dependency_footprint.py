@@ -18,8 +18,6 @@ def write_fake_sidecar(root: Path) -> Path:
         "onnxruntime/capi/onnxruntime_pybind11_state.pyd": b"p" * 4096,
         "google/__init__.py": b"",
         "grpc/_cython/cygrpc.pyd": b"r" * 1024,
-        "PIL/Image.py": b"i" * 1024,
-        "PIL/ImageDraw.py": b"d" * 1024,
     }
     sidecar_files = {
         "tools/ffmpeg/ffmpeg.exe": b"f" * 20480,
@@ -60,7 +58,7 @@ def test_runtime_dependency_footprint_reports_required_groups(tmp_path: Path) ->
         "pyside6",
         "pythonGuiRuntime",
         "googleGrpc",
-        "pillow",
+        "legacyExportStack",
     }
     assert report["dependencies"]["scipy"]["expectedPresent"] is False
     assert report["dependencies"]["scipy"]["totalMb"] == 0
@@ -84,8 +82,8 @@ def test_runtime_dependency_footprint_reports_required_groups(tmp_path: Path) ->
     assert report["components"]["pythonGuiRuntime"]["missingRequiredPaths"] == []
     assert report["components"]["pythonGuiRuntime"]["disallowedPaths"] == []
     assert report["components"]["googleGrpc"]["missingRequiredPaths"] == []
-    assert report["components"]["pillow"]["missingRequiredPaths"] == []
-    assert report["components"]["pillow"]["disallowedPaths"] == []
+    assert report["components"]["legacyExportStack"]["missingRequiredPaths"] == []
+    assert report["components"]["legacyExportStack"]["disallowedPaths"] == []
 
 
 def test_runtime_dependency_footprint_fails_when_budget_is_exceeded(tmp_path: Path) -> None:
@@ -116,15 +114,30 @@ def test_runtime_dependency_footprint_fails_when_standard_component_is_missing(t
     assert "mediaTools:tools/ffmpeg/ffprobe.exe" in report["summary"]["componentMissingRequiredPaths"]
 
 
-def test_runtime_dependency_footprint_fails_when_unused_pillow_avif_binary_is_bundled(tmp_path: Path) -> None:
+def test_runtime_dependency_footprint_fails_when_legacy_export_stack_is_bundled(
+    tmp_path: Path,
+) -> None:
     sidecar = write_fake_sidecar(tmp_path / "scriber-backend")
-    avif = sidecar / "_internal" / "PIL" / "_avif.cp313-win_amd64.pyd"
-    avif.write_bytes(b"a" * 1024)
+    legacy_files = (
+        "PIL/Image.py",
+        "docx/templates/default.docx",
+        "lxml/etree.cp313-win_amd64.pyd",
+        "reportlab/platypus/__init__.py",
+    )
+    for relative in legacy_files:
+        path = sidecar / "_internal" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"legacy")
 
     report = build_report(sidecar)
 
     assert report["ok"] is False
-    assert "pillow:_internal\\PIL\\_avif.cp313-win_amd64.pyd" in report["summary"]["componentDisallowedPaths"]
+    assert set(report["summary"]["componentDisallowedPaths"]) == {
+        "legacyExportStack:_internal\\PIL",
+        "legacyExportStack:_internal\\docx",
+        "legacyExportStack:_internal\\lxml",
+        "legacyExportStack:_internal\\reportlab",
+    }
 
 
 def test_runtime_dependency_footprint_fails_when_scipy_is_bundled(tmp_path: Path) -> None:

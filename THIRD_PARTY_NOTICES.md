@@ -4,6 +4,22 @@ This file records third-party components whose notices must accompany Scriber
 binary distributions. The dependency lockfiles remain the authoritative list of
 all resolved package versions.
 
+## QuickJS-ng 0.15.0
+
+- Project: `quickjs-ng/quickjs`
+- Source: https://github.com/quickjs-ng/quickjs/tree/v0.15.0
+- Use in Scriber: JavaScript engine behind the bounded, offline YouTube EJS wrapper
+- License: MIT
+- Installed license: `backend/tools/ffmpeg/LICENSE.quickjs-ng.txt`
+
+Copyright (c) 2017-2026 Fabrice Bellard
+Copyright (c) 2017-2024 Charlie Gordon
+Copyright (c) 2023-2026 Ben Noordhuis
+Copyright (c) 2023-2026 Saúl Ibarra Corretgé
+
+The complete byte-locked MIT text is bundled beside the QuickJS engine in
+every installer and updater payload.
+
 ## aec3 0.2.0
 
 - Project: `aec3-rs`

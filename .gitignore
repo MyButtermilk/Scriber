@@ -20,6 +20,7 @@ tmp/
 /Frontend/src-tauri/resources/audio-sidecar/*
 !/Frontend/src-tauri/resources/audio-sidecar/.gitkeep
 /native/scriber-diarization-sidecar/target/
+/native/scriber-quickjs-wrapper/target/
 /deskscribe-parakeet-primeline-onnx/
 /sherpa-onnx-parakeet-primeline-de-int8/
 

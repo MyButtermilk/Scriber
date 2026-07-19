@@ -1,0 +1,138 @@
+{
+  "contract": "ScriberQuickJsWrapperRuntimeLockV1",
+  "schemaVersion": 1,
+  "target": {
+    "os": "windows",
+    "architecture": "x86_64"
+  },
+  "toolchain": {
+    "rust": "1.97.0",
+    "cargoProfile": "release",
+    "cargoArguments": ["build", "--release", "--locked"],
+    "rustFlags": "-C link-arg=/Brepro"
+  },
+  "upstreamLock": {
+    "relativePath": "scripts/perf/profiles/installer-size/quickjs-runtime-lock-v1.json",
+    "length": 5199,
+    "sha256": "78b681935a815197a7414294998674250971456305424522faefe01832d2f503",
+    "entry": "quickjs-ng-0.15.0-windows-x86_64"
+  },
+  "engine": {
+    "source": {
+      "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.15.0/qjs-windows-x86_64.exe",
+      "fileName": "qjs-windows-x86_64.exe",
+      "length": 1800265,
+      "sha256": "f157d58a9e14e958991e4b0f01b3a6d1d7dc25f3ae78f85c6c8da01c19bf77bf"
+    },
+    "installedFileName": "qjs-engine.exe",
+    "length": 1800265,
+    "sha256": "f76c7df5a1153b7b8baf5befe3d2621e4a5508c739f9e9eee51a32988d62547e",
+    "patches": [
+      {
+        "fileOffset": 3957,
+        "expectedHex": "e8669c0000",
+        "replacementHex": "0f1f440000",
+        "purpose": "disable-qjs-std-registration"
+      },
+      {
+        "fileOffset": 3972,
+        "expectedHex": "e8079d0000",
+        "replacementHex": "0f1f440000",
+        "purpose": "disable-qjs-os-registration"
+      },
+      {
+        "fileOffset": 3987,
+        "expectedHex": "e858ad0000",
+        "replacementHex": "0f1f440000",
+        "purpose": "disable-qjs-bjson-registration"
+      },
+      {
+        "fileOffset": 1178296,
+        "expectedHex": "e8a398efff",
+        "replacementHex": "0f1f440000",
+        "purpose": "disable-module-loader-installation"
+      }
+    ]
+  },
+  "license": {
+    "spdx": "MIT",
+    "url": "https://raw.githubusercontent.com/quickjs-ng/quickjs/v0.15.0/LICENSE",
+    "fileName": "LICENSE",
+    "installedFileName": "LICENSE.quickjs-ng.txt",
+    "length": 1212,
+    "sha256": "96f73f9d2a16c21a36b418f06073be26e7d6d5e7c1bc99756b21a4f2c74ef171"
+  },
+  "wrapper": {
+    "crateRoot": "native/scriber-quickjs-wrapper",
+    "files": [
+      {
+        "relativePath": "native/scriber-quickjs-wrapper/Cargo.toml",
+        "length": 542,
+        "sha256": "8f9420e4fdb9554d1fde651ef2fc4608f363c64617734a2a79efd851c2a6b64a"
+      },
+      {
+        "relativePath": "native/scriber-quickjs-wrapper/Cargo.lock",
+        "length": 5317,
+        "sha256": "91e441bd294c15c74d8b0a776acbbca65008b56d9c6d33def0054d471014a678"
+      },
+      {
+        "relativePath": "native/scriber-quickjs-wrapper/src/lib.rs",
+        "length": 24940,
+        "sha256": "5352d5d8dda5f81d418188eea6abadc48819a23599fe1b2493011eaf433bd9a6"
+      },
+      {
+        "relativePath": "native/scriber-quickjs-wrapper/src/main.rs",
+        "length": 828,
+        "sha256": "3755464b3c45f7a474cfac4530b64a3e14647bad8dc118c1b606acc12df1f5d4"
+      }
+    ],
+    "output": {
+      "installedFileName": "qjs.exe",
+      "length": 316416,
+      "sha256": "3594e7e4e01f755d7e9571e312f111f74036002a6b3460a4997e52b5a28533c9"
+    }
+  },
+  "manifest": {
+    "contract": "ScriberYoutubeJsRuntimeManifestV3",
+    "schemaVersion": 3,
+    "runtime": {
+      "kind": "quickjs",
+      "implementation": "bounded-quickjs-wrapper",
+      "version": "0.15.0",
+      "wrapperVersion": "3",
+      "protocol": "ScriberYtDlpQuickJsFileV1",
+      "executable": "qjs.exe",
+      "length": 316416,
+      "sha256": "3594e7e4e01f755d7e9571e312f111f74036002a6b3460a4997e52b5a28533c9",
+      "engine": "qjs-engine.exe",
+      "engineLength": 1800265,
+      "engineSha256": "f76c7df5a1153b7b8baf5befe3d2621e4a5508c739f9e9eee51a32988d62547e",
+      "origin": "https://github.com/quickjs-ng/quickjs/releases/download/v0.15.0/qjs-windows-x86_64.exe",
+      "license": "MIT",
+      "licenseFile": "LICENSE.quickjs-ng.txt",
+      "provenanceLockEntry": "quickjs-ng-0.15.0-windows-x86_64"
+    },
+    "policy": {
+      "remoteComponents": false,
+      "firstRunDownloads": false,
+      "maximumScriptBytes": 33554432,
+      "maximumStdoutBytes": 4194304,
+      "maximumStderrBytes": 262144,
+      "timeoutMilliseconds": 45000,
+      "memoryLimitBytes": 268435456,
+      "stackLimitBytes": 4194304,
+      "exactArgumentProtocol": true,
+      "engineHashVerified": true,
+      "killOnJobClose": true,
+      "activeProcessLimit": 1,
+      "processStateFailureCleanupBeforeReaderJoin": true,
+      "nativeModules": false,
+      "moduleLoader": false,
+      "fileAccess": false,
+      "processLaunch": false,
+      "networkAccess": false,
+      "timeoutSelfTestMilliseconds": 250
+    }
+  },
+  "manifestCanonicalSha256": "a019e6608585ad21e846417af9b6fa15b398e7e200d4a882022fea8b375b6a60"
+}

@@ -1,6 +1,6 @@
 # Roadmap And Known Issues
 
-Last verified: 2026-07-15
+Last verified: 2026-07-19
 
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
@@ -55,11 +55,13 @@ YouTube/file:
 - YouTube input is restricted to validated YouTube URLs, API/thumbnail responses
   are bounded, redirect targets are revalidated, and canceled library downloads
   use isolated attempt directories so late workers cannot corrupt retries.
-- YouTube extraction pins `yt-dlp[default,deno]==2026.7.4`, bundles matching EJS
-  scripts plus Deno, leaves player-client selection to yt-dlp, and validates an
-  audio stream and container integrity with ffprobe before provider upload.
-  Corrupted/incomplete transfers are retryable download failures rather than
-  successful downloads that later fail inside Azure MAI.
+- YouTube extraction pins `yt-dlp[default]==2026.7.4`, bundles matching EJS
+  scripts plus a manifest-bound QuickJS-ng 0.15.0 wrapper/engine quartet, leaves
+  player-client selection to yt-dlp, and validates audio-stream and container
+  integrity with ffprobe before provider upload. Frozen builds never resolve a
+  raw QuickJS binary from `PATH`; in-place upgrades delete the exact superseded
+  Deno executable. Corrupted/incomplete transfers are retryable download
+  failures rather than successful downloads that later fail inside Azure MAI.
 - YouTube jobs now prefer manual or automatic caption tracks before downloading
   audio. The default-on preference is stored in runtime settings across installer
   upgrades, and missing or unreadable captions fall back to the audio path.

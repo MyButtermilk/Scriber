@@ -567,8 +567,15 @@ function Get-BackendRuntimeInputManifest {
     $inputPaths = @(
         "packaging\scriber-backend.spec",
         "packaging\backend-sidecar-output-contract.json",
+        "packaging\quickjs-youtube-runtime-lock-v1.json",
         "requirements-base.txt",
-        "requirements-build.txt"
+        "requirements-build.txt",
+        "scripts\build_quickjs_youtube_runtime.py",
+        "scripts\perf\profiles\installer-size\quickjs-runtime-lock-v1.json",
+        "native\scriber-quickjs-wrapper\Cargo.toml",
+        "native\scriber-quickjs-wrapper\Cargo.lock",
+        "native\scriber-quickjs-wrapper\src\lib.rs",
+        "native\scriber-quickjs-wrapper\src\main.rs"
     )
     $files = @(Get-InputFileEntries -Root $Root -RelativePaths $inputPaths)
     $files += @(Get-PythonFileEntries -Root $Root -RelativeDirectories @("backend_runtime", "pyloudnorm"))
@@ -630,8 +637,11 @@ function Get-SidecarInputManifest {
         }
         $resolvedYtDlp = Resolve-BackendStableMediaTool -Names @("yt-dlp.exe", "yt-dlp") -Python $PythonPath -ExpectedRuntimeCacheKey $RuntimeCacheKey
         $tools += Get-ToolMetadataEntry -Path $resolvedYtDlp -Name "yt-dlp"
-        $resolvedDeno = Resolve-BackendStableMediaTool -Names @("deno.exe", "deno") -Python $PythonPath -ExpectedRuntimeCacheKey $RuntimeCacheKey -Required
-        $tools += Get-ToolMetadataEntry -Path $resolvedDeno -Name "deno"
+        # This key is computed before the stable runtime cache necessarily
+        # exists. Bind every future QuickJS runtime file directly to the lock;
+        # RuntimeCacheKey binds the builder, wrapper sources, manifest, and
+        # protected upstream QuickJS provenance.
+        $tools += @(Get-QuickJsYoutubeRuntimeLockedFileMetadata -Root $Root)
     }
     return [ordered]@{
         apiVersion = "3"
@@ -721,7 +731,12 @@ function Test-BackendStableMediaFiles {
         $actualByPath[[string]$entry.path] = $entry
     }
     $seen = @{}
-    $denoFound = $false
+    $requiredQuickJsFiles = @{
+        "qjs.exe" = $false
+        "qjs-engine.exe" = $false
+        "license.quickjs-ng.txt" = $false
+        "js-runtime-manifest.json" = $false
+    }
     foreach ($entry in $expected) {
         $relative = [string](Get-ObjectPropertyValue -Object $entry -Name "path")
         $length = Get-ObjectPropertyValue -Object $entry -Name "length"
@@ -743,11 +758,12 @@ function Test-BackendStableMediaFiles {
             return $false
         }
         $seen[$relative] = $true
-        if ([System.IO.Path]::GetFileName($relative) -in @("deno", "deno.exe")) {
-            $denoFound = $true
+        $leaf = [System.IO.Path]::GetFileName($relative).ToLowerInvariant()
+        if ($requiredQuickJsFiles.ContainsKey($leaf)) {
+            $requiredQuickJsFiles[$leaf] = $true
         }
     }
-    return $denoFound
+    return -not ($requiredQuickJsFiles.Values -contains $false)
 }
 
 function Resolve-BackendSidecarCandidateMediaTool {
@@ -780,7 +796,7 @@ function Resolve-BackendSidecarCandidateMediaTool {
                     $stableMap = @{}
                     foreach ($entry in @($manifest.mediaFiles)) {
                         $leaf = [System.IO.Path]::GetFileName([string]$entry.path).ToLowerInvariant()
-                        if ($leaf -in @("deno", "deno.exe", "yt-dlp", "yt-dlp.exe")) {
+                        if ($leaf -in @("qjs.exe", "qjs-engine.exe", "license.quickjs-ng.txt", "js-runtime-manifest.json", "yt-dlp", "yt-dlp.exe")) {
                             $stableMap[$leaf] = [pscustomobject]@{
                                 path = Join-Path $backendDir ("tools\ffmpeg\{0}" -f [string]$entry.path)
                                 length = [int64]$entry.length
@@ -879,7 +895,8 @@ function Resolve-BackendStableMediaTool {
 function Initialize-BackendRuntimeStableMediaTools {
     param(
         [string]$CacheRoot,
-        [string]$Python
+        [string]$Python,
+        [string]$BuildWorkRoot
     )
 
     $stableRoot = Join-Path $CacheRoot "media-tools"
@@ -888,12 +905,13 @@ function Initialize-BackendRuntimeStableMediaTools {
         Remove-Item -LiteralPath $stableRoot -Recurse -Force
     }
     New-Item -ItemType Directory -Force -Path $stableRoot | Out-Null
-    $deno = Resolve-PythonInstalledTool -Names @("deno.exe", "deno") -Python $Python
-    if (-not $deno) {
-        throw "Deno was not installed with the frozen backend dependencies."
-    }
-    $denoName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "deno.exe" } else { "deno" }
-    Copy-Item -LiteralPath $deno -Destination (Join-Path $stableRoot $denoName) -Force
+    Invoke-QuickJsYoutubeRuntimeBuild `
+        -Python $Python `
+        -OutputPath (Join-Path $stableRoot "qjs.exe") `
+        -EngineOutputPath (Join-Path $stableRoot "qjs-engine.exe") `
+        -LicenseOutputPath (Join-Path $stableRoot "LICENSE.quickjs-ng.txt") `
+        -ManifestPath (Join-Path $stableRoot "js-runtime-manifest.json") `
+        -BuildWorkRoot $BuildWorkRoot
 
     $ytDlp = Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp") -SearchDir ""
     if ($ytDlp) {
@@ -1972,8 +1990,15 @@ function Test-SidecarTargetCurrent {
         if (-not $SkipBundledFfprobe -and -not (Test-Path -LiteralPath (Join-Path $TargetDir "tools\ffmpeg\ffprobe.exe") -PathType Leaf)) {
             return $false
         }
-        if (-not (Test-Path -LiteralPath (Join-Path $TargetDir "tools\ffmpeg\deno.exe") -PathType Leaf)) {
-            return $false
+        foreach ($requiredQuickJsPath in @(
+            "tools\ffmpeg\qjs.exe",
+            "tools\ffmpeg\qjs-engine.exe",
+            "tools\ffmpeg\LICENSE.quickjs-ng.txt",
+            "tools\ffmpeg\js-runtime-manifest.json"
+        )) {
+            if (-not (Test-Path -LiteralPath (Join-Path $TargetDir $requiredQuickJsPath) -PathType Leaf)) {
+                return $false
+            }
         }
         if ($ValidateSlimMediaTools -and -not (Test-Path -LiteralPath (Join-Path $TargetDir "tools\ffmpeg\ffmpeg-profile-manifest.json") -PathType Leaf)) {
             return $false
@@ -2419,6 +2444,100 @@ function Resolve-PythonInstalledTool {
     return Resolve-MediaTool -Names $Names -SearchDir ""
 }
 
+function Get-QuickJsYoutubeRuntimeLockedFileMetadata {
+    param([string]$Root)
+
+    $lockPath = Join-Path $Root "packaging\quickjs-youtube-runtime-lock-v1.json"
+    if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
+        throw "Missing QuickJS wrapper runtime lock: $lockPath"
+    }
+    $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+    if ([string](Get-ObjectPropertyValue -Object $lock -Name "contract") -ne "ScriberQuickJsWrapperRuntimeLockV1") {
+        throw "QuickJS wrapper runtime lock has an invalid contract."
+    }
+    $wrapper = Get-ObjectPropertyValue -Object $lock -Name "wrapper"
+    $output = Get-ObjectPropertyValue -Object $wrapper -Name "output"
+    $engine = Get-ObjectPropertyValue -Object $lock -Name "engine"
+    $license = Get-ObjectPropertyValue -Object $lock -Name "license"
+    $manifest = Get-ObjectPropertyValue -Object $lock -Name "manifestCanonicalSha256"
+    $rows = @(
+        [ordered]@{ name = "quickjs-wrapper"; value = $output },
+        [ordered]@{ name = "quickjs-engine"; value = $engine },
+        [ordered]@{ name = "quickjs-license"; value = $license }
+    )
+    foreach ($row in $rows) {
+        $length = Get-ObjectPropertyValue -Object $row.value -Name "length"
+        $sha256 = [string](Get-ObjectPropertyValue -Object $row.value -Name "sha256")
+        if ($null -eq $length -or [int64]$length -le 0 -or $sha256 -notmatch '^[0-9a-f]{64}$') {
+            throw "QuickJS wrapper runtime lock has an invalid $($row.name) identity."
+        }
+        [ordered]@{
+            name = $row.name
+            exists = $true
+            length = [int64]$length
+            sha256 = $sha256
+        }
+    }
+    if ([string]$manifest -notmatch '^[0-9a-f]{64}$') {
+        throw "QuickJS wrapper runtime lock has an invalid manifest identity."
+    }
+    [ordered]@{ name = "quickjs-manifest"; exists = $true; sha256 = [string]$manifest }
+}
+
+function Invoke-QuickJsYoutubeRuntimeBuild {
+    param(
+        [string]$Python,
+        [string]$OutputPath,
+        [string]$EngineOutputPath,
+        [string]$LicenseOutputPath,
+        [string]$ManifestPath,
+        [string]$BuildWorkRoot = "",
+        [switch]$VerifyOnly
+    )
+
+    $builder = Join-Path $RepoRoot "scripts\build_quickjs_youtube_runtime.py"
+    $lock = Join-Path $RepoRoot "packaging\quickjs-youtube-runtime-lock-v1.json"
+    if (-not (Test-Path -LiteralPath $builder -PathType Leaf)) {
+        throw "Missing QuickJS wrapper runtime builder: $builder"
+    }
+    if (-not (Test-Path -LiteralPath $lock -PathType Leaf)) {
+        throw "Missing QuickJS wrapper runtime lock: $lock"
+    }
+    Assert-UnderRoot -Root $RepoRoot -Path $OutputPath -Label "QuickJS wrapper output"
+    Assert-UnderRoot -Root $RepoRoot -Path $EngineOutputPath -Label "QuickJS engine output"
+    Assert-UnderRoot -Root $RepoRoot -Path $LicenseOutputPath -Label "QuickJS license output"
+    Assert-UnderRoot -Root $RepoRoot -Path $ManifestPath -Label "QuickJS runtime manifest"
+
+    $arguments = @(
+        $builder,
+        "--repo-root", $RepoRoot,
+        "--lock", $lock,
+        "--output", $OutputPath,
+        "--engine-output", $EngineOutputPath,
+        "--license-output", $LicenseOutputPath,
+        "--manifest", $ManifestPath
+    )
+    if ($VerifyOnly) {
+        $arguments += "--verify-only"
+    } else {
+        if (-not $BuildWorkRoot) {
+            throw "A QuickJS wrapper build work root is required."
+        }
+        Assert-UnderRoot -Root $RepoRoot -Path $BuildWorkRoot -Label "QuickJS wrapper build work root"
+        $arguments += @("--work-dir", $BuildWorkRoot)
+        if ($env:SCRIBER_QUICKJS_ENGINE_BIN) {
+            $arguments += @("--quickjs-engine", $env:SCRIBER_QUICKJS_ENGINE_BIN)
+        }
+        if ($env:SCRIBER_QUICKJS_LICENSE_FILE) {
+            $arguments += @("--quickjs-license", $env:SCRIBER_QUICKJS_LICENSE_FILE)
+        }
+    }
+    & $Python @arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Pinned QuickJS wrapper runtime build or verification failed."
+    }
+}
+
 function Test-MediaToolExecutable {
     param(
         [string]$Path,
@@ -2674,11 +2793,26 @@ function Copy-MediaTools {
         $copied += (Join-Path $toolsTarget (Split-Path $ytDlp -Leaf))
     }
 
-    $deno = Resolve-BackendStableMediaTool -Names @("deno.exe", "deno") -Python $PythonPath -ExpectedRuntimeCacheKey $runtimeCacheKey -Required
-    $copiedDeno = Join-Path $toolsTarget "deno.exe"
-    Copy-Item -LiteralPath $deno -Destination $copiedDeno -Force
-    Test-MediaToolExecutable -Path $copiedDeno -Name "deno" -VersionArguments @("--version")
-    $copied += $copiedDeno
+    $quickJs = Resolve-BackendStableMediaTool -Names @("qjs.exe") -Python $PythonPath -ExpectedRuntimeCacheKey $runtimeCacheKey -Required
+    $quickJsEngine = Resolve-BackendStableMediaTool -Names @("qjs-engine.exe") -Python $PythonPath -ExpectedRuntimeCacheKey $runtimeCacheKey -Required
+    $quickJsLicense = Resolve-BackendStableMediaTool -Names @("LICENSE.quickjs-ng.txt") -Python $PythonPath -ExpectedRuntimeCacheKey $runtimeCacheKey -Required
+    $jsRuntimeManifest = Resolve-BackendStableMediaTool -Names @("js-runtime-manifest.json") -Python $PythonPath -ExpectedRuntimeCacheKey $runtimeCacheKey -Required
+    $copiedQuickJs = Join-Path $toolsTarget "qjs.exe"
+    $copiedQuickJsEngine = Join-Path $toolsTarget "qjs-engine.exe"
+    $copiedQuickJsLicense = Join-Path $toolsTarget "LICENSE.quickjs-ng.txt"
+    $copiedJsRuntimeManifest = Join-Path $toolsTarget "js-runtime-manifest.json"
+    Copy-Item -LiteralPath $quickJs -Destination $copiedQuickJs -Force
+    Copy-Item -LiteralPath $quickJsEngine -Destination $copiedQuickJsEngine -Force
+    Copy-Item -LiteralPath $quickJsLicense -Destination $copiedQuickJsLicense -Force
+    Copy-Item -LiteralPath $jsRuntimeManifest -Destination $copiedJsRuntimeManifest -Force
+    $copied += $copiedQuickJs, $copiedQuickJsEngine, $copiedQuickJsLicense, $copiedJsRuntimeManifest
+    Invoke-QuickJsYoutubeRuntimeBuild `
+        -Python $PythonPath `
+        -OutputPath $copiedQuickJs `
+        -EngineOutputPath $copiedQuickJsEngine `
+        -LicenseOutputPath $copiedQuickJsLicense `
+        -ManifestPath $copiedJsRuntimeManifest `
+        -VerifyOnly
 
     return $copied
 }
@@ -3328,7 +3462,8 @@ if (-not $cacheHit) {
             }
             Initialize-BackendRuntimeStableMediaTools `
                 -CacheRoot $RuntimeCacheRoot `
-                -Python $PythonPath
+                -Python $PythonPath `
+                -BuildWorkRoot (Join-Path $WorkRoot "quickjs-youtube-runtime")
             Write-BackendRuntimeCacheMetadata `
                 -RuntimeDir $cachedRuntimeDir `
                 -RuntimeExe $cachedRuntimeExe `
@@ -3410,8 +3545,17 @@ if (-not $cacheHit -and ($BundleMediaTools -or $MediaToolsDir)) {
 }
 
 if ($BundleMediaTools -or $MediaToolsDir) {
-    $bundledDeno = Join-Path $sidecarDir "tools\ffmpeg\deno.exe"
-    Test-MediaToolExecutable -Path $bundledDeno -Name "deno" -VersionArguments @("--version")
+    $bundledQuickJs = Join-Path $sidecarDir "tools\ffmpeg\qjs.exe"
+    $bundledQuickJsEngine = Join-Path $sidecarDir "tools\ffmpeg\qjs-engine.exe"
+    $bundledQuickJsLicense = Join-Path $sidecarDir "tools\ffmpeg\LICENSE.quickjs-ng.txt"
+    $bundledJsRuntimeManifest = Join-Path $sidecarDir "tools\ffmpeg\js-runtime-manifest.json"
+    Invoke-QuickJsYoutubeRuntimeBuild `
+        -Python $PythonPath `
+        -OutputPath $bundledQuickJs `
+        -EngineOutputPath $bundledQuickJsEngine `
+        -LicenseOutputPath $bundledQuickJsLicense `
+        -ManifestPath $bundledJsRuntimeManifest `
+        -VerifyOnly
 }
 
 if ($cacheEnabled -and -not $cacheHit) {

@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-07-16
+Last verified: 2026-07-19
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -82,10 +82,13 @@ YouTube:
    persistent `youtubePreferCaptions` setting defaults to enabled in the writable
    runtime data directory. If no usable track exists, the job falls back to the
    configured STT provider and audio workflow.
-3. The fallback uses pinned current `yt-dlp`, bundled EJS challenge scripts,
-   Deno, and bundled ffmpeg/ffprobe. yt-dlp owns current YouTube player-client
-   selection; Scriber does not force stale client names. Every downloaded file
-   must pass ffprobe audio/structure validation before it can reach a provider.
+3. The fallback uses pinned current `yt-dlp`, bundled EJS challenge scripts, a
+   manifest-bound QuickJS-ng engine behind Scriber's bounded file-protocol
+   wrapper, and bundled ffmpeg/ffprobe. Frozen resolution accepts only the
+   four-file wrapper bundle under `tools/ffmpeg`, never a raw `qjs` from
+   `PATH`. yt-dlp owns current YouTube player-client selection; Scriber does not
+   force stale client names. Every downloaded file must pass ffprobe
+   audio/structure validation before it can reach a provider.
 4. Persistent job metadata tracks the caption preference, download, media
    preparation, transcription, summary, retry, resume, cancel, and completion.
 5. Transcript and summary are saved as a `youtube` transcript. A pending summary

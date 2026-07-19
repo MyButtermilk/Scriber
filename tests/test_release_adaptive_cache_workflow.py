@@ -283,10 +283,16 @@ def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
     media_root.mkdir(parents=True)
     executable = runtime_root / "scriber-backend.exe"
     runtime_data = internal / "runtime.dat"
-    deno = media_root / "deno.exe"
+    quickjs_files = {
+        "qjs.exe": b"stable-quickjs-wrapper",
+        "qjs-engine.exe": b"stable-quickjs-engine",
+        "LICENSE.quickjs-ng.txt": b"stable-quickjs-license",
+        "js-runtime-manifest.json": b"stable-quickjs-manifest",
+    }
     executable.write_bytes(b"frozen-python-launcher")
     runtime_data.write_bytes(b"stable-runtime-data")
-    deno.write_bytes(b"stable-deno-runtime")
+    for name, content in quickjs_files.items():
+        (media_root / name).write_bytes(content)
 
     input_manifest = {
         "runtimeContract": {
@@ -322,7 +328,12 @@ def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
         "inputManifest": input_manifest,
         "runtimeFiles": runtime_files,
         "stableMediaFiles": [
-            {"path": "media-tools/deno.exe", "length": deno.stat().st_size, "sha256": _sha256(deno)}
+            {
+                "path": f"media-tools/{name}",
+                "length": (media_root / name).stat().st_size,
+                "sha256": _sha256(media_root / name),
+            }
+            for name in quickjs_files
         ],
     }
     (runtime_root / "runtime-layer-manifest.json").write_text(

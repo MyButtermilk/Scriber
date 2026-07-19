@@ -115,14 +115,21 @@ COMPONENT_GROUPS: dict[str, dict[str, Any]] = {
         "requiredPaths": ("_internal/grpc",),
         "reason": "Google Cloud STT gRPC runtime support; Google Python modules may be embedded in the PYZ archive",
     },
-    "pillow": {
-        "paths": ("_internal/PIL",),
-        "requiredPaths": ("_internal/PIL",),
-        "disallowedPaths": (
-            "_internal/PIL/AvifImagePlugin.py",
-            "_internal/PIL/_avif.cp313-win_amd64.pyd",
+    "legacyExportStack": {
+        "paths": (
+            "_internal/PIL",
+            "_internal/docx",
+            "_internal/lxml",
+            "_internal/reportlab",
         ),
-        "reason": "Pillow runtime for image/export handling without unused AVIF binary support",
+        "requiredPaths": (),
+        "disallowedPaths": (
+            "_internal/PIL",
+            "_internal/docx",
+            "_internal/lxml",
+            "_internal/reportlab",
+        ),
+        "reason": "Disallowed legacy PDF/DOCX dependencies; text export is standard-library-only",
     },
 }
 
@@ -428,9 +435,9 @@ def build_report(
             top_files_limit=top_files_limit,
             max_mb=max_google_grpc_mb,
         ),
-        "pillow": summarize_component(
-            "pillow",
-            COMPONENT_GROUPS["pillow"],
+        "legacyExportStack": summarize_component(
+            "legacyExportStack",
+            COMPONENT_GROUPS["legacyExportStack"],
             sidecar_dir=sidecar_dir,
             top_files_limit=top_files_limit,
             max_mb=max_pillow_mb,

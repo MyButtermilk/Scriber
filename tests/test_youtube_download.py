@@ -213,6 +213,8 @@ def test_structured_caption_parser_rejects_malformed_or_untimed_payloads(
 async def test_download_youtube_transcript_returns_none_for_untimed_caption_track(
     monkeypatch,
 ):
+    captured_options: dict = {}
+
     class FakeResponse:
         def __enter__(self):
             return self
@@ -224,8 +226,8 @@ async def test_download_youtube_transcript_returns_none_for_untimed_caption_trac
             return b'{"events":[{"segs":[{"utf8":"text only"}]}]}'
 
     class FakeYoutubeDL:
-        def __init__(self, _options):
-            pass
+        def __init__(self, options):
+            captured_options.update(options)
 
         def __enter__(self):
             return self
@@ -256,8 +258,14 @@ async def test_download_youtube_transcript_returns_none_for_untimed_caption_trac
     networking_module.Request = FakeRequest
     monkeypatch.setitem(sys.modules, "yt_dlp", yt_dlp_module)
     monkeypatch.setitem(sys.modules, "yt_dlp.networking", networking_module)
+    monkeypatch.setattr(
+        "src.youtube_download._apply_youtube_only_runtime_policy", lambda: None
+    )
 
     assert await download_youtube_transcript("https://example.test/video") is None
+    assert captured_options["allowed_extractors"] == [r"youtube.*"]
+    assert captured_options["remote_components"] == []
+    assert captured_options["js_runtimes"] == {}
 
 
 @pytest.mark.asyncio
@@ -323,7 +331,7 @@ async def test_download_youtube_audio_parses_output_path(tmp_path: Path):
                 with patch(
                     "src.youtube_download.asyncio.create_subprocess_exec",
                     new=AsyncMock(return_value=_DummyProc(stdout=str(out_file), stderr="", returncode=0)),
-                ):
+                ) as exec_mock:
                     with patch(
                         "src.youtube_download._ensure_audio_only_file",
                         new=AsyncMock(return_value=ensured),
@@ -332,6 +340,12 @@ async def test_download_youtube_audio_parses_output_path(tmp_path: Path):
 
     assert got == ensured
     ensure_mock.assert_awaited_once_with(out_file.resolve())
+    command = exec_mock.await_args.args
+    assert "--no-config" in command
+    assert "--no-plugin-dirs" in command
+    assert "--no-remote-components" in command
+    assert command[command.index("--use-extractors") + 1] == "youtube.*"
+    assert command.count("--no-js-runtimes") == 1
 
 
 @pytest.mark.asyncio
@@ -373,7 +387,7 @@ async def test_download_youtube_audio_subprocess_falls_back_on_unavailable_forma
 
 
 @pytest.mark.asyncio
-async def test_download_youtube_audio_uses_deno_and_current_default_clients(
+async def test_download_youtube_audio_uses_quickjs_and_current_default_clients(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -400,10 +414,15 @@ async def test_download_youtube_audio_uses_deno_and_current_default_clients(
             return {"id": "video-id", "ext": "webm"}
 
     monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
-    deno_path = tmp_path / "deno.exe"
-    deno_path.write_bytes(b"deno")
+    monkeypatch.setattr(
+        "src.youtube_download._apply_youtube_only_runtime_policy", lambda: None
+    )
+    quickjs_path = tmp_path / "qjs.exe"
+    quickjs_path.write_bytes(b"quickjs")
     with patch("src.youtube_download._require_ffmpeg"):
-        with patch("src.youtube_download.find_media_tool", return_value=str(deno_path)):
+        with patch(
+            "src.youtube_download.find_media_tool", return_value=str(quickjs_path)
+        ):
             with patch(
                 "src.youtube_download._ensure_audio_only_file",
                 new=AsyncMock(side_effect=lambda path: path),
@@ -416,7 +435,7 @@ async def test_download_youtube_audio_uses_deno_and_current_default_clients(
     assert result.name == "video-id.webm"
     assert "extractor_args" not in captured_options
     assert captured_options["js_runtimes"] == {
-        "deno": {"path": str(deno_path)}
+        "quickjs": {"path": str(quickjs_path)}
     }
     assert captured_options["concurrent_fragment_downloads"] == 4
     assert captured_options["noprogress"] is True
@@ -424,6 +443,139 @@ async def test_download_youtube_audio_uses_deno_and_current_default_clients(
     assert captured_options["retries"] == 3
     assert captured_options["fragment_retries"] == 3
     assert captured_options["extractor_retries"] == 3
+    assert captured_options["allowed_extractors"] == [r"youtube.*"]
+    assert captured_options["remote_components"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_library", [True, False], ids=["library", "subprocess-fallback"])
+async def test_download_youtube_audio_attests_quickjs_without_blocking_event_loop(
+    monkeypatch,
+    tmp_path: Path,
+    use_library: bool,
+):
+    """A timeout-like bound self-test must never stall aiohttp's event loop."""
+
+    from src.runtime import media_tools
+
+    app_root = tmp_path / "app"
+    quickjs_path = app_root / "tools" / "ffmpeg" / "qjs.exe"
+    quickjs_path.parent.mkdir(parents=True)
+    quickjs_path.write_bytes(b"locked wrapper identity is stubbed below")
+
+    self_test_started = threading.Event()
+    self_test_finished = threading.Event()
+    release_self_test = threading.Event()
+    heartbeat_observed = asyncio.Event()
+    self_test_candidates: list[Path] = []
+
+    def timeout_like_self_test(candidate: Path) -> bool:
+        assert candidate == quickjs_path.resolve()
+        self_test_candidates.append(candidate)
+        self_test_started.set()
+        # If resolution accidentally runs on the event-loop thread, the
+        # heartbeat cannot release this gate before its bounded timeout.
+        released_by_heartbeat = release_self_test.wait(timeout=2.0)
+        self_test_finished.set()
+        return released_by_heartbeat
+
+    async def event_loop_heartbeat() -> None:
+        while not self_test_started.is_set():
+            await asyncio.sleep(0)
+        if not self_test_finished.is_set():
+            heartbeat_observed.set()
+            release_self_test.set()
+
+    monkeypatch.setattr(media_tools, "is_frozen", lambda: True)
+    monkeypatch.setattr(media_tools, "app_root", lambda: app_root)
+    monkeypatch.setattr(
+        media_tools,
+        "_locked_runtime_file_matches",
+        lambda _parent, _identity: True,
+    )
+    monkeypatch.setattr(media_tools, "_quickjs_self_test_matches", timeout_like_self_test)
+    monkeypatch.setattr(
+        "src.youtube_download._apply_youtube_only_runtime_policy", lambda: None
+    )
+
+    out_file = tmp_path / "downloaded.webm"
+    out_file.write_bytes(b"audio")
+    captured_options: dict = {}
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            captured_options.update(options)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, _url, *, download):
+            assert download is True
+            output_path = Path(
+                captured_options["outtmpl"]
+                .replace("%(id)s", "video-id")
+                .replace("%(ext)s", "webm")
+            )
+            output_path.write_bytes(b"audio")
+            return {"id": "video-id", "ext": "webm"}
+
+    real_import = builtins.__import__
+
+    def import_with_optional_fallback(name, *args, **kwargs):
+        if name == "yt_dlp" and not use_library:
+            raise ImportError("exercise subprocess fallback")
+        return real_import(name, *args, **kwargs)
+
+    if use_library:
+        monkeypatch.setitem(
+            sys.modules,
+            "yt_dlp",
+            types.SimpleNamespace(YoutubeDL=FakeYoutubeDL),
+        )
+
+    heartbeat_task = asyncio.create_task(event_loop_heartbeat())
+    with patch("builtins.__import__", side_effect=import_with_optional_fallback):
+        with patch("src.youtube_download._require_ffmpeg"):
+            with patch(
+                "src.youtube_download.asyncio.create_subprocess_exec",
+                new=AsyncMock(
+                    return_value=_DummyProc(
+                        stdout=str(out_file),
+                        stderr="",
+                        returncode=0,
+                    )
+                ),
+            ) as subprocess_exec:
+                with patch(
+                    "src.youtube_download._ensure_audio_only_file",
+                    new=AsyncMock(side_effect=lambda path: path),
+                ):
+                    result = await asyncio.wait_for(
+                        download_youtube_audio(
+                            "https://www.youtube.com/watch?v=video-id",
+                            output_dir=tmp_path / "downloads",
+                        ),
+                        timeout=3.0,
+                    )
+
+    await asyncio.wait_for(heartbeat_task, timeout=3.0)
+    assert heartbeat_observed.is_set()
+    assert self_test_finished.is_set()
+    assert self_test_candidates == [quickjs_path.resolve()]
+    if use_library:
+        assert result.name == "video-id.webm"
+        assert captured_options["js_runtimes"] == {
+            "quickjs": {"path": str(quickjs_path.resolve())}
+        }
+        subprocess_exec.assert_not_awaited()
+    else:
+        assert result == out_file.resolve()
+        command = subprocess_exec.await_args.args
+        runtime_index = command.index("--js-runtimes")
+        assert command[runtime_index + 1] == f"quickjs:{quickjs_path.resolve()}"
 
 
 @pytest.mark.asyncio
@@ -443,6 +595,9 @@ async def test_download_youtube_audio_library_failure_cleans_attempt_directory(m
             raise RuntimeError("synthetic yt-dlp failure")
 
     monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+    monkeypatch.setattr(
+        "src.youtube_download._apply_youtube_only_runtime_policy", lambda: None
+    )
     with patch("src.youtube_download._require_ffmpeg"):
         with pytest.raises(RuntimeError, match="synthetic yt-dlp failure"):
             await download_youtube_audio("https://example.com", output_dir=tmp_path)
@@ -609,6 +764,9 @@ async def test_download_youtube_audio_library_stops_worker_on_cancel(monkeypatch
                 stopped.set()
 
     monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+    monkeypatch.setattr(
+        "src.youtube_download._apply_youtube_only_runtime_policy", lambda: None
+    )
     with patch("src.youtube_download._require_ffmpeg"):
         task = asyncio.create_task(
             download_youtube_audio("https://example.com", output_dir=tmp_path)

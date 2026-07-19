@@ -328,7 +328,14 @@ foreach ($path in @(
     "requirements-base.txt",
     "requirements-build.txt",
     "packaging/scriber-backend.spec",
-    "packaging/backend-sidecar-output-contract.json"
+    "packaging/backend-sidecar-output-contract.json",
+    "packaging/quickjs-youtube-runtime-lock-v1.json",
+    "scripts/build_quickjs_youtube_runtime.py",
+    "scripts/perf/profiles/installer-size/quickjs-runtime-lock-v1.json",
+    "native/scriber-quickjs-wrapper/Cargo.toml",
+    "native/scriber-quickjs-wrapper/Cargo.lock",
+    "native/scriber-quickjs-wrapper/src/lib.rs",
+    "native/scriber-quickjs-wrapper/src/main.rs"
 )) {
     Add-RawFileEntry -Entries $backendRuntimeEntries -Path $path
 }

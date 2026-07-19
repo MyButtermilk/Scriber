@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-07-16
+Last verified: 2026-07-19
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -63,8 +63,11 @@ Backend and runtime:
   private PortAudio-to-native endpoint mapping with redacted endpoint hashes.
 - `src/audio_file_input.py`, `src/youtube_download.py`, `src/runtime/media_tools.py`:
   ffmpeg/ffprobe resolution and media preparation. YouTube extraction uses the
-  pinned yt-dlp/EJS/Deno runtime and validates downloaded audio before provider
-  upload.
+  pinned yt-dlp/EJS/QuickJS-ng runtime and validates downloaded audio before
+  provider upload. Frozen builds accept only the complete manifest-bound
+  wrapper bundle under `tools/ffmpeg`; source runs may use the explicit
+  `SCRIBER_QUICKJS_DEV_WRAPPER_PATH` override, but never an arbitrary `qjs`
+  from `PATH`.
 - `src/database.py`: SQLite WAL persistence, metadata loading, FTS5 search.
 - `src/data/job_store.py`: persistent file/YouTube jobs.
 - `src/data/latency_metrics_store.py`: hot-path metrics.
@@ -132,6 +135,11 @@ Frontend and shell:
 Packaging and scripts:
 
 - `packaging/scriber-backend.spec`: PyInstaller onedir backend sidecar spec.
+- `packaging/quickjs-youtube-runtime-lock-v1.json`,
+  `native/scriber-quickjs-wrapper/`, and
+  `scripts/build_quickjs_youtube_runtime.py`: byte-locked QuickJS-ng engine,
+  bounded yt-dlp file-protocol wrapper, deterministic engine hardening, and
+  offline-capable four-file YouTube JavaScript runtime preparation.
 - `scripts/build_tauri_backend_sidecar.ps1`: sidecar build, runtime import
   checks, media-tool bundling, optional cache reuse.
 - `scripts/build_windows.ps1`: Windows installer orchestration. Official GitHub
@@ -154,7 +162,10 @@ Packaging and scripts:
   inventory-, functional-, upgrade/uninstall-, YouTube-runtime-, and install-
   timing evidence. Promotion still requires two fresh final inventories plus
   the counterbalanced install-timing evidence. It is an unsigned local research
-  workflow only; never treat its artifacts as signed release evidence.
+  workflow only; never treat its artifacts as signed release evidence. The
+  byte-locked profile inputs, validators, legacy Deno wrapper, and current
+  QuickJS build inputs are forced to LF by `.gitattributes`; preserve those
+  rules so a Windows `core.autocrlf` checkout cannot invalidate raw-byte locks.
 - `native/scriber-diarization-sidecar/`: isolated, statically linked
   Sherpa-ONNX worker; release preparation stages its attested EXE under backend
   `tools/diarization`. Its worker cache and pinned Sherpa archive cache remain
@@ -864,7 +875,14 @@ Packaging and scripts:
   Transcriptions HTTP adapter with `gpt-4o-mini-transcribe-2025-12-15`. Keep
   the explicit `openai` SDK and `websockets` dependencies for these paths.
   Groq STT uses Pipecat's `groq` SDK dependency, and Pipecat provider imports
-  require `nltk` at runtime. Gladia live transcription uses
+  require `nltk` at runtime. The frozen `punkt_tab` data keeps only the complete
+  English and German models. Pipecat 1.5's sentence-boundary utility calls
+  `sent_tokenize(text)` without a language argument, so provider support for
+  Spanish, French, Italian, Portuguese, Dutch, or auto-detected speech must not
+  be conflated with a requirement to bundle those unused Punkt models. Frozen
+  gates must explicitly load English and German from the bundle, reject any
+  third language directory, and forbid NLTK download fallback. Gladia live
+  transcription uses
   Pipecat's Gladia service; Gladia file and YouTube transcription use the
   direct pre-recorded HTTP upload/polling API and should not be routed through
   the live WebSocket pipeline. The direct async adapters
@@ -898,12 +916,27 @@ Packaging and scripts:
   default. Keep `youtubePreferCaptions` persistent in writable runtime settings,
   fall back to provider audio transcription when captions are unavailable, and
   do not expose the preference as an inline control on the YouTube page.
-- Standard YouTube builds pin `yt-dlp[default,deno]==2026.7.4` with matching
-  `yt-dlp-ejs==0.8.0` and bundled Deno `2.9.2`. Let current yt-dlp defaults
-  select YouTube player clients; do not restore the stale forced `android,web`
-  client pair. Every returned download must pass ffprobe container and audio
-  stream validation before transcription. Keep malformed/incomplete downloads
-  retryable and never report them as download success.
+- Standard YouTube builds pin `yt-dlp[default]==2026.7.4` with matching
+  `yt-dlp-ejs==0.8.0` and the locked QuickJS-ng `0.15.0` engine behind
+  `scriber-quickjs-wrapper`. Stage `qjs.exe`, `qjs-engine.exe`,
+  `LICENSE.quickjs-ng.txt`, and `js-runtime-manifest.json` as one indivisible
+  bundle. The wrapper accepts only the exact `--script FILE` protocol, verifies
+  the patched engine identity, bounds input/output/memory/runtime, prevents
+  native module and secondary-process use, and cleans up its child through a
+  Windows job. Keep its internal timeout/child-reap and capability-boundary
+  tests in the build verifier. Frozen resolution must bind the wrapper, engine,
+  manifest, and license to the committed app-layer trust root and require the
+  exact wrapper self-test; the installed manifest must never authenticate its
+  own file identities. Run that synchronous attestation off the aiohttp event
+  loop and reuse its result for yt-dlp's library and subprocess fallback paths.
+  Do not fall back to a raw QuickJS executable.
+  The NSIS postinstall hook must continue deleting exactly the superseded
+  `backend\tools\ffmpeg\deno.exe` so an in-place upgrade matches a clean install.
+  Let current yt-dlp defaults select YouTube player clients; do not restore the
+  stale forced `android,web` client pair. Every returned download must pass
+  ffprobe container and audio stream validation before transcription. Keep
+  malformed/incomplete downloads retryable and never report them as download
+  success.
 - Keep PySide6, customtkinter, and Tk overlay fallbacks out of the standard
   sidecar. Installed recording overlay rendering is owned by Tauri/Rust.
 
@@ -1215,7 +1248,8 @@ Already implemented and should not be regressed:
   every startup and tab preload.
 - Layered backend caches avoid PyInstaller when only application code changes.
   `build\tauri-sidecar-runtime-cache` contains the stable frozen Python runtime
-  plus exact file-integrity metadata and stable Deno/yt-dlp media executables;
+  plus exact file-integrity metadata and stable QuickJS-wrapper/yt-dlp media
+  executables;
   tracked current `src` files are staged separately under `backend\app` with a
   concrete-version manifest. The full sidecar key uses media-tool content
   hashes instead of timestamps. Both the internal manifests and
