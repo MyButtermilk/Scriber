@@ -58,6 +58,92 @@ REQUIRED_PACKAGE_VERSIONS: tuple[tuple[str, str], ...] = (
     ("yt-dlp-ejs", "0.8.0"),
 )
 
+SENTENCE_SEGMENTATION_PROBES: tuple[tuple[str, str, str], ...] = (
+    (
+        "english_abbreviation",
+        "Dr. Smith arrived. The meeting started.",
+        "Dr. Smith arrived.",
+    ),
+    (
+        "decimal",
+        "The value is 3.14. Next item.",
+        "The value is 3.14.",
+    ),
+    (
+        "german_abbreviation",
+        "Dr. Müller kommt. Danach geht es weiter.",
+        "Dr. Müller kommt.",
+    ),
+    ("cjk_punctuation", "これは文です。次です", "これは文です。"),
+    ("arabic_punctuation", "مرحبا؟التالي", "مرحبا؟"),
+)
+
+
+def check_sentence_segmentation(
+    *,
+    import_module: Callable[[str], object] = importlib.import_module,
+    frozen: bool | None = None,
+    frozen_root: Path | None = None,
+) -> list[dict[str, str]]:
+    """Exercise the bundled NLTK data through Pipecat without network fallback."""
+
+    nltk_module: object | None = None
+    original_download: object | None = None
+    try:
+        nltk_module = import_module("nltk")
+        nltk_data = getattr(nltk_module, "data")
+        nltk_data_path = getattr(nltk_data, "path")
+        is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
+        if is_frozen:
+            root = frozen_root
+            if root is None:
+                raw_root = getattr(sys, "_MEIPASS", None)
+                if not isinstance(raw_root, (str, bytes)):
+                    raise RuntimeError("frozen runtime has no bundled data root")
+                root = Path(raw_root)
+            bundled_nltk_data = root / "nltk_data"
+            if not bundled_nltk_data.is_dir():
+                raise RuntimeError("bundled nltk_data directory is missing")
+            # Replace, rather than prepend to, the search list so a developer or
+            # user cache can never make an incomplete frozen bundle look valid.
+            nltk_data_path[:] = [str(bundled_nltk_data)]
+
+        original_download = getattr(nltk_module, "download")
+        if not callable(original_download):
+            raise RuntimeError("NLTK downloader boundary is unavailable")
+
+        def reject_download(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("NLTK download fallback was attempted")
+
+        setattr(nltk_module, "download", reject_download)
+        pipecat_string = import_module("pipecat.utils.string")
+        match_endofsentence = getattr(pipecat_string, "match_endofsentence")
+        if not callable(match_endofsentence):
+            raise RuntimeError("Pipecat sentence segmenter is unavailable")
+
+        for label, text, expected_first_sentence in SENTENCE_SEGMENTATION_PROBES:
+            expected_end = len(expected_first_sentence)
+            actual_end = match_endofsentence(text)
+            if actual_end != expected_end:
+                raise RuntimeError(
+                    f"sentence segmentation probe {label} returned {actual_end!r}; "
+                    f"expected {expected_end}"
+                )
+    except Exception as exc:
+        return [
+            {
+                "module": "pipecat.utils.string.match_endofsentence",
+                "reason": "bundled NLTK/Pipecat sentence segmentation runtime",
+                # Keep frozen diagnostics independent of install paths and user data.
+                "error": f"{type(exc).__name__}: sentence segmentation probe failed",
+            }
+        ]
+    finally:
+        if nltk_module is not None and callable(original_download):
+            setattr(nltk_module, "download", original_download)
+
+    return []
+
 
 def check_imports(
     imports: Iterable[tuple[str, str]] = REQUIRED_IMPORTS,
@@ -107,7 +193,14 @@ def check_package_versions(
 
 
 def check_runtime_requirements() -> list[dict[str, str]]:
-    return [*check_imports(), *check_package_versions()]
+    segmentation_failures = check_sentence_segmentation()
+    version_failures = check_package_versions()
+    if segmentation_failures:
+        # Pipecat's module import attempts an NLTK download when punkt data is
+        # absent. Do not run the broader imports after the no-network gate has
+        # failed, or that fallback could mask a broken frozen bundle.
+        return [*segmentation_failures, *version_failures]
+    return [*check_imports(), *version_failures]
 
 
 def main() -> int:

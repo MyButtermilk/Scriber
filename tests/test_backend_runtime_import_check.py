@@ -4,12 +4,17 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+from scripts import check_backend_runtime_imports as runtime_import_checks
 from scripts.check_backend_runtime_imports import (
     REQUIRED_IMPORTS,
     REQUIRED_PACKAGE_VERSIONS,
+    SENTENCE_SEGMENTATION_PROBES,
     check_imports,
     check_package_versions,
+    check_runtime_requirements,
+    check_sentence_segmentation,
 )
 from backend_runtime.contract import RUNTIME_CONTRACT_REVISION, RUNTIME_REQUIRED_IMPORTS
 
@@ -112,6 +117,127 @@ def test_backend_runtime_import_check_rejects_stale_pipecat():
             "error": "VersionMismatch: installed 0.0.95",
         }
     ]
+
+
+def test_backend_runtime_import_check_exercises_sentence_segmentation():
+    assert {label for label, _text, _expected in SENTENCE_SEGMENTATION_PROBES} == {
+        "english_abbreviation",
+        "decimal",
+        "german_abbreviation",
+        "cjk_punctuation",
+        "arabic_punctuation",
+    }
+    assert check_sentence_segmentation(frozen=False) == []
+
+
+def test_frozen_sentence_check_uses_only_bundled_nltk_data(tmp_path):
+    bundled_nltk_data = tmp_path / "nltk_data"
+    bundled_nltk_data.mkdir()
+    original_download_calls: list[str] = []
+
+    def original_download(name: str) -> bool:
+        original_download_calls.append(name)
+        return True
+
+    fake_nltk = SimpleNamespace(
+        data=SimpleNamespace(path=["user-cache", "developer-cache"]),
+        download=original_download,
+    )
+    expected_ends = {
+        text: len(expected)
+        for _label, text, expected in SENTENCE_SEGMENTATION_PROBES
+    }
+    observed_paths: list[list[str]] = []
+
+    def fake_import(module_name: str) -> object:
+        if module_name == "nltk":
+            return fake_nltk
+        if module_name == "pipecat.utils.string":
+            observed_paths.append(list(fake_nltk.data.path))
+            assert fake_nltk.download is not original_download
+            return SimpleNamespace(
+                match_endofsentence=lambda text: expected_ends[text]
+            )
+        raise AssertionError(f"unexpected import: {module_name}")
+
+    assert (
+        check_sentence_segmentation(
+            import_module=fake_import,
+            frozen=True,
+            frozen_root=tmp_path,
+        )
+        == []
+    )
+    assert observed_paths == [[str(bundled_nltk_data)]]
+    assert fake_nltk.data.path == [str(bundled_nltk_data)]
+    assert fake_nltk.download is original_download
+    assert original_download_calls == []
+
+
+def test_frozen_sentence_check_rejects_download_fallback(tmp_path):
+    bundled_nltk_data = tmp_path / "nltk_data"
+    bundled_nltk_data.mkdir()
+    original_download_calls: list[str] = []
+
+    def original_download(name: str) -> bool:
+        original_download_calls.append(name)
+        return True
+
+    fake_nltk = SimpleNamespace(
+        data=SimpleNamespace(path=["user-cache"]),
+        download=original_download,
+    )
+
+    def fake_import(module_name: str) -> object:
+        if module_name == "nltk":
+            return fake_nltk
+        if module_name == "pipecat.utils.string":
+            fake_nltk.download("punkt_tab")
+        raise AssertionError(f"unexpected import: {module_name}")
+
+    failures = check_sentence_segmentation(
+        import_module=fake_import,
+        frozen=True,
+        frozen_root=tmp_path,
+    )
+
+    assert failures == [
+        {
+            "module": "pipecat.utils.string.match_endofsentence",
+            "reason": "bundled NLTK/Pipecat sentence segmentation runtime",
+            "error": "RuntimeError: sentence segmentation probe failed",
+        }
+    ]
+    assert fake_nltk.data.path == [str(bundled_nltk_data)]
+    assert fake_nltk.download is original_download
+    assert original_download_calls == []
+
+
+def test_runtime_requirements_stop_before_pipecat_imports_when_sentence_gate_fails(
+    monkeypatch,
+):
+    failure = {
+        "module": "pipecat.utils.string.match_endofsentence",
+        "reason": "bundled NLTK/Pipecat sentence segmentation runtime",
+        "error": "LookupError: sentence segmentation probe failed",
+    }
+    monkeypatch.setattr(
+        runtime_import_checks,
+        "check_sentence_segmentation",
+        lambda: [failure],
+    )
+    monkeypatch.setattr(
+        runtime_import_checks,
+        "check_imports",
+        lambda: (_ for _ in ()).throw(AssertionError("imports must not run")),
+    )
+    monkeypatch.setattr(
+        runtime_import_checks,
+        "check_package_versions",
+        lambda: [],
+    )
+
+    assert check_runtime_requirements() == [failure]
 
 
 def test_standard_requirements_include_audio_runtime_dependencies():
