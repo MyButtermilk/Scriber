@@ -24,20 +24,6 @@ def exclude_datas(datas, excluded_destination_prefixes):
     return filtered
 
 
-def exclude_pure_modules(pure, excluded_module_prefixes):
-    excluded = tuple(str(prefix).rstrip(".") for prefix in excluded_module_prefixes)
-    filtered = []
-    for entry in pure:
-        module_name = str(entry[0])
-        if any(
-            module_name == prefix or module_name.startswith(prefix + ".")
-            for prefix in excluded
-        ):
-            continue
-        filtered.append(entry)
-    return filtered
-
-
 hiddenimports = [module for module, _reason in RUNTIME_REQUIRED_IMPORTS]
 hiddenimports += [
     "pyloudnorm",
@@ -194,22 +180,6 @@ a = Analysis(
     ],
     noarchive=False,
     optimize=0,
-)
-# These modules enter the graph through packaging helpers, broad third-party
-# collection hooks, or package-local test support. None is part of Scriber's
-# frozen runtime contract. Mutate the TOC in place so PyInstaller keeps the
-# code-cache association keyed to this exact list object.
-a.pure[:] = exclude_pure_modules(
-    a.pure,
-    (
-        "PyInstaller",
-        "keyboard._keyboard_tests",
-        "keyboard._mouse_tests",
-        "lxml.doctestcompare",
-        "pygments",
-        "reportlab.graphics.testshapes",
-        "yt_dlp.__pyinstaller",
-    ),
 )
 pyz = PYZ(a.pure)
 exe = EXE(

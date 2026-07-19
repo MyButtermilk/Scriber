@@ -434,45 +434,6 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert 'Test-MediaToolExecutable -Path $copiedDeno -Name "deno"' in build_script
 
 
-def test_sidecar_spec_prunes_only_exact_build_and_test_pyz_prefixes():
-    repo_root = Path(__file__).resolve().parents[1]
-    spec = (repo_root / "packaging" / "scriber-backend.spec").read_text(
-        encoding="utf-8"
-    )
-
-    expected_prefixes = (
-        "PyInstaller",
-        "keyboard._keyboard_tests",
-        "keyboard._mouse_tests",
-        "lxml.doctestcompare",
-        "pygments",
-        "reportlab.graphics.testshapes",
-        "yt_dlp.__pyinstaller",
-    )
-    filter_call = spec.split("a.pure[:] = exclude_pure_modules(", 1)[1].split(
-        "\n)\npyz = PYZ(a.pure)", 1
-    )[0]
-
-    assert "def exclude_pure_modules(" in spec
-    assert 'module_name == prefix or module_name.startswith(prefix + ".")' in spec
-    assert "a.pure[:] = exclude_pure_modules(" in spec
-    assert spec.index("a.pure[:] = exclude_pure_modules(") < spec.index(
-        "pyz = PYZ(a.pure)"
-    )
-    for prefix in expected_prefixes:
-        assert f'"{prefix}"' in filter_call
-    for retained_prefix in (
-        "setuptools",
-        "_distutils_hack",
-        "numpy",
-        "cffi",
-        "httpx",
-        "packaging",
-        "yt_dlp",
-    ):
-        assert f'"{retained_prefix}"' not in filter_call
-
-
 def test_backend_media_resolution_supports_fresh_full_and_runtime_cache_hits():
     repo_root = Path(__file__).resolve().parents[1]
     build_script = (
