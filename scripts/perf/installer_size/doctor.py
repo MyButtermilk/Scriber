@@ -1020,46 +1020,40 @@ def validate_preflight_record(context, evidence: dict[str, str]) -> list[dict[st
 def validate_baseline_state(context) -> list[dict[str, Any]]:
     paths = paths_for(context)
     findings: list[dict[str, Any]] = []
-    replicas: list[dict[str, Any]] = []
-    for index in (1, 2):
-        payload, errors = _load_optional(
-            paths.baseline_replica(index),
-            code="baseline_replica_missing_or_invalid",
-            label=f"baseline replica {index} is unavailable",
-        )
-        findings.extend(errors)
-        if payload is not None:
-            replicas.append(payload)
+    inventory, errors = _load_optional(
+        paths.baseline_replica(1),
+        code="baseline_inventory_missing_or_invalid",
+        label="baseline inventory is unavailable",
+    )
+    findings.extend(errors)
     baseline, errors = _load_optional(
         paths.baseline,
         code="baseline_summary_missing_or_invalid",
         label="accepted baseline summary is unavailable",
     )
     findings.extend(errors)
-    if baseline is None or len(replicas) != 2:
+    if baseline is None or inventory is None:
         return findings
     try:
         expected = accept_baseline(
-            replicas[0],
-            replicas[1],
+            inventory,
             first_inventory_sha256=file_sha256(paths.baseline_replica(1)),
-            second_inventory_sha256=file_sha256(paths.baseline_replica(2)),
         )
     except InventoryError as exc:
         return [
             *findings,
             finding(
                 "block",
-                "baseline_replica_contract_mismatch",
-                f"the authoritative baseline evaluator rejected a replica: {exc}",
+                "baseline_inventory_contract_mismatch",
+                f"the authoritative baseline evaluator rejected the inventory: {exc}",
             ),
         ]
     if expected.get("accepted") is not True:
         findings.append(
             finding(
                 "block",
-                "baseline_reproducibility_failed",
-                "the authoritative baseline evaluator rejected the replica pair",
+                "baseline_inventory_rejected",
+                "the authoritative baseline evaluator rejected the baseline inventory",
                 reasonCodes=expected.get("reasonCodes", []),
             )
         )
@@ -1070,7 +1064,7 @@ def validate_baseline_state(context) -> list[dict[str, Any]]:
             finding(
                 "block",
                 "baseline_summary_binding_mismatch",
-                "baseline.json does not equal the authoritative acceptance result for its two replicas",
+                "baseline.json does not equal the authoritative acceptance result for its inventory",
             )
         )
     try:
@@ -1082,7 +1076,7 @@ def validate_baseline_state(context) -> list[dict[str, Any]]:
             finding(
                 "block",
                 "baseline_installed_payload_missing",
-                "installer-size baseline replicas must include the installed payload inventory",
+                "the installer-size baseline must include the installed payload inventory",
             )
         )
     expected_evaluator = current_installer_evaluator_hash(context.repo_root)

@@ -3,7 +3,7 @@
   "profile": "installer-size",
   "campaign": "installer-size-v1",
   "durationSeconds": 43200,
-  "baselineReplicas": 2,
+  "baselineReplicas": 1,
   "referenceBandwidthBitsPerSecond": 50000000,
   "minimumFreeBytes": 53687091200,
   "referenceCompression": "bzip2",

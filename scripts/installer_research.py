@@ -85,21 +85,15 @@ def _inventory_command(args: argparse.Namespace, *, evaluator_hash: str) -> int:
 
 def _accept_baseline_command(args: argparse.Namespace, *, evaluator_hash: str) -> int:
     first, first_sha = _read_json_with_sha(
-        args.first_inventory, label="first inventory"
+        args.inventory, label="baseline inventory"
     )
-    second, second_sha = _read_json_with_sha(
-        args.second_inventory, label="second inventory"
-    )
-    for label, inventory in (("first", first), ("second", second)):
-        if inventory.get("evaluatorHash") != evaluator_hash:
-            raise InventoryError(
-                f"{label} inventory was produced by a different evaluator."
-            )
+    if first.get("evaluatorHash") != evaluator_hash:
+        raise InventoryError(
+            "baseline inventory was produced by a different evaluator."
+        )
     baseline = accept_baseline(
         first,
-        second,
         first_inventory_sha256=first_sha,
-        second_inventory_sha256=second_sha,
     )
     write_json_atomic(baseline, args.output)
     print(
@@ -217,10 +211,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     accept = subparsers.add_parser(
         "accept-baseline",
-        help="Accept only two independently reproducible bzip2 inventories.",
+        help="Accept one fully validated release-equivalent bzip2 inventory.",
     )
-    accept.add_argument("--first-inventory", type=_path, required=True)
-    accept.add_argument("--second-inventory", type=_path, required=True)
+    accept.add_argument("--inventory", type=_path, required=True)
     accept.add_argument("--output", type=_path, required=True)
 
     evaluate = subparsers.add_parser(

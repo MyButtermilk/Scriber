@@ -16,7 +16,10 @@ from .inventory import (
 )
 
 
-BASELINE_CONTRACT = "InstallerResearchBaselineV1"
+BASELINE_CONTRACT = "InstallerResearchBaselineV2"
+BASELINE_SCHEMA_VERSION = 2
+LEGACY_BASELINE_CONTRACT = "InstallerResearchBaselineV1"
+LEGACY_BASELINE_SCHEMA_VERSION = 1
 RESULT_CONTRACT = "InstallerResearchResultV1"
 SCHEMA_VERSION = 1
 GATE_STATUSES = {"pass", "fail", "not_run", "not_applicable"}
@@ -192,9 +195,26 @@ def _validate_accepted_baseline(
             "Accepted baseline summary disagrees with its canonical inventory: "
             + ", ".join(mismatches)
         )
+    contract = baseline.get("baselineContract")
+    schema_version = baseline.get("schemaVersion")
+    if contract == BASELINE_CONTRACT and schema_version == BASELINE_SCHEMA_VERSION:
+        expected_replica_count = 1
+        if baseline.get("baselineInventoryCount") != 1:
+            raise InventoryError(
+                "Accepted single-inventory baseline must declare baselineInventoryCount=1."
+            )
+    elif (
+        contract == LEGACY_BASELINE_CONTRACT
+        and schema_version == LEGACY_BASELINE_SCHEMA_VERSION
+    ):
+        expected_replica_count = 2
+    else:
+        raise InventoryError("Accepted baseline contract or schemaVersion is unsupported.")
     replicas = baseline.get("replicas")
-    if not isinstance(replicas, list) or len(replicas) != 2:
-        raise InventoryError("Accepted baseline must bind exactly two replicas.")
+    if not isinstance(replicas, list) or len(replicas) != expected_replica_count:
+        raise InventoryError(
+            f"Accepted baseline must bind exactly {expected_replica_count} inventory document(s)."
+        )
     for ordinal, replica in enumerate(replicas, start=1):
         if not isinstance(replica, dict) or replica.get("ordinal") != ordinal:
             raise InventoryError("Accepted baseline replica ordinals are invalid.")
@@ -212,13 +232,15 @@ def _validate_accepted_baseline(
                 raise InventoryError(
                     f"baseline.replicas[{ordinal}].{field} must be a lowercase SHA-256."
                 )
-    first, second = replicas
-    if first["replicaId"] == second["replicaId"]:
-        raise InventoryError("Accepted baseline replica IDs are not distinct.")
-    if first["buildRootSha256"] == second["buildRootSha256"]:
-        raise InventoryError("Accepted baseline build roots are not distinct.")
-    if first["inventorySha256"] == second["inventorySha256"]:
-        raise InventoryError("Accepted baseline inventory documents are not distinct.")
+    first = replicas[0]
+    if expected_replica_count == 2:
+        second = replicas[1]
+        if first["replicaId"] == second["replicaId"]:
+            raise InventoryError("Accepted baseline replica IDs are not distinct.")
+        if first["buildRootSha256"] == second["buildRootSha256"]:
+            raise InventoryError("Accepted baseline build roots are not distinct.")
+        if first["inventorySha256"] == second["inventorySha256"]:
+            raise InventoryError("Accepted baseline inventory documents are not distinct.")
     first_expected = {
         "replicaId": inventory["buildProvenance"]["replicaId"],
         "buildRootSha256": inventory["buildProvenance"]["buildRootSha256"],
@@ -321,6 +343,21 @@ def _baseline_reason_codes(
     return sorted(set(reasons))
 
 
+def _single_baseline_reason_codes(inventory: Mapping[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if not inventory.get("ok"):
+        reasons.append("inventory_not_ok")
+    if inventory.get("compression") != "bzip2":
+        reasons.append("baseline_compression_not_bzip2")
+    installed = inventory["payload"].get("installed")
+    if installed is None:
+        reasons.append("installed_inventory_missing")
+    parity = inventory["payload"].get("stagedInstalledParity")
+    if not isinstance(parity, dict) or not parity.get("ok"):
+        reasons.append("staged_installed_parity_failed")
+    return sorted(set(reasons))
+
+
 def _replica_summary(
     inventory: Mapping[str, Any],
     *,
@@ -344,28 +381,62 @@ def _replica_summary(
 
 def accept_baseline(
     first: Mapping[str, Any],
-    second: Mapping[str, Any],
+    second: Mapping[str, Any] | None = None,
     *,
     first_inventory_sha256: str | None = None,
     second_inventory_sha256: str | None = None,
 ) -> dict[str, Any]:
     _validate_inventory(first, label="first")
-    _validate_inventory(second, label="second")
     first_digest = first_inventory_sha256 or canonical_json_sha256(first)
-    second_digest = second_inventory_sha256 or canonical_json_sha256(second)
-    if not SHA256_RE.fullmatch(first_digest) or not SHA256_RE.fullmatch(second_digest):
-        raise InventoryError("Replica inventory SHA-256 is invalid.")
-    reason_codes = _baseline_reason_codes(
-        first,
-        second,
-        first_inventory_sha256=first_digest,
-        second_inventory_sha256=second_digest,
-    )
+    if not SHA256_RE.fullmatch(first_digest):
+        raise InventoryError("Baseline inventory SHA-256 is invalid.")
+    if second is None:
+        if second_inventory_sha256 is not None:
+            raise InventoryError(
+                "second_inventory_sha256 is invalid without a second inventory."
+            )
+        reason_codes = _single_baseline_reason_codes(first)
+        contract = BASELINE_CONTRACT
+        schema_version = BASELINE_SCHEMA_VERSION
+        replicas = [
+            _replica_summary(
+                first,
+                ordinal=1,
+                inventory_sha256=first_digest,
+            )
+        ]
+    else:
+        # Retain validation of already-recorded V1 pair evidence, but the active
+        # installer-size campaign creates only the V2 single-inventory form.
+        _validate_inventory(second, label="second")
+        second_digest = second_inventory_sha256 or canonical_json_sha256(second)
+        if not SHA256_RE.fullmatch(second_digest):
+            raise InventoryError("Replica inventory SHA-256 is invalid.")
+        reason_codes = _baseline_reason_codes(
+            first,
+            second,
+            first_inventory_sha256=first_digest,
+            second_inventory_sha256=second_digest,
+        )
+        contract = LEGACY_BASELINE_CONTRACT
+        schema_version = LEGACY_BASELINE_SCHEMA_VERSION
+        replicas = [
+            _replica_summary(
+                first,
+                ordinal=1,
+                inventory_sha256=first_digest,
+            ),
+            _replica_summary(
+                second,
+                ordinal=2,
+                inventory_sha256=second_digest,
+            ),
+        ]
     staged = first["payload"]["staged"]
     installed = first["payload"].get("installed")
     result = {
-        "baselineContract": BASELINE_CONTRACT,
-        "schemaVersion": SCHEMA_VERSION,
+        "baselineContract": contract,
+        "schemaVersion": schema_version,
         "accepted": not reason_codes,
         "reasonCodes": reason_codes,
         "acceptedAtUtc": _utc_now() if not reason_codes else None,
@@ -382,20 +453,11 @@ def accept_baseline(
         "semanticTreeSha256": staged["semanticTreeSha256"],
         "fileListSha256": staged["fileListSha256"],
         "pyzInventorySha256": first["backendExecutable"]["pyzDiagnostics"]["inventorySha256"],
-        "replicas": [
-            _replica_summary(
-                first,
-                ordinal=1,
-                inventory_sha256=first_digest,
-            ),
-            _replica_summary(
-                second,
-                ordinal=2,
-                inventory_sha256=second_digest,
-            ),
-        ],
+        "replicas": replicas,
         "inventory": dict(first),
     }
+    if second is None:
+        result["baselineInventoryCount"] = 1
     return result
 
 
@@ -1023,8 +1085,15 @@ def evaluate_candidate(
     min_absolute_reduction_bytes: int = 256 * 1024,
     min_relative_basis_points: int = 25,
 ) -> dict[str, Any]:
-    if baseline.get("baselineContract") != BASELINE_CONTRACT or baseline.get("schemaVersion") != 1:
-        raise InventoryError("baseline is not an InstallerResearchBaselineV1 artifact.")
+    contract_and_schema = (
+        baseline.get("baselineContract"),
+        baseline.get("schemaVersion"),
+    )
+    if contract_and_schema not in {
+        (BASELINE_CONTRACT, BASELINE_SCHEMA_VERSION),
+        (LEGACY_BASELINE_CONTRACT, LEGACY_BASELINE_SCHEMA_VERSION),
+    }:
+        raise InventoryError("baseline contract or schemaVersion is unsupported.")
     if not baseline.get("accepted"):
         raise InventoryError("Candidate evaluation requires an accepted baseline.")
     baseline_inventory = baseline.get("inventory")

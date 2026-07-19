@@ -43,7 +43,7 @@ def test_entrypoint_has_only_the_frozen_public_arguments() -> None:
     names = re.findall(r"\[(?:string|switch)\]\$(\w+)", parameter_block)
     assert names == ["RunId", "Mode", "RunTiming"]
     assert (
-        '[ValidateSet("baseline-1", "baseline-2", "candidate", "final-1", "final-2")]'
+        '[ValidateSet("baseline-1", "candidate", "final-1", "final-2")]'
         in parameter_block
     )
     for forbidden in (
@@ -55,6 +55,11 @@ def test_entrypoint_has_only_the_frozen_public_arguments() -> None:
         "Threshold",
     ):
         assert f"]${forbidden}" not in parameter_block
+
+
+def test_single_baseline_config_check_is_fail_closed() -> None:
+    assert "($config.baselineReplicas -is [bool])" in SOURCE
+    assert "[int]$config.baselineReplicas -ne 1" in SOURCE
 
 
 def test_invalid_run_id_is_a_parse_and_safe_failure_smoke() -> None:

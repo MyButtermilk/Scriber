@@ -33,6 +33,7 @@ from scripts.perf.installer_size.state import (
     acquire_dispatch_lock,
     append_ledger,
     arm_research_clock,
+    baseline_replica_count,
     clear_pending_packet,
     effective_finalization_reserve,
     file_sha256,
@@ -253,7 +254,7 @@ def _validate_inventory_dispatch(
     if build_root_sha != build_root_identity_sha256(staged_root):
         raise StateError("inventory --build-root-sha256 differs from the staged build-root identity")
     if packet["action"]["kind"] == "baseline-replica" and options["--compression"] != "bzip2":
-        raise StateError("baseline replicas require explicit bzip2 compression")
+        raise StateError("the baseline inventory requires explicit bzip2 compression")
 
 
 def _expected_parent_champion_id(context) -> str:
@@ -1730,10 +1731,7 @@ def _start_session_locked(
                     "requiredActions": _preflight_required_actions(report),
                 }
                 return 2, payload
-        if (
-            accepted_baseline_replica_packet_id(context, 1)
-            and accepted_baseline_replica_packet_id(context, 2)
-        ) or (
+        if accepted_baseline_replica_packet_id(context, 1) or (
             paths.baseline.is_file()
             and load_json_object(paths.baseline).get("accepted") is False
         ):
@@ -1754,12 +1752,12 @@ def _start_session_locked(
                     ),
                     "requiredActions": [
                         {
-                            "id": "retry-baseline-pair-acceptance",
+                            "id": "retry-baseline-acceptance",
                             "instruction": "Resume the same RunId; no baseline artifact was committed.",
                         }
                     ],
                 }
-            baseline = _load_baseline_pair(context)
+            baseline = _load_baseline(context)
             if baseline.get("accepted") is not True:
                 return 2, {
                     "sessionContract": "InstallerSizeSessionEntryV1",
@@ -1781,7 +1779,7 @@ def _start_session_locked(
                     "requiredActions": [
                         {
                             "id": "start-new-run-id",
-                            "instruction": "The immutable baseline pair was rejected; start a new RunId after correcting the cause.",
+                            "instruction": "The immutable baseline inventory was rejected; start a new RunId after correcting the cause.",
                         }
                     ],
                 }
@@ -1863,8 +1861,6 @@ def recommend_next(context, *, now: datetime | None = None) -> dict[str, Any]:
             safe = "dispatch-existing-packet"
     elif not accepted_baseline_replica_packet_id(context, 1):
         safe = "formulate-baseline-replica-1-packet"
-    elif not accepted_baseline_replica_packet_id(context, 2):
-        safe = "formulate-baseline-replica-2-packet"
     elif (
         paths.baseline.is_file()
         and load_json_object(paths.baseline).get("accepted") is False
@@ -1920,14 +1916,16 @@ def recommend_next(context, *, now: datetime | None = None) -> dict[str, Any]:
     }
 
 
-def _load_baseline_pair(context) -> dict[str, Any]:
+def _load_baseline(context) -> dict[str, Any]:
     baseline = load_json_object(paths_for(context).baseline)
     if (
-        baseline.get("baselineContract") != "InstallerResearchBaselineV1"
+        baseline.get("baselineContract") != "InstallerResearchBaselineV2"
+        or baseline.get("schemaVersion") != 2
+        or baseline.get("baselineInventoryCount") != 1
         or baseline.get("runId") != context.run_id
         or not isinstance(baseline.get("accepted"), bool)
     ):
-        raise StateError("baseline pair artifact has invalid identity or status")
+        raise StateError("single baseline artifact has invalid identity or status")
     return baseline
 
 
@@ -1957,10 +1955,8 @@ def _accept_baseline(context) -> subprocess.CompletedProcess[str] | None:
             str(baseline_python),
             str(evaluator),
             "accept-baseline",
-            "--first-inventory",
+            "--inventory",
             str(paths.baseline_replica(1)),
-            "--second-inventory",
-            str(paths.baseline_replica(2)),
             "--output",
             str(paths.baseline),
         ]
@@ -2022,6 +2018,8 @@ def _check_packet_phase(context, packet: dict[str, Any], *, now: datetime | None
         session_source = load_json_object(paths.session_init).get("sourceCommit")
         if packet["sourceCommit"] != session_source:
             raise StateError("baseline replica sourceCommit differs from session initialization")
+        if packet["action"].get("replica") > baseline_replica_count(context):
+            raise StateError("baseline packet exceeds the frozen baseline replica count")
     else:
         remaining = remaining_seconds(context, now=now)
         if remaining is None:
@@ -2315,7 +2313,9 @@ def _dispatch_next_locked(
     progress["activePacketId"] = None
     if packet["action"]["kind"] == "baseline-replica" and decision == "baseline_accept":
         progress["baselineReplicasAccepted"] = sum(
-            1 for index in (1, 2) if paths.baseline_replica(index).is_file()
+            1
+            for index in range(1, baseline_replica_count(context) + 1)
+            if paths.baseline_replica(index).is_file()
         )
     progress["updatedAtUtc"] = format_utc(finished)
     write_json_atomic(paths.progress, progress)
@@ -2334,12 +2334,11 @@ def _dispatch_next_locked(
     clear_pending_packet(paths, expected_packet_id=packet_id)
 
     baseline_acceptance: dict[str, Any] | None = None
-    baseline_pair_ready = True
+    baseline_ready = True
     if (
         packet["action"]["kind"] == "baseline-replica"
         and decision == "baseline_accept"
         and paths.baseline_replica(1).is_file()
-        and paths.baseline_replica(2).is_file()
     ):
         accepted = _accept_baseline(context)
         baseline_acceptance = _baseline_acceptance_process_payload(
@@ -2347,14 +2346,14 @@ def _dispatch_next_locked(
             context.repo_root,
         )
         if accepted is not None and accepted.returncode != 0:
-            baseline_pair_ready = False
+            baseline_ready = False
         if paths.baseline.is_file():
-            baseline_pair = _load_baseline_pair(context)
-            baseline_acceptance["accepted"] = baseline_pair.get("accepted") is True
-            if baseline_pair.get("accepted") is not True:
-                baseline_pair_ready = False
+            baseline = _load_baseline(context)
+            baseline_acceptance["accepted"] = baseline.get("accepted") is True
+            if baseline.get("accepted") is not True:
+                baseline_ready = False
                 baseline_acceptance["fatalForRunId"] = True
-            if baseline_pair_ready:
+            if baseline_ready:
                 pre_arm_now = now or utc_now()
                 report = run_doctor(
                     context,
@@ -2365,17 +2364,17 @@ def _dispatch_next_locked(
                 write_json_atomic(paths.preflight_dir / "pre-arm-doctor.json", report)
                 baseline_acceptance["doctorOk"] = report.get("ok") is True
                 if report.get("ok") is not True:
-                    baseline_pair_ready = False
-            if baseline_pair_ready:
+                    baseline_ready = False
+            if baseline_ready:
                 arm_now = now or utc_now()
                 arm_research_clock(
                     context,
-                    baseline=baseline_pair,
+                    baseline=baseline,
                     doctor_report=report,
                     now=arm_now,
                 )
         else:
-            baseline_pair_ready = False
+            baseline_ready = False
             baseline_acceptance["accepted"] = None
             baseline_acceptance["retryable"] = True
     response = {
@@ -2395,7 +2394,7 @@ def _dispatch_next_locked(
         if (
             decision
             in {"baseline_accept", "final_replica_accept", "keep", "discard", "measure_only"}
-            and baseline_pair_ready
+            and baseline_ready
         )
         else 2,
         response,

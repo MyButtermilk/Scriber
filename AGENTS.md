@@ -149,11 +149,12 @@ Packaging and scripts:
 - `scripts/perf/profiles/installer-size/`, `scripts/perf/installer_size/`, and
   `scripts/run_installer_size_packet.ps1`: isolated installer-size
   AutoResearch profile. It freezes a hermetic Python/Node/Rust/NSIS toolchain,
-  requires two fresh bzip2 baselines before arming its fixed 43,200-second
+  requires one fully gated bzip2 baseline before arming its fixed 43,200-second
   clock, evaluates one immutable hypothesis packet at a time, and retains
   inventory-, functional-, upgrade/uninstall-, YouTube-runtime-, and install-
-  timing evidence. It is an unsigned local research workflow only; never treat
-  its artifacts as signed release evidence.
+  timing evidence. Promotion still requires two fresh final inventories plus
+  the counterbalanced install-timing evidence. It is an unsigned local research
+  workflow only; never treat its artifacts as signed release evidence.
 - `native/scriber-diarization-sidecar/`: isolated, statically linked
   Sherpa-ONNX worker; release preparation stages its attested EXE under backend
   `tools/diarization`. Its worker cache and pinned Sherpa archive cache remain

@@ -143,17 +143,9 @@ def _inventory(
 
 def _accepted_baseline() -> dict:
     first = _inventory(
-        replica_id="baseline-replica-1", build_root_sha256="1" * 64
+        replica_id="baseline-1", build_root_sha256="1" * 64
     )
-    second = copy.deepcopy(first)
-    second["buildProvenance"] = {
-        "replicaId": "baseline-replica-2",
-        "buildRootSha256": "2" * 64,
-    }
-    second["generatedAtUtc"] = "2026-07-18T00:01:00Z"
-    second["installer"]["sha256"] = "c" * 64
-    second["payload"]["staged"]["exactTreeSha256"] = "d" * 64
-    return accept_baseline(first, second)
+    return accept_baseline(first)
 
 
 def _passing_gates(
@@ -355,22 +347,73 @@ def _evaluate(candidate: dict, **kwargs) -> dict:
     )
 
 
-def test_accept_baseline_allows_exact_hash_and_installer_hash_volatility() -> None:
+def test_active_baseline_helper_uses_single_inventory_v2() -> None:
     baseline = _accepted_baseline()
 
-    assert baseline["baselineContract"] == "InstallerResearchBaselineV1"
-    assert baseline["schemaVersion"] == 1
+    assert baseline["baselineContract"] == "InstallerResearchBaselineV2"
+    assert baseline["schemaVersion"] == 2
+    assert baseline["baselineInventoryCount"] == 1
     assert baseline["accepted"] is True
     assert baseline["reasonCodes"] == []
     assert baseline["installerLength"] == 100_000_000
-    assert len(baseline["replicas"]) == 2
-    assert baseline["replicas"][0]["installerSha256"] != baseline["replicas"][1][
-        "installerSha256"
-    ]
+    assert len(baseline["replicas"]) == 1
     assert baseline["inventory"]["inventoryContract"] == "InstallerResearchInventoryV1"
 
 
-def test_accept_baseline_rejects_semantic_or_component_drift() -> None:
+def test_accept_single_baseline_binds_one_raw_inventory_hash() -> None:
+    inventory = _inventory(
+        replica_id="baseline-1",
+        build_root_sha256="1" * 64,
+    )
+
+    baseline = accept_baseline(
+        inventory,
+        first_inventory_sha256="2" * 64,
+    )
+
+    assert baseline["baselineContract"] == "InstallerResearchBaselineV2"
+    assert baseline["schemaVersion"] == 2
+    assert baseline["baselineInventoryCount"] == 1
+    assert baseline["accepted"] is True
+    assert len(baseline["replicas"]) == 1
+    assert baseline["replicas"][0]["inventorySha256"] == "2" * 64
+    assert baseline["inventory"] == inventory
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        (lambda value: value.update(ok=False), "inventory_not_ok"),
+        (
+            lambda value: value.update(compression="lzma"),
+            "baseline_compression_not_bzip2",
+        ),
+        (
+            lambda value: value["payload"].update(installed=None),
+            "installed_inventory_missing",
+        ),
+        (
+            lambda value: value["payload"].update(
+                stagedInstalledParity={"ok": False}
+            ),
+            "staged_installed_parity_failed",
+        ),
+    ],
+)
+def test_accept_single_baseline_rejects_incomplete_inventory(
+    mutation,
+    reason: str,
+) -> None:
+    inventory = _inventory(replica_id="baseline-1")
+    mutation(inventory)
+
+    baseline = accept_baseline(inventory)
+
+    assert baseline["accepted"] is False
+    assert reason in baseline["reasonCodes"]
+
+
+def test_legacy_v1_pair_reader_preserves_reproducibility_rejection() -> None:
     first = _inventory(
         replica_id="baseline-replica-1", build_root_sha256="1" * 64
     )
@@ -391,52 +434,29 @@ def test_accept_baseline_rejects_semantic_or_component_drift() -> None:
 
 
 def test_accept_baseline_requires_release_equivalent_bzip2() -> None:
-    first = _inventory(
+    inventory = _inventory(
         compression="lzma",
-        replica_id="baseline-replica-1",
+        replica_id="baseline-1",
         build_root_sha256="1" * 64,
     )
-    second = copy.deepcopy(first)
-    second["buildProvenance"] = {
-        "replicaId": "baseline-replica-2",
-        "buildRootSha256": "2" * 64,
-    }
 
-    baseline = accept_baseline(first, second)
+    baseline = accept_baseline(inventory)
 
     assert baseline["accepted"] is False
     assert baseline["reasonCodes"] == ["baseline_compression_not_bzip2"]
 
 
 def test_accept_baseline_requires_installed_payload_evidence() -> None:
-    first = _inventory(
+    inventory = _inventory(
         installed_bytes=None,
-        replica_id="baseline-replica-1",
+        replica_id="baseline-1",
         build_root_sha256="1" * 64,
     )
-    second = copy.deepcopy(first)
-    second["buildProvenance"] = {
-        "replicaId": "baseline-replica-2",
-        "buildRootSha256": "2" * 64,
-    }
 
-    baseline = accept_baseline(first, second)
+    baseline = accept_baseline(inventory)
 
     assert baseline["accepted"] is False
     assert "installed_inventory_missing" in baseline["reasonCodes"]
-
-
-def test_accept_baseline_rejects_the_same_inventory_document_twice() -> None:
-    inventory = _inventory(
-        replica_id="baseline-replica-1", build_root_sha256="1" * 64
-    )
-
-    baseline = accept_baseline(inventory, inventory)
-
-    assert baseline["accepted"] is False
-    assert "inventory_document_not_distinct" in baseline["reasonCodes"]
-    assert "replica_id_not_distinct" in baseline["reasonCodes"]
-    assert "build_root_not_distinct" in baseline["reasonCodes"]
 
 
 def test_evaluate_rejects_a_tampered_accepted_baseline_summary() -> None:
@@ -599,15 +619,10 @@ def test_ten_timing_pairs_are_insufficient_for_keep() -> None:
 def test_relative_threshold_uses_ceiling_and_can_dominate_absolute_threshold() -> None:
     baseline_first = _inventory(
         installer_bytes=200_000_001,
-        replica_id="baseline-replica-1",
+        replica_id="baseline-1",
         build_root_sha256="1" * 64,
     )
-    baseline_second = copy.deepcopy(baseline_first)
-    baseline_second["buildProvenance"] = {
-        "replicaId": "baseline-replica-2",
-        "buildRootSha256": "2" * 64,
-    }
-    baseline = accept_baseline(baseline_first, baseline_second)
+    baseline = accept_baseline(baseline_first)
     required = 500_001
     candidate = _inventory(
         installer_bytes=200_000_001 - required,
@@ -702,15 +717,10 @@ def test_compression_requires_combined_download_and_install_improvement() -> Non
 def test_combined_gate_uses_exact_ceiling_when_one_percent_dominates() -> None:
     first = _inventory(
         installer_bytes=400_000_001,
-        replica_id="baseline-replica-1",
+        replica_id="baseline-1",
         build_root_sha256="1" * 64,
     )
-    second = copy.deepcopy(first)
-    second["buildProvenance"] = {
-        "replicaId": "baseline-replica-2",
-        "buildRootSha256": "2" * 64,
-    }
-    baseline = accept_baseline(first, second)
+    baseline = accept_baseline(first)
 
     def evaluate_with_savings(savings: int, packet_id: str) -> dict:
         candidate = _inventory(
@@ -802,38 +812,27 @@ def test_candidate_inventory_is_bound_to_packet_and_source_commit() -> None:
     assert checks["candidateSourceCommit"] is False
 
 
-def test_accept_baseline_cli_binds_both_replica_files(tmp_path: Path) -> None:
+def test_accept_baseline_cli_binds_one_inventory_file(tmp_path: Path) -> None:
     from scripts.perf.installer_size.doctor import current_installer_evaluator_hash
 
     evaluator_hash = current_installer_evaluator_hash(REPO_ROOT)
     first = _inventory()
-    second = copy.deepcopy(first)
     first["buildProvenance"] = {
-        "replicaId": "baseline-replica-1",
+        "replicaId": "baseline-1",
         "buildRootSha256": "1" * 64,
     }
-    second["buildProvenance"] = {
-        "replicaId": "baseline-replica-2",
-        "buildRootSha256": "2" * 64,
-    }
     first["evaluatorHash"] = evaluator_hash
-    second["evaluatorHash"] = evaluator_hash
-    second["installer"]["sha256"] = "c" * 64
-    first_path = tmp_path / "replica-1.json"
-    second_path = tmp_path / "replica-2.json"
+    first_path = tmp_path / "baseline-inventory.json"
     output = tmp_path / "baseline.json"
     first_path.write_text(json.dumps(first, indent=2) + "\n", encoding="utf-8")
-    second_path.write_text(json.dumps(second, indent=2) + "\n", encoding="utf-8")
 
     completed = subprocess.run(
         [
             sys.executable,
             "scripts/installer_research.py",
             "accept-baseline",
-            "--first-inventory",
+            "--inventory",
             str(first_path),
-            "--second-inventory",
-            str(second_path),
             "--output",
             str(output),
         ],
@@ -847,10 +846,9 @@ def test_accept_baseline_cli_binds_both_replica_files(tmp_path: Path) -> None:
     baseline = json.loads(output.read_text(encoding="utf-8"))
     assert baseline["accepted"] is True
     assert baseline["evaluatorHash"] == evaluator_hash
-    assert len(baseline["replicas"]) == 2
-    assert baseline["replicas"][0]["inventorySha256"] != baseline["replicas"][1][
-        "inventorySha256"
-    ]
+    assert baseline["baselineContract"] == "InstallerResearchBaselineV2"
+    assert baseline["baselineInventoryCount"] == 1
+    assert len(baseline["replicas"]) == 1
 
 
 def test_evaluate_cli_hashes_and_validates_timing_evidence(tmp_path: Path) -> None:
@@ -858,16 +856,10 @@ def test_evaluate_cli_hashes_and_validates_timing_evidence(tmp_path: Path) -> No
 
     evaluator_hash = current_installer_evaluator_hash(REPO_ROOT)
     first = _inventory(
-        replica_id="baseline-replica-1", build_root_sha256="1" * 64
+        replica_id="baseline-1", build_root_sha256="1" * 64
     )
-    second = copy.deepcopy(first)
     first["evaluatorHash"] = evaluator_hash
-    second["evaluatorHash"] = evaluator_hash
-    second["buildProvenance"] = {
-        "replicaId": "baseline-replica-2",
-        "buildRootSha256": "2" * 64,
-    }
-    baseline = accept_baseline(first, second)
+    baseline = accept_baseline(first)
     candidate = _inventory(
         installer_bytes=99_000_000,
         staged_bytes=199_000_000,

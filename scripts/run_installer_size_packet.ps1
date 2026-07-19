@@ -16,7 +16,7 @@ param(
     [string]$RunId,
 
     [Parameter(Mandatory = $true)]
-    [ValidateSet("baseline-1", "baseline-2", "candidate", "final-1", "final-2")]
+    [ValidateSet("baseline-1", "candidate", "final-1", "final-2")]
     [string]$Mode,
 
     [switch]$RunTiming
@@ -1708,7 +1708,7 @@ try {
     if ($expectedReplica -gt 0 -and [int]$action.replica -ne $expectedReplica) {
         throw "packet_mode_replica_mismatch"
     }
-    if ($Mode -in @("baseline-1", "baseline-2", "final-1") -and $RunTiming) {
+    if ($Mode -in @("baseline-1", "final-1") -and $RunTiming) {
         throw "timing_not_allowed_for_mode"
     }
     if ($Mode -eq "final-2" -and -not $RunTiming) {
@@ -1731,6 +1731,8 @@ try {
     if (
         [int]$config.schemaVersion -ne 1 -or
         [string]$config.profile -ne "installer-size" -or
+        ($config.baselineReplicas -is [bool]) -or
+        [int]$config.baselineReplicas -ne 1 -or
         [string]$config.referenceCompression -ne "bzip2" -or
         [int]$config.minimumInstallerReduction.bytes -ne 262144 -or
         [double]$config.minimumInstallerReduction.fraction -ne 0.0025 -or

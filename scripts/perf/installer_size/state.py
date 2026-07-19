@@ -321,6 +321,17 @@ def paths_for(context: ProfileContext) -> RunPaths:
     return _paths_for_root(context, context.run_root)
 
 
+def baseline_replica_count(context: ProfileContext) -> int:
+    """Return the frozen number of pre-clock baseline inventories."""
+
+    configured = context.config.get("baselineReplicas")
+    if isinstance(configured, bool) or not isinstance(configured, int) or configured != 1:
+        raise StateError(
+            "installer-size config baselineReplicas must be exactly 1"
+        )
+    return 1
+
+
 def safe_packet_id(value: Any) -> str:
     text = str(value or "").strip()
     if not text or len(text) > 96:
@@ -444,8 +455,8 @@ def _expected_manifest_bindings(context: ProfileContext) -> dict[str, Any]:
         ),
         "preflightSha256": file_sha256(paths.preflight),
         "baselineSha256": file_sha256(paths.baseline),
+        "baselineReplicaCount": baseline_replica_count(context),
         "baselineReplica1Sha256": file_sha256(paths.baseline_replica(1)),
-        "baselineReplica2Sha256": file_sha256(paths.baseline_replica(2)),
         "toolchainManifestSha256": file_sha256(paths.toolchain_manifest),
         "environmentManifestSha256": file_sha256(paths.environment_manifest),
         "wheelhouseManifestSha256": file_sha256(paths.wheelhouse_manifest),
@@ -479,6 +490,7 @@ def validate_manifest(context: ProfileContext, manifest: dict[str, Any]) -> None
         "sourceCommit": session_init.get("sourceCommit"),
         "sourceBranch": session_init.get("sourceBranch"),
         "referenceCompression": context.config.get("referenceCompression"),
+        "baselineReplicaCount": baseline_replica_count(context),
     }
     for field, expected in exact_session_fields.items():
         if manifest.get(field) != expected:
@@ -517,6 +529,8 @@ def validate_session_init(context: ProfileContext, payload: dict[str, Any]) -> N
         raise StateError("session-init identity mismatch")
     if payload.get("durationSeconds") != context.duration_seconds:
         raise StateError("resume cannot change the original duration")
+    if payload.get("baselineReplicaCount") != baseline_replica_count(context):
+        raise StateError("session-init baseline replica count mismatch")
     if payload.get("researchStartedAtUtc") is not None or payload.get("researchDeadlineUtc") is not None:
         raise StateError("session-init must not claim that the research clock started")
     hashes = payload.get("protectedInputHashes")
@@ -559,6 +573,7 @@ def load_session_init(context: ProfileContext) -> dict[str, Any]:
         "runId": context.run_id,
         "sourceCommit": payload.get("sourceCommit"),
         "durationSeconds": context.duration_seconds,
+        "baselineReplicaCount": baseline_replica_count(context),
         "researchClockStarted": False,
         "sessionInitSha256": file_sha256(paths.session_init),
         "baselineRequirementsBaseSha256": file_sha256(
@@ -684,6 +699,13 @@ def load_progress(
         raise StateError("progress RunId mismatch")
     if progress.get("phase") not in {"prepare", "run", "finalizing", "plateau", "complete"}:
         raise StateError("progress phase is invalid")
+    baseline_accepted = progress.get("baselineReplicasAccepted")
+    if (
+        isinstance(baseline_accepted, bool)
+        or not isinstance(baseline_accepted, int)
+        or not 0 <= baseline_accepted <= baseline_replica_count(context)
+    ):
+        raise StateError("progress baseline replica count is invalid")
     final_replica_ids = progress.get("finalReplicaPacketIds")
     if (
         not isinstance(final_replica_ids, list)
@@ -864,7 +886,9 @@ def initialize_run(
                 if prior_clock != manifest_clock:
                     if not progress.get("researchStartedAtUtc"):
                         progress["phase"] = "run"
-                        progress["baselineReplicasAccepted"] = 2
+                        progress["baselineReplicasAccepted"] = baseline_replica_count(
+                            context
+                        )
                     progress.update(manifest_clock)
                     progress["updatedAtUtc"] = format_utc(recovered_at)
                     write_json_atomic(paths.progress, progress)
@@ -907,6 +931,7 @@ def initialize_run(
     if os.path.lexists(paths.root):
         raise StateError("run state already exists; use -Resume with the same RunId")
 
+    baseline_count = baseline_replica_count(context)
     source = git_snapshot(context.repo_root)
     if source["dirtyEntries"]:
         raise StateError("installer-size session initialization requires a clean Git worktree")
@@ -962,6 +987,7 @@ def initialize_run(
             "runId": context.run_id,
             "createdAtUtc": format_utc(created),
             "durationSeconds": context.duration_seconds,
+            "baselineReplicaCount": baseline_count,
             "sourceCommit": source["sourceCommit"],
             "sourceBranch": source["sourceBranch"],
             "referenceCompression": context.config.get("referenceCompression"),
@@ -1005,6 +1031,7 @@ def initialize_run(
                 "runId": context.run_id,
                 "sourceCommit": source["sourceCommit"],
                 "durationSeconds": context.duration_seconds,
+                "baselineReplicaCount": baseline_count,
                 "researchClockStarted": False,
                 "sessionInitSha256": file_sha256(staged_paths.session_init),
                 "baselineRequirementsBaseSha256": file_sha256(
@@ -1164,16 +1191,20 @@ def arm_research_clock(
     preflight = load_json_object(paths.preflight)
     if preflight.get("accepted") is not True:
         raise StateError("research clock cannot start before accepted preflight")
-    if not accepted_baseline_replica_packet_id(
-        context, 1
-    ) or not accepted_baseline_replica_packet_id(context, 2):
+    if not accepted_baseline_replica_packet_id(context, 1):
         raise StateError(
-            "research clock cannot start before two ledger-accepted baseline replicas"
+            "research clock cannot start before one ledger-accepted baseline inventory"
         )
-    if baseline.get("baselineContract") != "InstallerResearchBaselineV1":
-        raise StateError("research clock requires an accepted InstallerResearchBaselineV1")
+    if (
+        baseline.get("baselineContract") != "InstallerResearchBaselineV2"
+        or baseline.get("schemaVersion") != 2
+        or baseline.get("baselineInventoryCount") != 1
+    ):
+        raise StateError(
+            "research clock requires an accepted single-inventory InstallerResearchBaselineV2"
+        )
     if baseline.get("accepted") is not True:
-        raise StateError("research clock requires an accepted reproducible baseline")
+        raise StateError("research clock requires an accepted baseline inventory")
     if baseline.get("runId") != context.run_id:
         raise StateError("accepted baseline belongs to another RunId")
     if baseline.get("sourceCommit") != session_init.get("sourceCommit"):
@@ -1215,6 +1246,7 @@ def arm_research_clock(
         "sourceCommit": source["sourceCommit"],
         "sourceBranch": source["sourceBranch"],
         "referenceCompression": context.config.get("referenceCompression"),
+        "baselineReplicaCount": baseline_replica_count(context),
         "protectedInputHashes": session_init.get("protectedInputHashes"),
         "bindings": bindings,
     }
@@ -1223,7 +1255,7 @@ def arm_research_clock(
     progress.update(
         {
             "phase": "run",
-            "baselineReplicasAccepted": 2,
+            "baselineReplicasAccepted": baseline_replica_count(context),
             "researchStartedAtUtc": format_utc(started),
             "researchDeadlineUtc": format_utc(deadline),
             "updatedAtUtc": format_utc(started),
@@ -1374,6 +1406,10 @@ def validate_packet(packet: dict[str, Any], *, run_id: str) -> None:
             raise StateError(f"{action.get('kind')} action requires replica 1 or 2")
     if action.get("kind") == "baseline-replica":
         replica = int(action["replica"])
+        if replica != 1:
+            raise StateError(
+                "the single-baseline protocol allows only baseline replica 1"
+            )
         expected_packet_id = f"baseline-{replica}"
         if packet.get("packetId") != expected_packet_id:
             raise StateError(
@@ -1436,6 +1472,11 @@ def validate_packet(packet: dict[str, Any], *, run_id: str) -> None:
 def set_pending_packet(context: ProfileContext, packet: dict[str, Any]) -> Path:
     paths = paths_for(context)
     validate_packet(packet, run_id=str(context.run_id))
+    if (
+        packet.get("action", {}).get("kind") == "baseline-replica"
+        and packet.get("action", {}).get("replica") > baseline_replica_count(context)
+    ):
+        raise StateError("baseline packet exceeds the frozen baseline replica count")
     if paths.pending_packet.exists():
         raise StateError("a pending packet already exists")
     if paths.abandoned_packet(str(packet["packetId"])).exists():
@@ -1841,9 +1882,14 @@ def _reconcile_completed_pending(
     if decision == "baseline_accept":
         replica = packet.get("action", {}).get("replica")
         accepted_count = sum(
-            1 for index in (1, 2) if paths.baseline_replica(index).is_file()
+            1
+            for index in range(1, baseline_replica_count(context) + 1)
+            if paths.baseline_replica(index).is_file()
         )
-        if replica not in (1, 2) or progress.get("baselineReplicasAccepted") != accepted_count:
+        if (
+            replica != 1
+            or progress.get("baselineReplicasAccepted") != accepted_count
+        ):
             raise StateError("completed baseline replica is absent from durable progress")
     last_run_sha = file_sha256(paths.last_run)
     expected_payload = packet_completed_ledger_payload(

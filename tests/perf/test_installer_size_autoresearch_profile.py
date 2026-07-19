@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.perf import autoresearch_profiles
+from scripts.installer_research.comparator import accept_baseline
 from scripts.perf.autoresearch_profiles import ProfileError, resolve_profile_context
 from scripts.perf.installer_size import doctor, evaluator, runner, state
 
@@ -75,6 +76,7 @@ def profile_config() -> dict:
         "profile": "installer-size",
         "campaign": "installer-size-v1-test",
         "durationSeconds": 43200,
+        "baselineReplicas": 1,
         "minimumFreeBytes": 1,
         "referenceCompression": "bzip2",
         "minimumInstallerReduction": {"bytes": 262144, "fraction": 0.0025},
@@ -174,6 +176,16 @@ def test_profile_context_is_immutable_and_namespaced(tmp_path: Path) -> None:
     assert context.run_root == context.repo_root / "autoresearch-results" / "installer-size" / RUN_ID
     with pytest.raises(FrozenInstanceError):
         context.run_id = "changed"  # type: ignore[misc]
+
+
+def test_single_baseline_count_rejects_boolean_config(tmp_path: Path) -> None:
+    _repo_root, context = make_repo(tmp_path)
+    config = profile_config()
+    config["baselineReplicas"] = True
+    write_json(context.config_path, config)
+
+    with pytest.raises(state.StateError, match="must be exactly 1"):
+        state.baseline_replica_count(context)
 
 
 @pytest.mark.parametrize(
@@ -650,20 +662,30 @@ def test_resume_reconciles_completed_packet_commit_tail_idempotently(
     ]
     assert len(first_events) == 1
 
-    stage_completed_replica("baseline-2", 2, ledger_done=True)
     state.initialize_run(
         context,
         resume=True,
         now=FIXED_NOW + timedelta(minutes=2),
     )
     assert not paths.pending_packet.exists()
-    second_events = [
+    first_events_after_second_resume = [
         row
         for row in state.read_ledger(paths.ledger)
         if row["event"] == "packet_completed"
-        and row["payload"]["packetId"] == "baseline-2"
+        and row["payload"]["packetId"] == "baseline-1"
     ]
-    assert len(second_events) == 1
+    assert len(first_events_after_second_resume) == 1
+
+
+def test_single_baseline_protocol_rejects_baseline_2_packet(tmp_path: Path) -> None:
+    _repo_root, context = make_repo(tmp_path)
+    state.initialize_run(context, resume=False, now=FIXED_NOW)
+
+    with pytest.raises(state.StateError, match="single-baseline protocol"):
+        state.set_pending_packet(
+            context,
+            _baseline_packet(context, packet_id="baseline-2", replica=2),
+        )
 
 
 def test_resume_commits_no_result_crash_tail_without_replay(tmp_path: Path) -> None:
@@ -953,9 +975,8 @@ def _write_arm_inputs(context) -> tuple[state.RunPaths, dict, dict]:
         now=FIXED_NOW,
     )
     write_json(paths.baseline_replica(1), {"inventoryContract": "InstallerResearchInventoryV1", "replica": 1})
-    write_json(paths.baseline_replica(2), {"inventoryContract": "InstallerResearchInventoryV1", "replica": 2})
     source_commit = git(context.repo_root, "rev-parse", "HEAD")
-    for replica in (1, 2):
+    for replica in (1,):
         packet_id = f"accepted-baseline-{replica}"
         packet = {
             "packetContract": "InstallerResearchPacketV1",
@@ -1010,8 +1031,9 @@ def _write_arm_inputs(context) -> tuple[state.RunPaths, dict, dict]:
     write_json(paths.toolchain_manifest, {"rustToolchain": "1.97.0"})
     write_json(paths.holdout_snapshot, {"holdoutSnapshotContract": "test"})
     baseline = {
-        "baselineContract": "InstallerResearchBaselineV1",
-        "schemaVersion": 1,
+        "baselineContract": "InstallerResearchBaselineV2",
+        "schemaVersion": 2,
+        "baselineInventoryCount": 1,
         "accepted": True,
         "runId": RUN_ID,
         "sourceCommit": git(context.repo_root, "rev-parse", "HEAD"),
@@ -1126,6 +1148,9 @@ def test_arm_writes_one_immutable_manifest_and_resume_preserves_deadline(
     assert manifest["researchStartedAtUtc"] == armed["researchStartedAtUtc"]
     assert manifest["researchDeadlineUtc"] == armed["researchDeadlineUtc"]
     assert manifest["bindings"]["baselineSha256"] == state.file_sha256(paths.baseline)
+    assert manifest["baselineReplicaCount"] == 1
+    assert manifest["bindings"]["baselineReplicaCount"] == 1
+    assert "baselineReplica2Sha256" not in manifest["bindings"]
     assert manifest["bindings"]["environmentManifestSha256"] == state.file_sha256(
         paths.environment_manifest
     )
@@ -1173,6 +1198,7 @@ def test_resume_repairs_progress_clock_only_from_immutable_manifest(
         now=FIXED_NOW + timedelta(hours=2),
     )
     repaired = state.load_progress(context)
+    assert repaired["baselineReplicasAccepted"] == 1
     assert repaired["researchStartedAtUtc"] == armed["researchStartedAtUtc"]
     assert repaired["researchDeadlineUtc"] == armed["researchDeadlineUtc"]
     assert state.read_ledger(paths.ledger)[-1]["event"] == (
@@ -1600,15 +1626,14 @@ def test_baseline_doctor_recomputes_authoritative_acceptance(
     state.initialize_run(context, resume=False, now=FIXED_NOW)
     paths = state.paths_for(context)
     first = {"inventoryContract": "InstallerResearchInventoryV1", "ordinal": 1}
-    second = {"inventoryContract": "InstallerResearchInventoryV1", "ordinal": 2}
     write_json(paths.baseline_replica(1), first)
-    write_json(paths.baseline_replica(2), second)
     write_json(paths.toolchain_manifest, {"kind": "toolchain"})
     component_map = repo_root / "packaging" / "installer-component-map-v1.json"
     write_json(component_map, {"mapId": "test"})
     expected = {
-        "baselineContract": "InstallerResearchBaselineV1",
-        "schemaVersion": 1,
+        "baselineContract": "InstallerResearchBaselineV2",
+        "schemaVersion": 2,
+        "baselineInventoryCount": 1,
         "accepted": True,
         "reasonCodes": [],
         "acceptedAtUtc": "2026-07-18T10:00:00Z",
@@ -1634,7 +1659,20 @@ def test_next_dispatches_exactly_one_existing_packet(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _repo_root, context = make_repo(tmp_path)
+    repo_root, context = make_repo(tmp_path)
+    component_map = repo_root / "packaging" / "installer-component-map-v1.json"
+    write_json(component_map, {"mapId": "test"})
+    git(repo_root, "add", "packaging/installer-component-map-v1.json")
+    git(
+        repo_root,
+        "-c",
+        "user.name=Scriber Tests",
+        "-c",
+        "user.email=tests@example.invalid",
+        "commit",
+        "-m",
+        "fixture component map",
+    )
     state.initialize_run(context, resume=False, now=FIXED_NOW)
     paths = state.paths_for(context)
     state.write_preflight(
@@ -1644,6 +1682,13 @@ def test_next_dispatches_exactly_one_existing_packet(
         evidence_hashes={},
         now=FIXED_NOW,
     )
+    write_json(paths.wheelhouse_manifest, {"kind": "wheelhouse"})
+    write_json(
+        paths.environment_manifest,
+        {"productDependenciesSha256": "b" * 64},
+    )
+    write_json(paths.toolchain_manifest, {"rustToolchain": "1.97.0"})
+    write_json(paths.holdout_snapshot, {"holdoutSnapshotContract": "test"})
     packet = {
         "packetContract": "InstallerResearchPacketV1",
         "schemaVersion": 1,
@@ -1652,8 +1697,8 @@ def test_next_dispatches_exactly_one_existing_packet(
         "lane": "baseline",
         "sourceCommit": git(context.repo_root, "rev-parse", "HEAD"),
         "hypothesis": {
-            "statement": "The hermetic baseline is reproducible.",
-            "mechanism": "Build and inventory one independent replica.",
+            "statement": "Measure the fully gated hermetic baseline.",
+            "mechanism": "Build and inventory one release-equivalent installer.",
             "expectedReductionBytes": 0,
             "risk": "low",
             "rollback": "Discard the replica without changing product code.",
@@ -1673,22 +1718,35 @@ def test_next_dispatches_exactly_one_existing_packet(
     state.set_pending_packet(context, packet)
     calls = []
     monkeypatch.setattr(runner, "current_installer_evaluator_hash", lambda _root: "e" * 64)
-    monkeypatch.setattr(
-        runner,
-        "run_doctor",
-        lambda *_args, **_kwargs: {
+    def passing_doctor(_context, *, phase, **_kwargs):
+        return {
             "doctorContract": "InstallerSizeDoctorV1",
+            "phase": phase,
+            "runId": RUN_ID,
             "ok": True,
             "findings": [],
             "evidenceHashes": {},
-        },
-    )
+        }
 
+    monkeypatch.setattr(runner, "run_doctor", passing_doctor)
     def fake_dispatch(_context, received):
         calls.append(received["packetId"])
-        component_map = context.repo_root / "packaging" / "installer-component-map-v1.json"
-        write_json(component_map, {"mapId": "test"})
-        write_json(paths.toolchain_manifest, {"kind": "toolchain"})
+        component = {
+            "rawBytes": 1,
+            "fileCount": 1,
+            "allocationCount": 1,
+            "fileListSha256": "3" * 64,
+            "allocationListSha256": "4" * 64,
+        }
+        tree = {
+            "totalBytes": 1,
+            "fileCount": 1,
+            "exactTreeSha256": "5" * 64,
+            "semanticTreeSha256": "6" * 64,
+            "fileListSha256": "7" * 64,
+            "components": {"backend-executable": component},
+            "componentBytesSum": 1,
+        }
         write_json(
             paths.baseline_replica(1),
             {
@@ -1704,20 +1762,62 @@ def test_next_dispatches_exactly_one_existing_packet(
                 "evaluatorHash": "e" * 64,
                 "toolchainHash": state.file_sha256(paths.toolchain_manifest),
                 "componentMap": {"sha256": state.file_sha256(component_map)},
+                "productVersion": "1.2.3",
                 "compression": "bzip2",
-                "payload": {"installed": {"totalBytes": 1}},
+                "installer": {
+                    "name": "Scriber_1.2.3_x64-setup.exe",
+                    "length": 100,
+                    "sha256": "8" * 64,
+                },
+                "payload": {
+                    "staged": tree,
+                    "installed": dict(tree),
+                    "stagedInstalledParity": {"ok": True},
+                },
+                "backendExecutable": {
+                    "length": 1,
+                    "virtualPartitionBytes": 1,
+                    "pyinstallerVersion": "6.20.0",
+                    "regions": [],
+                    "pyzDiagnostics": {
+                        "inventorySha256": "9" * 64,
+                        "roots": {},
+                    },
+                },
             },
         )
         return subprocess.CompletedProcess([], 0, stdout="ok", stderr="")
 
+    def accept_single_inventory(_context):
+        inventory = state.load_json_object(paths.baseline_replica(1))
+        baseline = accept_baseline(
+            inventory,
+            first_inventory_sha256=state.file_sha256(paths.baseline_replica(1)),
+        )
+        state.write_json_atomic(paths.baseline, baseline)
+        return subprocess.CompletedProcess([], 0, stdout="accepted", stderr="")
+
     monkeypatch.setattr(runner, "_dispatch_command", fake_dispatch)
+    monkeypatch.setattr(runner, "_accept_baseline", accept_single_inventory)
     exit_code, response = runner.dispatch_next(context, now=FIXED_NOW + timedelta(seconds=1))
 
     assert exit_code == 0
     assert response["decision"] == "baseline_accept"
+    assert response["baselineAcceptance"]["accepted"] is True
+    assert response["baselineAcceptance"]["doctorOk"] is True
     assert calls == ["baseline-1"]
     assert not paths.pending_packet.exists()
-    assert state.load_progress(context)["baselineReplicasAccepted"] == 1
+    progress = state.load_progress(context)
+    assert progress["baselineReplicasAccepted"] == 1
+    assert progress["phase"] == "run"
+    assert progress["researchStartedAtUtc"] == "2026-07-18T10:00:01Z"
+    assert progress["researchDeadlineUtc"] == "2026-07-18T22:00:01Z"
+    manifest = state.load_manifest(context)
+    assert manifest["baselineReplicaCount"] == 1
+    assert "baselineReplica2Sha256" not in manifest["bindings"]
+    assert runner.recommend_next(context, now=FIXED_NOW + timedelta(minutes=6))[
+        "safeNextStep"
+    ] != "formulate-baseline-replica-2-packet"
     with pytest.raises(state.StateError, match="one existing pending-packet"):
         runner.dispatch_next(context, now=FIXED_NOW + timedelta(seconds=2))
 
@@ -1778,7 +1878,7 @@ def test_failed_baseline_output_is_quarantined_and_never_arms(
     assert not paths.manifest.exists()
 
 
-def test_rejected_baseline_pair_is_run_id_fatal(tmp_path: Path) -> None:
+def test_rejected_single_baseline_is_run_id_fatal(tmp_path: Path) -> None:
     _repo_root, context = make_repo(tmp_path)
     state.initialize_run(context, resume=False, now=FIXED_NOW)
     paths = state.paths_for(context)
@@ -1790,8 +1890,7 @@ def test_rejected_baseline_pair_is_run_id_fatal(tmp_path: Path) -> None:
         now=FIXED_NOW,
     )
     write_json(paths.baseline_replica(1), {"replica": 1})
-    write_json(paths.baseline_replica(2), {"replica": 2})
-    for replica in (1, 2):
+    for replica in (1,):
         packet_id = f"retry-baseline-{replica}"
         packet = {
             "packetContract": "InstallerResearchPacketV1",
@@ -1841,7 +1940,9 @@ def test_rejected_baseline_pair_is_run_id_fatal(tmp_path: Path) -> None:
     write_json(
         paths.baseline,
         {
-            "baselineContract": "InstallerResearchBaselineV1",
+            "baselineContract": "InstallerResearchBaselineV2",
+            "schemaVersion": 2,
+            "baselineInventoryCount": 1,
             "runId": RUN_ID,
             "accepted": False,
             "reasonCodes": ["installer_not_reproducible"],
@@ -1864,7 +1965,7 @@ def test_rejected_baseline_pair_is_run_id_fatal(tmp_path: Path) -> None:
     assert not paths.manifest.exists()
 
 
-def test_missing_baseline_pair_artifact_is_retryable(
+def test_missing_single_baseline_artifact_is_retryable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1879,8 +1980,7 @@ def test_missing_baseline_pair_artifact_is_retryable(
         now=FIXED_NOW,
     )
     write_json(paths.baseline_replica(1), {"replica": 1})
-    write_json(paths.baseline_replica(2), {"replica": 2})
-    for replica in (1, 2):
+    for replica in (1,):
         packet_id = f"timeout-baseline-{replica}"
         packet = {
             "packetContract": "InstallerResearchPacketV1",
@@ -1943,7 +2043,7 @@ def test_missing_baseline_pair_artifact_is_retryable(
     assert payload["phase"] == "baseline-validation"
     assert payload["baselineAcceptance"]["exitCode"] == 124
     assert payload["requiredActions"][0]["id"] == (
-        "retry-baseline-pair-acceptance"
+        "retry-baseline-acceptance"
     )
     assert not paths.manifest.exists()
 
@@ -3117,6 +3217,7 @@ def test_profile_config_protects_every_existing_evaluator_input() -> None:
         ).read_text(encoding="utf-8")
     )
     assert config["durationSeconds"] == 43200
+    assert config["baselineReplicas"] == 1
     assert config["referenceCompression"] == "bzip2"
     assert config["minimumFreeBytes"] == 50 * 1024**3
     for relative in config["protectedInputs"]:

@@ -7,9 +7,11 @@ packet dispatch. The harness must never spawn an autonomous LLM loop.
 
 ## Fixed campaign rules
 
-- Research duration is exactly 43,200 seconds. Preflight and the two independent
-  baseline builds are outside that budget. `researchStartedAtUtc` and the fixed
-  deadline are written only after both baselines and the run-phase doctor pass.
+- Research duration is exactly 43,200 seconds. Preflight and one fully gated
+  baseline build are outside that budget. `researchStartedAtUtc` and the fixed
+  deadline are written only after that baseline inventory and the run-phase
+  doctor pass. This does not change the two fresh final inventories required
+  for promotion evidence.
 - The installer remains self-contained. No feature, provider, format, language,
   sidecar, export, or first-use runtime may be removed without a functionally
   equivalent bundled replacement.
