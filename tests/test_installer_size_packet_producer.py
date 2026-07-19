@@ -133,16 +133,21 @@ def test_captured_command_uses_native_exit_code_under_windows_powershell_51(
                 "$nativeFailure = Invoke-CapturedCommand -LogPath (Join-Path $LogRoot 'native-failure.log') -Command {",
                 "    & $Python -c 'import sys;sys.exit(7)'",
                 "}",
+                "$handledNativeFailure = Invoke-CapturedCommand -LogPath (Join-Path $LogRoot 'handled-native-failure.log') -PowerShellScript -Command {",
+                "    & $Python -c 'import sys;sys.exit(9)'",
+                "    $null = 1 + 1",
+                "}",
                 "$global:LASTEXITCODE = 23",
                 "$powershellSuccess = Invoke-CapturedCommand -LogPath (Join-Path $LogRoot 'powershell-success.log') -Command {",
                 "    $null = 1 + 1",
                 "}",
-                "$powershellFailure = Invoke-CapturedCommand -LogPath (Join-Path $LogRoot 'powershell-failure.log') -Command {",
+                "$powershellFailure = Invoke-CapturedCommand -LogPath (Join-Path $LogRoot 'powershell-failure.log') -PowerShellScript -Command {",
                 "    throw 'expected-probe-failure'",
                 "}",
                 "[ordered]@{",
                 "    success = [int]$success.exitCode",
                 "    nativeFailure = [int]$nativeFailure.exitCode",
+                "    handledNativeFailure = [int]$handledNativeFailure.exitCode",
                 "    powershellSuccess = [int]$powershellSuccess.exitCode",
                 "    powershellFailure = [int]$powershellFailure.exitCode",
                 "} | ConvertTo-Json -Compress",
@@ -177,6 +182,7 @@ def test_captured_command_uses_native_exit_code_under_windows_powershell_51(
     assert json.loads(completed.stdout.strip()) == {
         "success": 0,
         "nativeFailure": 7,
+        "handledNativeFailure": 0,
         "powershellSuccess": 0,
         "powershellFailure": 2,
     }
@@ -184,6 +190,26 @@ def test_captured_command_uses_native_exit_code_under_windows_powershell_51(
     captured = _function_source("Invoke-CapturedCommand")
     assert "& $Command > $LogPath" in captured
     assert "& $Command *> $LogPath" not in captured
+
+    expected_powershell_entrypoints = {
+        "prepare_installer_research_environment.ps1": 1,
+        "build_windows.ps1": 1,
+        "smoke_windows_installer.ps1": 3,
+        "smoke_tauri_desktop.ps1": 1,
+        "measure_installer_research.ps1": 1,
+    }
+    assert SOURCE.count("-PowerShellScript -Command") == sum(
+        expected_powershell_entrypoints.values()
+    )
+    for entrypoint, expected_count in expected_powershell_entrypoints.items():
+        invocations = [
+            match.start() for match in re.finditer(re.escape(entrypoint), SOURCE)
+        ]
+        assert len(invocations) == expected_count
+        for invocation in invocations:
+            wrapper = SOURCE.rfind("Invoke-CapturedCommand", 0, invocation)
+            assert wrapper >= 0
+            assert "-PowerShellScript -Command" in SOURCE[wrapper:invocation]
 
 
 def test_registry_cleanup_tolerates_only_a_disappearing_exact_entry(

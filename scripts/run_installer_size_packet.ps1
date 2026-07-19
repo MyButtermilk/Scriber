@@ -204,7 +204,8 @@ function Write-JsonAtomic {
 function Invoke-CapturedCommand {
     param(
         [Parameter(Mandatory = $true)][string]$LogPath,
-        [Parameter(Mandatory = $true)][scriptblock]$Command
+        [Parameter(Mandatory = $true)][scriptblock]$Command,
+        [switch]$PowerShellScript
     )
 
     $parent = Split-Path -Parent $LogPath
@@ -221,8 +222,16 @@ function Invoke-CapturedCommand {
         & $Command > $LogPath
         $commandSucceeded = $?
         $nativeExitCode = $LASTEXITCODE
-        # When a native process ran, its explicit exit code is authoritative.
-        if ($null -ne $nativeExitCode) {
+        # A successful allowlisted .ps1 orchestrator can intentionally handle a
+        # native failure and leave that historical code behind. Its
+        # ErrorActionPreference=Stop contract plus the caller's subsequent
+        # artifact/evidence validation are authoritative. Direct native
+        # commands retain exact exit codes and must not use this switch.
+        if ($PowerShellScript) {
+            if (-not $commandSucceeded) {
+                $exitCode = 1
+            }
+        } elseif ($null -ne $nativeExitCode) {
             $exitCode = [int]$nativeExitCode
         } elseif (-not $commandSucceeded) {
             $exitCode = 1
@@ -538,7 +547,7 @@ function Ensure-HermeticEnvironment {
             throw "baseline_python_missing"
         }
         $prepareLog = Join-Path $RunRoot "scratch\environment-$environmentName.log"
-        $prepared = Invoke-CapturedCommand -LogPath $prepareLog -Command {
+        $prepared = Invoke-CapturedCommand -LogPath $prepareLog -PowerShellScript -Command {
             & (Join-Path $RepoRoot "scripts\prepare_installer_research_environment.ps1") `
                 -RunId $RunId `
                 -BasePython $basePython `
@@ -752,7 +761,7 @@ function Invoke-FullInstallerBuild {
         Remove-Item -LiteralPath $ExpectedInstaller -Force
     }
     $log = Join-Path $BuildRoot "build.log"
-    $built = Invoke-CapturedCommand -LogPath $log -Command {
+    $built = Invoke-CapturedCommand -LogPath $log -PowerShellScript -Command {
         & (Join-Path $RepoRoot "scripts\build_windows.ps1") `
             -RepoRoot $RepoRoot `
             -Bundles @("nsis") `
@@ -1320,7 +1329,7 @@ function Invoke-BaselineToCandidateUpgradeGate {
 
         $baselineSmokePath = Join-Path $ScratchRoot "baseline-upgrade-source-smoke.json"
         $baselineSmokeLog = Join-Path $ScratchRoot "baseline-upgrade-source-smoke.log"
-        $baselineSmokeCommand = Invoke-CapturedCommand -LogPath $baselineSmokeLog -Command {
+        $baselineSmokeCommand = Invoke-CapturedCommand -LogPath $baselineSmokeLog -PowerShellScript -Command {
             & (Join-Path $RepoRoot "scripts\smoke_windows_installer.ps1") `
                 -RepoRoot $RepoRoot `
                 -PythonExecutable $Python `
@@ -1371,7 +1380,7 @@ function Invoke-BaselineToCandidateUpgradeGate {
         $upgradeDesktopPath = Join-Path $ScratchRoot "candidate-upgrade-desktop-smoke.json"
         $upgradeDesktopLog = Join-Path $ScratchRoot "candidate-upgrade-desktop-smoke.log"
         $appExecutable = Resolve-InstalledAppExecutable -InstallRoot $InstallRoot
-        $desktopCommand = Invoke-CapturedCommand -LogPath $upgradeDesktopLog -Command {
+        $desktopCommand = Invoke-CapturedCommand -LogPath $upgradeDesktopLog -PowerShellScript -Command {
             & (Join-Path $RepoRoot "scripts\smoke_tauri_desktop.ps1") `
                 -RepoRoot $RepoRoot `
                 -ExePath $appExecutable `
@@ -1897,7 +1906,7 @@ try {
     New-Item -ItemType Directory -Path $scratchRoot -Force | Out-Null
     $installedSmokePath = Join-Path $scratchRoot "installed-smoke.json"
     $installedSmokeLog = Join-Path $scratchRoot "installed-smoke.log"
-    $installedSmokeCommand = Invoke-CapturedCommand -LogPath $installedSmokeLog -Command {
+    $installedSmokeCommand = Invoke-CapturedCommand -LogPath $installedSmokeLog -PowerShellScript -Command {
         & (Join-Path $RepoRoot "scripts\smoke_windows_installer.ps1") `
             -RepoRoot $RepoRoot `
             -PythonExecutable $environment.python `
@@ -2105,7 +2114,7 @@ try {
     if ($expectedKind -eq "baseline-replica") {
         $cleanupSmokePath = Join-Path $scratchRoot "baseline-self-upgrade-uninstall-smoke.json"
         $cleanupSmokeLog = Join-Path $scratchRoot "baseline-self-upgrade-uninstall-smoke.log"
-        $cleanupSmokeCommand = Invoke-CapturedCommand -LogPath $cleanupSmokeLog -Command {
+        $cleanupSmokeCommand = Invoke-CapturedCommand -LogPath $cleanupSmokeLog -PowerShellScript -Command {
             & (Join-Path $RepoRoot "scripts\smoke_windows_installer.ps1") `
                 -RepoRoot $RepoRoot `
                 -PythonExecutable $environment.python `
@@ -2302,7 +2311,7 @@ try {
             -PacketId $(if ($timingParentId -eq "baseline") { "baseline-1" } else { $timingParentId }) `
             -Inventory $timingParentInventory
         $timingLog = Join-Path $scratchRoot "install-timing.log"
-        $timingCommand = Invoke-CapturedCommand -LogPath $timingLog -Command {
+        $timingCommand = Invoke-CapturedCommand -LogPath $timingLog -PowerShellScript -Command {
             & (Join-Path $RepoRoot "scripts\measure_installer_research.ps1") `
                 -BaselineInstallerPath $parentInstaller `
                 -CandidateInstallerPath $archivedInstaller `
