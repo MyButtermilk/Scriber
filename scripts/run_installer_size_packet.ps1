@@ -228,9 +228,11 @@ function Invoke-CapturedCommand {
         # artifact/evidence validation are authoritative. Direct native
         # commands retain exact exit codes and must not use this switch.
         if ($PowerShellScript) {
-            if (-not $commandSucceeded) {
-                $exitCode = 1
-            }
+            # Reaching this point means the allowlisted script returned without
+            # a terminating error. Windows PowerShell 5.1 can still expose a
+            # false `$?` from an internal, already-handled native invocation;
+            # the caller must validate the script's immutable evidence next.
+            $exitCode = 0
         } elseif ($null -ne $nativeExitCode) {
             $exitCode = [int]$nativeExitCode
         } elseif (-not $commandSucceeded) {
