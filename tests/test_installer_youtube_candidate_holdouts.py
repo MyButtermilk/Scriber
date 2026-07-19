@@ -220,6 +220,34 @@ def test_p95_gate_uses_nearest_rank_and_exact_110_percent_limit() -> None:
     assert failing["candidateP95Ns"] == 23
 
 
+def test_deno_version_contract_accepts_the_pinned_release_banner() -> None:
+    runtime = holdouts.RuntimeIdentity(
+        kind="deno",
+        version="2.9.2",
+        executable=Path("deno.exe"),
+        length=1,
+        sha256="a" * 64,
+        origin="https://example.test/deno.exe",
+        license="MIT",
+        provenance="pinned-wheel",
+        manifest_sha256=None,
+        provenance_lock_entry=None,
+        provenance_lock_sha256=None,
+    )
+
+    assert holdouts._runtime_version_return_code_ok(runtime, 0) is True
+    assert (
+        holdouts._runtime_version_from_output(
+            runtime,
+            b"deno 2.9.2 (stable, release, x86_64-pc-windows-msvc)\n"
+            b"v8 14.7.119.2-rusty\ntypescript 6.0.2\n",
+        )
+        is True
+    )
+    assert holdouts._runtime_version_from_output(runtime, b"deno 2.9.3 (stable)\n") is False
+    assert holdouts._runtime_version_from_output(runtime, b"prefix deno 2.9.2\n") is False
+
+
 def test_quickjs_version_contract_uses_documented_help_shape() -> None:
     runtime = holdouts.RuntimeIdentity(
         kind="quickjs",

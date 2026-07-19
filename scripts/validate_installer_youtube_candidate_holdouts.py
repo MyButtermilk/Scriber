@@ -1156,7 +1156,8 @@ def _runtime_long_command(runtime: RuntimeIdentity) -> list[str]:
 def _runtime_version_from_output(runtime: RuntimeIdentity, output: bytes) -> bool:
     decoded = output.decode("utf-8", errors="replace")
     if runtime.kind == "deno":
-        return decoded.splitlines()[0].strip() == f"deno {runtime.version}" if decoded else False
+        match = re.match(r"^deno\s+(\S+)(?:\s|$)", decoded)
+        return bool(match and match.group(1) == runtime.version)
     match = re.search(r"^QuickJS(?:-ng)?\s+version\s+(\S+)", decoded, re.MULTILINE)
     return bool(match and match.group(1) == runtime.version)
 
