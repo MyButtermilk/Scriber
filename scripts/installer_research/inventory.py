@@ -416,6 +416,32 @@ def _normalize_sidecar_build_metadata(raw: bytes) -> bytes:
     ).encode("utf-8")
 
 
+def _normalize_tauri_bundle_type(
+    raw: bytes,
+    marker: Mapping[str, Any],
+) -> bytes:
+    prefix = str(marker["prefix"]).encode("ascii")
+    allowed_values = tuple(
+        str(value).encode("ascii") for value in marker["allowedValues"]
+    )
+    normalized_value = str(marker["normalizedValue"]).encode("ascii")
+    marker_count = raw.count(prefix)
+    if marker_count == 0:
+        if raw.startswith(b"MZ"):
+            raise InventoryError("Tauri desktop executable has no bundle-type marker.")
+        return raw
+    if marker_count != 1:
+        raise InventoryError(
+            "Tauri desktop executable has multiple bundle-type markers."
+        )
+    marker_start = raw.index(prefix) + len(prefix)
+    marker_end = marker_start + len(normalized_value)
+    value = raw[marker_start:marker_end]
+    if value not in allowed_values:
+        raise InventoryError("Tauri desktop executable has an unsupported bundle type.")
+    return raw[:marker_start] + normalized_value + raw[marker_end:]
+
+
 def load_component_map(path: Path) -> tuple[dict[str, Any], str]:
     if not path.is_file():
         raise InventoryError(f"Component map does not exist: {path}")
@@ -491,11 +517,25 @@ def load_component_map(path: Path) -> tuple[dict[str, Any], str]:
     normalization = _require_mapping(
         component_map.get("semanticNormalization"), label="semanticNormalization"
     )
-    if normalization.get("contract") != "scriber-sidecar-build-metadata-v1":
+    if (
+        normalization.get("contract")
+        != "scriber-installer-semantic-normalization-v2"
+    ):
         raise InventoryError("Unsupported semantic-normalization contract.")
     names = normalization.get("sidecarMetadataFileNames")
     if names != ["sidecar-build-metadata.json"]:
         raise InventoryError("Unexpected sidecar metadata normalization scope.")
+    tauri_marker = _require_mapping(
+        normalization.get("tauriBundleTypeMarker"),
+        label="tauriBundleTypeMarker",
+    )
+    if tauri_marker != {
+        "desktopExecutablePath": "scriber-desktop.exe",
+        "prefix": "__TAURI_BUNDLE_TYPE_VAR_",
+        "allowedValues": ["UNK", "NSS"],
+        "normalizedValue": "UNK",
+    }:
+        raise InventoryError("Unexpected Tauri bundle-type normalization scope.")
 
     return component_map, _sha256_bytes(raw)
 
@@ -553,10 +593,21 @@ def _semantic_bytes_for_file(
     path: Path,
     relative_path: str,
     raw: bytes | None,
+    component_map: Mapping[str, Any],
 ) -> bytes | None:
-    if PurePosixPath(relative_path.casefold()).name != "sidecar-build-metadata.json":
-        return None
-    return _normalize_sidecar_build_metadata(raw if raw is not None else _read_stable_bytes(path))
+    normalized_path = relative_path.casefold()
+    if PurePosixPath(normalized_path).name == "sidecar-build-metadata.json":
+        return _normalize_sidecar_build_metadata(
+            raw if raw is not None else _read_stable_bytes(path)
+        )
+    normalization = component_map["semanticNormalization"]
+    tauri_marker = normalization["tauriBundleTypeMarker"]
+    if normalized_path == str(tauri_marker["desktopExecutablePath"]).casefold():
+        return _normalize_tauri_bundle_type(
+            raw if raw is not None else _read_stable_bytes(path),
+            tauri_marker,
+        )
+    return None
 
 
 def _distribution_name(relative_path: str) -> str | None:
@@ -594,6 +645,7 @@ def _build_tree_inventory(
             path=path,
             relative_path=relative_path,
             raw=raw,
+            component_map=component_map,
         )
         semantic_length = length if semantic_bytes is None else len(semantic_bytes)
         semantic_sha256 = sha256 if semantic_bytes is None else _sha256_bytes(semantic_bytes)
@@ -1105,8 +1157,10 @@ def _installed_parity(
         staged_files[key]["path"]
         for key in staged_files.keys() & installed_files.keys()
         if (
-            staged_files[key]["length"] != installed_files[key]["length"]
-            or staged_files[key]["sha256"] != installed_files[key]["sha256"]
+            staged_files[key]["semanticLength"]
+            != installed_files[key]["semanticLength"]
+            or staged_files[key]["semanticSha256"]
+            != installed_files[key]["semanticSha256"]
         )
     )
     allowed_installed_only = [

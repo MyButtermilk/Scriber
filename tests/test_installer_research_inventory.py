@@ -14,6 +14,7 @@ from scripts.installer_research.inventory import (
     InventoryError,
     _build_tree_inventory,
     _normalize_sidecar_build_metadata,
+    _normalize_tauri_bundle_type,
     build_root_identity_sha256,
     build_inventory,
     inspect_pyinstaller_executable,
@@ -299,6 +300,67 @@ def test_installed_tree_allows_only_the_nsis_uninstaller_as_an_extra_file(
         "allowedInstalledOnly": ["uninstall.exe"],
         "unexpectedInstalledOnly": [],
     }
+
+
+def test_installed_tree_normalizes_only_the_tauri_nsis_bundle_marker(
+    minimal_pyinstaller_payload: Path,
+    tmp_path: Path,
+) -> None:
+    staged = tmp_path / "staged"
+    installed = tmp_path / "installed"
+    shutil.copytree(minimal_pyinstaller_payload, staged)
+    shutil.copytree(minimal_pyinstaller_payload, installed)
+    prefix = b"__TAURI_BUNDLE_TYPE_VAR_"
+    (staged / "scriber-desktop.exe").write_bytes(
+        b"MZbefore" + prefix + b"UNK\xc0\x00after"
+    )
+    (installed / "scriber-desktop.exe").write_bytes(
+        b"MZbefore" + prefix + b"NSS\xc0\x00after"
+    )
+    (installed / "uninstall.exe").write_bytes(b"uninstaller")
+
+    inventory = _inventory(
+        staged,
+        _make_installer(tmp_path / "artifacts"),
+        installed=installed,
+    )
+
+    staged_entry = next(
+        item
+        for item in inventory["payload"]["staged"]["files"]
+        if item["path"] == "scriber-desktop.exe"
+    )
+    installed_entry = next(
+        item
+        for item in inventory["payload"]["installed"]["files"]
+        if item["path"] == "scriber-desktop.exe"
+    )
+    assert staged_entry["sha256"] != installed_entry["sha256"]
+    assert staged_entry["semanticSha256"] == installed_entry["semanticSha256"]
+    assert inventory["payload"]["stagedInstalledParity"]["ok"] is True
+
+
+def test_tauri_bundle_marker_normalization_is_fail_closed() -> None:
+    marker = load_component_map(COMPONENT_MAP)[0]["semanticNormalization"][
+        "tauriBundleTypeMarker"
+    ]
+    prefix = marker["prefix"].encode("ascii")
+
+    staged = b"MZbefore" + prefix + b"UNK\xc0\x00after"
+    installed = b"MZbefore" + prefix + b"NSS\xc0\x00after"
+    assert _normalize_tauri_bundle_type(staged, marker) == _normalize_tauri_bundle_type(
+        installed, marker
+    )
+    assert _normalize_tauri_bundle_type(staged, marker) != _normalize_tauri_bundle_type(
+        installed.replace(b"after", b"other"), marker
+    )
+
+    with pytest.raises(InventoryError, match="unsupported bundle type"):
+        _normalize_tauri_bundle_type(b"MZ" + prefix + b"BAD\xc0\x00", marker)
+    with pytest.raises(InventoryError, match="multiple bundle-type markers"):
+        _normalize_tauri_bundle_type(staged + prefix + b"UNK\xc0\x00", marker)
+    with pytest.raises(InventoryError, match="no bundle-type marker"):
+        _normalize_tauri_bundle_type(b"MZwithout-marker", marker)
 
 
 def test_semantic_metadata_normalization_is_narrow_and_schema_validated(

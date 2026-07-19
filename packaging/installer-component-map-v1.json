@@ -245,6 +245,12 @@
   ],
   "semanticNormalization": {
     "sidecarMetadataFileNames": ["sidecar-build-metadata.json"],
-    "contract": "scriber-sidecar-build-metadata-v1"
+    "tauriBundleTypeMarker": {
+      "desktopExecutablePath": "scriber-desktop.exe",
+      "prefix": "__TAURI_BUNDLE_TYPE_VAR_",
+      "allowedValues": ["UNK", "NSS"],
+      "normalizedValue": "UNK"
+    },
+    "contract": "scriber-installer-semantic-normalization-v2"
   }
 }
