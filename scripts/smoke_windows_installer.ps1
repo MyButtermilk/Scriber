@@ -824,7 +824,17 @@ try {
     if ($VerifyMediaPreparation) {
         $mediaPreparation = Invoke-InstalledMediaPreparationSmoke -InstallRoot $InstallDir -RuntimeDataDir $DataDir
     }
-    $smokeOk = [bool]($smoke -and ($smoke.ok -ne $false))
+    $smokeOkProperty = if ($smoke) {
+        $smoke.PSObject.Properties |
+            Where-Object { $_.Name -eq "ok" } |
+            Select-Object -First 1
+    } else {
+        $null
+    }
+    $smokeOk = [bool](
+        $smoke -and
+        ($null -eq $smokeOkProperty -or $smokeOkProperty.Value -ne $false)
+    )
     $desktopSmokeFailure = if (-not $smokeOk) { $smoke } else { $null }
 
     $result = [ordered]@{

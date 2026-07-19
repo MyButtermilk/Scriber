@@ -3613,6 +3613,7 @@ try {
         liveRecording = $liveRecording
         stability = $stability
         shellMenuSmoke = $shellMenuSmoke
+        failureDiagnostics = $null
         cleanupVerified = $false
     }
 } catch {

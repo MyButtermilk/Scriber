@@ -1274,6 +1274,7 @@ def test_desktop_and_installer_smokes_can_persist_json_output_under_tmp() -> Non
 
     assert "Write-SmokeJson -Payload $result -Path $OutputPath -Root $RepoRoot" in desktop
     assert "function Get-SmokeFailureDiagnostics" in desktop
+    assert "failureDiagnostics = $null" in desktop
     assert "failureDiagnostics = $failureDiagnostics" in desktop
     assert "if ($failure) {" in desktop
     assert "Write-SmokeJson -Payload ([pscustomobject]$result) -Path $OutputPath -Root $RepoRoot" in installer
@@ -1492,6 +1493,11 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
     assert "ready = $smoke.ready" in installer
     assert "liveRecording = $smoke.liveRecording" in installer
     assert "ok = $smokeOk" in installer
+    assert "$smoke.PSObject.Properties |" in installer
+    assert 'Where-Object { $_.Name -eq "ok" }' in installer
+    assert "Select-Object -First 1" in installer
+    assert "$null -eq $smokeOkProperty -or $smokeOkProperty.Value -ne $false" in installer
+    assert "$smoke.ok" not in installer
     assert "$desktopSmokeFailure = if (-not $smokeOk) { $smoke } else { $null }" in installer
 
     assert "[switch]$RunInstallerLiveRecordingSmoke" in build
