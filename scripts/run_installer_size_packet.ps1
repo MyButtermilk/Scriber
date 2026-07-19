@@ -213,13 +213,17 @@ function Invoke-CapturedCommand {
     try {
         # A successful PowerShell-only command must not inherit a stale native
         # exit code from an earlier tool invocation in this process.
-        $global:LASTEXITCODE = 0
+        $global:LASTEXITCODE = $null
         & $Command *> $LogPath
         $commandSucceeded = $?
-        if (-not $commandSucceeded) {
+        $nativeExitCode = $LASTEXITCODE
+        # Windows PowerShell 5.1 can set $? to False when a successful native
+        # command writes diagnostics to stderr and all streams are redirected.
+        # When a native process ran, its explicit exit code is authoritative.
+        if ($null -ne $nativeExitCode) {
+            $exitCode = [int]$nativeExitCode
+        } elseif (-not $commandSucceeded) {
             $exitCode = 1
-        } elseif ($null -ne $LASTEXITCODE) {
-            $exitCode = [int]$LASTEXITCODE
         }
     } catch {
         $exitCode = 2

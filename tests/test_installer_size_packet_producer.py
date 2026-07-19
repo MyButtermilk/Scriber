@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,98 @@ def test_invalid_run_id_is_a_parse_and_safe_failure_smoke() -> None:
     rendered = json.dumps(payload)
     assert str(ROOT) not in rendered
     assert str(Path.home()) not in rendered
+
+
+def test_captured_command_uses_native_exit_code_under_windows_powershell_51(
+    tmp_path: Path,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("The installer packet producer is Windows-only.")
+
+    function_source = "function Invoke-CapturedCommand {" + _function_source(
+        "Invoke-CapturedCommand"
+    )
+    probe = tmp_path / "captured-command-probe.ps1"
+    probe.write_text(
+        "\n".join(
+            (
+                "param([string]$Python, [string]$LogRoot)",
+                # Keep native stderr non-terminating so Windows PowerShell 5.1
+                # exposes the exact $? = False / LASTEXITCODE = 0 regression.
+                '$ErrorActionPreference = "Continue"',
+                "function Get-Sha256File {",
+                "    param([string]$Path)",
+                "    $bytes = [System.IO.File]::ReadAllBytes($Path)",
+                "    $sha = [System.Security.Cryptography.SHA256]::Create()",
+                "    try {",
+                "        return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()",
+                "    } finally {",
+                "        $sha.Dispose()",
+                "    }",
+                "}",
+                "function Get-Sha256Text {",
+                "    param([string]$Value)",
+                "    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)",
+                "    $sha = [System.Security.Cryptography.SHA256]::Create()",
+                "    try {",
+                "        return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()",
+                "    } finally {",
+                "        $sha.Dispose()",
+                "    }",
+                "}",
+                function_source,
+                "$success = Invoke-CapturedCommand -LogPath (Join-Path $LogRoot 'success.log') -Command {",
+                "    & $Python -c 'import sys;sys.stderr.write(chr(120)+chr(10))'",
+                "}",
+                "$nativeFailure = Invoke-CapturedCommand -LogPath (Join-Path $LogRoot 'native-failure.log') -Command {",
+                "    & $Python -c 'import sys;sys.exit(7)'",
+                "}",
+                "$global:LASTEXITCODE = 23",
+                "$powershellSuccess = Invoke-CapturedCommand -LogPath (Join-Path $LogRoot 'powershell-success.log') -Command {",
+                "    $null = 1 + 1",
+                "}",
+                "$powershellFailure = Invoke-CapturedCommand -LogPath (Join-Path $LogRoot 'powershell-failure.log') -Command {",
+                "    throw 'expected-probe-failure'",
+                "}",
+                "[ordered]@{",
+                "    success = [int]$success.exitCode",
+                "    nativeFailure = [int]$nativeFailure.exitCode",
+                "    powershellSuccess = [int]$powershellSuccess.exitCode",
+                "    powershellFailure = [int]$powershellFailure.exitCode",
+                "} | ConvertTo-Json -Compress",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(probe),
+            "-Python",
+            sys.executable,
+            "-LogRoot",
+            str(tmp_path),
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout.strip()) == {
+        "success": 0,
+        "nativeFailure": 7,
+        "powershellSuccess": 0,
+        "powershellFailure": 2,
+    }
 
 
 def test_full_payload_build_is_explicit_hermetic_and_unsigned() -> None:
