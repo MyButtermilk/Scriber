@@ -1372,6 +1372,16 @@ def validate_packet(packet: dict[str, Any], *, run_id: str) -> None:
     if action.get("kind") in {"baseline-replica", "final-replica"}:
         if action.get("replica") not in (1, 2):
             raise StateError(f"{action.get('kind')} action requires replica 1 or 2")
+    if action.get("kind") == "baseline-replica":
+        replica = int(action["replica"])
+        expected_packet_id = f"baseline-{replica}"
+        if packet.get("packetId") != expected_packet_id:
+            raise StateError(
+                "baseline-replica packetId must match its canonical "
+                f"replica id {expected_packet_id}"
+            )
+        if packet.get("lane") != "baseline":
+            raise StateError("baseline-replica packet lane must be baseline")
     if action.get("kind") == "measure-candidate":
         parent_champion_id = packet.get("parentChampionId")
         if not isinstance(parent_champion_id, str) or not parent_champion_id.strip():

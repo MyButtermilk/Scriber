@@ -475,7 +475,7 @@ def test_resume_recovers_interrupted_dispatch_without_replaying_it(tmp_path: Pat
         "packetContract": "InstallerResearchPacketV1",
         "schemaVersion": 1,
         "runId": RUN_ID,
-        "packetId": "interrupted-baseline",
+        "packetId": "baseline-1",
         "lane": "baseline",
         "sourceCommit": git(context.repo_root, "rev-parse", "HEAD"),
         "hypothesis": {
@@ -635,7 +635,7 @@ def test_resume_reconciles_completed_packet_commit_tail_idempotently(
                 now=FIXED_NOW + timedelta(seconds=replica),
             )
 
-    stage_completed_replica("commit-tail-1", 1, ledger_done=False)
+    stage_completed_replica("baseline-1", 1, ledger_done=False)
     state.initialize_run(
         context,
         resume=True,
@@ -646,11 +646,11 @@ def test_resume_reconciles_completed_packet_commit_tail_idempotently(
         row
         for row in state.read_ledger(paths.ledger)
         if row["event"] == "packet_completed"
-        and row["payload"]["packetId"] == "commit-tail-1"
+        and row["payload"]["packetId"] == "baseline-1"
     ]
     assert len(first_events) == 1
 
-    stage_completed_replica("commit-tail-2", 2, ledger_done=True)
+    stage_completed_replica("baseline-2", 2, ledger_done=True)
     state.initialize_run(
         context,
         resume=True,
@@ -661,7 +661,7 @@ def test_resume_reconciles_completed_packet_commit_tail_idempotently(
         row
         for row in state.read_ledger(paths.ledger)
         if row["event"] == "packet_completed"
-        and row["payload"]["packetId"] == "commit-tail-2"
+        and row["payload"]["packetId"] == "baseline-2"
     ]
     assert len(second_events) == 1
 
@@ -1738,7 +1738,7 @@ def test_failed_baseline_output_is_quarantined_and_never_arms(
     )
     packet = _baseline_packet(
         context,
-        packet_id="failed-baseline-output",
+        packet_id="baseline-1",
         replica=1,
     )
     state.set_pending_packet(context, packet)
@@ -1995,7 +1995,7 @@ def test_every_packet_dispatch_runs_a_fresh_fail_closed_doctor(
         "packetContract": "InstallerResearchPacketV1",
         "schemaVersion": 1,
         "runId": RUN_ID,
-        "packetId": "baseline-doctor-drift",
+        "packetId": "baseline-1",
         "lane": "baseline",
         "sourceCommit": git(context.repo_root, "rev-parse", "HEAD"),
         "hypothesis": {
@@ -2096,6 +2096,15 @@ def test_packet_timeout_and_dispatch_driver_are_fail_closed(tmp_path: Path) -> N
     with pytest.raises(state.StateError, match="timeoutSeconds"):
         state.validate_packet(packet, run_id=RUN_ID)
     packet["action"]["timeoutSeconds"] = 60
+    state.validate_packet(packet, run_id=RUN_ID)
+    packet["packetId"] = "baseline-replica-1"
+    with pytest.raises(state.StateError, match="canonical replica id baseline-1"):
+        state.validate_packet(packet, run_id=RUN_ID)
+    packet["packetId"] = "baseline-1"
+    packet["lane"] = "not-baseline"
+    with pytest.raises(state.StateError, match="lane must be baseline"):
+        state.validate_packet(packet, run_id=RUN_ID)
+    packet["lane"] = "baseline"
     state.validate_packet(packet, run_id=RUN_ID)
     with pytest.raises(state.StateError, match="only the frozen"):
         runner._validate_dispatch_policy(
@@ -2340,7 +2349,7 @@ def test_packet_started_hash_blocks_immutable_packet_rewrite(tmp_path: Path) -> 
         "packetContract": "InstallerResearchPacketV1",
         "schemaVersion": 1,
         "runId": RUN_ID,
-        "packetId": "immutable-packet",
+        "packetId": "baseline-1",
         "lane": "baseline",
         "sourceCommit": git(context.repo_root, "rev-parse", "HEAD"),
         "hypothesis": {
