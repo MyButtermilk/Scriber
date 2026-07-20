@@ -256,6 +256,15 @@ tree directly; `backend\_internal\numpy.libs`, public
 `numpy-2.4.6.dist-info`, and every `*openblas*` file must be absent, while
 `numpy-2.4.6+scriber.noblas.1.dist-info` and its licenses must be present.
 
+A clean runtime-cache miss also prepares Punkt from
+`packaging/nltk-punkt-tab-lock-v1.json`. The preparer verifies the downloaded
+archive's exact length/SHA-256, validates every ZIP path, and extracts only the
+locked English/German files into the build work root. `NLTK_DATA` is scoped to
+the source import probe and PyInstaller child and restored afterward. If a CI
+build reports `LookupError` for `pipecat.utils.string.match_endofsentence`,
+check the `nltk-punkt-data` phase and archive identity first; do not rely on or
+copy a developer's `%APPDATA%\nltk_data` cache.
+
 SmartTurn equivalence is stricter than a smoke test. Compare all `64,000`
 float32 feature values, final probability, and boolean prediction against a
 public-NumPy H16 environment, then enforce median and p95 end-to-end budgets.

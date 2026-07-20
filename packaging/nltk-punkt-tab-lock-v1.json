@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "contract": "ScriberNltkPunktTabLockV1",
+  "url": "https://raw.githubusercontent.com/nltk/nltk_data/550b6625bcef1f2abff2ff770a5a0d272c9c6b2a/packages/tokenizers/punkt_tab.zip",
+  "archive": {
+    "length": 4319076,
+    "sha256": "e57f64187974277726a3417ca6f181ec5403676c717672eef6a748a7b20e0106"
+  },
+  "assets": [
+    "README",
+    "english/abbrev_types.txt",
+    "english/collocations.tab",
+    "english/ortho_context.tab",
+    "english/sent_starters.txt",
+    "german/abbrev_types.txt",
+    "german/collocations.tab",
+    "german/ortho_context.tab",
+    "german/sent_starters.txt"
+  ]
+}

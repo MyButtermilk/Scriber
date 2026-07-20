@@ -140,6 +140,11 @@ Packaging and scripts:
   provenance and complete validation contract live in
   `packaging/wheels/numpy-noblas-wheel-lock-v1.json`; never install it into the
   shared build venv or replace the public NumPy requirement with it.
+- `packaging/nltk-punkt-tab-lock-v1.json` and
+  `scripts/prepare_nltk_punkt_data.py`: locked source for the English/German
+  Punkt build data. A clean frozen-runtime miss must prepare it below the build
+  work root and expose `NLTK_DATA` only to the source import probe and
+  PyInstaller child; never rely on a developer's roaming NLTK cache.
 - `packaging/quickjs-youtube-runtime-lock-v1.json`,
   `native/scriber-quickjs-wrapper/`, and
   `scripts/build_quickjs_youtube_runtime.py`: byte-locked QuickJS-ng engine,
