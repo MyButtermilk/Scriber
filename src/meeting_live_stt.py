@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from websockets.asyncio.client import connect as websocket_connect
 
+from src.runtime.smart_turn_mel import install_smart_turn_mel_acceleration
 from src.soniox_region import soniox_realtime_websocket_url
 
 
@@ -56,6 +57,13 @@ def create_meeting_smart_turn_analyzer() -> Any:
     """Create Pipecat's bundled Smart Turn V3 analyzer without its heavyweight extra."""
     from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 
+    try:
+        install_smart_turn_mel_acceleration()
+    except Exception:
+        # Keep provider-independent endpoint detection available through the
+        # numerically equivalent NumPy fallback. Frozen release gates require
+        # the accelerated path, so this is only a runtime resilience boundary.
+        pass
     analyzer = LocalSmartTurnAnalyzerV3(cpu_count=1)
     analyzer.set_sample_rate(16_000)
     return analyzer

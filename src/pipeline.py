@@ -43,6 +43,7 @@ from pipecat.utils.time import time_now_iso8601
 from src.core.provider_capabilities import get_capabilities
 from src.runtime.media_tools import find_media_tool
 from src.runtime.provider_dependencies import import_provider_runtime_module
+from src.runtime.smart_turn_mel import install_smart_turn_mel_acceleration
 from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
 from src.runtime.http_response import read_response_json_limited, read_response_text_limited
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
@@ -59,6 +60,21 @@ except ImportError:
     LocalSmartTurnAnalyzerV3 = None
     HAS_SMART_TURN = False
     logger.debug("Optional Pipecat LocalSmartTurnAnalyzerV3 is not available")
+
+
+def _create_local_smart_turn_analyzer(**kwargs: Any) -> Any:
+    """Create SmartTurn with Scriber's compact-NumPy matrix acceleration."""
+
+    try:
+        install_smart_turn_mel_acceleration()
+    except Exception as exc:
+        # The no-BLAS fallback remains functionally correct if the tiny model
+        # cannot be loaded. Release gates require the accelerated path.
+        logger.warning(
+            "SmartTurn mel acceleration unavailable; using NumPy fallback: {}",
+            type(exc).__name__,
+        )
+    return LocalSmartTurnAnalyzerV3(**kwargs)
 
 try:
     from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -151,7 +167,7 @@ class _AnalyzerCache:
             vad_analyzer = SileroVADAnalyzer()
         if needs_smart_turn:
             logger.info("Prewarming one-shot SmartTurn V3 analyzer")
-            smart_turn_analyzer = LocalSmartTurnAnalyzerV3()
+            smart_turn_analyzer = _create_local_smart_turn_analyzer()
 
         unused_vad = None
         unused_smart_turn = None
@@ -253,7 +269,7 @@ class _AnalyzerCache:
             logger.debug("Claimed prewarmed SmartTurn V3 analyzer for one recording")
             return analyzer
         logger.info("Initializing per-session SmartTurn V3 analyzer")
-        return LocalSmartTurnAnalyzerV3()
+        return _create_local_smart_turn_analyzer()
 
     @classmethod
     def clear_cache(cls):

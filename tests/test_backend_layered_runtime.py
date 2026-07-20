@@ -253,6 +253,52 @@ def test_pyinstaller_spec_freezes_launcher_and_not_first_party_application() -> 
     assert '"src.' not in spec
 
 
+def test_numpy_product_overlay_is_validated_safe_fail_closed_and_pyinstaller_scoped() -> None:
+    builder = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(
+        encoding="utf-8"
+    )
+    spec = (REPO_ROOT / "packaging" / "scriber-backend.spec").read_text(
+        encoding="utf-8"
+    )
+    overlay_function = builder.split(
+        "function New-ValidatedNumPyPyInstallerOverlay", 1
+    )[1].split("function Invoke-TimedStep", 1)[0]
+    pyinstaller_block = builder.split(
+        'Invoke-TimedStep -Label "pyinstaller-build"', 1
+    )[1].split('Invoke-TimedStep -Label "frozen-runtime-layer-check"', 1)[0]
+
+    assert "scripts\\validate_numpy_noblas_wheel.py" in overlay_function
+    assert "--lock $lockPath" in overlay_function
+    assert "--wheel $wheelPath" in overlay_function
+    assert "--extract-to $stagingRoot" in overlay_function
+    assert "-Root $BuildWorkRoot" in overlay_function
+    assert "$safeExtractProgram" not in overlay_function
+
+    for variable in (
+        "SCRIBER_NUMPY_WHEEL_PATH",
+        "SCRIBER_NUMPY_OVERLAY_ROOT",
+        "PYTHONPATH",
+    ):
+        assert f"$env:{variable} =" in pyinstaller_block
+        assert f"Remove-Item Env:{variable}" in pyinstaller_block
+    assert "$env:PYTHONPATH = $script:NumPyPyInstallerOverlay.OverlayRoot" in pyinstaller_block
+    assert "-m pip install" not in overlay_function
+
+    assert 'numpy_version = "2.4.6+scriber.noblas.1"' in spec
+    assert 'os.environ.get("SCRIBER_NUMPY_WHEEL_PATH")' in spec
+    assert 'os.environ.get("SCRIBER_NUMPY_OVERLAY_ROOT")' in spec
+    assert "numpy_wheel_path != expected_numpy_wheel" in spec
+    assert "numpy_origin.is_relative_to(numpy_overlay_root)" in spec
+    assert "numpy_distribution.version != numpy_version" in spec
+    assert "numpy_distribution_root.is_relative_to(numpy_overlay_root)" in spec
+    assert 'numpy_metadata_datas = copy_metadata("numpy")' in spec
+    assert "Path(numpy_metadata_source).resolve() != expected_numpy_dist_info" in spec
+    assert 'numpy_metadata_prefix + "METADATA" not in analysis_data_destinations' in spec
+    assert 'destination.startswith(numpy_metadata_prefix + "licenses/")' in spec
+    assert 'destination.startswith("numpy-2.4.6.dist-info/")' in spec
+    assert "pathex=[str(numpy_overlay_root)," in spec
+
+
 def test_runtime_cache_key_source_excludes_application_code() -> None:
     script = (REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1").read_text(
         encoding="utf-8"
@@ -264,6 +310,12 @@ def test_runtime_cache_key_source_excludes_application_code() -> None:
 
     assert '"backend_runtime"' in runtime_block
     assert '"requirements-base.txt"' in runtime_block
+    assert (
+        '"packaging/wheels/numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl"'
+        in runtime_block
+    )
+    assert '"packaging/wheels/numpy-noblas-wheel-lock-v1.json"' in runtime_block
+    assert '"scripts/validate_numpy_noblas_wheel.py"' in runtime_block
     assert '"src"' not in runtime_block
     assert 'Add-GitTrackedEntries -Entries $backendEntries -Paths @("src")' in application_block
     assert '"scripts/stage_backend_application_layer.py"' in application_block

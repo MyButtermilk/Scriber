@@ -3,6 +3,8 @@
   ; that the frozen runtime intentionally stopped shipping so an upgrade is
   ; byte-for-byte equivalent to a clean install.
   Delete "$INSTDIR\backend\tools\ffmpeg\deno.exe"
+  Delete "$INSTDIR\backend\_internal\numpy.libs\libscipy_openblas64_-63c857e738469261263c764a36be9436.dll"
+  Delete "$INSTDIR\backend\_internal\numpy.libs\msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll"
   Delete "$INSTDIR\backend\_internal\nltk_data\tokenizers\punkt_tab.zip"
   Delete "$INSTDIR\backend\_internal\nltk_data\tokenizers\punkt_tab\czech\abbrev_types.txt"
   Delete "$INSTDIR\backend\_internal\nltk_data\tokenizers\punkt_tab\czech\collocations.tab"
@@ -132,6 +134,7 @@
   ; Remove only the exact directories that the obsolete files can leave
   ; behind. Child-first non-recursive removal is harmless while a directory
   ; still contains current payload and lets a later uninstall remove parents.
+  RMDir "$INSTDIR\backend\_internal\numpy.libs"
   RMDir "$INSTDIR\backend\_internal\nltk_data\tokenizers\punkt_tab\czech"
   RMDir "$INSTDIR\backend\_internal\nltk_data\tokenizers\punkt_tab\danish"
   RMDir "$INSTDIR\backend\_internal\nltk_data\tokenizers\punkt_tab\dutch"

@@ -214,6 +214,73 @@ scripts\project-python.cmd scripts\smoke_diarization_worker_resource.py `
   exposed only as redacted metadata through the Debug Console, hot-path metrics,
   and support bundles.
 
+## Compact NumPy packaging gates
+
+The frozen Windows backend uses the tracked
+`numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl`; the development and
+build venv intentionally continue to use public NumPy `2.4.6`. Validate the
+artifact and its extraction contract before investigating PyInstaller:
+
+```powershell
+venv\Scripts\python.exe scripts\validate_numpy_noblas_wheel.py `
+  --lock packaging\wheels\numpy-noblas-wheel-lock-v1.json `
+  --wheel packaging\wheels\numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl
+
+venv\Scripts\python.exe -m pytest -q `
+  tests\test_validate_numpy_noblas_wheel.py `
+  tests\test_smart_turn_mel.py `
+  tests\test_backend_runtime_import_check.py `
+  tests\test_backend_layered_runtime.py `
+  tests\test_release_adaptive_cache_workflow.py
+```
+
+The locked wheel is `6,395,597` bytes with SHA-256
+`e28ee25278e91bbb99153e9e7bcdbb0d8e88d1d4401f76218e0cd71707e0151c`.
+The validator checks every RECORD entry, runtime and metadata versions, wheel
+tags, licenses, the 19 expected PYDs, absence of bundled DLLs, and absence of
+BLAS/LAPACK/GFortran PE imports. Extraction additionally rejects absolute,
+parent-traversing, drive/colon, NUL, duplicate-target, symlink, and non-empty
+destination cases.
+
+After a real sidecar build, run the frozen executable probe rather than relying
+only on the venv tests:
+
+```powershell
+Frontend\src-tauri\target\release\backend\scriber-backend.exe `
+  --runtime-import-check
+```
+
+The probe must report the exact custom NumPy version, `blas` and `lapack` as
+`none`, successful numerical probes, and no OpenBLAS file. Also inventory the
+tree directly; `backend\_internal\numpy.libs`, public
+`numpy-2.4.6.dist-info`, and every `*openblas*` file must be absent, while
+`numpy-2.4.6+scriber.noblas.1.dist-info` and its licenses must be present.
+
+SmartTurn equivalence is stricter than a smoke test. Compare all `64,000`
+float32 feature values, final probability, and boolean prediction against a
+public-NumPy H16 environment, then enforce median and p95 end-to-end budgets.
+For language retention, use real German `de-DE` audio and compare normalized
+transcript recall/WER as well as H16/H17 transcript identity. English routing
+tests do not substitute for an English acoustic fixture, and a German-only
+model fixture must never be reported as English acoustic evidence.
+
+For a same-version H16-to-H17 upgrade, do not use
+`smoke_windows_installer.ps1 -SimulateUpgrade`: that installs the same artifact
+twice. Install the exact H16 artifact first, preserve a data-directory sentinel,
+overlay H17, and compare the complete installed tree against the clean H17
+staged payload. The authoritative H16 research artifact is `83,403,090` bytes
+with SHA-256
+`293491946b5814dc99e9cdc78771b6ee7287c5527424f2e34a05acbd16579b83`.
+Any extra former NumPy file is an upgrade failure. Afterward, strict uninstall
+must leave no install files, processes, or matching HKCU uninstall entry while
+preserving the data sentinel.
+
+The H17 measurement used bzip2 and one preserved H16 baseline. Its staged
+payload is `172,170,061` bytes/`539` files and its frozen backend is
+`153,183,611` bytes/`536` files. The final bundle is `78,408,598` bytes with
+SHA-256 `fcb48cf4eb7abd28714a05dec74d3616b7f8db3d22156208022528b9f92a99bc`;
+always record a new size and hash after changing `installer-hooks.nsh`.
+
 ## Installer Builds
 
 `src/version.py` is the leading release version. `scripts\sync_version.py`

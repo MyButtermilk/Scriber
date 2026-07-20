@@ -11,6 +11,7 @@ from scripts import check_backend_runtime_imports as runtime_import_checks
 from scripts.check_backend_runtime_imports import (
     BLOCKED_FROZEN_BUILD_ONLY_IMPORTS,
     BLOCKED_FROZEN_YT_DLP_IMPORTS,
+    FROZEN_NUMPY_VERSION,
     PUNKT_TAB_LANGUAGE_PROBES,
     PUNKT_TAB_REQUIRED_FILES,
     PUNKT_TAB_RETAINED_LANGUAGES,
@@ -19,6 +20,7 @@ from scripts.check_backend_runtime_imports import (
     REQUIRED_PACKAGE_VERSIONS,
     SENTENCE_SEGMENTATION_PROBES,
     check_frozen_build_tool_pruning,
+    check_frozen_numpy_noblas,
     check_imports,
     check_frozen_youtube_only_yt_dlp,
     check_package_versions,
@@ -48,6 +50,61 @@ PUNKT_TAB_PRUNED_LANGUAGES = (
     "swedish",
     "turkish",
 )
+
+
+def _fake_compact_numpy():
+    import numpy as np
+
+    return SimpleNamespace(
+        __version__=FROZEN_NUMPY_VERSION,
+        show_config=lambda **_kwargs: {
+            "Build Dependencies": {
+                "blas": {"name": "none"},
+                "lapack": {"name": "none"},
+            }
+        },
+        arange=np.arange,
+        array=np.array,
+        array_equal=np.array_equal,
+        float64=np.float64,
+        linalg=np.linalg,
+    )
+
+
+def test_frozen_numpy_noblas_gate_accepts_compact_runtime(tmp_path):
+    fake_numpy = _fake_compact_numpy()
+
+    assert check_frozen_numpy_noblas(
+        frozen=True,
+        frozen_root=tmp_path,
+        import_module=lambda name: fake_numpy if name == "numpy" else None,
+        version_for=lambda _name: FROZEN_NUMPY_VERSION,
+    ) == []
+
+
+def test_frozen_numpy_noblas_gate_rejects_stale_openblas(tmp_path):
+    fake_numpy = _fake_compact_numpy()
+    (tmp_path / "libscipy_openblas64_stale.dll").write_bytes(b"stale")
+
+    assert check_frozen_numpy_noblas(
+        frozen=True,
+        frozen_root=tmp_path,
+        import_module=lambda name: fake_numpy if name == "numpy" else None,
+        version_for=lambda _name: FROZEN_NUMPY_VERSION,
+    ) == [
+        {
+            "module": "frozen-numpy-noblas",
+            "reason": "compact NumPy runtime without external BLAS/LAPACK",
+            "error": "RuntimeError: frozen NumPy no-BLAS check failed",
+        }
+    ]
+
+
+def test_numpy_noblas_gate_does_not_constrain_source_environment():
+    assert check_frozen_numpy_noblas(
+        frozen=False,
+        import_module=lambda _name: (_ for _ in ()).throw(AssertionError()),
+    ) == []
 
 
 def _write_complete_punkt_tab(
@@ -283,6 +340,8 @@ def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_direct
     }
     obsolete_paths = {
         "nltk_data/tokenizers/punkt_tab.zip",
+        "numpy.libs/libscipy_openblas64_-63c857e738469261263c764a36be9436.dll",
+        "numpy.libs/msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll",
         "hf_xet/hf_xet.pyd",
         "lxml/builder.cp313-win_amd64.pyd",
         "lxml/html/_difflib.cp313-win_amd64.pyd",
@@ -355,6 +414,7 @@ def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_direct
         if line.startswith(delete_prefix)
     }
     obsolete_directories = (
+        "backend/_internal/numpy.libs",
         *(
             f"backend/_internal/nltk_data/tokenizers/punkt_tab/{language}"
             for language in PUNKT_TAB_PRUNED_LANGUAGES
@@ -447,6 +507,30 @@ def test_nsis_upgrade_hook_tombstones_only_the_exact_obsolete_deno_runtime_file(
     assert 'RMDir "$INSTDIR\\backend\\tools\\ffmpeg"' not in hook
     assert 'RMDir "$INSTDIR\\backend\\tools"' not in hook
     assert "RMDir /r" not in hook
+    assert "*" not in hook
+
+
+def test_nsis_upgrade_hook_tombstones_only_the_exact_h16_openblas_runtime():
+    hook = (
+        Path(__file__).resolve().parents[1]
+        / "Frontend"
+        / "src-tauri"
+        / "windows"
+        / "installer-hooks.nsh"
+    ).read_text(encoding="utf-8")
+    numpy_libs_prefix = '  Delete "$INSTDIR\\backend\\_internal\\numpy.libs\\'
+    numpy_lib_deletes = tuple(
+        line.removeprefix(numpy_libs_prefix).removesuffix('"')
+        for line in hook.splitlines()
+        if line.startswith(numpy_libs_prefix)
+    )
+
+    assert numpy_lib_deletes == (
+        "libscipy_openblas64_-63c857e738469261263c764a36be9436.dll",
+        "msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll",
+    )
+    assert 'RMDir "$INSTDIR\\backend\\_internal\\numpy.libs"' in hook
+    assert 'RMDir /r "$INSTDIR\\backend\\_internal\\numpy.libs"' not in hook
     assert "*" not in hook
 
 
@@ -930,6 +1014,12 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
         "function Get-BackendRuntimeInputManifest", 1
     )[1].split("function Get-BackendApplicationInputManifest", 1)[0]
     assert '"packaging\\quickjs-youtube-runtime-lock-v1.json"' in runtime_manifest_source
+    assert (
+        '"packaging\\wheels\\numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl"'
+        in runtime_manifest_source
+    )
+    assert '"packaging\\wheels\\numpy-noblas-wheel-lock-v1.json"' in runtime_manifest_source
+    assert '"scripts\\validate_numpy_noblas_wheel.py"' in runtime_manifest_source
     assert '"scripts\\build_quickjs_youtube_runtime.py"' in runtime_manifest_source
     assert 'Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp")' not in runtime_manifest_source
     assert '"requirements-base.txt"' in runtime_manifest_source

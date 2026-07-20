@@ -135,6 +135,11 @@ Frontend and shell:
 Packaging and scripts:
 
 - `packaging/scriber-backend.spec`: PyInstaller onedir backend sidecar spec.
+- `packaging/wheels/numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl`:
+  locked no-external-BLAS NumPy product wheel for the frozen backend only. Its
+  provenance and complete validation contract live in
+  `packaging/wheels/numpy-noblas-wheel-lock-v1.json`; never install it into the
+  shared build venv or replace the public NumPy requirement with it.
 - `packaging/quickjs-youtube-runtime-lock-v1.json`,
   `native/scriber-quickjs-wrapper/`, and
   `scripts/build_quickjs_youtube_runtime.py`: byte-locked QuickJS-ng engine,
@@ -1216,6 +1221,18 @@ Already implemented and should not be regressed:
   Realtime/Conversations/Webhooks implementation modules, and synchronous grpc
   helpers. The frozen gate must initialize every supported provider path, reject
   representative pruned imports, and load both English and German Punkt data.
+- The Windows frozen backend uses the validated
+  `numpy-2.4.6+scriber.noblas.1` wheel through a work-root-local,
+  PyInstaller-child-only overlay. Keep wheel/lock/validator in both the internal
+  runtime key and the normalized CI runtime key, while leaving requirements,
+  wheelhouse, pip-store, and build-venv identities on public NumPy `2.4.6`.
+  The spec must fail closed on wheel path, import origin, version, metadata, and
+  licenses; the frozen import probe must reject any external BLAS/LAPACK
+  configuration or retained OpenBLAS file. SmartTurn may use only the pinned
+  fixed-matrix ONNX adapter already backed by the bundled ONNX Runtime, with
+  complete feature/probability parity and German recognition gates. H16 upgrade
+  cleanup uses exact obsolete filenames plus a non-recursive empty-directory
+  removal; never replace it with wildcard or recursive `numpy.libs` deletion.
 - Cached VAD/analyzer setup.
 - No-client WebSocket broadcast fast path.
 - About 60 Hz audio-level throttling.

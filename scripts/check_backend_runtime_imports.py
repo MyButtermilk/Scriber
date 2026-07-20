@@ -72,6 +72,7 @@ BLOCKED_FROZEN_YT_DLP_IMPORTS: tuple[str, ...] = (
 REQUIRED_FROZEN_EXPORT_IMPORTS: tuple[str, ...] = (
     "src.export",
 )
+FROZEN_NUMPY_VERSION = "2.4.6+scriber.noblas.1"
 
 FROZEN_EXPORT_COMPAT_IMPORTS: tuple[str, ...] = (
     "PIL",
@@ -765,6 +766,68 @@ def check_frozen_provider_pruning(
     return []
 
 
+def check_frozen_numpy_noblas(
+    *,
+    frozen: bool | None = None,
+    frozen_root: Path | None = None,
+    import_module: Callable[[str], object] = importlib.import_module,
+    version_for: Callable[[str], str] = importlib.metadata.version,
+) -> list[dict[str, str]]:
+    """Require Scriber's compact NumPy and reject the obsolete BLAS runtime."""
+
+    is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
+    if not is_frozen:
+        return []
+    try:
+        numpy = import_module("numpy")
+        distribution_version = version_for("numpy")
+        runtime_version = str(getattr(numpy, "__version__", ""))
+        if distribution_version != FROZEN_NUMPY_VERSION or runtime_version != FROZEN_NUMPY_VERSION:
+            raise RuntimeError(
+                f"expected {FROZEN_NUMPY_VERSION}, got metadata={distribution_version}, "
+                f"runtime={runtime_version}"
+            )
+
+        config = numpy.show_config(mode="dicts")
+        dependencies = config.get("Build Dependencies", {})
+        for dependency_name in ("blas", "lapack"):
+            dependency = dependencies.get(dependency_name, {})
+            if str(dependency.get("name", "")).casefold() != "none":
+                raise RuntimeError(f"external {dependency_name} dependency is still enabled")
+
+        left = numpy.arange(12, dtype=numpy.float64).reshape(3, 4)
+        right = numpy.arange(8, dtype=numpy.float64).reshape(4, 2)
+        product = left @ right
+        expected = numpy.array([[28.0, 34.0], [76.0, 98.0], [124.0, 162.0]])
+        if not numpy.array_equal(product, expected):
+            raise RuntimeError("compact NumPy matrix multiplication probe failed")
+        if abs(float(numpy.linalg.norm(numpy.array([3.0, 4.0]))) - 5.0) > 1e-12:
+            raise RuntimeError("compact NumPy norm probe failed")
+
+        root = frozen_root
+        if root is None:
+            bundled_root = getattr(sys, "_MEIPASS", None)
+            if not bundled_root:
+                raise RuntimeError("frozen runtime has no bundled data root")
+            root = Path(bundled_root)
+        stale = sorted(
+            path.name
+            for path in root.rglob("*")
+            if path.is_file() and "openblas" in path.name.casefold()
+        )
+        if stale:
+            raise RuntimeError("frozen runtime retained an OpenBLAS file")
+    except Exception as exc:
+        return [
+            {
+                "module": "frozen-numpy-noblas",
+                "reason": "compact NumPy runtime without external BLAS/LAPACK",
+                "error": f"{type(exc).__name__}: frozen NumPy no-BLAS check failed",
+            }
+        ]
+    return []
+
+
 def check_runtime_requirements() -> list[dict[str, str]]:
     segmentation_failures = check_sentence_segmentation()
     version_failures = check_package_versions()
@@ -782,6 +845,7 @@ def check_runtime_requirements() -> list[dict[str, str]]:
         *check_frozen_build_tool_pruning(),
         *check_frozen_docstring_pruning(),
         *check_frozen_provider_pruning(),
+        *check_frozen_numpy_noblas(),
     ]
 
 

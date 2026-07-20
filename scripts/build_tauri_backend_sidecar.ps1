@@ -131,6 +131,93 @@ function Assert-UnderRoot {
     }
 }
 
+function New-ValidatedNumPyPyInstallerOverlay {
+    param(
+        [string]$Root,
+        [string]$BuildWorkRoot,
+        [string]$Python
+    )
+
+    $wheelPath = Join-Path $Root "packaging\wheels\numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl"
+    $lockPath = Join-Path $Root "packaging\wheels\numpy-noblas-wheel-lock-v1.json"
+    $validatorPath = Join-Path $Root "scripts\validate_numpy_noblas_wheel.py"
+    foreach ($requiredPath in @($wheelPath, $lockPath, $validatorPath)) {
+        if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+            throw "Missing locked NumPy no-BLAS build input: $requiredPath"
+        }
+    }
+
+    $wheelPath = (Resolve-Path -LiteralPath $wheelPath).Path
+    $lockPath = (Resolve-Path -LiteralPath $lockPath).Path
+    $validatorPath = (Resolve-Path -LiteralPath $validatorPath).Path
+    $overlayRoot = Join-Path $BuildWorkRoot "numpy-noblas-pyinstaller-overlay"
+    $stagingRoot = Join-Path $BuildWorkRoot ("numpy-noblas-pyinstaller-overlay.staging-{0}" -f $PID)
+    foreach ($cleanupPath in @($overlayRoot, $stagingRoot)) {
+        $null = Assert-UnderRoot `
+            -Root $BuildWorkRoot `
+            -Path $cleanupPath `
+            -Label "NumPy PyInstaller overlay path" `
+            -Recurse
+        if (Test-Path -LiteralPath $cleanupPath) {
+            Remove-Item -LiteralPath $cleanupPath -Recurse -Force
+        }
+    }
+
+    New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
+    $validationOutput = @(
+        & $Python $validatorPath `
+            --lock $lockPath `
+            --wheel $wheelPath `
+            --extract-to $stagingRoot `
+            2>&1
+    )
+    $validationExitCode = $LASTEXITCODE
+    if ($validationExitCode -ne 0) {
+        $validationDetails = ($validationOutput | Out-String).Trim()
+        throw "Locked NumPy no-BLAS wheel validation failed with exit code $validationExitCode. $validationDetails"
+    }
+    foreach ($line in $validationOutput) {
+        Write-Host $line
+    }
+
+    try {
+        $null = Assert-UnderRoot `
+            -Root $BuildWorkRoot `
+            -Path $stagingRoot `
+            -Label "Extracted NumPy PyInstaller overlay" `
+            -Recurse
+        $expectedPackage = Join-Path $stagingRoot "numpy\__init__.py"
+        $expectedMetadata = Join-Path $stagingRoot "numpy-2.4.6+scriber.noblas.1.dist-info\METADATA"
+        if (
+            -not (Test-Path -LiteralPath $expectedPackage -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $expectedMetadata -PathType Leaf)
+        ) {
+            throw "Validated NumPy wheel did not extract the expected package and metadata."
+        }
+        Move-Item -LiteralPath $stagingRoot -Destination $overlayRoot
+        $null = Assert-UnderRoot `
+            -Root $BuildWorkRoot `
+            -Path $overlayRoot `
+            -Label "Final NumPy PyInstaller overlay" `
+            -Recurse
+    } catch {
+        if (Test-Path -LiteralPath $stagingRoot) {
+            $null = Assert-UnderRoot `
+                -Root $BuildWorkRoot `
+                -Path $stagingRoot `
+                -Label "Failed NumPy PyInstaller overlay cleanup" `
+                -Recurse
+            Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+
+    return [pscustomobject]@{
+        WheelPath = $wheelPath
+        OverlayRoot = $overlayRoot
+    }
+}
+
 function Invoke-TimedStep {
     param(
         [string]$Label,
@@ -567,9 +654,12 @@ function Get-BackendRuntimeInputManifest {
     $inputPaths = @(
         "packaging\scriber-backend.spec",
         "packaging\backend-sidecar-output-contract.json",
+        "packaging\wheels\numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl",
+        "packaging\wheels\numpy-noblas-wheel-lock-v1.json",
         "packaging\quickjs-youtube-runtime-lock-v1.json",
         "requirements-base.txt",
         "requirements-build.txt",
+        "scripts\validate_numpy_noblas_wheel.py",
         "scripts\build_quickjs_youtube_runtime.py",
         "scripts\perf\profiles\installer-size\quickjs-runtime-lock-v1.json",
         "native\scriber-quickjs-wrapper\Cargo.toml",
@@ -3408,9 +3498,27 @@ if (-not $cacheHit) {
             }
         }
 
+        Invoke-TimedStep -Label "numpy-noblas-pyinstaller-overlay" -Command {
+            $script:NumPyPyInstallerOverlay = New-ValidatedNumPyPyInstallerOverlay `
+                -Root $RepoRoot `
+                -BuildWorkRoot $WorkRoot `
+                -Python $PythonPath
+        }
+
         Invoke-TimedStep -Label "pyinstaller-build" -Command {
+            $hadRepoRoot = Test-Path Env:SCRIBER_REPO_ROOT
             $oldRepoRoot = $env:SCRIBER_REPO_ROOT
+            $hadNumPyWheelPath = Test-Path Env:SCRIBER_NUMPY_WHEEL_PATH
+            $oldNumPyWheelPath = $env:SCRIBER_NUMPY_WHEEL_PATH
+            $hadNumPyOverlayRoot = Test-Path Env:SCRIBER_NUMPY_OVERLAY_ROOT
+            $oldNumPyOverlayRoot = $env:SCRIBER_NUMPY_OVERLAY_ROOT
+            $hadPythonPath = Test-Path Env:PYTHONPATH
+            $oldPythonPath = $env:PYTHONPATH
             $env:SCRIBER_REPO_ROOT = $RepoRoot
+            $env:SCRIBER_NUMPY_WHEEL_PATH = $script:NumPyPyInstallerOverlay.WheelPath
+            $env:SCRIBER_NUMPY_OVERLAY_ROOT = $script:NumPyPyInstallerOverlay.OverlayRoot
+            $env:PYTHONPATH = $script:NumPyPyInstallerOverlay.OverlayRoot
+            $pyInstallerExitCode = $null
             try {
                 Push-Location $RepoRoot
                 try {
@@ -3424,14 +3532,34 @@ if (-not $cacheHit) {
                         $SpecPath
                     )
                     & $PythonPath -m PyInstaller @pyInstallerArgs
+                    $pyInstallerExitCode = $LASTEXITCODE
                 } finally {
                     Pop-Location
                 }
             } finally {
-                $env:SCRIBER_REPO_ROOT = $oldRepoRoot
+                if ($hadRepoRoot) {
+                    $env:SCRIBER_REPO_ROOT = $oldRepoRoot
+                } else {
+                    Remove-Item Env:SCRIBER_REPO_ROOT -ErrorAction SilentlyContinue
+                }
+                if ($hadNumPyWheelPath) {
+                    $env:SCRIBER_NUMPY_WHEEL_PATH = $oldNumPyWheelPath
+                } else {
+                    Remove-Item Env:SCRIBER_NUMPY_WHEEL_PATH -ErrorAction SilentlyContinue
+                }
+                if ($hadNumPyOverlayRoot) {
+                    $env:SCRIBER_NUMPY_OVERLAY_ROOT = $oldNumPyOverlayRoot
+                } else {
+                    Remove-Item Env:SCRIBER_NUMPY_OVERLAY_ROOT -ErrorAction SilentlyContinue
+                }
+                if ($hadPythonPath) {
+                    $env:PYTHONPATH = $oldPythonPath
+                } else {
+                    Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+                }
             }
-            if ($LASTEXITCODE -ne 0) {
-                throw "PyInstaller frozen runtime build failed."
+            if ($pyInstallerExitCode -ne 0) {
+                throw "PyInstaller frozen runtime build failed with exit code $pyInstallerExitCode."
             }
         }
 

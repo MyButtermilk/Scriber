@@ -2,17 +2,70 @@
 
 from pathlib import Path
 import dis
+import importlib.metadata
+import importlib.util
 import inspect
 import os
 import sys
 from types import CodeType
 
-from PyInstaller.config import CONF
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules, copy_metadata
-
 repo_root = Path(os.environ.get("SCRIBER_REPO_ROOT", Path.cwd())).resolve()
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
+
+numpy_version = "2.4.6+scriber.noblas.1"
+expected_numpy_wheel = (
+    repo_root
+    / "packaging"
+    / "wheels"
+    / f"numpy-{numpy_version}-cp313-cp313-win_amd64.whl"
+).resolve()
+numpy_wheel_value = os.environ.get("SCRIBER_NUMPY_WHEEL_PATH")
+numpy_overlay_value = os.environ.get("SCRIBER_NUMPY_OVERLAY_ROOT")
+if not numpy_wheel_value or not numpy_overlay_value:
+    raise RuntimeError(
+        "PyInstaller requires the validated NumPy no-BLAS wheel and overlay inputs"
+    )
+numpy_wheel_path = Path(numpy_wheel_value).resolve()
+numpy_overlay_root = Path(numpy_overlay_value).resolve()
+if numpy_wheel_path != expected_numpy_wheel or not numpy_wheel_path.is_file():
+    raise RuntimeError("PyInstaller NumPy wheel does not originate from the locked repository path")
+if not numpy_overlay_root.is_dir():
+    raise RuntimeError("PyInstaller NumPy overlay is missing")
+expected_numpy_package = numpy_overlay_root / "numpy" / "__init__.py"
+expected_numpy_dist_info = numpy_overlay_root / f"numpy-{numpy_version}.dist-info"
+numpy_dist_info_dirs = sorted(
+    path.name
+    for path in numpy_overlay_root.glob("numpy-*.dist-info")
+    if path.is_dir()
+)
+if (
+    not expected_numpy_package.is_file()
+    or not (expected_numpy_dist_info / "METADATA").is_file()
+    or numpy_dist_info_dirs != [expected_numpy_dist_info.name]
+):
+    raise RuntimeError("PyInstaller NumPy overlay has unexpected package metadata")
+
+# The source/build venv deliberately retains the public NumPy wheel. Only the
+# PyInstaller child receives this extracted, locked product overlay.
+sys.path.insert(0, str(numpy_overlay_root))
+numpy_spec = importlib.util.find_spec("numpy")
+if numpy_spec is None or not numpy_spec.origin:
+    raise RuntimeError("PyInstaller cannot resolve NumPy from the product overlay")
+numpy_origin = Path(numpy_spec.origin).resolve()
+if not numpy_origin.is_relative_to(numpy_overlay_root):
+    raise RuntimeError("PyInstaller resolved NumPy outside the validated product overlay")
+numpy_distribution = importlib.metadata.distribution("numpy")
+if numpy_distribution.version != numpy_version:
+    raise RuntimeError(
+        f"PyInstaller resolved NumPy {numpy_distribution.version}, expected {numpy_version}"
+    )
+numpy_distribution_root = Path(numpy_distribution.locate_file("")).resolve()
+if not numpy_distribution_root.is_relative_to(numpy_overlay_root):
+    raise RuntimeError("PyInstaller resolved NumPy metadata outside the validated product overlay")
+
+from PyInstaller.config import CONF
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules, copy_metadata
 
 stdlib_export_compat_root = repo_root / "packaging" / "stdlib_export_compat"
 pyinstaller_hook_root = repo_root / "packaging" / "pyinstaller_hooks"
@@ -261,6 +314,16 @@ def collect_required_dynamic_libs(package):
 binaries = collect_required_dynamic_libs("onnxruntime")
 
 datas = []
+numpy_metadata_datas = copy_metadata("numpy")
+if len(numpy_metadata_datas) != 1:
+    raise RuntimeError("PyInstaller NumPy metadata collection is ambiguous")
+numpy_metadata_source, numpy_metadata_destination = numpy_metadata_datas[0]
+if (
+    Path(numpy_metadata_source).resolve() != expected_numpy_dist_info
+    or Path(numpy_metadata_destination).as_posix() != expected_numpy_dist_info.name
+):
+    raise RuntimeError("PyInstaller NumPy metadata does not originate from the product overlay")
+datas += numpy_metadata_datas
 datas += copy_metadata("pipecat-ai")
 datas += copy_metadata("onnx-asr")
 datas += copy_metadata("huggingface-hub")
@@ -302,7 +365,7 @@ datas = exclude_datas(datas, ("tzdata",))
 
 a = Analysis(
     [str(repo_root / "backend_runtime" / "launcher.py")],
-    pathex=[str(stdlib_export_compat_root), str(repo_root)],
+    pathex=[str(numpy_overlay_root), str(stdlib_export_compat_root), str(repo_root)],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -374,6 +437,26 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+analysis_data_destinations = {
+    str(entry[0]).replace("\\", "/")
+    for entry in a.datas
+}
+numpy_metadata_prefix = expected_numpy_dist_info.name + "/"
+if (
+    numpy_metadata_prefix + "METADATA" not in analysis_data_destinations
+    or not any(
+        destination.startswith(numpy_metadata_prefix + "licenses/")
+        for destination in analysis_data_destinations
+    )
+):
+    raise RuntimeError("Frozen runtime is missing custom NumPy metadata or licenses")
+if any(
+    destination == "numpy-2.4.6.dist-info"
+    or destination.startswith("numpy-2.4.6.dist-info/")
+    for destination in analysis_data_destinations
+):
+    raise RuntimeError("Frozen runtime retained official NumPy metadata")
 
 # PyInstaller's NLTK hook includes both the complete expanded punkt_tab tree
 # and its redundant source archive. Scriber and Pipecat 1.5 use English sentence

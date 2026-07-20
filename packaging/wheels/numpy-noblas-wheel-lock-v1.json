@@ -1,0 +1,232 @@
+{
+  "contract": "ScriberNumPyNoBlasWheelLockV1",
+  "schemaVersion": 1,
+  "artifact": {
+    "relativePath": "packaging/wheels/numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl",
+    "fileName": "numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl",
+    "distribution": "numpy",
+    "version": "2.4.6+scriber.noblas.1",
+    "pythonTag": "cp313",
+    "abiTag": "cp313",
+    "platformTag": "win_amd64",
+    "wheelTag": "cp313-cp313-win_amd64",
+    "length": 6395597,
+    "sha256": "e28ee25278e91bbb99153e9e7bcdbb0d8e88d1d4401f76218e0cd71707e0151c",
+    "entryCount": 930,
+    "uncompressedBytes": 21119797,
+    "compressedPayloadBytes": 6257677,
+    "pydCount": 19,
+    "pydBytes": 8627200
+  },
+  "source": {
+    "project": "numpy",
+    "version": "2.4.6",
+    "url": "https://files.pythonhosted.org/packages/d0/ad/fed0499ce6a338d2a03ebae59cd15093910c8875328855781952abf6c2fe/numpy-2.4.6.tar.gz",
+    "fileName": "numpy-2.4.6.tar.gz",
+    "length": 20735807,
+    "sha256": "f3a3570c4a2a16746ac2c31a7c7c7b0c186b95ce902e33db6f28094ed7387dda",
+    "patches": [
+      {
+        "relativePath": "pyproject.toml",
+        "upstreamLength": 9743,
+        "upstreamSha256": "2a9ddeef4bf8b3d600e2a31ebc2263e8298f3af4643a763061534c6b115f9228",
+        "patchedLength": 9760,
+        "patchedSha256": "6f92b8d358e386b81386d2bc8fca976cf646e9c71dcaf89b9c3311df70984650",
+        "replacement": {
+          "expected": "version = \"2.4.6\"",
+          "value": "version = \"2.4.6+scriber.noblas.1\""
+        },
+        "purpose": "give the custom wheel an exact PEP 440 local distribution version"
+      },
+      {
+        "relativePath": "numpy/version.py",
+        "upstreamLength": 293,
+        "upstreamSha256": "833eb1051581de6bf4d23cd6f090e0fa4cbab6c548463dc718b5be62920fa2d7",
+        "patchedLength": 310,
+        "patchedSha256": "b0b9bd0f94a7d78e1b07434eaee80722944325a98d0e9f62a0644640429bdb12",
+        "replacement": {
+          "expected": "version = \"2.4.6\"",
+          "value": "version = \"2.4.6+scriber.noblas.1\""
+        },
+        "purpose": "keep numpy.__version__ equal to the wheel METADATA version"
+      }
+    ]
+  },
+  "build": {
+    "python": {
+      "version": "3.13.7",
+      "implementation": "CPython",
+      "architecture": "AMD64",
+      "executableLength": 105816,
+      "executableSha256": "d932e5e2f324d57f392e8fd063dcf6d0185be8a664c57c6d24e7762ed02c28ca",
+      "runtimeDllLength": 6123864,
+      "runtimeDllSha256": "41ec4fc4e5bc8b207258590238f7f050b13fdfee84c4a7b1ecff6e945d031a10",
+      "importLibraryLength": 368882,
+      "importLibrarySha256": "262042d21656acd2216d5f3e73daa2365ef92f552613e5cb8ca6060539a80294",
+      "bundledPip": {
+        "version": "25.2",
+        "fileName": "pip-25.2-py3-none-any.whl",
+        "length": 1752557,
+        "sha256": "6d67a2b4e7f14d8b31b8b52648866fa717f45a1eb70e83002f4331d07e953717"
+      }
+    },
+    "nativeToolchain": {
+      "visualStudio": "18.0.11121.172 Insiders",
+      "vcToolsVersion": "14.44.35207",
+      "vcVarsArguments": ["-vcvars_ver=14.44"],
+      "compiler": {
+        "version": "19.44.35219",
+        "length": 677960,
+        "sha256": "69106b595bec828cbf942321f98a0cd3a1fc7d6b8460b0b6b7a07a387fcb309c"
+      },
+      "linker": {
+        "version": "14.44.35219.0",
+        "length": 3252808,
+        "sha256": "0508ca9f8296f49807a597d71af26f1e0301fb1f1d9179165cad0b5013580f79"
+      },
+      "librarian": {
+        "version": "14.44.35219.0",
+        "length": 23608,
+        "sha256": "625d329c5d1a1c1f8e518e4733b9bcf70729f4b464b1a9457470bb8ad0794fab"
+      },
+      "windowsSdkVersion": "10.0.19041.0",
+      "resourceCompiler": {
+        "version": "10.0.19041.5609",
+        "length": 71208,
+        "sha256": "2cbcc6024fe41ae92fada6b3f74e6e2a1b2fe71c51b288167d6abab319da2628"
+      }
+    },
+    "pythonBuildWheels": [
+      {
+        "fileName": "cython-3.2.8-cp313-cp313-win_amd64.whl",
+        "version": "3.2.8",
+        "length": 2770884,
+        "sha256": "0961ba91f59492d1bef974cc6b45993c743162776188bcb79e029b442d5d4fcc"
+      },
+      {
+        "fileName": "meson_python-0.20.0-py3-none-any.whl",
+        "version": "0.20.0",
+        "length": 29386,
+        "sha256": "6a744cf0c09e76ecbdc58cfa374b48c8902dac1b74479628238634efbf36aec9"
+      },
+      {
+        "fileName": "meson-1.11.2-py3-none-any.whl",
+        "version": "1.11.2",
+        "length": 1078911,
+        "sha256": "7e4f6e83fec83e3eaac928e058b073c7557b282c35b6a2024cea143a39926a39"
+      },
+      {
+        "fileName": "ninja-1.13.0-py3-none-win_amd64.whl",
+        "version": "1.13.0",
+        "length": 309975,
+        "sha256": "fb8ee8719f8af47fed145cced4a85f0755dd55d45b2bddaf7431fa89803c5f3e"
+      },
+      {
+        "fileName": "packaging-26.2-py3-none-any.whl",
+        "version": "26.2",
+        "length": 100195,
+        "sha256": "5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e"
+      },
+      {
+        "fileName": "pyproject_metadata-0.12.1-py3-none-any.whl",
+        "version": "0.12.1",
+        "length": 23452,
+        "sha256": "f7162d580a96386a8eb096da06215f981f547d1490f03055ef99e323bc2da427"
+      }
+    ],
+    "meson": {
+      "executedVendoredVersion": "1.9.2",
+      "crossFile": null,
+      "nativeFile": "generated by meson-python with the isolated CPython executable",
+      "configSettings": [
+        "-Dblas=none",
+        "-Dlapack=none",
+        "-Dallow-noblas=true",
+        "-Duse-ilp64=false"
+      ],
+      "implicitSettings": {
+        "buildtype": "release",
+        "b_ndebug": "if-release",
+        "b_vscrt": "md",
+        "cpuBaseline": "X86_V2",
+        "cpuDispatch": "X86_V3"
+      }
+    },
+    "determinism": {
+      "PYTHONHASHSEED": "0",
+      "SOURCE_DATE_EPOCH": "946684800",
+      "CL": "/Brepro",
+      "LINK": "/Brepro",
+      "CFLAGS": "/Brepro",
+      "CXXFLAGS": "/Brepro",
+      "LDFLAGS": "/Brepro",
+      "pipNoCache": true,
+      "buildIsolation": false
+    },
+    "compatibilityHeader": {
+      "fileName": "stdalign.h",
+      "length": 378,
+      "sha256": "2aaf6c2a70a0bcbcdb85351834c330511669dad1935b8185ee932527ca64c37d",
+      "purpose": "provide the standard C11 alignas/alignof compatibility macros missing from the selected local MSVC installation"
+    }
+  },
+  "validation": {
+    "metadataName": "numpy",
+    "metadataVersion": "2.4.6+scriber.noblas.1",
+    "rootIsPurelib": false,
+    "buildDependencies": {
+      "blas": "none",
+      "lapack": "none"
+    },
+    "forbiddenArchiveSuffixes": [".dll"],
+    "forbiddenArchivePathMarkers": ["numpy.libs/", ".libs/"],
+    "forbiddenPeImportMarkers": [
+      "openblas",
+      "blas",
+      "lapack",
+      "gfortran",
+      "quadmath",
+      "flexiblas",
+      "blis",
+      "mkl",
+      "atlas"
+    ],
+    "allowedPeImports": [
+      "KERNEL32.dll",
+      "MSVCP140.dll",
+      "VCRUNTIME140.dll",
+      "VCRUNTIME140_1.dll",
+      "api-ms-win-crt-convert-l1-1-0.dll",
+      "api-ms-win-crt-environment-l1-1-0.dll",
+      "api-ms-win-crt-heap-l1-1-0.dll",
+      "api-ms-win-crt-locale-l1-1-0.dll",
+      "api-ms-win-crt-math-l1-1-0.dll",
+      "api-ms-win-crt-runtime-l1-1-0.dll",
+      "api-ms-win-crt-stdio-l1-1-0.dll",
+      "api-ms-win-crt-string-l1-1-0.dll",
+      "api-ms-win-crt-time-l1-1-0.dll",
+      "api-ms-win-crt-utility-l1-1-0.dll",
+      "python313.dll"
+    ],
+    "licenseExpression": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+    "licenseFiles": [
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/LICENSE.txt",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/_core/include/numpy/libdivide/LICENSE.txt",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/_core/src/common/pythoncapi-compat/COPYING",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/_core/src/highway/LICENSE",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/_core/src/multiarray/dragon4_LICENSE.txt",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/_core/src/npysort/x86-simd-sort/LICENSE.md",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/_core/src/umath/svml/LICENSE",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/fft/pocketfft/LICENSE.md",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/linalg/lapack_lite/LICENSE.txt",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/ma/LICENSE",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/random/LICENSE.md",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/random/src/distributions/LICENSE.md",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/random/src/mt19937/LICENSE.md",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/random/src/pcg64/LICENSE.md",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/random/src/philox/LICENSE.md",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/random/src/sfc64/LICENSE.md",
+      "numpy-2.4.6+scriber.noblas.1.dist-info/licenses/numpy/random/src/splitmix64/LICENSE.md"
+    ]
+  }
+}

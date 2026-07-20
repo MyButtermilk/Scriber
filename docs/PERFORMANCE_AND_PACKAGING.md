@@ -8,23 +8,41 @@ installer-size, and optimization notes.
 ## Current Baseline
 
 The latest verified installer-size AutoResearch result is the unsigned local
-H16 bzip2 build from 2026-07-20:
+H17 bzip2 build from 2026-07-20:
 
-- The exact campaign baseline installer is `152,090,560` bytes; H16 is
-  `83,403,090` bytes (SHA-256
-  `293491946b5814dc99e9cdc78771b6ee7287c5527424f2e34a05acbd16579b83`).
-  The measured saving is `68,687,470` bytes, or `45.162%`.
-- The H16 staged payload is `191,776,225` bytes. Its clean installed tree is
-  `191,872,521` bytes across exactly `543` files.
-- H16 combines the QuickJS-ng YouTube runtime, the English/German-only NLTK
+- The exact campaign baseline installer is `152,090,560` bytes. The final H17
+  installer is `78,408,598` bytes (SHA-256
+  `fcb48cf4eb7abd28714a05dec74d3616b7f8db3d22156208022528b9f92a99bc`).
+  This is `73,681,962` bytes (`70.269 MiB`, `48.446%`) below the baseline and
+  `4,994,492` bytes (`4.763 MiB`, `5.988%`) below H16. Re-measure after any
+  installer-hook change; NSIS script bytes change its hash and size even when
+  the staged application payload is unchanged.
+- The H17 staged payload is `172,170,061` bytes across `539` files, down
+  `19,606,164` bytes (`18.698 MiB`, `10.223%`) from H16. Its frozen backend is
+  `153,183,611` bytes across `536` files. It contains neither `numpy.libs` nor
+  a BLAS/OpenBLAS/LAPACK file.
+- H17 retains the H16 QuickJS-ng YouTube runtime, English/German-only NLTK
   `punkt_tab` payload, standard-library PDF/DOCX exports, frozen-code docstring
   pruning, and removal of unused provider SDK modules. FFmpeg and ffprobe,
   local ONNX ASR, supported providers, and the static diarization worker remain
   bundled.
+- H17 replaces only the frozen product copy of public NumPy `2.4.6` with the
+  locked `2.4.6+scriber.noblas.1` wheel. The build/source venv, requirements,
+  campaign wheelhouse, and pip cache retain public NumPy `2.4.6`; the custom
+  wheel is validated and extracted into a temporary PyInstaller-only overlay.
+  SmartTurn's fixed mel-filter multiplication uses the already bundled ONNX
+  Runtime so removing OpenBLAS does not create the measured pure-NumPy
+  regression.
 - Frozen runtime validation keeps `Analysis(optimize=0)`, `__debug__`, and real
   `assert` execution while removing compiler-owned runtime docstrings from the
   PyInstaller code cache. English and German Punkt loading/segmentation both
   pass from the frozen bundle.
+- A real German `de-DE` audio gate produced byte-identical H16/H17 transcripts
+  with token recall `18/20` (`0.90`) and WER `3/20` (`0.15`). SmartTurn produced
+  all `64,000/64,000` float32 feature values and its prediction/probability
+  exactly; end-to-end median/p95 were `+2.3%/+0.6%` versus H16. Five English
+  provider/language-routing tests passed; this packet does not claim an English
+  acoustic result from the German-only Primeline fixture.
 - The installed QuickJS holdout passes all six route families, including player
   signature, captions, Shorts, Music, and completed-live replay, with input
   immutability and child cleanup verified.
@@ -41,17 +59,47 @@ frozen-runtime, six-case QuickJS, upgrade, and strict-uninstall evidence above
 all passed; H16 is therefore a measured and directly verified result, but it is
 not recorded as a runner-promoted campaign champion.
 
-### Next high-impact packaging packets
+### H17 compact NumPy implementation and debugging
 
-1. H17 should test an offline, attestable NumPy `2.4.6` wheel built without an
-   external BLAS/LAPACK runtime. OpenBLAS accounts for `20,415,488` raw bytes
-   and has a `5,422,821`-byte bzip2 proxy; the realistic installer target is a
-   further `4.5–5.2 MiB` reduction. Do not delete the DLL from the current
-   wheel: NumPy's extension modules import it directly. Promotion requires
-   SmartTurn feature/inference budgets, speaker-embedding parity, local ONNX
-   ASR, real installed German and English audio fixtures, clean H16 upgrade,
-   and proof that no OpenBLAS import or file remains.
-2. A later architecture packet may remove the duplicate ONNX Runtime linked
+The implementation is deliberately fail-closed and has four boundaries:
+
+1. `packaging/wheels/numpy-noblas-wheel-lock-v1.json` binds the wheel filename,
+   SHA-256, size, tags, NumPy versions, license/RECORD inventory, PYD inventory,
+   and forbidden archive/import patterns. `scripts/validate_numpy_noblas_wheel.py`
+   validates this before extraction, rejects unsafe ZIP members and symlinks,
+   and extracts only to a caller-supplied empty physical directory.
+2. `scripts/build_tauri_backend_sidecar.ps1` creates that overlay below its
+   bounded work root. It exposes `SCRIBER_NUMPY_WHEEL_PATH`,
+   `SCRIBER_NUMPY_OVERLAY_ROOT`, and the overlay-only `PYTHONPATH` only around
+   the PyInstaller child, then restores the exact previous environment.
+   `packaging/scriber-backend.spec` verifies wheel path, import origin, exact
+   runtime/metadata version, and license metadata; the public
+   `numpy-2.4.6.dist-info` is forbidden from the frozen result.
+3. `src/runtime/smart_turn_mel.py` lazily selects the bundled
+   `smart-turn-mel-matmul.onnx` only for the Scriber no-BLAS NumPy version. The
+   model is a fixed float64 `80x201` mel matrix generated by
+   `scripts/build_smart_turn_mel_matmul_model.py`; it uses one sequential,
+   single-threaded ONNX Runtime session. Do not generalize this adapter to
+   arbitrary matrix operations without new correctness and latency evidence.
+4. `scripts/check_backend_runtime_imports.py` requires the custom NumPy version,
+   `blas/lapack: none`, basic `@` and `linalg.norm` correctness, and no retained
+   OpenBLAS file. The NSIS post-install hook removes the two exact former H16
+   files and then removes the empty `numpy.libs` directory. It intentionally
+   uses no wildcard or recursive deletion.
+
+When debugging, first run the wheel validator, then the focused adapter tests,
+then the frozen import probe. If PyInstaller resolves public NumPy, inspect the
+three child-only environment variables and the spec's reported import origin;
+do not install the custom wheel into the shared build venv. If SmartTurn changes
+results, regenerate the ONNX model only from the pinned generator environment
+and compare the complete feature tensor plus final probability—not only the
+boolean decision. If a same-version upgrade retains old NumPy files, compare a
+clean H17 staged inventory with the H16-to-H17 installed inventory and update
+only exact tombstones for confirmed obsolete paths.
+
+### Remaining high-impact packaging packet
+
+1. A later architecture packet may remove the duplicate ONNX Runtime linked
    into the `17,139,200`-byte static diarization worker. Linking static
    Sherpa/Rust code against the already packaged, identical ONNX Runtime 1.24.4
    DLL is expected to save about `5.0–5.5 MiB` from the installer while keeping

@@ -271,6 +271,51 @@ def test_backend_cache_keys_ignore_spec_checkout_line_endings() -> None:
         shutil.rmtree(output_crlf, ignore_errors=True)
 
 
+def test_numpy_overlay_lock_invalidates_only_backend_product_cache_keys() -> None:
+    if shutil.which("pwsh") is None:
+        pytest.skip("PowerShell 7 is required for release-script validation")
+
+    lock_path = REPO_ROOT / "packaging/wheels/numpy-noblas-wheel-lock-v1.json"
+    original = lock_path.read_bytes()
+    output_before = REPO_ROOT / "build" / f"test-cache-keys-numpy-before-{uuid.uuid4().hex}"
+    output_after = REPO_ROOT / "build" / f"test-cache-keys-numpy-after-{uuid.uuid4().hex}"
+
+    def write_keys(output: Path) -> dict[str, bytes]:
+        subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-File",
+                str(REPO_ROOT / "scripts/ci/write_release_cache_keys.ps1"),
+                "-OutputDir",
+                str(output.relative_to(REPO_ROOT)),
+            ],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return {path.name: path.read_bytes() for path in output.glob("*.txt")}
+
+    try:
+        before = write_keys(output_before)
+        lock_path.write_bytes(original + b"\n ")
+        after = write_keys(output_after)
+
+        assert before.keys() == after.keys()
+        changed = {name for name in before if before[name] != after[name]}
+        assert changed == {"backend-runtime.txt", "backend-sidecar.txt"}
+        for name in changed:
+            manifest = after[name]
+            assert b"packaging/wheels/numpy-noblas-wheel-lock-v1.json" in manifest
+            assert b"packaging/wheels/numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl" in manifest
+            assert b"scripts/validate_numpy_noblas_wheel.py" in manifest
+    finally:
+        lock_path.write_bytes(original)
+        shutil.rmtree(output_before, ignore_errors=True)
+        shutil.rmtree(output_after, ignore_errors=True)
+
+
 def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
     if shutil.which("pwsh") is None:
         pytest.skip("PowerShell 7 is required for release-script validation")
