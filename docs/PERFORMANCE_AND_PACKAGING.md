@@ -1,87 +1,50 @@
 # Performance And Packaging
 
-Last verified: 2026-07-19
+Last verified: 2026-07-20
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
 
 ## Current Baseline
 
-Latest validated local Profile B installer build from 2026-07-11 (unsigned
-`v0.4.35` development build with LZMA):
+The latest verified installer-size AutoResearch result is the unsigned local
+H16 bzip2 build from 2026-07-20:
 
-- Installer: `120.16 MiB` (SHA-256
-  `67e80944c66aed0e052378ba57f8cf6436a6e59eafc24a2a2737fd0e0439c69a`).
-- Installed app: about `303.45 MiB`.
-- Backend resource tree: about `286.07 MiB`.
-- Installed media-tool/runtime directory: about `100.37 MiB`, dominated by the
-  pinned Deno YouTube runtime; the FFmpeg/ffprobe Profile B subset is `5.11 MiB`.
-- Profile B portable media-tool build: about `5.11 MiB` for `ffmpeg.exe`,
-  `ffprobe.exe`, and required runtime DLLs.
-- Previous PySide6 overlay runtime component: about `62.70 MiB`; current
-  standard builds remove this runtime and render the overlay in Tauri.
-- AWS SDK footprint: absent, `0.00 MiB`.
-- Targeted package/provider-removal tests: `188 passed`.
-- Frontend type check passed.
-- Installed frontend smoke passed.
-- Installed media-preparation smoke passed `5/5`.
-- Installed uninstall smoke passed.
-- Installed Tauri-WebView/frontend ownership smoke passed against the exact
-  `Scriber_0.4.35_x64-setup.exe`; `THIRD_PARTY_NOTICES.md` was present and the
-  optional WeSpeaker model was absent.
-- Real installed file and YouTube workflow smoke previously passed `2/2` for
-  the Profile B path with `https://www.youtube.com/watch?v=0wEjbSYNUM8`.
+- The exact campaign baseline installer is `152,090,560` bytes; H16 is
+  `83,403,090` bytes (SHA-256
+  `293491946b5814dc99e9cdc78771b6ee7287c5527424f2e34a05acbd16579b83`).
+  The measured saving is `68,687,470` bytes, or `45.162%`.
+- The H16 staged payload is `191,776,225` bytes. Its clean installed tree is
+  `191,872,521` bytes across exactly `543` files.
+- H16 combines the QuickJS-ng YouTube runtime, the English/German-only NLTK
+  `punkt_tab` payload, standard-library PDF/DOCX exports, frozen-code docstring
+  pruning, and removal of unused provider SDK modules. FFmpeg and ffprobe,
+  local ONNX ASR, supported providers, and the static diarization worker remain
+  bundled.
+- Frozen runtime validation keeps `Analysis(optimize=0)`, `__debug__`, and real
+  `assert` execution while removing compiler-owned runtime docstrings from the
+  PyInstaller code cache. English and German Punkt loading/segmentation both
+  pass from the frozen bundle.
+- The installed QuickJS holdout passes all six route families, including player
+  signature, captions, Shorts, Music, and completed-live replay, with input
+  immutability and child cleanup verified.
+- A direct baseline-to-H16 upgrade produced the exact expected `543`-file tree
+  with no missing, extra, or changed files. The data sentinel survived and the
+  strict uninstall left no install files, processes, or registry entries.
 
-Compared with the 2026-06-12 Profile B baseline, the 2026-06-17 build is
-about `0.2 MiB` smaller as a compressed installer, about `43 MiB` smaller
-after installation, and about `42.3 MiB` smaller in the backend resource tree.
+The protected formal runner still labels this packet `crash`, but that is a
+harness false-negative rather than a product failure. Its same-version upgrade
+watcher timed out after the candidate installer had already exited with code
+zero, and the retained YouTube detail later failed packet binding with
+`retained_gate_artifact_binding_failed`. The independent installed-tree,
+frozen-runtime, six-case QuickJS, upgrade, and strict-uninstall evidence above
+all passed; H16 is therefore a measured and directly verified result, but it is
+not recorded as a runner-promoted campaign champion.
 
-Historical comparison points:
-
-- Full/Gyan-style media tooling produced much larger installed packages.
-- Gyan Essentials remains a fallback path, not the default.
-- Removing ffprobe is still an experiment because standard workflows expect
-  ffprobe availability.
-
-The full-installer baseline above still contains the superseded Deno runtime.
-The 2026-07-19 high-impact prototype replaces it with QuickJS-ng `0.15.0`
-behind Scriber's bounded, offline `--script FILE` wrapper. The final staged
-quartet (`qjs.exe`, hardened `qjs-engine.exe`, license, and canonical manifest)
-is `2,119,089` bytes. Against the exact H10-derived staged payload, raw payload
-size falls from `294,922,093` to `216,634,372` bytes: `78,287,721` bytes
-(`74.661 MiB`) saved, with no Deno executable remaining. This candidate was
-restaged through the installer allowlist after composing the final application
-layer: the generated `15,792`-byte app-layer manifest binds `93` files, has
-SHA-256 `a3b83e063a6a9c90b4213c5d1fb9d9b3d5dc9943586832243ab7e3764f53c0a0`,
-and the complete application layer including that manifest is `3,001,527`
-bytes. It includes the frozen QuickJS trust root and final media-resolution and
-YouTube-download code; no pre-trust-root app layer was reused for this count.
-The fresh `638`-file allowlisted payload has tree SHA-256
-`60e946eda9f3bab872019da47d3ac0ea103e536ec9b716378944e648fb64356e`
-and file-list SHA-256
-`f5c1cafd36f7aa1a50250a42b15741b323bbedd59ca826682b2526a1d8ede82b`.
-Its byte-level measurement evidence has SHA-256
-`3394020b05154a20144e04ce762e5250f82016811d38e12f9b9ab718212c3f45`.
-
-The protected campaign component map intentionally remains unchanged during
-this experiment. Because it predates the four-file wrapper layout, its
-component breakdown can attribute part of the quartet to `other-payload`
-instead of `js-runtime`. Do not use that per-component split for this result;
-the staged total-byte delta and the non-protected runtime-file/bzip2 audit below
-are the authoritative prototype measurements.
-
-A Python bzip2-level-9 per-file proxy compresses the former `80,416,159`-byte
-Deno executable to `29,321,474` bytes and the final QuickJS quartet to `917,730`
-bytes, a proxy reduction of `28,403,744` bytes (`27.088 MiB`). This is not an
-NSIS-size claim: no installer was built for this prototype, so the next
-authorized installer build must measure the real compressed artifact and
-install time. The new non-protected frozen product smoke passed all six public
-route families with yt-dlp `2026.7.4` and EJS `0.8.0`, verified input
-immutability and process cleanup, and produced evidence SHA-256
-`61ca2014ccfecf89da4a15b77bee0fcfa80b2493f34f7ecaec6ca0e107bf1ee6`.
-This smoke proves current product behavior but is not a paired AutoResearch
-promotion result; the earlier protected paired diagnostic remained inconclusive
-because one baseline sample failed transiently.
+For historical release comparison, the 2026-07-11 unsigned `v0.4.35` Profile B
+LZMA development installer was `120.16 MiB`, with about `303.45 MiB` installed.
+That build still carried Deno. QuickJS-ng replaces it in H16; Profile B ffmpeg
+and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
 
@@ -869,7 +832,18 @@ Current packaging choices:
   smaller runtime manifest and the larger bilingual checker, the complete
   staged sidecar is 9,716,218 bytes smaller. A deterministic bzip2 level-9
   full-sidecar proxy predicts 2,983,281 bytes of installer savings; a complete
-  installer build is still required for a formal result.
+  installer build was subsequently included in the cumulative H16 measurement
+  above; the isolated Punkt-only saving remains a counterbuild estimate.
+- H16 recursively rewrites the retained PyInstaller code cache to remove only
+  compiler-owned module, class, function, and method docstrings. It deliberately
+  keeps `Analysis(optimize=0)`, `__debug__`, and executable `assert` statements;
+  the frozen probe verifies all three properties. The H16 PYZ filter also keeps
+  only Deepgram's required `listen.v1` graph and removes unused Deepgram
+  surfaces, OpenAI SDK Realtime/Conversations/Webhooks implementation modules,
+  and synchronous grpc channel/server/interceptor helpers. Supported OpenAI,
+  Deepgram, Google, Speechmatics, and ElevenLabs initialization remains part of
+  the frozen runtime gate, which also requires representative pruned imports to
+  fail.
 - AWS Transcribe is no longer exposed in frontend or backend settings. The
   standard sidecar excludes `boto3`, `botocore`, `s3transfer`, `aioboto3`,
   `aiobotocore`, and Pipecat AWS service modules.

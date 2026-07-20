@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-07-19
+Last verified: 2026-07-20
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -1209,6 +1209,13 @@ Packaging and scripts:
 Already implemented and should not be regressed:
 
 - Lazy STT provider imports.
+- Frozen-backend size pruning keeps PyInstaller `Analysis(optimize=0)` and real
+  assertion execution, then recursively removes only compiler-owned docstrings
+  from the retained code cache. Preserve the Deepgram `listen.v1` runtime
+  allowlist and the exclusions for unused Deepgram surfaces, OpenAI SDK
+  Realtime/Conversations/Webhooks implementation modules, and synchronous grpc
+  helpers. The frozen gate must initialize every supported provider path, reject
+  representative pruned imports, and load both English and German Punkt data.
 - Cached VAD/analyzer setup.
 - No-client WebSocket broadcast fast path.
 - About 60 Hz audio-level throttling.
