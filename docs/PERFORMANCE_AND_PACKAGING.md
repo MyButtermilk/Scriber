@@ -41,6 +41,25 @@ frozen-runtime, six-case QuickJS, upgrade, and strict-uninstall evidence above
 all passed; H16 is therefore a measured and directly verified result, but it is
 not recorded as a runner-promoted campaign champion.
 
+### Next high-impact packaging packets
+
+1. H17 should test an offline, attestable NumPy `2.4.6` wheel built without an
+   external BLAS/LAPACK runtime. OpenBLAS accounts for `20,415,488` raw bytes
+   and has a `5,422,821`-byte bzip2 proxy; the realistic installer target is a
+   further `4.5–5.2 MiB` reduction. Do not delete the DLL from the current
+   wheel: NumPy's extension modules import it directly. Promotion requires
+   SmartTurn feature/inference budgets, speaker-embedding parity, local ONNX
+   ASR, real installed German and English audio fixtures, clean H16 upgrade,
+   and proof that no OpenBLAS import or file remains.
+2. A later architecture packet may remove the duplicate ONNX Runtime linked
+   into the `17,139,200`-byte static diarization worker. Linking static
+   Sherpa/Rust code against the already packaged, identical ONNX Runtime 1.24.4
+   DLL is expected to save about `5.0–5.5 MiB` from the installer while keeping
+   process isolation. The current worker contract explicitly requires a fully
+   static binary, so this is not an H16/H17 mutation: it needs a versioned
+   hybrid-worker manifest/cache contract and installed German/English
+   transcription-plus-diarization evidence before it can be considered.
+
 For historical release comparison, the 2026-07-11 unsigned `v0.4.35` Profile B
 LZMA development installer was `120.16 MiB`, with about `303.45 MiB` installed.
 That build still carried Deno. QuickJS-ng replaces it in H16; Profile B ffmpeg
