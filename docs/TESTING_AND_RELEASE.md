@@ -746,6 +746,36 @@ bounded output and deadlines, process-tree cleanup, and input immutability. Its
 evidence is intentionally redacted and is a product smoke, not a replacement
 for the protected paired AutoResearch validator.
 
+The standard QuickJS runtime builder downloads the exact wrapper recorded in
+`packaging/quickjs-youtube-runtime-lock-v1.json` from the dedicated
+`release-cache-quickjs-wrapper-v3` prerelease and validates its length and
+SHA-256 before staging it. This avoids coupling clean GitHub release builds to
+the current Windows SDK/MSVC linker. Use
+`scripts/build_quickjs_youtube_runtime.py --rebuild-wrapper` only to diagnose
+source reproducibility; it must still match the protected output identity and
+is not the normal release path.
+
+Release planning and hybrid PR checks run the real remote-asset gate before
+expensive builds:
+
+```powershell
+pwsh -NoProfile -File scripts\ci\verify_quickjs_wrapper_cache_asset.ps1 `
+  -Repo MyButtermilk/Scriber
+```
+
+If the prerelease asset must be restored, take `qjs.exe` only from a previously
+attested Scriber payload, verify that its length and SHA-256 match the lock, and
+republish it through the allowlisted cache publisher:
+
+```powershell
+pwsh -NoProfile -File scripts\ci\publish_quickjs_wrapper_cache_asset.ps1 `
+  -Repo MyButtermilk/Scriber `
+  -SourcePath <verified-qjs.exe>
+
+pwsh -NoProfile -File scripts\ci\verify_quickjs_wrapper_cache_asset.ps1 `
+  -Repo MyButtermilk/Scriber
+```
+
 Support bundle smoke verifies:
 
 - token protection,

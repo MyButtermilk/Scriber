@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +21,18 @@ def test_quickjs_wrapper_lock_binds_sources_engine_and_canonical_manifest() -> N
     assert lock["engine"]["installedFileName"] == "qjs-engine.exe"
     assert lock["license"]["installedFileName"] == "LICENSE.quickjs-ng.txt"
     assert lock["wrapper"]["output"]["installedFileName"] == "qjs.exe"
+    assert lock["wrapper"]["artifact"]["length"] == lock["wrapper"]["output"]["length"]
+    assert lock["wrapper"]["artifact"]["sha256"] == lock["wrapper"]["output"]["sha256"]
+    assert "release-cache-quickjs-wrapper-v3" in lock["wrapper"]["artifact"]["url"]
+    source_tree = (
+        json.dumps(
+            lock["wrapper"]["files"], sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        + b"\n"
+    )
+    assert hashlib.sha256(source_tree).hexdigest() == lock["wrapper"]["artifact"][
+        "sourceTreeSha256"
+    ]
     assert lock["manifest"]["runtime"]["implementation"] == helper.IMPLEMENTATION
     assert lock["manifest"]["runtime"]["protocol"] == helper.PROTOCOL
     assert lock["manifest"]["runtime"]["wrapperVersion"] == "3"
@@ -132,6 +145,64 @@ def test_quickjs_cargo_target_is_short_stable_and_wrapper_bound(
     assert len(str(target)) < len(str(long_work_dir / "cargo-target"))
 
 
+def test_normal_quickjs_build_provisions_locked_wrapper_instead_of_linking(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    lock = helper._load_lock(LOCK_PATH, REPO_ROOT)
+    output_root = tmp_path / "runtime"
+    work_root = tmp_path / "work"
+    wrapper = tmp_path / "downloaded-wrapper.exe"
+    engine = tmp_path / "engine.exe"
+    license_path = tmp_path / "LICENSE"
+    wrapper.write_bytes(b"wrapper")
+    engine.write_bytes(b"engine")
+    license_path.write_bytes(b"license")
+    provisioned: list[dict[str, object]] = []
+
+    def fake_provision(*, identity: dict[str, object], **_kwargs: object) -> Path:
+        provisioned.append(identity)
+        if identity is lock["wrapper"]["artifact"]:
+            return wrapper
+        if identity is lock["engine"]["source"]:
+            return engine
+        if identity is lock["license"]:
+            return license_path
+        raise AssertionError("unexpected QuickJS input")
+
+    monkeypatch.setattr(helper, "_load_lock", lambda *_args: lock)
+    monkeypatch.setattr(helper, "_provision_input", fake_provision)
+    monkeypatch.setattr(helper, "_harden_engine", lambda **_kwargs: engine)
+    monkeypatch.setattr(
+        helper,
+        "_build_wrapper",
+        lambda **_kwargs: pytest.fail("normal build linked the wrapper"),
+    )
+    monkeypatch.setattr(helper, "_copy_exact", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(helper, "_verify_runtime", lambda **_kwargs: None)
+
+    result = helper.build_or_verify(
+        SimpleNamespace(
+            repo_root=REPO_ROOT,
+            lock=LOCK_PATH,
+            output=output_root / "qjs.exe",
+            engine_output=output_root / "qjs-engine.exe",
+            license_output=output_root / "LICENSE.quickjs-ng.txt",
+            manifest=output_root / "js-runtime-manifest.json",
+            work_dir=work_root,
+            rustup=None,
+            quickjs_wrapper=None,
+            quickjs_engine=None,
+            quickjs_license=None,
+            rebuild_wrapper=False,
+            offline=False,
+            verify_only=False,
+        )
+    )
+
+    assert result["ok"] is True
+    assert provisioned[-1] is lock["wrapper"]["artifact"]
+
+
 def test_verify_only_never_builds_or_downloads(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -208,3 +279,33 @@ def test_sidecar_and_release_cache_keys_track_every_quickjs_build_input() -> Non
         assert f'"{relative}"' in release_keys
     assert "Invoke-QuickJsYoutubeRuntimeBuild" in sidecar
     assert "Invoke-DenortYoutubeRuntimeBuild" not in sidecar
+
+
+def test_ci_downloads_and_hashes_quickjs_wrapper_before_release_builds() -> None:
+    verifier = (
+        REPO_ROOT / "scripts" / "ci" / "verify_quickjs_wrapper_cache_asset.ps1"
+    ).read_text(encoding="utf-8")
+    release_workflow = (
+        REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
+    ).read_text(encoding="utf-8")
+    pr_workflow = (
+        REPO_ROOT / ".github" / "workflows" / "hybrid-pr-checks.yml"
+    ).read_text(encoding="utf-8")
+    publisher = (
+        REPO_ROOT / "scripts" / "ci" / "publish_quickjs_wrapper_cache_asset.ps1"
+    ).read_text(encoding="utf-8")
+    pruner = (
+        REPO_ROOT / "scripts" / "ci" / "prune_obsolete_release_caches.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "gh release download" in verifier
+    assert "Get-FileHash" in verifier
+    assert "release-cache-quickjs-wrapper-v3" in verifier
+    assert "verify_quickjs_wrapper_cache_asset.ps1" in release_workflow
+    assert "verify_quickjs_wrapper_cache_asset.ps1" in pr_workflow
+    assert "tests\\test_build_quickjs_youtube_runtime.py" in pr_workflow
+    assert "Get-FileHash" in publisher
+    assert "gh release upload" in publisher
+    assert "verify_quickjs_wrapper_cache_asset.ps1" in publisher
+    assert "release-cache-quickjs-wrapper-v3" in pruner
+    assert "release-cache-quickjs-wrapper-v\\d+" in pruner

@@ -63,6 +63,12 @@ jobs:
           }
           Write-Host "Outlook public-client configuration is present and valid."
 
+      - name: Verify QuickJS wrapper cache asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/ci/verify_quickjs_wrapper_cache_asset.ps1 -Repo "${{ github.repository }}"
+
       - name: Compute deterministic release cache keys
         id: cache-keys
         shell: pwsh

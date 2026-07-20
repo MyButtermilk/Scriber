@@ -2673,6 +2673,9 @@ function Invoke-QuickJsYoutubeRuntimeBuild {
         }
         Assert-UnderRoot -Root $RepoRoot -Path $BuildWorkRoot -Label "QuickJS wrapper build work root"
         $arguments += @("--work-dir", $BuildWorkRoot)
+        if ($env:SCRIBER_QUICKJS_WRAPPER_BIN) {
+            $arguments += @("--quickjs-wrapper", $env:SCRIBER_QUICKJS_WRAPPER_BIN)
+        }
         if ($env:SCRIBER_QUICKJS_ENGINE_BIN) {
             $arguments += @("--quickjs-engine", $env:SCRIBER_QUICKJS_ENGINE_BIN)
         }

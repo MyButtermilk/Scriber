@@ -20,8 +20,8 @@ class LockedRuntimeFile(NamedTuple):
 
 ROOT_CONTRACT = "ScriberFrozenQuickJsRuntimeRootV1"
 SOURCE_LOCK_FILE = "packaging/quickjs-youtube-runtime-lock-v1.json"
-SOURCE_LOCK_LENGTH = 4704
-SOURCE_LOCK_SHA256 = "0e6f17a1fc855dd5001077b72a679f0d735359e597dfc54c7ba426ee0b778bc8"
+SOURCE_LOCK_LENGTH = 5150
+SOURCE_LOCK_SHA256 = "c0b0f3a3015a6f2818a083c42b1aa17587558e28d6041bd084650b058be959a3"
 
 WRAPPER = LockedRuntimeFile(
     name="qjs.exe",

@@ -44,7 +44,14 @@ jobs:
             tests\test_verify_tauri_updater_publication.py `
             tests\test_windows_authenticode_gate.py `
             tests\test_tauri_stability_smoke_gates.py `
+            tests\test_build_quickjs_youtube_runtime.py `
             tests\perf\test_media_preparation_smoke_script.py
+
+      - name: Verify QuickJS wrapper cache asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/ci/verify_quickjs_wrapper_cache_asset.ps1 -Repo "${{ github.repository }}"
 
   frontend-gates:
     name: Frontend typecheck and build

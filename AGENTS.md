@@ -149,7 +149,13 @@ Packaging and scripts:
   `native/scriber-quickjs-wrapper/`, and
   `scripts/build_quickjs_youtube_runtime.py`: byte-locked QuickJS-ng engine,
   bounded yt-dlp file-protocol wrapper, deterministic engine hardening, and
-  offline-capable four-file YouTube JavaScript runtime preparation.
+  offline-capable four-file YouTube JavaScript runtime preparation. Normal
+  builds provision the byte-locked wrapper from the dedicated prerelease cache
+  asset; `--rebuild-wrapper` is diagnostic-only because MSVC linker updates can
+  change PE bytes even with the pinned Rust toolchain and `/Brepro`.
+  `scripts/ci/verify_quickjs_wrapper_cache_asset.ps1` must download and hash the
+  asset before release producers start; cache maintenance must preserve the
+  current QuickJS cache tag.
 - `scripts/build_tauri_backend_sidecar.ps1`: sidecar build, runtime import
   checks, media-tool bundling, optional cache reuse.
 - `scripts/build_windows.ps1`: Windows installer orchestration. Official GitHub

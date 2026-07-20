@@ -64,6 +64,13 @@
   },
   "wrapper": {
     "crateRoot": "native/scriber-quickjs-wrapper",
+    "artifact": {
+      "url": "https://github.com/MyButtermilk/Scriber/releases/download/release-cache-quickjs-wrapper-v3/scriber-quickjs-wrapper-v3-windows-x86_64.exe",
+      "fileName": "scriber-quickjs-wrapper-v3-windows-x86_64.exe",
+      "length": 316416,
+      "sha256": "3594e7e4e01f755d7e9571e312f111f74036002a6b3460a4997e52b5a28533c9",
+      "sourceTreeSha256": "7d333c825ebfe4f9c5c55bebd54a64398868194fe53b3ae58ab6ebdd53a41652"
+    },
     "files": [
       {
         "relativePath": "native/scriber-quickjs-wrapper/Cargo.toml",

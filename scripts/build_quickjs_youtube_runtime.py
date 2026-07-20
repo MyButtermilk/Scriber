@@ -383,13 +383,24 @@ def _load_lock(path: Path, repo_root: Path) -> Mapping[str, Any]:
 
     _exact_keys(
         wrapper,
-        {"crateRoot", "files", "output"},
+        {"crateRoot", "artifact", "files", "output"},
         label="QuickJS wrapper",
     )
     files = wrapper.get("files")
+    artifact = wrapper.get("artifact")
     output = wrapper.get("output")
-    if not isinstance(files, list) or len(files) != 4 or not isinstance(output, dict):
+    if (
+        not isinstance(files, list)
+        or len(files) != 4
+        or not isinstance(artifact, dict)
+        or not isinstance(output, dict)
+    ):
         raise BuildError("QuickJS wrapper input or output inventory is invalid")
+    _exact_keys(
+        artifact,
+        {"url", "fileName", "length", "sha256", "sourceTreeSha256"},
+        label="QuickJS wrapper artifact",
+    )
     _exact_keys(
         output,
         {"installedFileName", "length", "sha256"},
@@ -399,6 +410,13 @@ def _load_lock(path: Path, repo_root: Path) -> Mapping[str, Any]:
         output["installedFileName"] != "qjs.exe"
         or _positive_integer(output["length"], label="QuickJS wrapper length") <= 0
         or not SHA256_RE.fullmatch(str(output["sha256"]))
+        or artifact["length"] != output["length"]
+        or artifact["sha256"] != output["sha256"]
+        or artifact["fileName"] != "scriber-quickjs-wrapper-v3-windows-x86_64.exe"
+        or artifact["url"]
+        != "https://github.com/MyButtermilk/Scriber/releases/download/"
+        "release-cache-quickjs-wrapper-v3/"
+        "scriber-quickjs-wrapper-v3-windows-x86_64.exe"
     ):
         raise BuildError("QuickJS wrapper output identity is invalid")
     expected_inputs = {
@@ -430,6 +448,18 @@ def _load_lock(path: Path, repo_root: Path) -> Mapping[str, Any]:
             raise BuildError("QuickJS wrapper input differs from its lock")
     if actual_inputs != expected_inputs or wrapper["crateRoot"] != "native/scriber-quickjs-wrapper":
         raise BuildError("QuickJS wrapper source inventory is not exact")
+    source_tree_bytes = (
+        json.dumps(
+            files,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    if _sha256_bytes(source_tree_bytes) != artifact["sourceTreeSha256"]:
+        raise BuildError("QuickJS wrapper artifact is not bound to its source tree")
 
     _validate_upstream_lock(repo_root, lock)
     expected_manifest = _expected_manifest(lock)
@@ -444,8 +474,15 @@ def _load_lock(path: Path, repo_root: Path) -> Mapping[str, Any]:
 
 
 def _assert_identity(path: Path, expected: Mapping[str, Any], *, label: str) -> None:
-    if _file_identity(path) != (expected["length"], expected["sha256"]):
-        raise BuildError(f"{label} differs from its protected identity")
+    actual_length, actual_sha256 = _file_identity(path)
+    expected_length = expected["length"]
+    expected_sha256 = expected["sha256"]
+    if (actual_length, actual_sha256) != (expected_length, expected_sha256):
+        raise BuildError(
+            f"{label} differs from its protected identity "
+            f"(actual length={actual_length}, sha256={actual_sha256}; "
+            f"expected length={expected_length}, sha256={expected_sha256})"
+        )
 
 
 def _download_locked(
@@ -830,20 +867,35 @@ def build_or_verify(args: argparse.Namespace) -> dict[str, Any]:
             license_path = _provision_input(
                 cache_root=cache_root, identity=lock["license"], offline=args.offline
             )
-        rustup = args.rustup
-        if rustup is None:
-            found = shutil.which("rustup")
-            if not found:
-                raise BuildError("rustup is unavailable for the pinned QuickJS wrapper build")
-            rustup = Path(found)
-        rustup = rustup.resolve(strict=True)
-        wrapper = _build_wrapper(
-            repo_root=repo_root,
-            work_dir=work_dir,
-            rustup=rustup,
-            lock=lock,
-            offline=args.offline,
-        )
+        if getattr(args, "rebuild_wrapper", False):
+            rustup = args.rustup
+            if rustup is None:
+                found = shutil.which("rustup")
+                if not found:
+                    raise BuildError(
+                        "rustup is unavailable for the pinned QuickJS wrapper rebuild"
+                    )
+                rustup = Path(found)
+            rustup = rustup.resolve(strict=True)
+            wrapper = _build_wrapper(
+                repo_root=repo_root,
+                work_dir=work_dir,
+                rustup=rustup,
+                lock=lock,
+                offline=args.offline,
+            )
+        else:
+            wrapper = _resolve_override(
+                getattr(args, "quickjs_wrapper", None),
+                lock["wrapper"]["artifact"],
+                label="wrapper artifact",
+            )
+            if wrapper is None:
+                wrapper = _provision_input(
+                    cache_root=cache_root,
+                    identity=lock["wrapper"]["artifact"],
+                    offline=args.offline,
+                )
         _copy_exact(wrapper, wrapper_output, lock["wrapper"]["output"])
         _copy_exact(engine, engine_output, lock["engine"])
         _copy_exact(license_path, license_output, lock["license"])
@@ -891,8 +943,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--rustup", type=Path)
+    parser.add_argument("--quickjs-wrapper", type=Path)
     parser.add_argument("--quickjs-engine", type=Path)
     parser.add_argument("--quickjs-license", type=Path)
+    parser.add_argument("--rebuild-wrapper", action="store_true")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--verify-only", action="store_true")
     return parser

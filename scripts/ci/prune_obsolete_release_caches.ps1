@@ -50,6 +50,7 @@ foreach ($tag in @(
     'release-cache-backend-sidecar-v2',
     'release-cache-python-venv-v1',
     'release-cache-python-wheelhouse-v2',
+    'release-cache-quickjs-wrapper-v3',
     'release-cache-rust-build-v2',
     'release-cache-rust-audio-sidecar-v1',
     'release-cache-rust-diarization-sidecar-v1'
@@ -62,6 +63,7 @@ $cacheReleasePatterns = @(
     '^release-cache-backend-sidecar-v\d+$',
     '^release-cache-python-venv-v\d+$',
     '^release-cache-python-wheelhouse-v\d+$',
+    '^release-cache-quickjs-wrapper-v\d+$',
     '^release-cache-rust-build-v\d+$',
     '^release-cache-rust-audio-sidecar-v\d+$',
     '^release-cache-rust-diarization-sidecar-v\d+$'
