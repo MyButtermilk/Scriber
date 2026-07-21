@@ -13,6 +13,7 @@ from unittest.mock import ANY, AsyncMock, patch
 import pytest
 
 from src import database
+from src.core.provider_audio_formats import AudioInputFormat, AudioSelectionMode
 from src.data.meeting_store import MeetingCreate, MeetingStore
 from src.data.transcript_artifact_store import AttemptState
 from src.meeting_analysis import build_analysis_prompt, parse_and_validate_analysis
@@ -31,7 +32,7 @@ class FakePipeline:
 
 
 @pytest.mark.parametrize("provider", ["modulate", "modulate_async"])
-def test_modulate_meeting_route_uses_bounded_webm_derivative(tmp_path, provider):
+def test_modulate_meeting_route_uses_bounded_mp3_derivative(tmp_path, provider):
     finalizer = MeetingFinalizer(
         SimpleNamespace(),
         tmp_path,
@@ -48,9 +49,59 @@ def test_modulate_meeting_route_uses_bounded_webm_derivative(tmp_path, provider)
         }
     )
 
-    assert route.transport == "webm_opus_task_derivative"
+    assert route.transport == "mp3_task_derivative"
+    assert route.audio_input_format == AudioInputFormat.MP3
+    assert route.audio_input_format_verified is True
+    assert route.audio_selection_mode == AudioSelectionMode.GENERATED
+    assert route.audio_preparation_implementation == "current_ffmpeg_mp3_fallback"
     assert route.response_shape == "final_text"
     assert route.timestamp_mode == "estimated"
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_format", "expected_mode", "expected_implementation"),
+    [
+        (
+            "deepgram_async",
+            AudioInputFormat.FLAC,
+            AudioSelectionMode.ORIGINAL_PASSTHROUGH,
+            "original_passthrough",
+        ),
+        (
+            "openai_async",
+            AudioInputFormat.WAV_PCM16,
+            AudioSelectionMode.GENERATED,
+            "ffmpeg_wav_pcm16_control",
+        ),
+    ],
+)
+def test_direct_meeting_route_freezes_exact_preparation_before_attempt(
+    tmp_path,
+    provider,
+    expected_format,
+    expected_mode,
+    expected_implementation,
+):
+    finalizer = MeetingFinalizer(
+        SimpleNamespace(),
+        tmp_path,
+        lambda **_kwargs: None,
+        lambda *_args, **_kwargs: None,
+        artifact_store=SimpleNamespace(),
+    )
+
+    route = finalizer._frozen_meeting_route(
+        {"finalProvider": provider, "language": "de", "captureMetadata": {}}
+    )
+    recovered = finalizer._execution_route_for_snapshot(route.snapshot_draft())
+
+    assert route.audio_input_format == expected_format
+    assert route.audio_selection_mode == expected_mode
+    assert route.audio_preparation_implementation == expected_implementation
+    assert recovered["provider"] == provider
+    assert recovered["audio_input_format"] == expected_format.value
+    assert recovered["provider_audio_capability_id"]
+    assert recovered["audio_input_format_verified"] is True
 
 
 def test_voice_reprocess_temp_cleanup_is_bounded_to_runtime_directory(tmp_path):
@@ -1495,19 +1546,12 @@ def test_full_reprocess_reuses_current_completed_canonical_artifact(tmp_path):
         canonical_artifact_id="artifact-new",
         created_at="2026-07-15T10:00:01+00:00",
     )
-    route = SimpleNamespace(
-        id="route-new",
-        workload="meeting",
-        source_track="meeting_tracks",
-        provider="onnx_local",
-        model="whisper-large-v3-turbo",
-        language="de",
-    )
+    route_holder: dict[str, object] = {}
     artifacts = SimpleNamespace(
         get_head=lambda _meeting_id: SimpleNamespace(artifact_id="artifact-new"),
         get_artifact=lambda _artifact_id: artifact,
         get_attempt=lambda _attempt_id: attempt,
-        get_route_snapshot=lambda _attempt_id: route,
+        get_route_snapshot=lambda _attempt_id: route_holder.get("route"),
     )
     finalizer = MeetingFinalizer(
         SimpleNamespace(),
@@ -1515,6 +1559,17 @@ def test_full_reprocess_reuses_current_completed_canonical_artifact(tmp_path):
         lambda **_kwargs: None,
         lambda *_args, **_kwargs: None,
         artifact_store=artifacts,
+    )
+    expected_route = finalizer._frozen_meeting_route(meeting).snapshot_draft()
+    route_holder["route"] = SimpleNamespace(
+        id="route-new",
+        workload=expected_route.workload,
+        source_track=expected_route.source_track,
+        provider=expected_route.provider,
+        model=expected_route.model,
+        transport=expected_route.transport,
+        language=expected_route.language,
+        request_options=dict(expected_route.request_options),
     )
 
     assert finalizer._completed_artifact_for_current_reprocess(meeting) == (

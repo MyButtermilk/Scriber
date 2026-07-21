@@ -1,3 +1,4 @@
+mod audio_codec;
 mod audio_devices;
 mod audio_frame_pipe;
 mod audio_sidecar_client;
@@ -87,6 +88,7 @@ const BACKEND_TERMINATE_TIMEOUT: Duration = Duration::from_secs(2);
 const BACKEND_TERMINATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const BACKEND_HEALTH_MAX_RESPONSE_BYTES: u64 = 64 * 1024;
 static INITIAL_MAIN_WINDOW_REVEALED: AtomicBool = AtomicBool::new(false);
+static BENCHMARK_PROVIDER_REPLAY_ARM: Mutex<Option<BenchmarkProviderReplayArm>> = Mutex::new(None);
 const BACKEND_JSON_MAX_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
 const DEFAULT_LIVE_MIC_HOTKEY: &str = "ctrl+shift+d";
 const DEFAULT_POST_PROCESSING_HOTKEY: &str = "ctrl+shift+f";
@@ -136,6 +138,38 @@ struct BenchmarkHotkeyMarker {
     qpc_ticks: i64,
     qpc_frequency: i64,
     timestamp_ns: i64,
+    #[serde(skip)]
+    provider_replay: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchmarkActivationKind {
+    Hotkey,
+    Button,
+}
+
+impl BenchmarkActivationKind {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "hotkey" => Some(Self::Hotkey),
+            "button" => Some(Self::Button),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Hotkey => "hotkey",
+            Self::Button => "button",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BenchmarkProviderReplayArm {
+    run_id: String,
+    sample_id: String,
+    activation_kind: BenchmarkActivationKind,
 }
 
 #[derive(Debug)]
@@ -152,21 +186,180 @@ impl BenchmarkHotkeyState {
         }
     }
 
-    fn capture_callback_marker(&self) -> Option<BenchmarkHotkeyMarker> {
-        let run_id = self.run_id.as_ref()?;
-        let (qpc_ticks, qpc_frequency, timestamp_ns) = query_performance_marker()?;
-        Some(BenchmarkHotkeyMarker {
+    fn callback_qpc_snapshot(&self) -> Option<(i64, i64, i64)> {
+        self.run_id.as_ref()?;
+        query_performance_marker()
+    }
+
+    fn capture_callback_marker(
+        &self,
+        qpc_snapshot: Option<(i64, i64, i64)>,
+        provider_replay_allowed: bool,
+    ) -> Result<Option<BenchmarkHotkeyMarker>, &'static str> {
+        self.capture_activation_marker(
+            BenchmarkActivationKind::Hotkey,
+            qpc_snapshot,
+            provider_replay_allowed,
+        )
+    }
+
+    fn capture_button_marker(&self) -> Option<BenchmarkHotkeyMarker> {
+        self.capture_activation_marker(BenchmarkActivationKind::Button, None, true)
+            .ok()
+            .flatten()
+    }
+
+    fn capture_activation_marker(
+        &self,
+        activation_kind: BenchmarkActivationKind,
+        qpc_snapshot: Option<(i64, i64, i64)>,
+        provider_replay_allowed: bool,
+    ) -> Result<Option<BenchmarkHotkeyMarker>, &'static str> {
+        let Some(run_id) = self.run_id.as_ref() else {
+            return Ok(None);
+        };
+        let Some(pending_sample) =
+            take_benchmark_provider_replay_arm(run_id, activation_kind, provider_replay_allowed)
+        else {
+            return Err("native benchmark activation does not match the armed lane");
+        };
+        let provider_replay = pending_sample.is_some();
+        if activation_kind == BenchmarkActivationKind::Button && !provider_replay {
+            return Ok(None);
+        }
+        if provider_replay
+            && activation_kind == BenchmarkActivationKind::Hotkey
+            && qpc_snapshot.is_none()
+        {
+            return Err("native benchmark callback QPC is unavailable");
+        }
+        let Some((qpc_ticks, qpc_frequency, timestamp_ns)) =
+            qpc_snapshot.or_else(query_performance_marker)
+        else {
+            return if provider_replay {
+                Err("native benchmark activation QPC is unavailable")
+            } else {
+                Ok(None)
+            };
+        };
+        Ok(Some(BenchmarkHotkeyMarker {
             schema_version: 1,
-            marker: "hotkey_received",
-            source: "tauri_global_shortcut",
+            marker: match activation_kind {
+                BenchmarkActivationKind::Hotkey => "hotkey_received",
+                BenchmarkActivationKind::Button => "button_received",
+            },
+            source: match activation_kind {
+                BenchmarkActivationKind::Hotkey => "tauri_global_shortcut",
+                BenchmarkActivationKind::Button => "tauri_ui_command",
+            },
             run_id: run_id.clone(),
-            sample_id: Uuid::new_v4().simple().to_string(),
+            sample_id: pending_sample.unwrap_or_else(|| Uuid::new_v4().simple().to_string()),
             process_id: std::process::id(),
             qpc_ticks,
             qpc_frequency,
             timestamp_ns,
-        })
+            provider_replay,
+        }))
     }
+}
+
+fn take_benchmark_provider_replay_arm(
+    run_id: &str,
+    activation_kind: BenchmarkActivationKind,
+    provider_replay_allowed: bool,
+) -> Option<Option<String>> {
+    let mut pending = lock_unpoisoned(&BENCHMARK_PROVIDER_REPLAY_ARM);
+    take_benchmark_provider_replay_arm_from(
+        &mut pending,
+        run_id,
+        activation_kind,
+        provider_replay_allowed,
+    )
+}
+
+fn take_benchmark_provider_replay_arm_from(
+    pending: &mut Option<BenchmarkProviderReplayArm>,
+    run_id: &str,
+    activation_kind: BenchmarkActivationKind,
+    provider_replay_allowed: bool,
+) -> Option<Option<String>> {
+    match pending.as_ref() {
+        None => Some(None),
+        Some(armed)
+            if provider_replay_allowed
+                && armed.run_id == run_id
+                && armed.activation_kind == activation_kind =>
+        {
+            let sample_id = armed.sample_id.clone();
+            pending.take();
+            Some(Some(sample_id))
+        }
+        Some(_) => None,
+    }
+}
+
+fn parse_benchmark_provider_replay_arm(
+    payload: &Value,
+    configured_run_id: Option<String>,
+) -> Result<BenchmarkProviderReplayArm, String> {
+    let object = payload
+        .as_object()
+        .ok_or_else(|| "benchmark activation arm must be an object".to_string())?;
+    let expected = ["activationKind", "runId", "sampleId"]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    if object
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>()
+        != expected
+    {
+        return Err("benchmark activation arm contains unsupported fields".to_string());
+    }
+    let configured =
+        configured_run_id.ok_or_else(|| "benchmark activation arm is disabled".to_string())?;
+    let run_id = normalize_benchmark_uuid(
+        object
+            .get("runId")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )
+    .ok_or_else(|| "benchmark activation run id is invalid".to_string())?;
+    if run_id != configured {
+        return Err("benchmark activation run id does not match this runtime".to_string());
+    }
+    let sample_id = normalize_benchmark_uuid(
+        object
+            .get("sampleId")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )
+    .ok_or_else(|| "benchmark activation sample id is invalid".to_string())?;
+    let activation_kind = BenchmarkActivationKind::parse(
+        object
+            .get("activationKind")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )
+    .ok_or_else(|| "benchmark activation kind is invalid".to_string())?;
+    Ok(BenchmarkProviderReplayArm {
+        run_id,
+        sample_id,
+        activation_kind,
+    })
+}
+
+pub(crate) fn arm_benchmark_provider_replay_activation(payload: &Value) -> Result<Value, String> {
+    let armed = parse_benchmark_provider_replay_arm(
+        payload,
+        normalize_benchmark_uuid(&env::var(TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV).unwrap_or_default()),
+    )?;
+    let activation_kind = armed.activation_kind.as_str();
+    *lock_unpoisoned(&BENCHMARK_PROVIDER_REPLAY_ARM) = Some(armed);
+    Ok(json!({
+        "armed": true,
+        "activationKind": activation_kind,
+    }))
 }
 
 fn normalize_benchmark_uuid(raw: &str) -> Option<String> {
@@ -174,6 +367,11 @@ fn normalize_benchmark_uuid(raw: &str) -> Option<String> {
         .ok()
         .filter(|value| !value.is_nil())
         .map(|value| value.simple().to_string())
+}
+
+fn benchmark_activation_enabled() -> bool {
+    normalize_benchmark_uuid(&env::var(TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV).unwrap_or_default())
+        .is_some()
 }
 
 fn provider_replay_run_id_for_child(
@@ -359,6 +557,7 @@ pub struct BackendStatus {
 pub struct BackendAccess {
     base_url: String,
     session_token: String,
+    benchmark_activation_enabled: bool,
 }
 
 #[derive(Debug)]
@@ -890,6 +1089,7 @@ impl BackendManager {
         BackendAccess {
             base_url: state.base_url.clone(),
             session_token: state.session_token.clone(),
+            benchmark_activation_enabled: benchmark_activation_enabled(),
         }
     }
 
@@ -905,6 +1105,7 @@ impl BackendManager {
                 BackendAccess {
                     base_url: state.base_url.clone(),
                     session_token: state.session_token.clone(),
+                    benchmark_activation_enabled: benchmark_activation_enabled(),
                 },
             )
         };
@@ -980,6 +1181,7 @@ impl BackendManager {
                 BackendAccess {
                     base_url: state.base_url.clone(),
                     session_token: state.session_token.clone(),
+                    benchmark_activation_enabled: benchmark_activation_enabled(),
                 },
             )
         };
@@ -1035,6 +1237,7 @@ impl BackendManager {
                 BackendAccess {
                     base_url: state.base_url.clone(),
                     session_token: state.session_token.clone(),
+                    benchmark_activation_enabled: benchmark_activation_enabled(),
                 },
             )
         };
@@ -1081,6 +1284,13 @@ fn get_backend_base_url(manager: tauri::State<'_, BackendManager>) -> String {
 #[tauri::command]
 fn get_backend_access(manager: tauri::State<'_, BackendManager>) -> BackendAccess {
     manager.access()
+}
+
+#[tauri::command]
+fn capture_benchmark_button_marker(
+    state: tauri::State<'_, BenchmarkHotkeyState>,
+) -> Option<BenchmarkHotkeyMarker> {
+    state.capture_button_marker()
 }
 
 #[tauri::command]
@@ -1471,6 +1681,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_backend_base_url,
             get_backend_access,
+            capture_benchmark_button_marker,
             native_overlay_renderer_ready,
             backend_status,
             ensure_backend_running,
@@ -3188,6 +3399,7 @@ fn terminate_managed_child(state: &mut BackendState) {
         let access = BackendAccess {
             base_url: state.base_url.clone(),
             session_token: state.session_token.clone(),
+            benchmark_activation_enabled: benchmark_activation_enabled(),
         };
         let graceful_requested = match request_backend_shutdown(&access) {
             Ok(()) => {
@@ -3791,14 +4003,45 @@ fn handle_global_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event_stat
     // Capture QPC at the actual Tauri callback boundary. The marker is inert
     // unless the explicit benchmark run-id environment contract was present
     // when this installed process started.
-    let benchmark_marker = app
+    let benchmark_callback_qpc = app
         .try_state::<BenchmarkHotkeyState>()
-        .and_then(|state| state.capture_callback_marker());
+        .and_then(|state| state.callback_qpc_snapshot());
     let Some(path) = app
         .try_state::<DesktopHotkeyState>()
         .and_then(|state| state.action_for_event(shortcut.id(), event_state, Instant::now()))
     else {
         return;
+    };
+    let benchmark_marker = if should_attach_benchmark_hotkey_marker(path, false) {
+        match app.try_state::<BenchmarkHotkeyState>().map(|state| {
+            state.capture_callback_marker(
+                benchmark_callback_qpc,
+                matches!(path, "/api/live-mic/start" | "/api/live-mic/toggle"),
+            )
+        }) {
+            Some(Ok(marker)) => marker,
+            Some(Err(err)) => {
+                write_shell_log(&format!(
+                    "global hotkey benchmark activation rejected path={path}: {err}"
+                ));
+                return;
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    // Provider replay is a start-only benchmark. Route the accepted primary
+    // shortcut directly to the strict start endpoint so toggle state cannot
+    // consume or reinterpret its one-shot native marker.
+    let path = if benchmark_marker
+        .as_ref()
+        .map(|marker| marker.provider_replay)
+        .unwrap_or(false)
+    {
+        "/api/live-mic/start"
+    } else {
+        path
     };
 
     if let Some(workspace_path) = workspace_path_for_hotkey_action(path) {
@@ -3861,10 +4104,19 @@ fn handle_global_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event_stat
             ));
         }
         let access = manager.access();
-        let benchmark_body = if should_attach_benchmark_hotkey_marker(path, recording_active) {
-            benchmark_marker
-                .as_ref()
-                .map(|marker| json!({ "benchmarkHotkeyMarker": marker }))
+        let benchmark_body = if benchmark_marker
+            .as_ref()
+            .map(|marker| marker.provider_replay)
+            .unwrap_or(false)
+            || should_attach_benchmark_hotkey_marker(path, recording_active)
+        {
+            benchmark_marker.as_ref().map(|marker| {
+                if marker.provider_replay {
+                    json!({ "benchmarkActivationMarker": marker })
+                } else {
+                    json!({ "benchmarkHotkeyMarker": marker })
+                }
+            })
         } else {
             None
         };
@@ -5065,6 +5317,7 @@ mod tests {
         let access = BackendAccess {
             base_url: format!("http://{DEFAULT_HOST}:{port}"),
             session_token: "new-shell-token".to_string(),
+            benchmark_activation_enabled: false,
         };
 
         assert!(!super::authenticated_backend_ready(&access));
@@ -5798,6 +6051,89 @@ mod tests {
     }
 
     #[test]
+    fn provider_replay_activation_arm_is_exact_and_consumed_once() {
+        let run_id = "7de1a48651d44f859042b7cbcb30da52".to_string();
+        let sample_id = "8de1a48651d44f859042b7cbcb30da53".to_string();
+        let parsed = super::parse_benchmark_provider_replay_arm(
+            &serde_json::json!({
+                "runId": run_id,
+                "sampleId": sample_id,
+                "activationKind": "button",
+            }),
+            Some(run_id.clone()),
+        )
+        .expect("valid native activation arm");
+        let mut pending = Some(parsed);
+
+        assert_eq!(
+            super::take_benchmark_provider_replay_arm_from(
+                &mut pending,
+                &run_id,
+                super::BenchmarkActivationKind::Button,
+                false,
+            ),
+            None
+        );
+        assert!(pending.is_some());
+        assert_eq!(
+            super::take_benchmark_provider_replay_arm_from(
+                &mut pending,
+                &run_id,
+                super::BenchmarkActivationKind::Hotkey,
+                true,
+            ),
+            None
+        );
+        assert!(pending.is_some());
+        assert_eq!(
+            super::take_benchmark_provider_replay_arm_from(
+                &mut pending,
+                &run_id,
+                super::BenchmarkActivationKind::Button,
+                true,
+            ),
+            Some(Some(sample_id))
+        );
+        assert!(pending.is_none());
+        assert_eq!(
+            super::take_benchmark_provider_replay_arm_from(
+                &mut pending,
+                &run_id,
+                super::BenchmarkActivationKind::Button,
+                true,
+            ),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn provider_replay_activation_arm_rejects_expansion_and_wrong_run() {
+        let run_id = "7de1a48651d44f859042b7cbcb30da52".to_string();
+        for payload in [
+            serde_json::json!({
+                "runId": run_id,
+                "sampleId": "8de1a48651d44f859042b7cbcb30da53",
+                "activationKind": "touch",
+            }),
+            serde_json::json!({
+                "runId": run_id,
+                "sampleId": "8de1a48651d44f859042b7cbcb30da53",
+                "activationKind": "hotkey",
+                "text": "forbidden",
+            }),
+            serde_json::json!({
+                "runId": "9de1a48651d44f859042b7cbcb30da54",
+                "sampleId": "8de1a48651d44f859042b7cbcb30da53",
+                "activationKind": "hotkey",
+            }),
+        ] {
+            assert!(
+                super::parse_benchmark_provider_replay_arm(&payload, Some(run_id.clone())).is_err()
+            );
+        }
+    }
+
+    #[test]
     fn provider_replay_run_id_reaches_only_release_sidecars() {
         let raw = "7de1a486-51d4-4f85-9042-b7cbcb30da52";
         assert_eq!(
@@ -5826,10 +6162,14 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn benchmark_hotkey_callback_marker_uses_windows_qpc() {
+        *super::lock_unpoisoned(&super::BENCHMARK_PROVIDER_REPLAY_ARM) = None;
         let state = super::BenchmarkHotkeyState {
             run_id: normalize_benchmark_uuid("7de1a486-51d4-4f85-9042-b7cbcb30da52"),
         };
-        let marker = state.capture_callback_marker().expect("Windows QPC marker");
+        let marker = state
+            .capture_callback_marker(state.callback_qpc_snapshot(), true)
+            .expect("benchmark marker contract")
+            .expect("Windows QPC marker");
         assert_eq!(marker.marker, "hotkey_received");
         assert_eq!(marker.source, "tauri_global_shortcut");
         assert_eq!(marker.process_id, std::process::id());
@@ -6057,6 +6397,7 @@ mod tests {
         let access = BackendAccess {
             base_url: format!("http://{DEFAULT_HOST}:{port}"),
             session_token: "shutdown-secret".to_string(),
+            benchmark_activation_enabled: false,
         };
 
         request_backend_shutdown(&access).expect("shutdown request succeeds");

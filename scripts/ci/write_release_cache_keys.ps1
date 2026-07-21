@@ -293,7 +293,9 @@ Add-ContentEntry -Entries $rustAudioEntries -Path "Frontend/src-tauri/Cargo.lock
 foreach ($path in @(
     "Frontend/src-tauri/build.rs",
     "Frontend/src-tauri/src/audio_sidecar.rs",
+    "Frontend/src-tauri/src/audio_codec.rs",
     "Frontend/src-tauri/src/audio_frame_pipe.rs",
+    "Frontend/src-tauri/src/audio_prepare.rs",
     "Frontend/src-tauri/src/meeting_aec.rs",
     "Frontend/src-tauri/src/redaction.rs"
 )) {

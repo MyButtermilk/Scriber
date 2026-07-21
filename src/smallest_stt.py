@@ -218,7 +218,7 @@ class SmallestAsyncProcessor(FrameProcessor):
         self._channels = 1
 
     def _create_buffer(self):
-        return create_pcm_spool()
+        return create_pcm_spool(reserve_wav_header=True)
 
     def _reset_buffer(self) -> None:
         close_pcm_spool(getattr(self, "_buffer", None))
@@ -295,6 +295,8 @@ class SmallestAsyncProcessor(FrameProcessor):
                         self._buffer,
                         self._sample_rate,
                         self._channels,
+                        reserved_wav_header=True,
+                        pcm_size=self._buffer_size,
                     )
                     try:
                         text = (await self._transcribe_wav(wav_source)).strip()

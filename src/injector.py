@@ -868,6 +868,8 @@ def _paste_text(
         phase="before_clipboard_set",
     ):
         return False
+    if on_marker:
+        on_marker("injection_target_validated")
 
     # Only save previous clipboard if we're going to restore it. This uses a
     # full format snapshot so image/file/HTML clipboard assets are not replaced
@@ -913,6 +915,8 @@ def _paste_text(
             return False
 
         paste_dispatched = True
+        if on_marker:
+            on_marker("paste_requested")
         try:
             dispatch()
         except Exception as exc:
@@ -1067,9 +1071,16 @@ def _tauri_inject_text(
                     call_started_ns=call_started_ns,
                     call_finished_ns=call_finished_ns,
                 )
+                canonical_alias = (
+                    "injection_target_validated"
+                    if marker == "clipboard_set"
+                    else "paste_requested"
+                )
                 if timestamp_ns is None:
+                    on_marker(canonical_alias)
                     on_marker(marker)
                 else:
+                    on_marker(canonical_alias, timestamp_ns)
                     on_marker(marker, timestamp_ns)
     record_command_diagnostic("injectText", True, response=response)
     return True

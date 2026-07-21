@@ -610,7 +610,10 @@ async def test_ensure_audio_only_file_leaves_webm_without_video(tmp_path: Path):
     webm_file = tmp_path / "audio.webm"
     webm_file.write_bytes(b"fake")
 
-    with patch("src.youtube_download._has_video_stream", new=AsyncMock(return_value=False)):
+    with (
+        patch("src.youtube_download._has_video_stream", new=AsyncMock(return_value=False)),
+        patch("src.youtube_download._is_exact_webm_opus", new=AsyncMock(return_value=True)),
+    ):
         got = await _ensure_audio_only_file(webm_file)
 
     assert got == webm_file
@@ -623,9 +626,15 @@ async def test_ensure_audio_only_file_converts_video_extension(tmp_path: Path):
     webm_file = tmp_path / "video.webm"
     webm_file.write_bytes(b"audio")
 
-    with patch("src.youtube_download._extract_audio_track", new=AsyncMock(return_value=webm_file)) as extract_mock:
-        with patch("src.youtube_download._has_video_stream", new=AsyncMock(return_value=False)):
-            got = await _ensure_audio_only_file(mp4_file)
+    with (
+        patch(
+            "src.youtube_download._extract_audio_track",
+            new=AsyncMock(return_value=webm_file),
+        ) as extract_mock,
+        patch("src.youtube_download._has_video_stream", new=AsyncMock(return_value=False)),
+        patch("src.youtube_download._is_exact_webm_opus", new=AsyncMock(return_value=True)),
+    ):
+        got = await _ensure_audio_only_file(mp4_file)
 
     assert got == webm_file
     extract_mock.assert_awaited_once_with(mp4_file)
@@ -638,12 +647,43 @@ async def test_ensure_audio_only_file_converts_non_webm_audio(tmp_path: Path):
     webm_file = tmp_path / "audio.webm"
     webm_file.write_bytes(b"audio")
 
-    with patch("src.youtube_download._extract_audio_track", new=AsyncMock(return_value=webm_file)) as extract_mock:
-        with patch("src.youtube_download._has_video_stream", new=AsyncMock(return_value=False)):
-            got = await _ensure_audio_only_file(mp3_file)
+    with (
+        patch(
+            "src.youtube_download._extract_audio_track",
+            new=AsyncMock(return_value=webm_file),
+        ) as extract_mock,
+        patch("src.youtube_download._has_video_stream", new=AsyncMock(return_value=False)),
+        patch("src.youtube_download._is_exact_webm_opus", new=AsyncMock(return_value=True)),
+    ):
+        got = await _ensure_audio_only_file(mp3_file)
 
     assert got == webm_file
     extract_mock.assert_awaited_once_with(mp3_file)
+
+
+@pytest.mark.asyncio
+async def test_ensure_audio_only_file_reencodes_webm_with_non_opus_codec(tmp_path: Path):
+    source = tmp_path / "audio.webm"
+    source.write_bytes(b"vorbis")
+    normalized = tmp_path / "audio.audio.webm"
+    normalized.write_bytes(b"opus")
+
+    with (
+        patch(
+            "src.youtube_download._extract_audio_track",
+            new=AsyncMock(return_value=normalized),
+        ) as extract_mock,
+        patch("src.youtube_download._has_video_stream", new=AsyncMock(return_value=False)),
+        patch(
+            "src.youtube_download._is_exact_webm_opus",
+            new=AsyncMock(side_effect=[False, True]),
+        ) as codec_probe,
+    ):
+        got = await _ensure_audio_only_file(source)
+
+    assert got == normalized
+    extract_mock.assert_awaited_once_with(source)
+    assert codec_probe.await_count == 2
 
 
 @pytest.mark.asyncio

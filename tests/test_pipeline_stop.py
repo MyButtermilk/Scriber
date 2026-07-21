@@ -1,9 +1,11 @@
 import asyncio
 import gc
+import hashlib
 import io
 import inspect
 import threading
 import weakref
+from enum import StrEnum
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,11 +13,15 @@ import pytest
 from pipecat.frames.frames import (
     EndFrame,
     InputAudioRawFrame,
+    StartFrame,
     TranscriptionFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
-from pipecat.processors.frame_processor import FrameDirection
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.runner import PipelineRunner
+from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.turns.user_start import VADUserTurnStartStrategy
 from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
@@ -43,8 +49,12 @@ from src.pipeline import (
     _live_recording_gate_needed,
     _live_stt_stop_strategy,
     _ordered_live_pipeline_steps,
+    _ProviderIngressDrainProcessor,
+    _rust_capture_wav_plan,
+    _speechmatics_capture_time_wav_enabled,
     direct_file_workflow_timeout_seconds,
 )
+from src.transcript_artifacts import freeze_provider_route
 
 
 def test_microphone_transport_has_no_silently_ignored_analyzer_arguments():
@@ -52,6 +62,152 @@ def test_microphone_transport_has_no_silently_ignored_analyzer_arguments():
 
     assert "vad_analyzer" not in parameters
     assert "turn_analyzer" not in parameters
+
+
+def test_rust_capture_wav_plan_is_limited_to_exact_speechmatics_batch_route(monkeypatch):
+    monkeypatch.delenv("SCRIBER_SPEECHMATICS_BATCH_BASE_URL", raising=False)
+    monkeypatch.delenv("SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV", raising=False)
+    endpoint_sha256 = hashlib.sha256(
+        pipeline_module.SPEECHMATICS_BATCH_DEFAULT_BASE_URL.rstrip("/").encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    route = freeze_provider_route(
+        workload="live_mic",
+        provider="speechmatics_async",
+        model="batch-v2",
+        provider_route="batch_v2",
+        audio_input_format="wav_pcm16",
+        audio_selection_mode="generated",
+        audio_preparation_implementation="wav_pcm16_file_v1",
+        provider_endpoint_sha256=endpoint_sha256,
+        diarization_requested=False,
+    ).execution_route()
+    assert (
+        _rust_capture_wav_plan(
+            "speechmatics_async",
+            sample_rate=16_000,
+            channels=1,
+            execution_route=route,
+        )
+        is None
+    )
+
+    def enabled_plan(provider, **kwargs):
+        return _rust_capture_wav_plan(
+            provider,
+            candidate_enabled=True,
+            **kwargs,
+        )
+
+    plan = enabled_plan(
+        "speechmatics_async",
+        sample_rate=16_000,
+        channels=1,
+        execution_route=route,
+    )
+    assert plan == {
+        "schemaVersion": "1",
+        "format": "wav_pcm16",
+        "implementation": "wav_pcm16_file_v1",
+        "sampleRate": 16_000,
+        "channels": 1,
+        "bitsPerSample": 16,
+        "queueCapacityFrames": 64,
+        "maxPcmBytes": 64 * 1024 * 1024,
+    }
+    assert (
+        enabled_plan(
+            "azure_mai",
+            sample_rate=16_000,
+            channels=1,
+            execution_route=route,
+        )
+        is None
+    )
+    assert (
+        enabled_plan(
+            "speechmatics_async",
+            sample_rate=16_000,
+            channels=1,
+            execution_route=None,
+        )
+        is None
+    )
+    for field, stale_value in (
+        ("model", "unknown"),
+        ("provider_route", "legacy"),
+        ("audio_input_format", "mp3"),
+        ("provider_audio_capability_id", "stale"),
+        ("provider_audio_capability_revision", "stale"),
+        ("audio_selection_mode", "passthrough"),
+        ("audio_preparation_implementation", "wav_pcm16_virtual"),
+        ("provider_endpoint_sha256", "0" * 64),
+    ):
+        stale_route = dict(route)
+        stale_route[field] = stale_value
+        assert (
+            enabled_plan(
+                "speechmatics_async",
+                sample_rate=16_000,
+                channels=1,
+                execution_route=stale_route,
+            )
+            is None
+        )
+
+    unverified_route = dict(route)
+    unverified_route["audio_input_format_verified"] = False
+    assert (
+        enabled_plan(
+            "speechmatics_async",
+            sample_rate=16_000,
+            channels=1,
+            execution_route=unverified_route,
+        )
+        is None
+    )
+
+    monkeypatch.setenv(
+        "SCRIBER_SPEECHMATICS_BATCH_BASE_URL",
+        "https://custom.invalid/v2",
+    )
+    # The route is an immutable start-time snapshot. A later env mutation must
+    # not change the already-frozen candidate decision.
+    assert enabled_plan(
+        "speechmatics_async",
+        sample_rate=16_000,
+        channels=1,
+        execution_route=route,
+    ) == plan
+
+    baseline_route = dict(route)
+    baseline_route["audio_preparation_implementation"] = (
+        "python_reserved_wav_header_v1"
+    )
+    assert (
+        enabled_plan(
+            "speechmatics_async",
+            sample_rate=16_000,
+            channels=1,
+            execution_route=baseline_route,
+        )
+        is None
+    )
+
+
+def test_speechmatics_capture_time_wav_defaults_off(monkeypatch):
+    monkeypatch.delenv("SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV", raising=False)
+
+    assert _speechmatics_capture_time_wav_enabled() is False
+
+
+def test_speechmatics_capture_time_candidate_is_frozen_per_pipeline(monkeypatch):
+    monkeypatch.setenv("SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV", "0")
+    pipeline = ScriberPipeline(service_name="speechmatics_async")
+    monkeypatch.setenv("SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV", "1")
+
+    assert pipeline._speechmatics_capture_time_wav_enabled is False
 
 
 def test_live_analyzer_requirements_respect_disabled_vad_setting(monkeypatch):
@@ -342,6 +498,7 @@ def test_live_processor_order_keeps_segment_gate_before_http_stt_and_smart_turn_
     error_handler = object()
     transcript_callback = object()
     text_injector = object()
+    provider_ingress_drain = object()
 
     segmented_steps = _ordered_live_pipeline_steps(
         audio_input=audio_input,
@@ -365,6 +522,18 @@ def test_live_processor_order_keeps_segment_gate_before_http_stt_and_smart_turn_
         transcript_callback=transcript_callback,
         text_injector=text_injector,
     )
+    terminal_buffered_steps = _ordered_live_pipeline_steps(
+        audio_input=audio_input,
+        vad_processor=vad_processor,
+        vad_observer=vad_observer,
+        segmented_gate=None,
+        stt_service=stt_service,
+        smart_turn_processor=None,
+        error_handler=error_handler,
+        transcript_callback=transcript_callback,
+        text_injector=text_injector,
+        provider_ingress_drain=provider_ingress_drain,
+    )
 
     assert segmented_steps == [
         audio_input,
@@ -386,6 +555,169 @@ def test_live_processor_order_keeps_segment_gate_before_http_stt_and_smart_turn_
         transcript_callback,
         text_injector,
     ]
+    assert terminal_buffered_steps == [
+        audio_input,
+        vad_processor,
+        vad_observer,
+        stt_service,
+        provider_ingress_drain,
+        error_handler,
+        transcript_callback,
+        text_injector,
+    ]
+
+
+@pytest.mark.parametrize("service_name", ["azure_mai", "speechmatics_async"])
+@pytest.mark.asyncio
+async def test_provider_ingress_drain_waits_for_delayed_last_system_audio_before_endframe(
+    service_name,
+):
+    class _Source(FrameProcessor):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            if isinstance(frame, StartFrame):
+                self.started.set()
+            await self.push_frame(frame, direction)
+
+    class _DelayedTerminalProvider(FrameProcessor):
+        def __init__(self):
+            super().__init__()
+            self.last_audio_started = asyncio.Event()
+            self.release_last_audio = asyncio.Event()
+            self.received = bytearray()
+            self.terminal_snapshots: list[bytes] = []
+
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            if isinstance(frame, InputAudioRawFrame):
+                if frame.audio.startswith(b"\x02\x00"):
+                    self.last_audio_started.set()
+                    await self.release_last_audio.wait()
+                self.received.extend(frame.audio)
+            elif isinstance(frame, EndFrame):
+                self.terminal_snapshots.append(bytes(self.received))
+            await self.push_frame(frame, direction)
+
+    class _Sink(FrameProcessor):
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            await self.push_frame(frame, direction)
+
+    source = _Source()
+    provider = _DelayedTerminalProvider()
+    drain_processor = _ProviderIngressDrainProcessor()
+    runtime_pipeline = Pipeline([source, provider, drain_processor, _Sink()])
+    task = PipelineTask(
+        runtime_pipeline,
+        params=PipelineParams(allow_interruptions=False),
+        enable_rtvi=False,
+        enable_turn_tracking=False,
+        check_dangling_tasks=False,
+    )
+    runner = PipelineRunner(
+        handle_sigint=False,
+        handle_sigterm=False,
+        check_dangling_tasks=False,
+    )
+    pipeline = ScriberPipeline(service_name=service_name, on_status_change=None)
+    pipeline.pipeline = runtime_pipeline
+    pipeline.task = task
+    pipeline.runner = runner
+    pipeline.audio_input = source
+    pipeline._provider_ingress_drain_processor = drain_processor
+
+    run_task = asyncio.create_task(runner.run(task))
+    first = b"\x01\x00" * 256
+    last = b"\x02\x00" * 256
+    try:
+        await asyncio.wait_for(source.started.wait(), timeout=1.0)
+        await task.queue_frame(
+            InputAudioRawFrame(
+                audio=first,
+                sample_rate=48_000,
+                num_channels=1,
+            )
+        )
+        await task.queue_frame(
+            InputAudioRawFrame(
+                audio=last,
+                sample_rate=48_000,
+                num_channels=1,
+            )
+        )
+        await asyncio.wait_for(provider.last_audio_started.wait(), timeout=1.0)
+
+        drain_task = asyncio.create_task(
+            pipeline._await_provider_ingress_audio_drain(source)
+        )
+        await asyncio.sleep(0.02)
+        assert drain_task.done() is False
+
+        provider.release_last_audio.set()
+        assert await asyncio.wait_for(drain_task, timeout=1.0) is True
+        await task.stop_when_done()
+        await asyncio.wait_for(run_task, timeout=1.0)
+
+        assert provider.terminal_snapshots == [first + last]
+    finally:
+        provider.release_last_audio.set()
+        if not task.has_finished():
+            await task.cancel(reason="test cleanup")
+        if not run_task.done():
+            await runner.cancel()
+        await asyncio.gather(run_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_provider_ingress_drain_timeout_fails_closed_without_terminal_upload(
+    monkeypatch,
+):
+    class _NeverAcknowledgedAudioInput:
+        def __init__(self):
+            self.frames = []
+
+        async def push_frame(self, frame, direction):
+            self.frames.append((frame, direction))
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "_PROVIDER_INGRESS_DRAIN_TIMEOUT_SECONDS",
+        0.01,
+    )
+    provider = _BufferedProvider()
+    pipeline = ScriberPipeline(service_name="azure_mai", on_status_change=None)
+    pipeline.pipeline = _DummyRuntimePipelineGraph([provider])
+    pipeline.task = _DummyTask(asyncio.Event(), set_done_on_stop=False)
+    pipeline.runner = _DummyRunner()
+    pipeline._provider_ingress_drain_processor = _ProviderIngressDrainProcessor()
+    audio_input = _NeverAcknowledgedAudioInput()
+
+    with pytest.raises(RuntimeError, match="drain barrier timed out"):
+        await pipeline._await_provider_ingress_audio_drain(audio_input)
+
+    assert len(audio_input.frames) == 1
+    assert provider._skip_terminal_transcription is True
+    assert pipeline.task.cancel_called is True
+    assert pipeline.runner.cancel_called is True
+    assert pipeline._terminal_error is not None
+
+
+@pytest.mark.asyncio
+async def test_provider_ingress_drain_unavailable_with_task_fails_closed():
+    pipeline = ScriberPipeline(service_name="azure_mai", on_status_change=None)
+    pipeline.task = _DummyTask(asyncio.Event(), set_done_on_stop=False)
+    pipeline.runner = _DummyRunner()
+
+    with pytest.raises(RuntimeError, match="drain barrier is unavailable"):
+        await pipeline._await_provider_ingress_audio_drain(None)
+
+    assert pipeline.task.cancel_called is True
+    assert pipeline.runner.cancel_called is True
+    assert pipeline._terminal_error is not None
 
 
 def test_soniox_token_formatter_preserves_speaker_zero_and_numbers_by_first_appearance():
@@ -430,6 +762,78 @@ def test_outer_direct_file_timeout_scales_for_cloud_and_local_long_media():
         direct_file_expected_duration_seconds=5 * 60 * 60,
     )
     assert local._direct_file_workflow_timeout_seconds() == 20_100.0
+
+
+@pytest.mark.parametrize("provider", ("google", "groq"))
+@pytest.mark.parametrize("runner_fails", (False, True))
+@pytest.mark.asyncio
+async def test_pipecat_owned_file_request_state_is_terminal_only_after_success(
+    monkeypatch,
+    provider,
+    runner_fails,
+):
+    class _Transport:
+        async def session_view(self, *, provider, marker):
+            marker("request_started", timestamp_ns=1)
+            return object()
+
+    class _FileInput:
+        def __init__(self, *_args, **_kwargs):
+            self.done = asyncio.Event()
+            self.done.set()
+            self.error = None
+
+        async def stop(self, _frame):
+            return None
+
+    class _Task:
+        def __init__(self, *_args, **_kwargs):
+            self.finished = False
+
+        def has_finished(self):
+            return self.finished
+
+        async def stop_when_done(self):
+            return None
+
+        async def cancel(self, **_kwargs):
+            self.finished = True
+
+    class _Runner:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def run(self, task):
+            task.finished = True
+            if runner_fails:
+                raise RuntimeError("synthetic provider failure")
+
+        async def cancel(self):
+            return None
+
+    monkeypatch.setattr("src.pipeline.FfmpegAudioFileInput", _FileInput)
+    monkeypatch.setattr("src.pipeline.Pipeline", lambda steps: steps)
+    monkeypatch.setattr("src.pipeline.PipelineTask", _Task)
+    monkeypatch.setattr("src.pipeline.PipelineRunner", _Runner)
+
+    pipeline = ScriberPipeline(
+        service_name=provider,
+        provider_http_transport=_Transport(),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_create_stt_service",
+        lambda _session, for_file=False: object(),
+    )
+
+    if runner_fails:
+        with pytest.raises(RuntimeError, match="synthetic provider failure"):
+            await pipeline.transcribe_file("synthetic.wav")
+        assert pipeline._provider_request_state == "bytes_may_have_been_sent"
+    else:
+        await pipeline.transcribe_file("synthetic.wav")
+        assert pipeline._provider_request_state == "result_received"
+    assert pipeline._provider_request_started is True
 
 
 @pytest.mark.asyncio
@@ -1039,6 +1443,60 @@ async def test_soniox_realtime_factory_uses_selected_eu_region(monkeypatch):
         await service.cleanup()
 
 
+def test_runtime_configuration_uses_frozen_route_language_region_and_mode(monkeypatch):
+    route = freeze_provider_route(
+        workload="file",
+        provider="soniox",
+        language="de-DE",
+        provider_region="eu",
+    )
+    monkeypatch.setattr(Config, "LANGUAGE", "en-US")
+    monkeypatch.setattr(Config, "SONIOX_REGION", "us")
+    monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
+
+    configuration = ScriberPipeline(
+        service_name="soniox",
+        execution_route=route.execution_route(),
+    ).stt_runtime_configuration()
+
+    assert configuration["model"] == route.model
+    assert configuration["mode"] == "batch"
+    assert configuration["language"] == "de-DE"
+    assert configuration["region"] == "eu"
+
+
+@pytest.mark.parametrize(
+    ("provider", "default_model"),
+    (
+        ("assemblyai_realtime", "universal-3-5-pro"),
+        ("deepgram", "nova-3"),
+        ("openai", "gpt-realtime-whisper"),
+        ("google", "latest_long"),
+        ("elevenlabs", "scribe_v2_realtime"),
+        ("speechmatics", "enhanced"),
+    ),
+)
+def test_streaming_background_contract_rejects_unknown_frozen_model(
+    provider,
+    default_model,
+):
+    execution_route = freeze_provider_route(
+        workload="file",
+        provider=provider,
+        model=default_model,
+    ).execution_route()
+    execution_route["model"] = "unknown-model"
+
+    with pytest.raises(ValueError, match="no verified audio format capability"):
+        ScriberPipeline(
+            service_name=provider,
+            execution_route=execution_route,
+        )._require_realtime_pcm_request_contract(
+            provider=provider,
+            default_model=default_model,
+        )
+
+
 def test_google_cloud_factory_uses_pipecat_1_5_settings(monkeypatch):
     class _Settings:
         def __init__(self, **kwargs):
@@ -1052,7 +1510,10 @@ def test_google_cloud_factory_uses_pipecat_1_5_settings(monkeypatch):
             self.sample_rate = sample_rate
             self.settings = settings
 
-    module = type("GoogleModule", (), {"GoogleSTTService": _GoogleSTTService})
+    module = SimpleNamespace(
+        GoogleSTTService=_GoogleSTTService,
+        speech_v2=SimpleNamespace(__name__="google.cloud.speech_v2"),
+    )
     monkeypatch.setattr(Config, "GOOGLE_APPLICATION_CREDENTIALS", "C:\\keys\\google.json")
     monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
@@ -1062,6 +1523,7 @@ def test_google_cloud_factory_uses_pipecat_1_5_settings(monkeypatch):
     assert service.credentials_path == "C:\\keys\\google.json"
     assert service.sample_rate == Config.SAMPLE_RATE
     assert service.settings.kwargs == {
+        "model": "latest_long",
         "languages": [Language.DE],
         "enable_automatic_punctuation": True,
         "enable_interim_results": True,
@@ -1080,7 +1542,10 @@ def test_google_cloud_factory_omits_languages_for_auto_detection(monkeypatch):
         def __init__(self, *, credentials_path, sample_rate, settings):
             self.settings = settings
 
-    module = type("GoogleModule", (), {"GoogleSTTService": _GoogleSTTService})
+    module = SimpleNamespace(
+        GoogleSTTService=_GoogleSTTService,
+        speech_v2=SimpleNamespace(__name__="google.cloud.speech_v2"),
+    )
     monkeypatch.setattr(Config, "GOOGLE_APPLICATION_CREDENTIALS", "C:\\keys\\google.json")
     monkeypatch.setattr(Config, "LANGUAGE", "auto")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
@@ -1088,6 +1553,185 @@ def test_google_cloud_factory_omits_languages_for_auto_detection(monkeypatch):
     service = ScriberPipeline(service_name="google")._create_stt_service(object())
 
     assert "languages" not in service.settings.kwargs
+    assert service.settings.kwargs["model"] == "latest_long"
+
+
+def test_google_cloud_factory_requires_frozen_v2_route_and_model(monkeypatch):
+    class _Settings:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _GoogleSTTService:
+        Settings = _Settings
+
+        def __init__(self, *, credentials_path, sample_rate, settings):
+            self.settings = settings
+
+    module = SimpleNamespace(
+        GoogleSTTService=_GoogleSTTService,
+        speech_v2=SimpleNamespace(__name__="google.cloud.speech_v2"),
+    )
+    monkeypatch.setattr(Config, "GOOGLE_APPLICATION_CREDENTIALS", "C:\\keys\\google.json")
+    monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+    route = freeze_provider_route(
+        workload="file",
+        provider="google",
+        language="de-DE",
+        custom_vocab="Scriber, Pipecat",
+    )
+    monkeypatch.setattr(Config, "LANGUAGE", "en-US")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Changed")
+
+    service = ScriberPipeline(
+        service_name="google",
+        execution_route=route.execution_route(),
+    )._create_stt_service(object())
+    assert service.settings.kwargs["model"] == "latest_long"
+    assert service.settings.kwargs["languages"] == [Language.DE]
+
+    stale_route = route.execution_route()
+    stale_route["provider_route"] = "cloud_streaming_v1"
+    with pytest.raises(ValueError, match="no verified audio format capability"):
+        ScriberPipeline(
+            service_name="google",
+            execution_route=stale_route,
+        )._create_stt_service(object())
+
+    unknown_model = route.execution_route()
+    unknown_model["model"] = "unknown-google-model"
+    with pytest.raises(ValueError, match="no verified audio format capability"):
+        ScriberPipeline(
+            service_name="google",
+            execution_route=unknown_model,
+        )._create_stt_service(object())
+
+
+def test_google_cloud_factory_rejects_non_v2_pipecat_module(monkeypatch):
+    module = SimpleNamespace(
+        GoogleSTTService=SimpleNamespace,
+        speech_v2=SimpleNamespace(__name__="google.cloud.speech_v1"),
+    )
+    monkeypatch.setattr(Config, "GOOGLE_APPLICATION_CREDENTIALS", "C:\\keys\\google.json")
+    monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+
+    with pytest.raises(RuntimeError, match="verified Speech V2 API"):
+        ScriberPipeline(service_name="google")._create_stt_service(object())
+
+
+def test_openai_realtime_factory_uses_frozen_model_and_language(monkeypatch):
+    class _Settings:
+        def __init__(self, *, model, language):
+            self.model = model
+            self.language = language
+
+    class _OpenAIRealtimeSTTService:
+        Settings = _Settings
+
+        def __init__(self, *, api_key, settings, turn_detection):
+            self.api_key = api_key
+            self.settings = settings
+            self.turn_detection = turn_detection
+
+    module = SimpleNamespace(
+        OpenAIRealtimeSTTService=_OpenAIRealtimeSTTService,
+    )
+    monkeypatch.setattr(Config, "OPENAI_API_KEY", "key")
+    monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+    route = freeze_provider_route(
+        workload="file",
+        provider="openai",
+        model="gpt-realtime-whisper",
+        language="de-DE",
+        custom_vocab="Scriber, Pipecat",
+    )
+    monkeypatch.setattr(Config, "OPENAI_REALTIME_STT_MODEL", "changed-after-freeze")
+    monkeypatch.setattr(Config, "LANGUAGE", "en-US")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Changed")
+
+    service = ScriberPipeline(
+        service_name="openai",
+        execution_route=route.execution_route(),
+    )._create_stt_service(object())
+
+    assert service.settings.model == "gpt-realtime-whisper"
+    assert service.settings.language == Language.DE
+    assert service.turn_detection is False
+
+
+def test_groq_factory_binds_frozen_model_and_openai_v1_endpoint(monkeypatch):
+    class _Settings:
+        def __init__(self, *, model, language, prompt):
+            self.model = model
+            self.language = language
+            self.prompt = prompt
+
+    class _GroqSTTService:
+        Settings = _Settings
+
+        def __init__(self, *, api_key, base_url, settings):
+            self.api_key = api_key
+            self.base_url = base_url
+            self.settings = settings
+
+    module = SimpleNamespace(GroqSTTService=_GroqSTTService)
+    monkeypatch.setattr(Config, "GROQ_API_KEY", "key")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber, Pipecat")
+    monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+    route = freeze_provider_route(workload="file", provider="groq")
+    monkeypatch.setattr(Config, "LANGUAGE", "en-US")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Changed")
+
+    service = ScriberPipeline(
+        service_name="groq",
+        execution_route=route.execution_route(),
+    )._create_stt_service(object())
+
+    assert service.base_url == "https://api.groq.com/openai/v1"
+    assert service.settings.model == "whisper-large-v3-turbo"
+    assert service.settings.language == Language.DE
+    assert service.settings.prompt == "Likely vocabulary: Scriber, Pipecat"
+
+    unknown_model = route.execution_route()
+    unknown_model["model"] = "unknown-groq-model"
+    with pytest.raises(ValueError, match="no verified audio format capability"):
+        ScriberPipeline(
+            service_name="groq",
+            execution_route=unknown_model,
+        )._create_stt_service(object())
+
+
+@pytest.mark.asyncio
+async def test_installed_groq_pipecat_request_shape_uses_bound_model():
+    from pipecat.services.groq.stt import GroqSTTService
+
+    service = GroqSTTService(
+        api_key="test-key",
+        base_url="https://api.groq.com/openai/v1",
+        settings=GroqSTTService.Settings(
+            model="whisper-large-v3-turbo",
+            language=Language.DE,
+        ),
+    )
+    original_client = service._client
+    assert str(original_client.base_url).rstrip("/") == "https://api.groq.com/openai/v1"
+    await original_client.close()
+
+    captured = {}
+
+    class _Transcriptions:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(text="done")
+
+    service._client = SimpleNamespace(
+        audio=SimpleNamespace(transcriptions=_Transcriptions())
+    )
+    response = await service._transcribe(b"wav-bytes")
+
+    assert response.text == "done"
+    assert captured["model"] == "whisper-large-v3-turbo"
+    assert captured["file"] == ("audio.wav", b"wav-bytes", "audio/wav")
 
 
 def test_assemblyai_realtime_factory_uses_pipecat_1_5_settings_without_live_diarization(monkeypatch):
@@ -1115,10 +1759,21 @@ def test_assemblyai_realtime_factory_uses_pipecat_1_5_settings_without_live_diar
     monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
     monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber, Pipecat")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+    route = freeze_provider_route(
+        workload="file",
+        provider="assemblyai_realtime",
+        model="universal-3-5-pro",
+        language="de-DE",
+        custom_vocab="Scriber, Pipecat",
+    )
+    monkeypatch.setattr(Config, "ASSEMBLYAI_RT_MODEL", "changed-after-freeze")
+    monkeypatch.setattr(Config, "LANGUAGE", "en-US")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Changed")
 
     service = ScriberPipeline(
         service_name="assemblyai_realtime",
         enable_speaker_diarization=True,
+        execution_route=route.execution_route(),
     )._create_stt_service(object())
 
     assert service.api_key == "key"
@@ -1227,8 +1882,19 @@ def test_elevenlabs_factory_uses_realtime_service(monkeypatch):
     monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
     monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber, Pipecat")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+    route = freeze_provider_route(
+        workload="file",
+        provider="elevenlabs",
+        language="de-DE",
+        custom_vocab="Scriber, Pipecat",
+    )
+    monkeypatch.setattr(Config, "LANGUAGE", "en-US")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Changed")
 
-    service = ScriberPipeline(service_name="elevenlabs")._create_stt_service(object())
+    service = ScriberPipeline(
+        service_name="elevenlabs",
+        execution_route=route.execution_route(),
+    )._create_stt_service(object())
 
     assert service.api_key == "key"
     assert service.sample_rate == Config.SAMPLE_RATE
@@ -1263,9 +1929,23 @@ def test_deepgram_factory_disables_live_diarization_by_default(monkeypatch):
 
     monkeypatch.setattr(Config, "DEEPGRAM_API_KEY", "key")
     monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber, Pipecat")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+    route = freeze_provider_route(
+        workload="file",
+        provider="deepgram",
+        model="nova-3",
+        language="de-DE",
+        custom_vocab="Scriber, Pipecat",
+    )
+    monkeypatch.setattr(Config, "DEEPGRAM_MODEL", "changed-after-freeze")
+    monkeypatch.setattr(Config, "LANGUAGE", "en-US")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Changed")
 
-    service = ScriberPipeline(service_name="deepgram")._create_stt_service(object())
+    service = ScriberPipeline(
+        service_name="deepgram",
+        execution_route=route.execution_route(),
+    )._create_stt_service(object())
 
     assert service.sample_rate == Config.SAMPLE_RATE
     assert service.encoding == "linear16"
@@ -1273,6 +1953,7 @@ def test_deepgram_factory_disables_live_diarization_by_default(monkeypatch):
     assert service.settings.kwargs == {
         "model": "nova-3",
         "language": Language.DE,
+        "keyterm": ["Scriber", "Pipecat"],
         "interim_results": True,
         "smart_format": True,
         "punctuate": True,
@@ -1282,11 +1963,13 @@ def test_deepgram_factory_disables_live_diarization_by_default(monkeypatch):
     service_with_speakers = ScriberPipeline(
         service_name="deepgram",
         enable_speaker_diarization=True,
+        execution_route=route.execution_route(),
     )._create_stt_service(object())
 
     assert service_with_speakers.settings.kwargs == {
         "model": "nova-3",
         "language": Language.DE,
+        "keyterm": ["Scriber", "Pipecat"],
         "interim_results": True,
         "smart_format": True,
         "punctuate": True,
@@ -1302,8 +1985,16 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
     class _SpeechmaticsSTTService:
         Settings = _Settings
 
-        def __init__(self, *, api_key, sample_rate, settings):
+        class OperatingPoint(StrEnum):
+            ENHANCED = "enhanced"
+
+        class AdditionalVocabEntry:
+            def __init__(self, *, content):
+                self.content = content
+
+        def __init__(self, *, api_key, base_url, sample_rate, settings):
             self.api_key = api_key
+            self.base_url = base_url
             self.sample_rate = sample_rate
             self.settings = settings
 
@@ -1314,28 +2005,68 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
     )
 
     monkeypatch.setattr(Config, "SPEECHMATICS_API_KEY", "key")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber, Pipecat")
+    monkeypatch.delenv("SPEECHMATICS_RT_URL", raising=False)
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
+    realtime_url = "wss://eu2.rt.speechmatics.com/v2"
+    route = freeze_provider_route(
+        workload="file",
+        provider="speechmatics",
+        model="enhanced",
+        language="de-DE",
+        custom_vocab="Scriber, Pipecat",
+        provider_endpoint_sha256=hashlib.sha256(
+            realtime_url.encode("utf-8")
+        ).hexdigest(),
+    )
+    monkeypatch.setattr(Config, "LANGUAGE", "en-US")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Changed")
 
-    service = ScriberPipeline(service_name="speechmatics")._create_stt_service(object())
+    service = ScriberPipeline(
+        service_name="speechmatics",
+        execution_route=route.execution_route(),
+    )._create_stt_service(object())
 
-    assert service.settings.kwargs == {
+    settings = dict(service.settings.kwargs)
+    additional_vocab = settings.pop("additional_vocab")
+    assert settings == {
+        "model": "enhanced",
         "enable_diarization": False,
         "language": Language.DE,
+        "operating_point": _SpeechmaticsSTTService.OperatingPoint.ENHANCED,
         "speaker_active_format": "[Speaker {speaker_id}]: {text}",
         "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
     }
+    assert [entry.content for entry in additional_vocab] == ["Scriber", "Pipecat"]
+    assert service.base_url == realtime_url
 
     service_with_speakers = ScriberPipeline(
         service_name="speechmatics",
         enable_speaker_diarization=True,
+        execution_route=route.execution_route(),
     )._create_stt_service(object())
 
-    assert service_with_speakers.settings.kwargs == {
+    speaker_settings = dict(service_with_speakers.settings.kwargs)
+    speaker_settings.pop("additional_vocab")
+    assert speaker_settings == {
+        "model": "enhanced",
         "enable_diarization": False,
         "language": Language.DE,
+        "operating_point": _SpeechmaticsSTTService.OperatingPoint.ENHANCED,
         "speaker_active_format": "[Speaker {speaker_id}]: {text}",
         "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
     }
+
+    monkeypatch.setenv(
+        "SPEECHMATICS_RT_URL",
+        "wss://private.invalid/speechmatics/v2",
+    )
+    with pytest.raises(RuntimeError, match="endpoint no longer matches"):
+        ScriberPipeline(
+            service_name="speechmatics",
+            execution_route=route.execution_route(),
+        )._create_stt_service(object())
 
 
 def test_deepgram_live_factory_never_enables_diarization(monkeypatch):
@@ -1361,6 +2092,7 @@ def test_deepgram_live_factory_never_enables_diarization(monkeypatch):
 
     monkeypatch.setattr(Config, "DEEPGRAM_API_KEY", "key")
     monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
 
     service = ScriberPipeline(
@@ -1445,8 +2177,16 @@ def test_speechmatics_factory_enables_batch_labeled_diarization(monkeypatch):
     class _SpeechmaticsSTTService:
         Settings = _Settings
 
-        def __init__(self, *, api_key, sample_rate, settings):
+        class OperatingPoint(StrEnum):
+            ENHANCED = "enhanced"
+
+        class AdditionalVocabEntry:
+            def __init__(self, *, content):
+                self.content = content
+
+        def __init__(self, *, api_key, base_url, sample_rate, settings):
             self.api_key = api_key
+            self.base_url = base_url
             self.sample_rate = sample_rate
             self.settings = settings
 
@@ -1457,6 +2197,9 @@ def test_speechmatics_factory_enables_batch_labeled_diarization(monkeypatch):
     )
 
     monkeypatch.setattr(Config, "SPEECHMATICS_API_KEY", "key")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "")
+    monkeypatch.delenv("SPEECHMATICS_RT_URL", raising=False)
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
 
     service = ScriberPipeline(
@@ -1465,8 +2208,11 @@ def test_speechmatics_factory_enables_batch_labeled_diarization(monkeypatch):
     )._create_stt_service(object())
 
     assert service.settings.kwargs == {
+        "model": "enhanced",
         "enable_diarization": False,
         "language": Language.DE,
+        "additional_vocab": [],
+        "operating_point": _SpeechmaticsSTTService.OperatingPoint.ENHANCED,
         "speaker_active_format": "[Speaker {speaker_id}]: {text}",
         "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
     }
@@ -1694,10 +2440,22 @@ async def test_terminal_buffered_provider_skips_segmented_final_wait():
         side_effect=AssertionError("terminal-buffered providers must not enter segmented wait")
     )
 
+    async def _drain_provider_ingress(_audio_input):
+        events.append("provider_ingress_drained")
+        return True
+
+    pipeline._await_provider_ingress_audio_drain = AsyncMock(
+        side_effect=_drain_provider_ingress
+    )
+
     await pipeline.stop(timeout_secs=1.0)
 
     pipeline._wait_for_new_final_transcription_or_done.assert_not_awaited()
     assert events.index("audio_stop") < events.index("task_stop_when_done")
+    assert events.index("audio_stop") < events.index("provider_ingress_drained")
+    assert events.index("provider_ingress_drained") < events.index(
+        "task_stop_when_done"
+    )
 
 
 @pytest.mark.asyncio
@@ -1828,6 +2586,37 @@ async def test_cleanup_audio_input_forces_stream_close():
 
     assert audio_input.close_stream is True
     assert pipeline.audio_input is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_audio_input_retains_private_provider_replay_capture_attestation():
+    expected = {
+        "source": "rust_audio_frame_pipe_reader",
+        "eosObserved": True,
+    }
+
+    class _ReplayAudioInput(_DummyAudioInput):
+        def provider_replay_capture_attestation(self):
+            return dict(expected)
+
+    pipeline = ScriberPipeline(
+        service_name="azure_mai",
+        on_status_change=None,
+        azure_mai_raw_transport=lambda **_kwargs: None,
+    )
+    audio_input = _ReplayAudioInput()
+    pipeline.audio_input = audio_input
+
+    await pipeline._cleanup_audio_input()
+
+    assert audio_input.close_stream is True
+    assert pipeline.audio_input is None
+    assert pipeline.provider_replay_capture_attestation() == expected
+    returned = pipeline.provider_replay_capture_attestation()
+    assert returned is not None
+    returned["eosObserved"] = False
+    assert pipeline.provider_replay_capture_attestation() == expected
+    assert pipeline.stt_runtime_configuration()["sampleRateHz"] == 48_000
 
 
 @pytest.mark.asyncio

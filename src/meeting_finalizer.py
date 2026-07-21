@@ -11,13 +11,22 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 from uuid import uuid4
 
 from loguru import logger
 
 from src import database
+from src.audio_prepare import audio_preparation_implementation
 from src.config import Config
+from src.core.provider_audio_formats import (
+    AudioInputFormat,
+    AudioSelectionMode,
+    ProviderAudioRouteKind,
+    require_exact_audio_input_format,
+    resolve_batch_provider_audio_capabilities,
+    select_audio_input_format,
+)
 from src.core.provider_capabilities import (
     meeting_max_duration_seconds,
     supports_direct_file_upload,
@@ -37,6 +46,7 @@ from src.runtime.ffmpeg_commands import (
     lossless_flac_track_args,
     meeting_lossless_archive_args,
     meeting_opus_playback_args,
+    mp3_transcode_args,
     wav_pcm_transcode_args,
     webm_opus_transcode_args,
 )
@@ -111,6 +121,7 @@ class MeetingFinalizer:
         speaker_model: Any | None = None,
         speaker_diarizer: Any | None = None,
         artifact_store: TranscriptArtifactStore | None = None,
+        provider_http_transport: Any | None = None,
     ) -> None:
         self.store = store
         self.audio_root = audio_root
@@ -118,6 +129,7 @@ class MeetingFinalizer:
         self.text_generator = text_generator
         self.speaker_model = speaker_model
         self.speaker_diarizer = speaker_diarizer
+        self.provider_http_transport = provider_http_transport
         self.artifact_store = artifact_store or TranscriptArtifactStore(
             Path(database._DB_PATH)
         )
@@ -174,25 +186,73 @@ class MeetingFinalizer:
             and metadata.get("reprocessKind") == "full_transcript"
             else ""
         )
-        return freeze_provider_route(
-            workload="meeting",
-            provider=provider,
-            source_track="meeting_tracks",
-            language=str(meeting.get("language") or "auto"),
-            diarization_requested=True,
-            local_worker_manifest={
+        route_args = {
+            "workload": "meeting",
+            "provider": provider,
+            "source_track": "meeting_tracks",
+            "language": str(meeting.get("language") or "auto"),
+            "diarization_requested": True,
+            "local_worker_manifest": {
                 "enabled": self.speaker_diarizer is not None,
                 "engine": "sherpa-onnx",
                 "componentPresent": bool(status.get("installed")),
                 "workerVersion": str(status.get("workerVersion") or "unknown"),
             },
-            transport=(
+            "transport": (
                 "webm_opus_task_derivative"
                 if provider.strip().lower()
-                in {"soniox", "soniox_async", "modulate", "modulate_async"}
-                else None
+                in {"soniox", "soniox_async"}
+                else (
+                    "mp3_task_derivative"
+                    if provider.strip().lower() in {"modulate", "modulate_async"}
+                    else None
+                )
             ),
-            model=reprocess_model or None,
+            "model": reprocess_model or None,
+        }
+        base_route = freeze_provider_route(**route_args)
+        if not supports_direct_file_upload(provider):
+            return base_route
+
+        capability = resolve_batch_provider_audio_capabilities(
+            base_route.provider,
+            base_route.model,
+        )
+        if base_route.transport == "webm_opus_task_derivative":
+            selected_format = require_exact_audio_input_format(
+                capability,
+                AudioInputFormat.WEBM_OPUS,
+                route_kind=ProviderAudioRouteKind.BATCH,
+            )
+            selection_mode = AudioSelectionMode.GENERATED
+            implementation = "ffmpeg_webm_opus_control"
+        elif base_route.transport == "mp3_task_derivative":
+            selected_format = require_exact_audio_input_format(
+                capability,
+                AudioInputFormat.MP3,
+                route_kind=ProviderAudioRouteKind.BATCH,
+            )
+            selection_mode = AudioSelectionMode.GENERATED
+            implementation = "current_ffmpeg_mp3_fallback"
+        else:
+            # Canonical Meeting tracks are verified FLAC working files before
+            # the artifact attempt begins. Freeze either exact pass-through or
+            # the one generated representation before any provider request.
+            selection = select_audio_input_format(
+                capability,
+                route_kind=ProviderAudioRouteKind.BATCH,
+                original_format=AudioInputFormat.FLAC,
+            )
+            selected_format = selection.audio_format
+            selection_mode = selection.mode
+            implementation = audio_preparation_implementation(selection)
+
+        return freeze_provider_route(
+            **route_args,
+            provider_route=base_route.provider_route,
+            audio_input_format=selected_format,
+            audio_selection_mode=selection_mode,
+            audio_preparation_implementation=implementation,
         )
 
     @staticmethod
@@ -289,12 +349,21 @@ class MeetingFinalizer:
             "source_track",
             "provider",
             "model",
+            "transport",
             "language",
         )
-        return all(
+        fields_match = all(
             str(getattr(actual, field, "") or "").strip().lower()
             == str(getattr(expected, field, "") or "").strip().lower()
             for field in normalized_fields
+        )
+        actual_options = getattr(actual, "request_options", {})
+        expected_options = getattr(expected, "request_options", {})
+        return bool(
+            fields_match
+            and isinstance(actual_options, dict | Mapping)
+            and isinstance(expected_options, dict | Mapping)
+            and dict(actual_options) == dict(expected_options)
         )
 
     @staticmethod
@@ -462,11 +531,28 @@ class MeetingFinalizer:
             raise RuntimeError(
                 "Meeting recovery needs the same private custom vocabulary used by its frozen route."
             )
+        options = snapshot.request_options
         return {
+            "provider": snapshot.provider,
             "model": snapshot.model,
             "language": snapshot.language,
             "custom_vocab": vocab,
             "transport": snapshot.transport,
+            "provider_route": options.get("providerRoute"),
+            "audio_input_format": options.get("audioInputFormat"),
+            "provider_audio_capability_id": options.get(
+                "providerAudioCapabilityId"
+            ),
+            "provider_audio_capability_revision": options.get(
+                "providerAudioCapabilityRevision"
+            ),
+            "audio_input_format_verified": options.get(
+                "audioInputFormatVerified"
+            ),
+            "audio_selection_mode": options.get("audioSelectionMode"),
+            "audio_preparation_implementation": options.get(
+                "audioPreparationImplementation"
+            ),
         }
 
     def _commit_artifact(
@@ -742,6 +828,7 @@ class MeetingFinalizer:
                         direct_file_speaker_diarization=source == "system",
                         execution_route=execution_route,
                         direct_file_expected_duration_seconds=duration_ms / 1_000.0,
+                        provider_http_transport=self.provider_http_transport,
                     )
                     provider_input = path
                     provider_derivative: Path | None = None
@@ -749,10 +836,12 @@ class MeetingFinalizer:
                         if (
                             supports_direct_file_upload(meeting["finalProvider"])
                             and execution_route.get("transport")
-                            == "webm_opus_task_derivative"
+                            in {"webm_opus_task_derivative", "mp3_task_derivative"}
                         ):
-                            provider_derivative = await self._create_webm_provider_derivative(
-                                path, source=source
+                            provider_derivative = await self._create_provider_derivative(
+                                path,
+                                source=source,
+                                transport=str(execution_route["transport"]),
                             )
                             provider_input = provider_derivative
                         if supports_direct_file_upload(meeting["finalProvider"]):
@@ -1516,15 +1605,23 @@ class MeetingFinalizer:
             observations,
         )
 
-    async def _create_webm_provider_derivative(
-        self, source_path: Path, *, source: str
+    async def _create_provider_derivative(
+        self, source_path: Path, *, source: str, transport: str
     ) -> Path:
         """Create a task-owned provider upload derivative from lossless Meeting PCM."""
         ffmpeg = require_media_tool("ffmpeg")
+        if transport == "webm_opus_task_derivative":
+            suffix = "webm"
+            args_builder = webm_opus_transcode_args
+        elif transport == "mp3_task_derivative":
+            suffix = "mp3"
+            args_builder = mp3_transcode_args
+        else:
+            raise ValueError("Unsupported Meeting provider derivative transport.")
         destination = source_path.with_name(
-            f".{source}.{uuid4().hex}.provider.webm"
+            f".{source}.{uuid4().hex}.provider.{suffix}"
         )
-        args = webm_opus_transcode_args(
+        args = args_builder(
             ffmpeg,
             source_path,
             destination,
@@ -1549,7 +1646,9 @@ class MeetingFinalizer:
         if process.returncode != 0 or not destination.is_file() or destination.stat().st_size <= 0:
             destination.unlink(missing_ok=True)
             reason = stderr.decode("utf-8", errors="replace")[-800:]
-            raise RuntimeError(f"Meeting provider WebM preparation failed: {reason}")
+            raise RuntimeError(
+                f"Meeting provider {suffix.upper()} preparation failed: {reason}"
+            )
         return destination
 
     async def _prepare_lossless_track(

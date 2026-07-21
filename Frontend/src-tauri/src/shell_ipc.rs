@@ -60,6 +60,8 @@ struct AudioCaptureStartOptions {
     native_endpoint_id_hash: String,
     prebuffer_ms: u32,
     prewarm_id: String,
+    provider_replay_fixture_exact_end: bool,
+    audio_preparation: Value,
 }
 
 #[derive(Debug)]
@@ -305,12 +307,14 @@ fn handle_shell_ipc_request_unchecked(raw: &str, expected_token: &str) -> String
                 "commands": [
                     "ping",
                     "capabilities",
+                    "benchmarkProviderReplayArm",
                     "injectText",
                     "nativeDeviceEventsStatus",
                     "audioEndpointInventory",
                     "audioProbe",
                     "audioCaptureStart",
                     "audioCaptureStop",
+                    "audioCaptureArtifactRelease",
                     "audioPrewarmStart",
                     "audioPrewarmStatus",
                     "audioPrewarmStop",
@@ -350,6 +354,19 @@ fn handle_shell_ipc_request_unchecked(raw: &str, expected_token: &str) -> String
                 "audioFrameProtocol": audio_frame_protocol_payload(),
             }),
         ),
+        "benchmarkProviderReplayArm" => {
+            match crate::arm_benchmark_provider_replay_activation(payload) {
+                Ok(payload) => response_line(request_id, true, "", "", started, payload),
+                Err(reason) => response_line(
+                    request_id,
+                    false,
+                    "benchmarkActivationArmRejected",
+                    &reason,
+                    started,
+                    json!({}),
+                ),
+            }
+        }
         "injectText" => {
             let _mutation_guard = inject_text_mutation_lock();
             match inject_text(payload) {
@@ -459,6 +476,7 @@ fn handle_shell_ipc_request_unchecked(raw: &str, expected_token: &str) -> String
                     "captureStop",
                     json!({
                         "streamId": stream_id,
+                        "artifactHandoff": true,
                     }),
                 );
                 let payload = audio_capture_stop_shell_payload(result.payload.clone(), &result);
@@ -473,6 +491,30 @@ fn handle_shell_ipc_request_unchecked(raw: &str, expected_token: &str) -> String
                 err.payload,
             ),
         },
+        "audioCaptureArtifactRelease" => {
+            match parse_audio_capture_artifact_release_payload(payload) {
+                Ok(lease_id) => {
+                    let result = call_audio_sidecar_command(
+                        "captureArtifactRelease",
+                        json!({"leaseId": lease_id}),
+                    );
+                    audio_sidecar_result_response_line(
+                        request_id,
+                        started,
+                        result.payload.clone(),
+                        &result,
+                    )
+                }
+                Err(err) => response_line(
+                    request_id,
+                    false,
+                    err.code,
+                    &err.reason,
+                    started,
+                    err.payload,
+                ),
+            }
+        }
         "audioPrewarmStart" => match parse_audio_capture_start_options(payload) {
             Ok(options) => {
                 let result = call_audio_sidecar_command(
@@ -1183,6 +1225,8 @@ fn audio_capture_start_sidecar_payload(options: &AudioCaptureStartOptions) -> Va
         "nativeEndpointIdHash": options.native_endpoint_id_hash,
         "prebufferMs": options.prebuffer_ms,
         "prewarmId": options.prewarm_id,
+        "providerReplayFixtureExactEnd": options.provider_replay_fixture_exact_end,
+        "audioPreparation": options.audio_preparation,
         "frameProtocol": audio_frame_protocol_payload(),
     })
 }
@@ -1223,6 +1267,10 @@ fn audio_capture_shell_payload(
     result: &crate::audio_sidecar_client::AudioSidecarCallResult,
 ) -> Value {
     let original_sidecar_payload = sidecar_payload.clone();
+    let accepted_requested_format = original_sidecar_payload
+        .get("requestedFormat")
+        .filter(|value| value.is_object())
+        .cloned();
     let mut payload = match sidecar_payload {
         Value::Object(map) => Value::Object(map),
         other => json!({
@@ -1234,15 +1282,18 @@ fn audio_capture_shell_payload(
         object.insert("available".to_string(), json!(result.success));
         object.insert(
             "requestedFormat".to_string(),
-            json!({
-            "sampleRate": options.sample_rate,
-            "channels": options.channels,
-            "blockSize": options.block_size,
-            "devicePreference": options.device_preference,
-            "portAudioLabel": options.port_audio_label,
-            "nativeEndpointIdHash": options.native_endpoint_id_hash,
-            "prebufferMs": options.prebuffer_ms,
-            "prewarmId": options.prewarm_id,
+            accepted_requested_format.unwrap_or_else(|| {
+                json!({
+                    "sampleRate": options.sample_rate,
+                    "channels": options.channels,
+                    "blockSize": options.block_size,
+                    "devicePreference": options.device_preference,
+                    "portAudioLabel": options.port_audio_label,
+                    "nativeEndpointIdHash": options.native_endpoint_id_hash,
+                    "prebufferMs": options.prebuffer_ms,
+                    "prewarmId": options.prewarm_id,
+                    "providerReplayFixtureExactEnd": options.provider_replay_fixture_exact_end,
+                })
             }),
         );
         object.insert("frameProtocol".to_string(), audio_frame_protocol_payload());
@@ -1257,7 +1308,16 @@ fn audio_prewarm_shell_payload(
     sidecar_payload: Value,
     result: &crate::audio_sidecar_client::AudioSidecarCallResult,
 ) -> Value {
-    let original_sidecar_payload = sidecar_payload.clone();
+    let mut diagnostic_sidecar_payload = sidecar_payload.clone();
+    if let Some(object) = diagnostic_sidecar_payload.as_object_mut() {
+        object.remove("captureArtifact");
+        if let Some(preparation) = object
+            .get_mut("audioPreparation")
+            .and_then(Value::as_object_mut)
+        {
+            preparation.remove("artifact");
+        }
+    }
     let mut payload = match sidecar_payload {
         Value::Object(map) => Value::Object(map),
         other => json!({
@@ -1282,7 +1342,7 @@ fn audio_prewarm_shell_payload(
         );
         object.insert("frameProtocol".to_string(), audio_frame_protocol_payload());
         object.insert("sidecar".to_string(), sidecar_status_payload(result));
-        object.insert("sidecarPayload".to_string(), original_sidecar_payload);
+        object.insert("sidecarPayload".to_string(), diagnostic_sidecar_payload);
     }
     payload
 }
@@ -1291,7 +1351,16 @@ fn audio_capture_stop_shell_payload(
     sidecar_payload: Value,
     result: &crate::audio_sidecar_client::AudioSidecarCallResult,
 ) -> Value {
-    let original_sidecar_payload = sidecar_payload.clone();
+    let mut diagnostic_sidecar_payload = sidecar_payload.clone();
+    if let Some(object) = diagnostic_sidecar_payload.as_object_mut() {
+        object.remove("captureArtifact");
+        if let Some(preparation) = object
+            .get_mut("audioPreparation")
+            .and_then(Value::as_object_mut)
+        {
+            preparation.remove("artifact");
+        }
+    }
     let mut payload = match sidecar_payload {
         Value::Object(map) => Value::Object(map),
         other => json!({
@@ -1310,7 +1379,7 @@ fn audio_capture_stop_shell_payload(
             .entry("reason".to_string())
             .or_insert_with(|| json!("noRustAudioSidecar"));
         object.insert("sidecar".to_string(), sidecar_status_payload(result));
-        object.insert("sidecarPayload".to_string(), original_sidecar_payload);
+        object.insert("sidecarPayload".to_string(), diagnostic_sidecar_payload);
     }
     payload
 }
@@ -1387,6 +1456,7 @@ fn audio_frame_protocol_payload() -> Value {
         "version": AUDIO_FRAME_VERSION,
         "headerBytes": AUDIO_FRAME_HEADER_LEN,
         "sampleFormat": "pcm_i16_le",
+        "zeroLengthEndOfStream": true,
     })
 }
 
@@ -1418,9 +1488,17 @@ fn parse_audio_capture_start_options(
             "audioCaptureStart payload must be an object",
         ));
     };
+    let sample_rate = optional_u64(payload, "sampleRate", 16_000, 192_000) as u32;
+    let channels = optional_u64(payload, "channels", 1, 16) as u16;
+    let audio_preparation = match payload.get("audioPreparation") {
+        None | Some(Value::Null) => Value::Null,
+        Some(value) => crate::audio_codec::EncoderPlan::parse(value, sample_rate, channels)
+            .map(|plan| plan.to_payload())
+            .map_err(|error| ShellCommandError::new("unsupportedAudioPreparation", error.code()))?,
+    };
     Ok(AudioCaptureStartOptions {
-        sample_rate: optional_u64(payload, "sampleRate", 16_000, 192_000) as u32,
-        channels: optional_u64(payload, "channels", 1, 16) as u16,
+        sample_rate,
+        channels,
         block_size: optional_u64(payload, "blockSize", 512, 16_384) as u32,
         device_preference: bounded_string(payload, "devicePreference", "default", 96),
         port_audio_label: bounded_string(payload, "portAudioLabel", "", 160),
@@ -1431,6 +1509,12 @@ fn parse_audio_capture_start_options(
         // do not silently truncate the capture-first prebuffer to two seconds.
         prebuffer_ms: optional_u64(payload, "prebufferMs", 0, 6_000) as u32,
         prewarm_id: bounded_string(payload, "prewarmId", "", 96),
+        provider_replay_fixture_exact_end: strict_optional_bool(
+            payload,
+            "providerReplayFixtureExactEnd",
+            false,
+        )?,
+        audio_preparation,
     })
 }
 
@@ -1442,6 +1526,25 @@ fn parse_audio_capture_stop_payload(payload: &Value) -> Result<String, ShellComm
         ));
     };
     Ok(bounded_string(payload, "streamId", "", 96))
+}
+
+fn parse_audio_capture_artifact_release_payload(
+    payload: &Value,
+) -> Result<String, ShellCommandError> {
+    let Some(payload) = payload.as_object() else {
+        return Err(ShellCommandError::new(
+            "invalidPayload",
+            "audioCaptureArtifactRelease payload must be an object",
+        ));
+    };
+    let lease_id = bounded_string(payload, "leaseId", "", 96);
+    if lease_id.len() != 32 || !lease_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ShellCommandError::new(
+            "invalidAudioCaptureArtifactLeaseId",
+            "audioCaptureArtifactRelease requires a valid lease identifier",
+        ));
+    }
+    Ok(lease_id.to_ascii_lowercase())
 }
 
 fn parse_audio_prewarm_stop_payload(payload: &Value) -> Result<String, ShellCommandError> {
@@ -1561,6 +1664,21 @@ fn optional_bool(
         .get(field)
         .and_then(Value::as_bool)
         .unwrap_or(default_value)
+}
+
+fn strict_optional_bool(
+    payload: &serde_json::Map<String, Value>,
+    field: &str,
+    default_value: bool,
+) -> Result<bool, ShellCommandError> {
+    match payload.get(field) {
+        None => Ok(default_value),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(ShellCommandError::new(
+            "invalidPayload",
+            format!("{field} must be a boolean"),
+        )),
+    }
 }
 
 fn optional_u64(
@@ -3882,7 +4000,10 @@ mod tests {
         assert_eq!(value["payload"]["audioProbe"], true);
         assert_eq!(value["payload"]["audioCapturePrototype"], false);
         assert_eq!(value["payload"]["audioPrewarmPrototype"], false);
-        assert_eq!(value["payload"]["audioFrameProtocol"]["version"], 1);
+        assert_eq!(
+            value["payload"]["audioFrameProtocol"]["version"],
+            super::AUDIO_FRAME_VERSION
+        );
         assert_eq!(value["payload"]["commands"][0], "ping");
         assert!(value["payload"]["commands"]
             .as_array()
@@ -4132,6 +4253,66 @@ mod tests {
         assert!(options
             .device_preference
             .starts_with("default-capture-device"));
+        assert!(!options.provider_replay_fixture_exact_end);
+        assert!(options.audio_preparation.is_null());
+    }
+
+    #[test]
+    fn provider_replay_fixture_exact_end_is_strict_and_capture_only() {
+        let options = super::parse_audio_capture_start_options(&json!({
+            "providerReplayFixtureExactEnd": true,
+        }))
+        .unwrap();
+
+        assert!(options.provider_replay_fixture_exact_end);
+        assert_eq!(
+            super::audio_capture_start_sidecar_payload(&options)["providerReplayFixtureExactEnd"],
+            true
+        );
+        assert!(super::audio_prewarm_start_sidecar_payload(&options)
+            .get("providerReplayFixtureExactEnd")
+            .is_none());
+
+        for invalid in [json!(null), json!(1), json!("true")] {
+            let error = super::parse_audio_capture_start_options(&json!({
+                "providerReplayFixtureExactEnd": invalid,
+            }))
+            .unwrap_err();
+            assert_eq!(error.code, "invalidPayload");
+            assert_eq!(
+                error.reason,
+                "providerReplayFixtureExactEnd must be a boolean"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_audio_capture_start_options_rejects_and_redacts_unknown_preparation_fields() {
+        let payload = json!({
+            "sampleRate": 16_000,
+            "channels": 1,
+            "audioPreparation": {
+                "schemaVersion": "1",
+                "format": "wav_pcm16",
+                "implementation": "wav_pcm16_virtual",
+                "sampleRate": 16_000,
+                "channels": 1,
+                "bitsPerSample": 16,
+                "queueCapacityFrames": 8,
+                "maxPcmBytes": 32_000,
+                "providerSecret": "must-not-cross-the-sidecar-boundary",
+            },
+        });
+
+        let error = super::parse_audio_capture_start_options(&payload).unwrap_err();
+
+        assert_eq!(error.code, "unsupportedAudioPreparation");
+        assert_eq!(error.reason, "audioPreparationUnknownField");
+        assert!(!error.payload.to_string().contains("providerSecret"));
+        assert!(!error
+            .payload
+            .to_string()
+            .contains("must-not-cross-the-sidecar-boundary"));
     }
 
     #[test]
@@ -4237,6 +4418,17 @@ mod tests {
             native_endpoint_id_hash: "endpoint-hash".to_string(),
             prebuffer_ms: 0,
             prewarm_id: "prewarm-1".to_string(),
+            provider_replay_fixture_exact_end: false,
+            audio_preparation: json!({
+                "schemaVersion": "1",
+                "format": "wav_pcm16",
+                "implementation": "wav_pcm16_virtual",
+                "sampleRate": 16_000,
+                "channels": 1,
+                "bitsPerSample": 16,
+                "queueCapacityFrames": 64,
+                "maxPcmBytes": 1_048_576,
+            }),
         };
         let result = crate::audio_sidecar_client::AudioSidecarCallResult {
             success: true,
@@ -4249,6 +4441,26 @@ mod tests {
                 "channels": 1,
                 "captureChannels": 1,
                 "sampleFormat": "pcm_i16_le",
+                "requestedFormat": {
+                    "sampleRate": 16_000,
+                    "channels": 1,
+                    "blockSize": 512,
+                    "devicePreference": "default",
+                    "portAudioLabel": "Default Mic, Windows WASAPI",
+                    "nativeEndpointIdHash": "endpoint-hash",
+                    "prebufferMs": 0,
+                    "prewarmId": "prewarm-1",
+                    "audioPreparation": {
+                        "schemaVersion": "1",
+                        "format": "wav_pcm16",
+                        "implementation": "wav_pcm16_virtual",
+                        "sampleRate": 16_000,
+                        "channels": 1,
+                        "bitsPerSample": 16,
+                        "queueCapacityFrames": 64,
+                        "maxPcmBytes": 1_048_576,
+                    },
+                },
             }),
             executable_available: true,
             executable_path_hash: Some("hash".to_string()),
@@ -4269,8 +4481,49 @@ mod tests {
             "endpoint-hash"
         );
         assert_eq!(payload["requestedFormat"]["prewarmId"], "prewarm-1");
+        assert_eq!(
+            payload["requestedFormat"]["audioPreparation"]["implementation"],
+            "wav_pcm16_virtual"
+        );
         assert_eq!(payload["sidecar"]["pid"], 1234);
         assert_eq!(payload["sidecarPayload"]["streamId"], "stream-1");
+    }
+
+    #[test]
+    fn rejected_audio_preparation_is_not_echoed_across_shell_response() {
+        let options = super::AudioCaptureStartOptions {
+            sample_rate: 16_000,
+            channels: 1,
+            block_size: 512,
+            device_preference: "default".to_string(),
+            port_audio_label: "".to_string(),
+            native_endpoint_id_hash: "".to_string(),
+            prebuffer_ms: 0,
+            prewarm_id: "".to_string(),
+            provider_replay_fixture_exact_end: false,
+            audio_preparation: json!({
+                "implementation": "unknown",
+                "providerSecret": "must-not-be-reflected",
+            }),
+        };
+        let result = crate::audio_sidecar_client::AudioSidecarCallResult {
+            success: false,
+            error_code: Some("unsupportedAudioPreparation".to_string()),
+            fallback_reason: Some("audioPreparationUnknownField".to_string()),
+            payload: json!({
+                "captureAvailable": false,
+                "audioPreparation": {"schemaVersion": "1"},
+            }),
+            executable_available: true,
+            executable_path_hash: Some("hash".to_string()),
+            pid: Some(1234),
+        };
+
+        let payload = super::audio_capture_shell_payload(&options, result.payload.clone(), &result);
+
+        assert!(payload["requestedFormat"]["audioPreparation"].is_null());
+        assert!(!payload.to_string().contains("must-not-be-reflected"));
+        assert!(!payload.to_string().contains("providerSecret"));
     }
 
     #[test]
@@ -4291,6 +4544,17 @@ mod tests {
                 "sidecarKilledAfterTimeout": false,
                 "sidecarWaitError": null,
                 "sidecarPid": 9876,
+                "captureArtifact": {
+                    "leaseId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "path": r"C:\private\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.wav",
+                },
+                "audioPreparation": {
+                    "state": "ready",
+                    "artifact": {
+                        "leaseId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "path": r"C:\private\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.wav",
+                    },
+                },
             }),
             executable_available: true,
             executable_path_hash: Some("hash".to_string()),
@@ -4387,6 +4651,18 @@ mod tests {
                 "sidecarKilledAfterTimeout": false,
                 "sidecarWaitError": null,
                 "sidecarPid": 9876,
+                "captureArtifact": {
+                    "schemaVersion": "1",
+                    "leaseId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "path": "private-shell-owned-path.wav",
+                },
+                "audioPreparation": {
+                    "implementation": "wav_pcm16_file_v1",
+                    "artifact": {
+                        "leaseId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "path": "private-shell-owned-path.wav",
+                    },
+                },
             }),
             executable_available: true,
             executable_path_hash: Some("hash".to_string()),
@@ -4405,6 +4681,14 @@ mod tests {
         assert!(payload["sidecarWaitError"].is_null());
         assert_eq!(payload["sidecar"]["pid"], 9876);
         assert_eq!(payload["sidecarPayload"]["streamId"], "stream-1");
+        assert_eq!(
+            payload["captureArtifact"]["leaseId"],
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert!(payload["sidecarPayload"].get("captureArtifact").is_none());
+        assert!(payload["sidecarPayload"]["audioPreparation"]
+            .get("artifact")
+            .is_none());
     }
 
     #[test]

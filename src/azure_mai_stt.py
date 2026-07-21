@@ -6,6 +6,7 @@ import contextlib
 import asyncio
 import io
 import json
+import os
 import tempfile
 from pathlib import Path
 from collections.abc import AsyncGenerator
@@ -35,6 +36,10 @@ from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, mp3_encode_pcm_p
 from src.runtime.http_response import read_response_text_limited
 from src.runtime.media_tools import require_media_tool
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool
+from src.runtime.capture_time_encoder import (
+    CaptureTimeEncoderError,
+    CaptureTimeFfmpegEncoder,
+)
 from src.runtime.subprocess_utils import (
     communicate_or_kill_on_cancel,
     hidden_subprocess_kwargs,
@@ -53,6 +58,17 @@ _AZURE_MAI_CONTENT_TYPES = {
 }
 
 AzureMaiRawTransport = Callable[..., Awaitable[tuple[int, str]]]
+
+
+def _capture_time_mp3_enabled() -> bool:
+    # The matched installed 5/15/30/60-second no-regression matrix did not
+    # promote this path, so it remains an explicit opt-in.
+    return os.getenv("SCRIBER_AZURE_MAI_CAPTURE_TIME_MP3", "0").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 def azure_mai_region(region: str | None) -> str:
@@ -298,7 +314,9 @@ async def _azure_mai_http_raw_transport(
     definition: dict[str, Any],
     speech_key: str,
     timeout_secs: float,
+    audio_preparation_implementation: str | None = None,
 ) -> tuple[int, str]:
+    del audio_preparation_implementation
     data = aiohttp.FormData()
     data.add_field("audio", audio_source, filename=filename, content_type=content_type)
     data.add_field("definition", json.dumps(definition), content_type="application/json")
@@ -327,6 +345,7 @@ async def transcribe_with_azure_mai(
     timeout_secs: float = 900.0,
     raw_transport: AzureMaiRawTransport | None = None,
     on_response_complete: Callable[[], None] | None = None,
+    audio_preparation_implementation: str | None = None,
 ) -> dict[str, Any]:
     region = validate_azure_mai_region(region)
     url = (
@@ -351,6 +370,7 @@ async def transcribe_with_azure_mai(
         definition=definition,
         speech_key=speech_key,
         timeout_secs=timeout_secs,
+        audio_preparation_implementation=audio_preparation_implementation,
     )
     # This boundary is intentionally before status handling and JSON parsing:
     # installed performance evidence measures controllable local tail latency
@@ -391,6 +411,8 @@ class AzureMaiTranscribeSTTService(STTService):
         audio_passthrough: bool = True,
         raw_transport: AzureMaiRawTransport | None = None,
         on_response_complete: Callable[[], None] | None = None,
+        on_encoder_marker: Callable[[str], None] | None = None,
+        capture_time_mp3_enabled: bool | None = None,
     ) -> None:
         language_locales = azure_mai_language_locales(language)
         selected_model = azure_mai_model(model)
@@ -414,21 +436,120 @@ class AzureMaiTranscribeSTTService(STTService):
         self._on_progress = on_progress
         self._raw_transport = raw_transport
         self._on_response_complete = on_response_complete
+        self._on_encoder_marker = on_encoder_marker
         self._buffer = self._create_buffer()
         self._buffer_size = 0
         self._sample_rate = 16000
         self._channels = 1
+        self._capture_encoder: CaptureTimeFfmpegEncoder | None = None
+        self._capture_encoder_enabled = (
+            _capture_time_mp3_enabled()
+            if capture_time_mp3_enabled is None
+            else bool(capture_time_mp3_enabled)
+        )
+        self._capture_encoder_disabled = not self._capture_encoder_enabled
+        self._audio_preparation_implementation: str | None = None
 
     def _create_buffer(self):
         return create_pcm_spool()
 
     def _reset_buffer(self) -> None:
+        capture_encoder = getattr(self, "_capture_encoder", None)
+        if capture_encoder is not None:
+            capture_encoder.close_nowait()
+        self._capture_encoder = None
+        self._capture_encoder_disabled = not self._capture_encoder_enabled
+        self._audio_preparation_implementation = None
         close_pcm_spool(getattr(self, "_buffer", None))
         self._buffer = self._create_buffer()
         self._buffer_size = 0
 
     def __del__(self) -> None:
+        capture_encoder = getattr(self, "_capture_encoder", None)
+        if capture_encoder is not None:
+            capture_encoder.close_nowait()
         close_pcm_spool(getattr(self, "_buffer", None))
+
+    def _create_capture_encoder(
+        self,
+        *,
+        sample_rate: int,
+        channels: int,
+    ) -> CaptureTimeFfmpegEncoder:
+        ffmpeg = require_media_tool("ffmpeg")
+        return CaptureTimeFfmpegEncoder(
+            mp3_encode_pcm_pipe_args(
+                ffmpeg,
+                input_sample_rate=max(1, int(sample_rate)),
+                input_channels=max(1, int(channels)),
+                bitrate="64k",
+            ),
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+
+    def _offer_capture_encoded_frame(self, audio: bytes) -> None:
+        if self._capture_encoder_disabled or not audio:
+            return
+        if self._capture_encoder is None:
+            try:
+                self._capture_encoder = self._create_capture_encoder(
+                    sample_rate=self._sample_rate,
+                    channels=self._channels,
+                )
+            except Exception as exc:
+                self._capture_encoder_disabled = True
+                logger.warning(
+                    "Azure MAI capture-time MP3 unavailable; retaining PCM fallback ({})",
+                    type(exc).__name__,
+                )
+                return
+        if not self._capture_encoder.offer(
+            audio,
+            sample_rate=self._sample_rate,
+            channels=self._channels,
+        ):
+            self._capture_encoder_disabled = True
+            logger.warning(
+                "Azure MAI capture-time MP3 invalidated; retaining PCM fallback ({})",
+                self._capture_encoder.error_code or "localCandidateUnavailable",
+            )
+
+    async def _finish_capture_encoder(self) -> BinaryIO | None:
+        encoder = self._capture_encoder
+        self._capture_encoder = None
+        if encoder is None or self._capture_encoder_disabled:
+            if encoder is not None:
+                await encoder.abort()
+            return None
+        try:
+            return await encoder.finish()
+        except Exception as exc:
+            reason = (
+                str(exc)
+                if isinstance(exc, CaptureTimeEncoderError)
+                else type(exc).__name__
+            )
+            logger.warning(
+                "Azure MAI capture-time MP3 failed before upload; using PCM fallback ({})",
+                reason,
+            )
+            return None
+
+    async def _abort_capture_encoder(self) -> None:
+        encoder = self._capture_encoder
+        self._capture_encoder = None
+        if encoder is not None:
+            await encoder.abort()
+
+    def _emit_encoder_marker(self, marker: str) -> None:
+        callback = self._on_encoder_marker
+        if callback is None:
+            return
+        try:
+            callback(marker)
+        except Exception:
+            logger.debug("Azure MAI encoder marker callback failed")
 
     async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
         mp3_bytes = await _pcm_to_mp3(
@@ -455,6 +576,9 @@ class AzureMaiTranscribeSTTService(STTService):
                 timeout_secs=900.0,
                 raw_transport=self._raw_transport,
                 on_response_complete=self._on_response_complete,
+                audio_preparation_implementation=(
+                    self._audio_preparation_implementation
+                ),
             )
 
         if self._session:
@@ -495,21 +619,36 @@ class AzureMaiTranscribeSTTService(STTService):
             self._buffer_size,
             frame.audio,
         )
+        self._offer_capture_encoded_frame(frame.audio)
 
     async def _flush_transcription(self, direction: FrameDirection) -> None:
         if not self._buffer_size:
             return
 
         _report_progress(self._on_progress, "Transcribing...")
-        mp3_source = await _pcm_stream_to_mp3(
-            self._buffer,
-            sample_rate=self._sample_rate,
-            channels=self._channels,
-        )
+        self._emit_encoder_marker("encoder_tail_started")
+        try:
+            mp3_source = await self._finish_capture_encoder()
+            if mp3_source is None:
+                self._audio_preparation_implementation = (
+                    "post_stop_ffmpeg_mp3_v1"
+                )
+                mp3_source = await _pcm_stream_to_mp3(
+                    self._buffer,
+                    sample_rate=self._sample_rate,
+                    channels=self._channels,
+                )
+            else:
+                self._audio_preparation_implementation = (
+                    "capture_time_ffmpeg_mp3_v1"
+                )
+        finally:
+            self._emit_encoder_marker("encoder_tail_completed")
         try:
             text = (await self._transcribe_mp3(mp3_source)).strip()
         finally:
             mp3_source.close()
+            self._audio_preparation_implementation = None
         if text:
             await self.push_frame(self._transcription_frame(text), direction)
 
@@ -519,10 +658,15 @@ class AzureMaiTranscribeSTTService(STTService):
             return
 
         await AIService.process_frame(self, frame, direction)
+        if isinstance(frame, CancelFrame):
+            await self._abort_capture_encoder()
+            self._reset_buffer()
+            await self.push_frame(frame, direction)
+            return
         try:
             if getattr(self, "_skip_terminal_transcription", False):
                 logger.info("Azure MAI: skipping terminal transcription for silent recording")
-                self._reset_buffer()
+                await self._abort_capture_encoder()
                 await self.push_frame(frame, direction)
                 return
             await self._flush_transcription(direction)

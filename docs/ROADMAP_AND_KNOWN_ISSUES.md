@@ -1,6 +1,6 @@
 # Roadmap And Known Issues
 
-Last verified: 2026-07-19
+Last verified: 2026-07-21
 
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
@@ -78,6 +78,18 @@ Reliability and data:
 
 - Job resume/retry scheduling is single-flight, transcript/job deletion is
   coordinated with persistence, and runtime caches/stores have bounded retention.
+- Issue #18 is implemented and measured: canonical
+  activation/stop-to-visible-text KPIs, exact provider/model/container/codec
+  route evidence, pass-through-first media preparation, one shared provider
+  HTTP pool, and fail-closed suppression of ambiguous duplicate billable
+  retries. Installed replay now arms without starting work and admits a sample
+  only from the exact one-shot native hotkey or primary-button QPC marker. Two
+  valid 60-sample installed matrices at 5, 15, 30, and 60 seconds exercised
+  Azure capture-time MP3, Speechmatics Rust WAV, and the Soniox control. All
+  exact-text and cleanup checks passed, but both candidates had canonical
+  duration regressions, so both experimental defaults remain off.
+  Caption-first YouTube jobs now distinguish their planned audio fallback from
+  the selected and executed route.
 - Settings updates validate persisted text sizes before mutation; invalid numeric
   tuning values fall back safely instead of crashing provider or runtime paths.
 - Unicode export filenames use a safe ASCII fallback plus RFC 5987 UTF-8 metadata.
@@ -1159,18 +1171,13 @@ evidence remains mandatory where the slice touches those boundaries.
    - Track backend working-set growth and average idle CPU.
    - Capture support bundles for any spontaneous mic shutoff reports.
 
-2. Measure stop-to-text latency precisely.
-   - Split `stop_requested` to `last_chunk_sent`,
-     `provider_final_received`, `clipboard_set`, and `first_paste`.
-   - Optimize only after the provider/local split is proven.
-
-3. Continue responsive UI polish.
+2. Continue responsive UI polish.
    - Debug Console and Settings should stay usable at narrow desktop widths.
    - Buttons should not become oversized or clipped.
    - Support-bundle download needs clear visible feedback with saved path when
      the browser/Tauri environment allows it.
 
-4. Keep release packaging reproducible.
+3. Keep release packaging reproducible.
    - Profile B should remain standard.
    - Gyan Essentials should remain fallback.
    - Any size pruning must pass installed frontend, media, support-bundle, and
@@ -1250,7 +1257,36 @@ Five-hour Meeting evidence:
 Provider latency:
 
 - Cloud STT finalization can dominate stop-to-text latency.
-- Local app optimization should be guided by hot-path metrics.
+- The installed replay/scoring path now measures externally visible text for
+  5-, 15-, 30-, and 60-second Microsoft, Soniox, and Speechmatics fixtures.
+  Speechmatics keeps the real Batch-v2 adapter/parser and full WAV validation
+  behind a network-free one-shot transport, so the capture-time WAV candidate
+  can be compared OFF/ON without credentials or billable requests. The final
+  matched installed runs each passed 60/60 samples and 12/12 cleanups. Azure's
+  Stop-to-provider p50 improved in every duration by 19.5% to 70.8%, but
+  canonical visible-text p50/p95 still regressed in some durations. Speechmatics
+  likewise regressed canonical 15-, 30-, or 60-second series. Both candidates
+  therefore remain default-off under the no-regression rule.
+- A bounded live Speechmatics route check now covers the same four durations
+  for both batch WAV and realtime raw PCM. It verified non-empty results and
+  measured realtime Stop-to-provider-final at 374-494 ms, but it used one
+  sample per duration and did not include installed target observation. Treat
+  it as compatibility evidence, not a promotion-quality speed claim.
+- Shared HTTP pooling and exact pass-through/transcode selection remove known
+  avoidable local work. The local replay establishes their installed product
+  path, while a live-provider speed claim still needs controlled cloud evidence.
+- Rust `wav_pcm16_virtual` remains a capture-lab candidate with
+  `productionReady=false` and `artifactExposed=false`. The separate production
+  `wav_pcm16_file_v1` path now streams a bounded lease file during capture,
+  validates it at the Tauri/Python boundary, feeds the exact Speechmatics batch
+  WAV upload, and cleans it on explicit release or shell shutdown. It activates
+  only for a complete current `batch_v2`/`enhanced`/verified-WAV/default-endpoint
+  route snapshot; custom or stale routes retain the PCM-spool fallback. This
+  closes the artifact-ownership implementation gap. Local codec labs rejected
+  the current flacenc/rezin/ruopus/Shine candidates; in-process LAME was 15.68%
+  to 41.72% faster than FFmpeg in its local series but still lacks installed
+  provider WER/CER and licensing evidence. Additional codecs therefore remain
+  experimental rather than a performance-evidence blocker for Issue #18.
 - A future Rust-side VAD path is worth evaluating in the audio sidecar. The
   referenced Silero Rust examples use either `ort` with an ONNX model path or
   `wavekat-vad` with compile-time model embedding and 16 kHz frame handling;

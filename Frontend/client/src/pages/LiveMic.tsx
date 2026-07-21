@@ -508,6 +508,7 @@ const GlossyMicButton = memo(function GlossyMicButton({
           </div>
           <button
             type="button"
+            id="live-mic-toggle-button"
             className="glossy-mic-central-button"
             onClick={onToggle}
             disabled={disabled}
@@ -545,6 +546,7 @@ import { VirtualTranscriptHistory } from "@/components/virtual-transcript-histor
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
 import { transcriptHistoryPeriod } from "@/lib/transcript-history-period";
 import {
+  captureBenchmarkButtonActivationMarker,
   presentLiveMicControlFailure,
   requestLiveMicStart,
   requestLiveMicStop,
@@ -923,7 +925,9 @@ export default function LiveMic() {
       if (action === "stop") {
         await requestLiveMicStop();
       } else {
-        await requestLiveMicStart();
+        const benchmarkActivationMarker =
+          await captureBenchmarkButtonActivationMarker();
+        await requestLiveMicStart(benchmarkActivationMarker);
       }
     } catch (error) {
       presentLiveMicControlFailure(error, {

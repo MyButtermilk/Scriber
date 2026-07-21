@@ -1070,7 +1070,7 @@ def test_live_mic_start_controls_share_structured_errors_without_retrying() -> N
     assert "retryable: boolean;" in api_types
     assert 'import type { LiveMicRuntimeErrorResponse } from "@/lib/api-types";' in helper
     assert "export class LiveMicControlError extends Error" in helper
-    assert "export function requestLiveMicStart(): Promise<Response>" in helper
+    assert "export function requestLiveMicStart(" in helper
     assert "throw await responseFailure(response);" in helper
     assert 'failure?.kind === "network"' in helper
     assert "void options.checkBackendStatus().catch(() => false);" in helper
@@ -1081,10 +1081,24 @@ def test_live_mic_start_controls_share_structured_errors_without_retrying() -> N
         source = control.read_text(encoding="utf-8")
         assert 'from "@/lib/live-mic-control"' in source, control.name
         assert 'from "@/hooks/use-backend-status"' in source, control.name
-        assert source.count("requestLiveMicStart()") == 1, control.name
+        assert source.count("requestLiveMicStart(") == 1, control.name
         assert "presentLiveMicControlFailure(error" in source, control.name
         assert "checkBackendStatus," in source, control.name
         assert 'apiUrl("/api/live-mic/start")' not in source, control.name
+
+
+def test_primary_live_mic_button_captures_native_benchmark_activation_once() -> None:
+    client_root = REPO_ROOT / "Frontend" / "client" / "src"
+    helper = (client_root / "lib" / "live-mic-control.ts").read_text(encoding="utf-8")
+    live_mic = (client_root / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
+
+    assert 'id="live-mic-toggle-button"' in live_mic
+    assert "await captureBenchmarkButtonActivationMarker();" in live_mic
+    assert "await requestLiveMicStart(benchmarkActivationMarker);" in live_mic
+    assert "export async function captureBenchmarkButtonActivationMarker()" in helper
+    assert '"capture_benchmark_button_marker"' in helper
+    assert "if (!marker)" in helper
+    assert "native benchmark activation is not armed" in helper
 
 
 def test_silero_switch_waits_for_the_authoritative_settings_response() -> None:

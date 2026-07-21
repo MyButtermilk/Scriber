@@ -1,0 +1,27 @@
+[package]
+name = "scriber-lossy-codec-lab"
+version = "0.1.0"
+description = "Isolated, non-production MP3 and Ogg Opus codec controls for Scriber issue 18"
+authors = ["Scriber"]
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+publish = false
+build = "build.rs"
+
+[dependencies]
+# Safe wrapper over the bundled LAME 3.100 C source in mp3lame-sys. This is a
+# lab-only static link and carries LGPL-3.0 redistribution/relinking duties.
+mp3lame-encoder = { version = "=0.2.4", features = ["std"] }
+# Pure Rust Opus encoder with stable x86 SSE2/AVX2+FMA runtime dispatch and its
+# own RFC 7845 Ogg Opus writer. Spectrogram support is unnecessary here.
+ruopus = { version = "=0.1.2", default-features = false, features = ["std"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+sha2 = "=0.10.9"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

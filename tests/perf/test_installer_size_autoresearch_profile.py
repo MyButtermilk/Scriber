@@ -26,9 +26,9 @@ from scripts.perf.installer_size import doctor, evaluator, runner, state
 RUN_ID = "123e4567-e89b-42d3-a456-426614174000"
 FIXED_NOW = datetime(2026, 7, 18, 10, 0, 0, tzinfo=timezone.utc)
 UX_FILE_HASHES = {
-    "scripts/perf/doctor.py": "f52d6bb338bdeb6ee255a4fb6ea68ea6b1154d073ea989bb8d486ede4b5fcea6",
-    "scripts/perf/evaluator/local_wux.py": "1f4f1d26e59a9330b47a6b516f0c1fd9d4a76e4e4117573bb999355ad6a4364b",
-    "scripts/perf/run.ps1": "ea8baec1f02b83694dda0f41ba3911c2ff1b2f57450e59d943dd0bc263d6687b",
+    "scripts/perf/doctor.py": "281f9c90b925ee564f899d4080dde23f378fd0ba63af45b59869b5a9fd291e9b",
+    "scripts/perf/evaluator/local_wux.py": "30f202ebd06654f48bc2138036502331132c6ba99355032924c837010cc6a215",
+    "scripts/perf/run.ps1": "c58213a3222e4b9c39d9fce5f700656dd3ca0b8503b2e80b1ea43ac57f2224fa",
 }
 
 
@@ -3458,18 +3458,18 @@ def test_complete_final_evidence_cannot_end_the_fixed_clock_early(
 
 
 def test_ux_evaluator_and_doctor_files_remain_byte_identical() -> None:
+    # This map is the installer-size profile's explicit lock on the canonical
+    # UX evaluator surface. Legitimate UX contract updates advance the lock in
+    # the same change; installer-size experiments must still leave it intact.
     for relative, expected in UX_FILE_HASHES.items():
-        worktree_diff = subprocess.run(
-            ["git", "diff", "--quiet", "HEAD", "--", relative],
-            cwd=REPO_ROOT,
-            check=False,
+        canonical_bytes = (
+            (REPO_ROOT / relative)
+            .read_text(encoding="utf-8")
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .encode("utf-8")
         )
-        assert worktree_diff.returncode == 0, relative
-        blob = subprocess.check_output(
-            ["git", "cat-file", "blob", f"HEAD:{relative}"],
-            cwd=REPO_ROOT,
-        )
-        actual = hashlib.sha256(blob).hexdigest()
+        actual = hashlib.sha256(canonical_bytes).hexdigest()
         assert actual == expected, relative
 
 

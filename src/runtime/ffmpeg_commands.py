@@ -49,6 +49,73 @@ def webm_opus_transcode_args(
     ]
 
 
+def ogg_opus_transcode_args(
+    ffmpeg: str,
+    source_path: str | Path,
+    target_path: str | Path,
+    *,
+    bitrate: str = DEFAULT_OPUS_BITRATE,
+    sample_rate: int = DEFAULT_AUDIO_SAMPLE_RATE,
+    channels: int = DEFAULT_AUDIO_CHANNELS,
+) -> list[str]:
+    return [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        "-i",
+        _path_arg(source_path),
+        "-vn",
+        "-map",
+        "0:a:0",
+        "-c:a",
+        "libopus",
+        "-b:a",
+        str(bitrate),
+        "-ar",
+        str(int(sample_rate)),
+        "-ac",
+        str(int(channels)),
+        "-f",
+        "ogg",
+        _path_arg(target_path),
+    ]
+
+
+def flac_transcode_args(
+    ffmpeg: str,
+    source_path: str | Path,
+    target_path: str | Path,
+    *,
+    sample_rate: int = DEFAULT_AUDIO_SAMPLE_RATE,
+    channels: int = DEFAULT_AUDIO_CHANNELS,
+) -> list[str]:
+    return [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        "-i",
+        _path_arg(source_path),
+        "-vn",
+        "-map",
+        "0:a:0",
+        "-c:a",
+        "flac",
+        "-ar",
+        str(int(sample_rate)),
+        "-ac",
+        str(int(channels)),
+        "-f",
+        "flac",
+        _path_arg(target_path),
+    ]
+
+
 def meeting_multitrack_flac_args(
     ffmpeg: str,
     microphone_clean_path: str | Path,
@@ -301,6 +368,30 @@ def ffprobe_duration_args(ffprobe: str, file_path: str | Path) -> list[str]:
         "format=duration",
         "-of",
         "default=noprint_wrappers=1:nokey=1",
+        _path_arg(file_path),
+    ]
+
+
+def ffprobe_audio_format_args(ffprobe: str, file_path: str | Path) -> list[str]:
+    """Return one bounded JSON probe for the first audio stream.
+
+    Container names and codec names are both required: an ``ogg`` or ``webm``
+    suffix alone is never evidence that the payload contains Opus.
+    """
+
+    return [
+        ffprobe,
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        (
+            "stream=codec_name,codec_type,sample_fmt,bits_per_sample,"
+            "bits_per_raw_sample,sample_rate,channels:format=format_name,duration"
+        ),
+        "-of",
+        "json",
         _path_arg(file_path),
     ]
 

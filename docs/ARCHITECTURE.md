@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-07-19
+Last verified: 2026-07-21
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -647,6 +647,23 @@ options, and the local worker/model manifest. Settings changes cannot mutate a
 running or recovered attempt. API keys, signed source URLs, and clear-text custom
 vocabulary never enter public snapshots, logs, or support bundles.
 
+For a registry-backed batch upload, the frozen identity additionally includes
+the exact provider route, exact container+codec input format, capability id and
+revision, and an explicit verification marker. The durable File/YouTube job
+route is first written with unknown source format, then may make exactly one
+compare-and-swap refinement to the probed/prepared format, selection mode, and
+preparation implementation before network submission. It cannot use that
+refinement to switch provider, model, capability, or an already verified
+format.
+
+A caption-first YouTube job keeps the exact audio provider plan under
+`plannedFallbackRoute`; it does not claim that route was executed. Caption
+resolution selects either a caption route or that fallback as the immutable
+`executionRoute`, and the job writes a matching `executedRoute` only after the
+selected result commits. `JobStore` rejects an executed route that differs from
+the selected route. This keeps successful caption jobs from being mislabeled as
+billable STT runs while preserving an exact recovery plan when captions fail.
+
 The durable attempt state machine is:
 
 ```text
@@ -820,6 +837,9 @@ Key modules:
   runtime logs, support bundles, and explicit dev/test frontend fallback.
 - `src/pipeline.py`: STT orchestration, service factory, VAD/analyzer caching,
   mic resolution, direct/async transcription helpers.
+- `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact
+  provider/route/model media capabilities, container+codec probing, and
+  pass-through-first file-backed upload preparation.
 - `src/microphone.py`: Python boundary for the Rust/WASAPI frame-pipe capture,
   stream lifecycle, channel selection, and audio-level callback throttling.
 - `src/mic_prewarm.py`: idle always-on mic prewarm and rolling raw-audio
@@ -831,6 +851,8 @@ Key modules:
 - `src/data/job_store.py`: durable file/YouTube job state.
 - `src/data/latency_metrics_store.py`: hot-path metric persistence.
 - `src/runtime/media_tools.py`: ffmpeg/ffprobe resolution.
+- `src/runtime/provider_http.py`: app-owned, event-loop-bound aiohttp provider
+  pool and privacy-safe connection/request timing.
 - `src/core/`: REST/WebSocket contracts, state machine, circuit breaker, retry
   and provider support types, hot-path tracing, logging helpers.
 - `src/native_overlay.py`: backend facade for the Tauri-owned recording overlay
@@ -1040,6 +1062,38 @@ Rust audio:
   writer connection state, total/prebuffer/live frames written, bytes written,
   writer error, uptime, PID, and exit status. Python stores these in nested
   active-capture diagnostics for support bundles and long-run smokes.
+- A successful capture writes one zero-payload `SAF1` end-of-stream control
+  frame after its final PCM block. The Rust/Python protocol accepts this as the
+  only zero-frame record; Python validates its sequence and waits for it after
+  an acknowledged sidecar stop. Missing EOS is retained as a mid-session
+  failure instead of treating pipe closure as successful delivery. Python keeps
+  accepting tail audio until that marker and drains its downstream audio queue
+  before final provider shutdown. Rust finalizes optional preparation only
+  after EOS and reports QPC markers for last audio, capture stop, and
+  encoder-tail start/completion.
+- `audioCaptureStart` may carry a strict `audioPreparation` plan. The current
+  capture-lab implementation is `wav_pcm16_virtual`: a bounded worker
+  retains shared PCM segments and creates a virtual RIFF header without
+  reassembling a second whole PCM buffer. It advertises
+  `productionReady=false` and `artifactExposed=false`.
+  `wav_pcm16_file_v1` is the production artifact path for the exact
+  Speechmatics batch/WAV route. Tauri creates an unguessable bounded lease path;
+  the sidecar reserves the 44-byte header, streams PCM after each successful
+  frame-pipe write, and patches the RIFF/data sizes only after capture/EOS.
+  Tauri validates the returned lease/path, file length, and WAV sizes before
+  handing ownership to Python. The provider opens that file directly and calls
+  `audioCaptureArtifactRelease` after upload; shell shutdown removes any lease
+  left behind by backend failure or restart. Activation enables this plan
+  only when its frozen route contains the exact `speechmatics_async` /
+  `batch_v2` / `enhanced` capability ID and current revision, verified
+  `wav_pcm16`, generated preparation marker, and default endpoint fingerprint.
+  Missing/stale metadata and custom endpoints fail closed to the Python PCM
+  spool without starting the Rust candidate.
+  Frame-pipe delivery remains authoritative and queue pressure, size overflow,
+  or worker/capture failure invalidates only the derived file so the existing
+  Python PCM spool can finish safely. The installed 2026-07-21 no-regression
+  matrix did not promote this path, so
+  `SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV` remains default-off.
 - Python Rust-frame diagnostics also record frame-pipe frames/audio frames read,
   bytes read, sequence/protocol error counts, first-frame read timing, reader
   end reason, and last frame metadata without exposing raw pipe paths.
@@ -1096,6 +1150,44 @@ REST:
 - `/api/metrics/hot-path` includes a bounded `postProcessing` snapshot so live
   dictation failures can be correlated with timing data without storing
   transcript text.
+- The hot-path tracer has one canonical marker vocabulary spanning activation,
+  visible recording state, microphone/audio readiness, stop/finalization,
+  provider request/response, parsing/post-processing, injection, and external
+  text observation. It preserves legacy all-pairs segments, while canonical KPI
+  helpers expose activation-to-observed-text and stop-to-observed-text without
+  fabricating absent or reversed measurements.
+- Installed provider replay binds each marker and the target observer to exact
+  run, sample, session, process generation, target generation, and Windows QPC
+  identity. `final_text_observed` comes from the separate target-window observer
+  after exact fixture hash/length validation; backend injection completion is
+  only an earlier marker. The replay arm route stops at `activation_armed` and
+  stores the target guard; it does not construct a provider pipeline. An exact
+  one-shot native hotkey callback or primary-button command must claim the same
+  run/sample/lane before the controller can start. Lane mismatch, missing QPC,
+  duplicate activation, or an unarmed marker fails closed and remains unknown.
+- The controlled matrix runs Microsoft, Soniox, and Speechmatics with 5-, 15-,
+  30-, and 60-second fixtures. Speechmatics keeps the real capture, Batch-v2
+  adapter, JSON-v2 parser, injection, and external observer chain, while a
+  one-shot local raw transport reads and validates the complete WAV without a
+  credential, network call, or billable request. Microsoft's local transport
+  enforces the frozen Azure URL/API/model/locale/definition and credential
+  sentinel, then independently decodes the bounded upload MP3 with bundled
+  ffmpeg. Its decode must equal a pre-activation reference derived from the
+  hash-verified PCM fixture, with only the bounded all-zero capture tail allowed.
+  Microsoft and Speechmatics transports additionally bind the actual preparation
+  implementation to the frozen expected implementation; a production fallback
+  is allowed but makes the benchmark sample ineligible. Each provider-duration series retains separate
+  distributions for activation-to-observed-text and stop-to-observed-text.
+  Promotion requires every series to be valid and no slower than the matching
+  baseline; legacy provider-final tails remain diagnostic and are neither
+  pooled nor scored. Non-speech overhead is emitted only for a byte-, format-,
+  duration-, and phase-attested fixture. The final matched matrix passed every
+  correctness/cleanup gate but found canonical regressions for both candidate
+  paths. `SCRIBER_AZURE_MAI_CAPTURE_TIME_MP3` and
+  `SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV` therefore remain explicit opt-ins;
+  their default/control preparation implementations are
+  `post_stop_ffmpeg_mp3_v1` and
+  `python_reserved_wav_header_v1`, respectively.
 
 WebSocket:
 
@@ -1134,6 +1226,40 @@ support bundles as `post-processing-diagnostics.redacted.json`; neither raw
 transcript text nor processed output belongs in any of those surfaces.
 
 ## Provider Boundary
+
+`src/core/provider_audio_formats.py` is the single capability registry for
+provider audio acceptance. Entries are exact provider/route/model-family keys
+with separate batch and realtime sets, evidence metadata, a verification date,
+capability revision, upload bound, preferred generated formats, and a narrower
+direct-pass-through allowlist. Container and codec are distinct: OGG/Vorbis,
+OGG/Opus, WebM/Vorbis, and WebM/Opus are different values, and generic OGG or
+WebM documentation is never promoted into an exact codec claim. Exact lookup
+rejects unknown/custom routes and inactive entries; the planned OpenRouter MAI
+route remains represented but inactive.
+
+File-backed direct transcription probes the real stream with ffprobe before
+selection. If the exact original is in the pass-through allowlist and below the
+effective upload bound, `src/audio_prepare.py` borrows that path unchanged.
+Otherwise it creates one implemented WAV PCM16, MP3, FLAC, OGG/Opus, or
+WebM/Opus derivative through the resolved ffmpeg tool, validates its nonzero
+size and limit, supplies an exact content type, and deletes it when the async
+preparation scope ends. The pipeline revalidates frozen capability id/revision,
+route, exact format, file existence, and byte length before opening the provider
+session.
+
+Production controller-created pipelines share one `ProviderHttpTransport` on
+the backend event loop. Its bounded aiohttp connector retains DNS and TCP/TLS
+state across sequential direct requests, uses Happy Eyeballs, has no cookie jar
+or periodic warm traffic, and is closed during backend shutdown. Per-request
+views attach canonical request/chunk markers. Retained diagnostics include only
+opaque flow ids, bounded provider labels, hashed origins, DNS/connection reuse
+state, bounded counts, and durations. They exclude URLs, paths, queries,
+headers, bodies, filenames, and transcript text. If an exception occurs after
+`request_started`, File/YouTube retry handling converts it to an unknown remote
+acceptance outcome and suppresses automatic replay. The same no-replay rule
+applies when the provider has returned a result but its first durable
+provider-stage write cannot be confirmed. Recovery may continue without a
+second cloud request only from a validated durable StageResult.
 
 Provider selection is owned by backend configuration and persisted settings.
 Soniox is the default STT family: realtime live transcription uses

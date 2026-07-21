@@ -5,6 +5,9 @@ import os
 import queue as _queue
 import threading
 import time
+from pathlib import Path
+from uuid import UUID
+
 import numpy as np
 from loguru import logger
 from pipecat.frames.frames import InputAudioRawFrame, StartFrame, EndFrame
@@ -245,6 +248,209 @@ def _hash_private_hint(value: str | None) -> str | None:
     return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
+class RustCaptureWavArtifact:
+    """A bounded WAV file leased by Tauri to the Python provider consumer.
+
+    The path is usable only while this object owns the lease. Tauri remains
+    cleanup authority, so callers must release the lease after upload rather
+    than unlinking the file themselves.
+    """
+
+    def __init__(self, payload: dict, *, shell_call=None) -> None:
+        if payload.get("schemaVersion") != "1":
+            raise ValueError("Rust WAV artifact schema is invalid")
+        lease_id = str(payload.get("leaseId") or "").strip().lower()
+        try:
+            lease_uuid = UUID(lease_id)
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError("Rust WAV artifact has an invalid lease identifier") from exc
+        if lease_uuid.int == 0 or lease_uuid.hex != lease_id:
+            raise ValueError("Rust WAV artifact has an invalid lease identifier")
+        path = Path(str(payload.get("path") or ""))
+        if (
+            not path.is_absolute()
+            or len(str(path)) > 1_024
+            or path.name.casefold() != f"{lease_id}.wav"
+            or str(payload.get("format") or "") != "wav_pcm16"
+            or str(payload.get("contentType") or "") != "audio/wav"
+            or str(payload.get("owner") or "") != "pythonBackendLease"
+            or str(payload.get("cleanupCommand") or "")
+            != "audioCaptureArtifactRelease"
+        ):
+            raise ValueError("Rust WAV artifact contract is invalid")
+        self.lease_id = lease_id
+        self.path = path
+        metadata_fields = (
+            "byteLength",
+            "pcmBytes",
+            "sampleRate",
+            "channels",
+            "bitsPerSample",
+        )
+        if any(
+            not isinstance(payload.get(field), int)
+            or isinstance(payload.get(field), bool)
+            for field in metadata_fields
+        ):
+            raise ValueError("Rust WAV artifact metadata types are invalid")
+        self.byte_length = payload["byteLength"]
+        self.pcm_bytes = payload["pcmBytes"]
+        self.sample_rate = payload["sampleRate"]
+        self.channels = payload["channels"]
+        self.bits_per_sample = payload["bitsPerSample"]
+        if (
+            self.byte_length != self.pcm_bytes + 44
+            or self.pcm_bytes < 0
+            or self.byte_length > (64 * 1024 * 1024 + 44)
+            or not 8_000 <= self.sample_rate <= 192_000
+            or not 1 <= self.channels <= 16
+            or self.bits_per_sample != 16
+            or self.pcm_bytes % (self.channels * 2) != 0
+        ):
+            raise ValueError("Rust WAV artifact metadata is invalid")
+        self._shell_call = shell_call or call_shell_ipc
+        self._released = False
+
+    @property
+    def released(self) -> bool:
+        return self._released
+
+    def matches_pcm(self, *, sample_rate: int, channels: int, pcm_bytes: int) -> bool:
+        return bool(
+            not self._released
+            and self.sample_rate == int(sample_rate)
+            and self.channels == int(channels)
+            and self.pcm_bytes == int(pcm_bytes)
+        )
+
+    def open(self):
+        if self._released:
+            raise RuntimeError("Rust WAV artifact lease was already released")
+        handle = self.path.open("rb")
+        try:
+            if os.fstat(handle.fileno()).st_size != self.byte_length:
+                raise RuntimeError("Rust WAV artifact length changed after handoff")
+            header = handle.read(44)
+            block_align = self.channels * 2
+            byte_rate = self.sample_rate * block_align
+            if (
+                len(header) != 44
+                or header[0:4] != b"RIFF"
+                or int.from_bytes(header[4:8], "little") != self.pcm_bytes + 36
+                or header[8:12] != b"WAVE"
+                or header[12:16] != b"fmt "
+                or int.from_bytes(header[16:20], "little") != 16
+                or int.from_bytes(header[20:22], "little") != 1
+                or int.from_bytes(header[22:24], "little") != self.channels
+                or int.from_bytes(header[24:28], "little") != self.sample_rate
+                or int.from_bytes(header[28:32], "little") != byte_rate
+                or int.from_bytes(header[32:34], "little") != block_align
+                or int.from_bytes(header[34:36], "little") != self.bits_per_sample
+                or header[36:40] != b"data"
+                or int.from_bytes(header[40:44], "little") != self.pcm_bytes
+            ):
+                raise RuntimeError("Rust WAV artifact header is invalid")
+            handle.seek(0)
+            return handle
+        except Exception:
+            handle.close()
+            raise
+
+    async def open_async(self):
+        """Open the lease without abandoning a late file handle on cancel.
+
+        Cancelling ``asyncio.to_thread`` stops only its awaiter.  The worker may
+        still open the WAV afterwards, which would leave an unobserved Windows
+        handle and make the following shell-owned lease release fail.  Observe
+        the bounded open transition, close any late handle, then propagate the
+        original cancellation.
+        """
+
+        operation = asyncio.create_task(asyncio.to_thread(self.open))
+        cancellation: asyncio.CancelledError | None = None
+        while not operation.done():
+            try:
+                await asyncio.shield(operation)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+            except BaseException:
+                # Observe the worker's exact result below. If cancellation was
+                # already requested, it remains authoritative over an open
+                # failure that completed afterwards.
+                break
+
+        try:
+            handle = operation.result()
+        except BaseException:
+            if cancellation is not None:
+                raise cancellation
+            raise
+
+        if cancellation is not None:
+            try:
+                handle.close()
+            finally:
+                raise cancellation
+        return handle
+
+    def release(self) -> bool:
+        if self._released:
+            return True
+        try:
+            response = self._shell_call(
+                "audioCaptureArtifactRelease",
+                {"leaseId": self.lease_id},
+                timeout_seconds=2.0,
+            )
+        except Exception:
+            return False
+        if not isinstance(response, dict) or not bool(response.get("success")):
+            return False
+        response_payload = response.get("payload")
+        if not isinstance(response_payload, dict) or not (
+            bool(response_payload.get("released"))
+            or response_payload.get("reason")
+            == "audioCaptureArtifactAlreadyReleased"
+        ):
+            return False
+        self._released = True
+        return True
+
+    async def release_async(self) -> bool:
+        return bool(await _run_bounded_blocking_transition(self.release))
+
+    def diagnostic_snapshot(self) -> dict:
+        return {
+            "available": not self._released,
+            "leaseIdHash": _hash_private_hint(self.lease_id),
+            "format": "wav_pcm16",
+            "byteLength": self.byte_length,
+            "pcmBytes": self.pcm_bytes,
+            "sampleRate": self.sample_rate,
+            "channels": self.channels,
+        }
+
+
+def _release_invalid_capture_artifact_payload(payload: dict, *, shell_call) -> None:
+    """Release a Tauri lease whose remaining Python contract was rejected."""
+
+    lease_id = str(payload.get("leaseId") or "").strip().lower()
+    try:
+        lease_uuid = UUID(lease_id)
+    except (ValueError, TypeError, AttributeError):
+        return
+    if lease_uuid.int == 0 or lease_uuid.hex != lease_id:
+        return
+    try:
+        shell_call(
+            "audioCaptureArtifactRelease",
+            {"leaseId": lease_id},
+            timeout_seconds=2.0,
+        )
+    except Exception:
+        pass
+
+
 def _read_exact(reader, byte_count: int) -> bytes:
     chunks: list[bytes] = []
     remaining = int(byte_count)
@@ -255,6 +461,50 @@ def _read_exact(reader, byte_count: int) -> bytes:
         chunks.append(bytes(chunk))
         remaining -= len(chunk)
     return b"".join(chunks)
+
+
+def _provider_replay_capture_fixture_metadata() -> dict | None:
+    """Load synthetic fixture metadata only behind the private replay gate."""
+
+    raw_run_id = str(os.getenv("SCRIBER_B7_PROVIDER_REPLAY_RUN_ID") or "").strip()
+    raw_path = str(
+        os.getenv(
+            "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH"
+        )
+        or ""
+    ).strip()
+    if not raw_run_id or not raw_path:
+        return None
+    try:
+        run_id = UUID(raw_run_id)
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if run_id.int == 0:
+        return None
+
+    fixture_path = Path(raw_path)
+    try:
+        if not fixture_path.is_absolute() or not fixture_path.is_file():
+            return None
+        byte_length = int(fixture_path.stat().st_size)
+    except OSError:
+        return None
+    max_fixture_bytes = 48_000 * 1 * 2 * 600
+    if byte_length <= 0 or byte_length % 2 != 0 or byte_length > max_fixture_bytes:
+        return None
+
+    digest = hashlib.sha256()
+    try:
+        with fixture_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return {
+        "sha256": digest.hexdigest(),
+        "byteLength": byte_length,
+        "frameCount": byte_length // 2,
+    }
 
 
 class _RustPrototypeStreamHandle:
@@ -294,7 +544,9 @@ class RustPrototypeFrameSource(AudioFrameSource):
         first_frame_timeout_seconds: float | None = None,
         prewarm_id: str = "",
         capture_route: dict | None = None,
+        audio_preparation: dict | None = None,
         on_start_marker=None,
+        on_provider_replay_fixture_consumed=None,
     ):
         self.sample_rate = int(sample_rate)
         self.target_channels = int(target_channels)
@@ -316,6 +568,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.sidecar_live_frames_written = None
         self.sidecar_bytes_written = None
         self.sidecar_writer_error = None
+        self.sidecar_eos_written = None
+        self.sidecar_timing_markers: dict[str, int] = {}
         self.sidecar_stop_reason = ""
         self.sidecar_stop_confirmed = None
         self.sidecar_start_count = 0
@@ -334,11 +588,16 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.frame_pipe_prebuffer_audio_frames_read = 0
         self.frame_pipe_live_frames_read = 0
         self.frame_pipe_live_audio_frames_read = 0
+        self.frame_pipe_eos_frames_read = 0
+        self.frame_pipe_zero_length_eos_frames_read = 0
         self.frame_pipe_prebuffer_after_live_count = 0
         self.frame_pipe_first_live_sequence = None
         self.requested_prebuffer_ms = 0
         self.requested_prewarm_id = str(prewarm_id or "")
         self.capture_route = dict(capture_route) if isinstance(capture_route, dict) else None
+        self.audio_preparation = (
+            dict(audio_preparation) if isinstance(audio_preparation, dict) else None
+        )
         self.capture_route_source = "freshResolution"
         self.device_selection_ms = None
         self.capture_start_response_ms = None
@@ -347,6 +606,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.frame_pipe_reader_end_reason = "notStarted"
         self.frame_pipe_first_frame_read_ms = None
         self.mid_session_failure_reason = ""
+        self.terminal_integrity_error = ""
         self._shell_call = shell_call or call_shell_ipc
         self._reader_factory = reader_factory or open
         self._first_frame_timeout_seconds = (
@@ -364,6 +624,9 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self._stop_event = threading.Event()
         self._first_frame_event = threading.Event()
         self._live_capture_ready_event = threading.Event()
+        self._end_of_stream_event = threading.Event()
+        self._requires_terminal_eos = False
+        self._end_of_stream_wait_seconds = 0.75
         self._external_stop_lock = threading.Lock()
         self._external_stop_state = "idle"
         self._pending_external_stop_error = ""
@@ -372,14 +635,33 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self._reader_started_at = 0.0
         self._last_callback_at = 0.0
         self._last_error = ""
+        self._capture_wav_artifact: RustCaptureWavArtifact | None = None
         self._on_start_marker = on_start_marker
+        self._on_provider_replay_fixture_consumed = (
+            on_provider_replay_fixture_consumed
+        )
+        self._provider_replay_capture_fixture = (
+            _provider_replay_capture_fixture_metadata()
+        )
+        self._provider_replay_capture_digest = hashlib.sha256()
+        self._provider_replay_fixture_prefix_digest = hashlib.sha256()
+        self._provider_replay_fixture_prefix_bytes = 0
+        self._provider_replay_tail_bytes = 0
+        self._provider_replay_tail_all_zero = True
+        self._provider_replay_fixture_consumed_notified = False
+        self._provider_replay_exact_end_accepted = False
 
-    def _mark_start(self, marker: str) -> None:
+    def _mark_start(self, marker: str, *, timestamp_ns: int | None = None) -> None:
         callback = self._on_start_marker
         if not callable(callback):
             return
         try:
-            callback(marker)
+            callback(marker, timestamp_ns=timestamp_ns)
+        except TypeError:
+            try:
+                callback(marker)
+            except Exception:
+                return
         except Exception:
             return
 
@@ -455,6 +737,9 @@ class RustPrototypeFrameSource(AudioFrameSource):
 
     def open(self, callback):
         self._callback = callback
+        if self._capture_wav_artifact is not None:
+            self._capture_wav_artifact.release()
+            self._capture_wav_artifact = None
         if self._pending_stop_stream_id:
             if self._request_sidecar_stop(
                 self._pending_stop_stream_id,
@@ -462,7 +747,12 @@ class RustPrototypeFrameSource(AudioFrameSource):
             ):
                 self._pending_stop_stream_id = ""
         selection_started = time.monotonic()
-        if self.requested_prewarm_id and isinstance(self.capture_route, dict):
+        provider_replay_capture = self._provider_replay_capture_fixture is not None
+        if (
+            not provider_replay_capture
+            and self.requested_prewarm_id
+            and isinstance(self.capture_route, dict)
+        ):
             # The route belongs to the exact leased prewarm ID. Rust remains
             # authoritative: it opens the requested/default endpoint and
             # compares that actual endpoint with the one prewarm opened before
@@ -490,7 +780,15 @@ class RustPrototypeFrameSource(AudioFrameSource):
             3,
         )
         self._mark_start("capture_route_ready")
-        self.requested_prebuffer_ms = _rust_audio_prebuffer_ms()
+        # The deterministic replay fixture begins at byte zero. Replaying an
+        # idle prebuffer would prepend unrelated PCM and make the consumed-byte
+        # proof ambiguous, so the private benchmark path explicitly starts at
+        # the first live synthetic frame.
+        self.requested_prebuffer_ms = (
+            0
+            if self._provider_replay_capture_fixture is not None
+            else _rust_audio_prebuffer_ms()
+        )
         payload = {
             "sampleRate": self.sample_rate,
             "channels": self.target_channels,
@@ -499,14 +797,24 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "portAudioLabel": selection.get("portAudioLabel") or "",
             "nativeEndpointIdHash": selection.get("nativeEndpointIdHash") or None,
             "prebufferMs": self.requested_prebuffer_ms,
-            "prewarmId": self.requested_prewarm_id,
+            "prewarmId": "" if provider_replay_capture else self.requested_prewarm_id,
             "frameProtocol": {
                 "magic": "SAF1",
                 "version": AUDIO_FRAME_VERSION,
                 "headerBytes": AUDIO_FRAME_HEADER_LEN,
                 "sampleFormat": "pcm_i16_le",
+                "zeroLengthEndOfStream": True,
             },
         }
+        if self._provider_replay_capture_fixture is not None:
+            # This private, process-bound benchmark mode makes the synthetic
+            # source write exactly one fixture (including only the final block
+            # padding) and then EOS. Normal synthetic and WASAPI capture keep
+            # their existing open-ended lifecycle.
+            payload["providerReplayFixtureExactEnd"] = True
+        if self.audio_preparation is not None:
+            payload["audioPreparation"] = dict(self.audio_preparation)
+        self._provider_replay_exact_end_accepted = False
         self._mark_start("audio_capture_start_ipc_started")
         capture_start_started = time.monotonic()
         response = self._shell_call("audioCaptureStart", payload, timeout_seconds=2.0)
@@ -526,8 +834,11 @@ class RustPrototypeFrameSource(AudioFrameSource):
             fallback_reason = str(response.get("fallbackReason") or error_code)
             self.fallback_reason = error_code
             raise RuntimeError(f"Rust audio capture start failed: {fallback_reason}")
-
         self._last_error = ""
+        self.terminal_integrity_error = ""
+        self.sidecar_timing_markers = {}
+        self.sidecar_eos_written = None
+        self._requires_terminal_eos = False
         # A successful Rust start is serialized with, and drains, any capture
         # left registered by an earlier timed-out stop.
         self._pending_stop_stream_id = ""
@@ -547,6 +858,20 @@ class RustPrototypeFrameSource(AudioFrameSource):
             if not self.stream_id:
                 self.fallback_reason = "rustStreamIdMissing"
                 raise RuntimeError("Rust audio capture did not return a stream ID")
+            if self._provider_replay_capture_fixture is not None:
+                if (
+                    response_payload.get(
+                        "providerReplayFixtureExactEndAccepted"
+                    )
+                    is not True
+                ):
+                    self.fallback_reason = (
+                        "rustProviderReplayFixtureExactEndRejected"
+                    )
+                    raise RuntimeError(
+                        "Rust audio capture did not accept the exact provider replay fixture boundary"
+                    )
+                self._provider_replay_exact_end_accepted = True
             self.capture_channels = max(
                 1,
                 int(response_payload.get("captureChannels") or self.target_channels),
@@ -567,6 +892,33 @@ class RustPrototypeFrameSource(AudioFrameSource):
                 raise RuntimeError(
                     f"Rust audio capture returned unsupported sample format {sample_format}"
                 )
+            authoritative_frame_protocol = response_payload.get("audioFrameProtocol")
+            if not isinstance(authoritative_frame_protocol, dict):
+                authoritative_frame_protocol = response_payload.get("frameProtocol")
+            if isinstance(authoritative_frame_protocol, dict):
+                returned_magic = str(authoritative_frame_protocol.get("magic") or "")
+                returned_version = int(authoritative_frame_protocol.get("version") or 0)
+                returned_header_bytes = int(
+                    authoritative_frame_protocol.get("headerBytes") or 0
+                )
+                returned_sample_format = str(
+                    authoritative_frame_protocol.get("sampleFormat") or ""
+                )
+                returned_zero_length_eos = bool(
+                    authoritative_frame_protocol.get("zeroLengthEndOfStream")
+                )
+                if (
+                    returned_magic != "SAF1"
+                    or returned_version != AUDIO_FRAME_VERSION
+                    or returned_header_bytes != AUDIO_FRAME_HEADER_LEN
+                    or returned_sample_format != "pcm_i16_le"
+                    or not returned_zero_length_eos
+                ):
+                    self.fallback_reason = "rustFrameProtocolMismatch"
+                    raise RuntimeError(
+                        "Rust audio capture returned an incompatible frame protocol"
+                    )
+                self._requires_terminal_eos = True
             if not self._frame_pipe:
                 self.fallback_reason = "rustFramePipeMissing"
                 raise RuntimeError("Rust audio capture did not return a frame pipe")
@@ -592,8 +944,10 @@ class RustPrototypeFrameSource(AudioFrameSource):
             self._pending_external_stop_error = ""
         self._first_frame_event.clear()
         self._live_capture_ready_event.clear()
+        self._end_of_stream_event.clear()
         self._live_capture_ready = False
         self._sequence_guard = AudioFrameSequenceGuard()
+        self._reset_provider_replay_capture_tracking()
         self._reader_started_at = time.monotonic()
         self.frame_pipe_reader_end_reason = "running"
         self.frame_pipe_first_frame_read_ms = None
@@ -627,16 +981,14 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self._mark_start("first_live_frame_ready")
 
     def stop(self, *, close: bool) -> None:
-        self._stop_event.set()
         stop_stream_id = self.stream_id or self._pending_stop_stream_id
         stop_confirmed = not bool(stop_stream_id)
+        terminal_integrity_error = ""
         if stop_stream_id:
             stop_confirmed = self._request_sidecar_stop(
                 stop_stream_id,
                 timeout_seconds=0.75,
             )
-        if self._reader_thread and self._reader_thread.is_alive():
-            self._reader_thread.join(timeout=0.5)
         if stop_stream_id and not stop_confirmed:
             # A short response timeout can occur while another command owns the
             # audio IPC lane. Once the reader is quiescent, make one longer
@@ -646,6 +998,33 @@ class RustPrototypeFrameSource(AudioFrameSource):
                 stop_stream_id,
                 timeout_seconds=2.0,
             )
+        if stop_stream_id and not stop_confirmed and self._requires_terminal_eos:
+            terminal_integrity_error = "rustAudioCaptureStopUnconfirmed"
+        elif stop_confirmed and stop_stream_id:
+            if self.sidecar_writer_error:
+                terminal_integrity_error = "rustAudioSidecarWriterFailed"
+            elif self.sidecar_eos_written is False:
+                terminal_integrity_error = "rustSidecarDidNotWriteEndOfStream"
+            elif self._requires_terminal_eos:
+                # A timed-out first request can reconcile as noActiveCapture
+                # after Tauri has consumed the authoritative stop result. For
+                # protocol v2, the independently observed EOS is the durable
+                # proof; a success response without it is not completion.
+                if not self._end_of_stream_event.wait(
+                    timeout=self._end_of_stream_wait_seconds
+                ):
+                    terminal_integrity_error = "rustFramePipeMissingEndOfStream"
+            elif self.sidecar_eos_written is True and not self._end_of_stream_event.wait(
+                timeout=self._end_of_stream_wait_seconds
+            ):
+                terminal_integrity_error = "rustFramePipeMissingEndOfStream"
+        if terminal_integrity_error:
+            self.terminal_integrity_error = terminal_integrity_error
+            self._last_error = terminal_integrity_error
+            self.mid_session_failure_reason = "captureIntegrityFailure"
+        self._stop_event.set()
+        if self._reader_thread and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=0.5)
         self._stream.stop()
         if stop_confirmed:
             self._pending_stop_stream_id = ""
@@ -655,6 +1034,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
         if close:
             self._stream.close()
             self._closed = True
+        if terminal_integrity_error:
+            raise RuntimeError(terminal_integrity_error)
 
     def _request_sidecar_stop(self, stream_id: str, *, timeout_seconds: float) -> bool:
         try:
@@ -704,7 +1085,47 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.sidecar_live_frames_written = payload.get("liveFramesWritten")
         self.sidecar_bytes_written = payload.get("bytesWritten")
         self.sidecar_writer_error = payload.get("writerError")
+        eos_written = payload.get("eosWritten")
+        if isinstance(eos_written, bool):
+            self.sidecar_eos_written = eos_written
         self.sidecar_stop_reason = str(payload.get("reason") or "")
+        artifact_payload = payload.get("captureArtifact")
+        if isinstance(artifact_payload, dict):
+            try:
+                artifact = RustCaptureWavArtifact(
+                    artifact_payload,
+                    shell_call=self._shell_call,
+                )
+                current_artifact = self._capture_wav_artifact
+                if (
+                    current_artifact is None
+                    or current_artifact.lease_id != artifact.lease_id
+                ):
+                    if current_artifact is not None:
+                        current_artifact.release()
+                    self._capture_wav_artifact = artifact
+            except (OSError, TypeError, ValueError) as exc:
+                self._last_error = f"rustCaptureArtifactInvalid:{type(exc).__name__}"
+                _release_invalid_capture_artifact_payload(
+                    artifact_payload,
+                    shell_call=self._shell_call,
+                )
+        timing_markers = payload.get("timingMarkers")
+        if isinstance(timing_markers, dict):
+            for marker in (
+                "last_audio_frame_captured",
+                "capture_stopped",
+                "encoder_tail_started",
+                "encoder_tail_completed",
+            ):
+                timestamp_ns = timing_markers.get(marker)
+                if (
+                    isinstance(timestamp_ns, int)
+                    and not isinstance(timestamp_ns, bool)
+                    and timestamp_ns > 0
+                ):
+                    self.sidecar_timing_markers[marker] = timestamp_ns
+                    self._mark_start(marker, timestamp_ns=timestamp_ns)
         if self.sidecar_writer_error:
             self._last_error = str(self.sidecar_writer_error)
 
@@ -745,7 +1166,14 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "sidecarLiveFramesWritten": self.sidecar_live_frames_written,
             "sidecarBytesWritten": self.sidecar_bytes_written,
             "sidecarWriterError": self.sidecar_writer_error,
+            "sidecarEosWritten": self.sidecar_eos_written,
+            "sidecarTimingMarkers": dict(self.sidecar_timing_markers),
             "sidecarStopReason": self.sidecar_stop_reason,
+            "captureWavArtifact": (
+                self._capture_wav_artifact.diagnostic_snapshot()
+                if self._capture_wav_artifact is not None
+                else None
+            ),
             "sidecarStartCount": self.sidecar_start_count,
             "sidecarRestartCount": max(0, int(self.sidecar_start_count) - 1),
             "readerThreadAlive": bool(self._reader_thread and self._reader_thread.is_alive()),
@@ -764,6 +1192,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "framePipePrebufferAudioFramesRead": self.frame_pipe_prebuffer_audio_frames_read,
             "framePipeLiveFramesRead": self.frame_pipe_live_frames_read,
             "framePipeLiveAudioFramesRead": self.frame_pipe_live_audio_frames_read,
+            "framePipeEosFramesRead": self.frame_pipe_eos_frames_read,
+            "terminalEosRequired": bool(self._requires_terminal_eos),
             "framePipePrebufferAfterLiveCount": self.frame_pipe_prebuffer_after_live_count,
             "framePipeFirstLiveSequence": self.frame_pipe_first_live_sequence,
             "liveCaptureReady": self._live_capture_ready,
@@ -771,6 +1201,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
             "externalStopState": external_stop_state,
             "framePipeFirstFrameReadMs": self.frame_pipe_first_frame_read_ms,
             "midSessionFailureReason": self.mid_session_failure_reason,
+            "terminalIntegrityError": self.terminal_integrity_error,
             "fallbackReason": self.fallback_reason,
             "lastError": self._last_error,
             "lastCallbackAgoSeconds": (
@@ -778,6 +1209,130 @@ class RustPrototypeFrameSource(AudioFrameSource):
                 if self._last_callback_at > 0
                 else None
             ),
+        }
+
+    def take_capture_wav_artifact(self) -> RustCaptureWavArtifact | None:
+        artifact, self._capture_wav_artifact = self._capture_wav_artifact, None
+        return artifact
+
+    def _reset_provider_replay_capture_tracking(self) -> None:
+        if self._provider_replay_capture_fixture is None:
+            return
+        self._provider_replay_capture_digest = hashlib.sha256()
+        self._provider_replay_fixture_prefix_digest = hashlib.sha256()
+        self._provider_replay_fixture_prefix_bytes = 0
+        self._provider_replay_tail_bytes = 0
+        self._provider_replay_tail_all_zero = True
+        self._provider_replay_fixture_consumed_notified = False
+
+    def _track_provider_replay_capture_payload(self, payload: bytes) -> bool:
+        fixture = self._provider_replay_capture_fixture
+        if fixture is None or not payload:
+            return False
+
+        self._provider_replay_capture_digest.update(payload)
+        fixture_bytes = int(fixture["byteLength"])
+        prefix_remaining = max(
+            0,
+            fixture_bytes - self._provider_replay_fixture_prefix_bytes,
+        )
+        prefix_size = min(prefix_remaining, len(payload))
+        if prefix_size:
+            prefix = payload[:prefix_size]
+            self._provider_replay_fixture_prefix_digest.update(prefix)
+            self._provider_replay_fixture_prefix_bytes += prefix_size
+
+        tail = payload[prefix_size:]
+        if tail:
+            self._provider_replay_tail_bytes += len(tail)
+            if any(tail):
+                self._provider_replay_tail_all_zero = False
+
+        if (
+            self._provider_replay_fixture_prefix_bytes >= fixture_bytes
+            and not self._provider_replay_fixture_consumed_notified
+        ):
+            self._provider_replay_fixture_consumed_notified = True
+            return True
+        return False
+
+    def _notify_provider_replay_fixture_consumed(self) -> None:
+        callback = self._on_provider_replay_fixture_consumed
+        if callable(callback):
+            try:
+                callback()
+            except Exception:
+                # This is a benchmark-only timing hint. The attestation remains
+                # authoritative and fails closed if capture runs too long.
+                pass
+
+    def provider_replay_capture_attestation(self) -> dict | None:
+        """Return benchmark-only proof for PCM read from the Rust frame pipe.
+
+        The fixture gate is deliberately evaluated before any hashing. Normal
+        microphone sessions therefore never compute or expose audio digests.
+        Run/sample/session/process binding is added later by the private
+        provider-replay registry rather than trusted from this reader.
+        """
+
+        fixture = self._provider_replay_capture_fixture
+        if fixture is None:
+            return None
+        bytes_per_frame = max(1, int(self.capture_channels) * 2)
+        prefix_bytes = int(self._provider_replay_fixture_prefix_bytes)
+        tail_bytes = int(self._provider_replay_tail_bytes)
+        prefix_matches = bool(
+            prefix_bytes == int(fixture["byteLength"])
+            and self._provider_replay_fixture_prefix_digest.hexdigest()
+            == fixture["sha256"]
+        )
+        tail_aligned = tail_bytes % bytes_per_frame == 0
+        trailing_frames = tail_bytes // bytes_per_frame
+        expected_trailing_frames = (
+            -int(fixture["frameCount"])
+        ) % int(self.block_size)
+        tail_valid = bool(
+            prefix_matches
+            and tail_aligned
+            and self._provider_replay_tail_all_zero
+            and self._provider_replay_exact_end_accepted
+            and trailing_frames == expected_trailing_frames
+        )
+        return {
+            "contractVersion": 1,
+            "source": "rust_audio_frame_pipe_reader",
+            "fixturePcmSha256": fixture["sha256"],
+            "capturedPcmSha256": self._provider_replay_capture_digest.hexdigest(),
+            "sampleRate": int(self.sample_rate),
+            "channels": int(self.capture_channels),
+            "sampleWidthBytes": 2,
+            "fixturePayloadBytesRead": prefix_bytes,
+            "fixtureAudioFramesRead": prefix_bytes // 2,
+            "payloadBytesRead": int(self.frame_pipe_payload_bytes_read),
+            "audioFramesRead": int(self.frame_pipe_audio_frames_read),
+            "trailingZeroFrames": trailing_frames,
+            "expectedTrailingZeroFrames": expected_trailing_frames,
+            "captureBlockSizeFrames": int(self.block_size),
+            "exactFixtureEndAccepted": bool(
+                self._provider_replay_exact_end_accepted
+            ),
+            "eosFramesRead": int(self.frame_pipe_eos_frames_read),
+            "eosObserved": bool(
+                self.frame_pipe_eos_frames_read == 1
+                and self.frame_pipe_zero_length_eos_frames_read == 1
+                and self.frame_pipe_reader_end_reason == "endOfStream"
+            ),
+            "sidecarEosWritten": self.sidecar_eos_written,
+            "droppedFrameCount": int(self.dropped_frame_count),
+            "sequenceErrorCount": int(self.frame_pipe_sequence_error_count),
+            "protocolErrorCount": int(self.frame_pipe_protocol_error_count),
+            "prebufferAfterLiveCount": int(
+                self.frame_pipe_prebuffer_after_live_count
+            ),
+            "readerEndReason": self.frame_pipe_reader_end_reason,
+            "tailKind": "zero_pcm_s16le" if tail_valid else "invalid",
+            "fixturePrefixMatched": prefix_matches,
+            "tailAllZero": bool(self._provider_replay_tail_all_zero),
         }
 
     def _redacted_adopted_prewarm(self) -> dict | None:
@@ -811,6 +1366,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
                             f"Rust audio frame channel mismatch: expected {self.capture_channels}, got {header.channels}"
                         )
                     is_prebuffer = bool(header.flags & AUDIO_FRAME_FLAG_PREBUFFER)
+                    is_end_of_stream = bool(header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM)
                     if is_prebuffer and self.frame_pipe_live_frames_read > 0:
                         self.frame_pipe_prebuffer_after_live_count += 1
                         raise AudioFrameProtocolError(
@@ -821,6 +1377,18 @@ class RustPrototypeFrameSource(AudioFrameSource):
                     self.frame_pipe_last_sequence = int(header.sequence)
                     self.frame_pipe_last_timestamp_micros = int(header.timestamp_micros)
                     self.frame_pipe_last_flags = int(header.flags)
+                    if is_end_of_stream:
+                        self.frame_pipe_eos_frames_read += 1
+                    if is_end_of_stream and int(header.frame_count) == 0:
+                        if int(header.payload_len) == 0:
+                            self.frame_pipe_zero_length_eos_frames_read += 1
+                        self.frame_pipe_reader_end_reason = "endOfStream"
+                        self._end_of_stream_event.set()
+                        self._live_capture_ready_event.set()
+                        break
+                    fixture_consumed_now = (
+                        self._track_provider_replay_capture_payload(payload)
+                    )
                     if is_prebuffer:
                         self.frame_pipe_prebuffer_frames_read += 1
                         self.frame_pipe_prebuffer_audio_frames_read += int(header.frame_count)
@@ -861,8 +1429,11 @@ class RustPrototypeFrameSource(AudioFrameSource):
                     if not is_prebuffer and callback_succeeded:
                         self._live_capture_ready = True
                         self._live_capture_ready_event.set()
-                    if header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM:
+                    if fixture_consumed_now:
+                        self._notify_provider_replay_fixture_consumed()
+                    if is_end_of_stream:
                         self.frame_pipe_reader_end_reason = "endOfStream"
+                        self._end_of_stream_event.set()
                         self._live_capture_ready_event.set()
                         break
                 if self.frame_pipe_reader_end_reason == "running":
@@ -1102,6 +1673,9 @@ class MicrophoneInput(BaseInputTransport):
         on_ready=None,
         on_last_audio_chunk_sent=None,
         on_start_marker=None,
+        on_provider_replay_fixture_consumed=None,
+        capture_audio_preparation: dict | None = None,
+        on_capture_wav_artifact=None,
         fresh_device_resolver=None,
     ):
         params = TransportParams(
@@ -1122,6 +1696,15 @@ class MicrophoneInput(BaseInputTransport):
         self.on_ready = on_ready
         self.on_last_audio_chunk_sent = on_last_audio_chunk_sent
         self.on_start_marker = on_start_marker
+        self.on_provider_replay_fixture_consumed = (
+            on_provider_replay_fixture_consumed
+        )
+        self.capture_audio_preparation = (
+            dict(capture_audio_preparation)
+            if isinstance(capture_audio_preparation, dict)
+            else None
+        )
+        self.on_capture_wav_artifact = on_capture_wav_artifact
         self._fresh_device_resolver = fresh_device_resolver
         self.stream = None
         self._frame_source: AudioFrameSource | None = None
@@ -1133,12 +1716,14 @@ class MicrophoneInput(BaseInputTransport):
         self._rust_prewarm_adoption: dict | None = None
         self._rust_prewarm_id = ""
         self._running = False
+        self._accepting_audio = False
         self._queue = _queue.Queue(maxsize=512)
         self._dropped_chunks = 0
         self._drained_chunks = 0
         self._max_queue_depth = 0
         self._last_drop_log_at = 0.0
         self._consumer_error = ""
+        self._capture_integrity_error = ""
         self._consumer_last_state = "not_started"
         self._consumer_loop: asyncio.AbstractEventLoop | None = None
         self._queue_wakeup: asyncio.Event | None = None
@@ -1171,6 +1756,7 @@ class MicrophoneInput(BaseInputTransport):
         self._last_audio_chunk_sent_notified = False
         self._callback_count = 0
         self._last_callback_at = 0.0
+        self._last_audio_frame_captured_ns = 0
         self._stream_started_at = 0.0
         self._last_status = ""
         self._last_callback_exception = ""
@@ -1220,15 +1806,24 @@ class MicrophoneInput(BaseInputTransport):
                 if isinstance(self._rust_prewarm_adoption, dict)
                 else None
             ),
+            audio_preparation=self.capture_audio_preparation,
             on_start_marker=self.on_start_marker,
+            on_provider_replay_fixture_consumed=(
+                self.on_provider_replay_fixture_consumed
+            ),
         )
 
-    def _mark_start(self, marker: str) -> None:
+    def _mark_start(self, marker: str, *, timestamp_ns: int | None = None) -> None:
         callback = self.on_start_marker
         if not callable(callback):
             return
         try:
-            callback(marker)
+            callback(marker, timestamp_ns=timestamp_ns)
+        except TypeError:
+            try:
+                callback(marker)
+            except Exception:
+                return
         except Exception:
             return
 
@@ -1298,10 +1893,12 @@ class MicrophoneInput(BaseInputTransport):
         self._max_queue_depth = 0
         self._last_drop_log_at = 0.0
         self._consumer_error = ""
+        self._capture_integrity_error = ""
         self._consumer_last_state = "not_started"
         self._consumer_restart_pending = False
         self._consumer_restart_count = 0
         self._running = True
+        self._accepting_audio = True
         self._active_capture_channel = None
         self._channel_selection_counter = 0
         self._last_audio_level_at = 0.0
@@ -1314,6 +1911,7 @@ class MicrophoneInput(BaseInputTransport):
         self._last_audio_chunk_sent_notified = False
         self._callback_count = 0
         self._last_callback_at = 0.0
+        self._last_audio_frame_captured_ns = 0
         self._stream_started_at = 0.0
         self._last_status = ""
         self._last_callback_exception = ""
@@ -1520,8 +2118,10 @@ class MicrophoneInput(BaseInputTransport):
         if status:
             self._last_status = str(status)
             logger.warning(f"Audio status: {status}")
-        if not self._running:
+        if not self._accepting_audio:
             return
+
+        self._last_audio_frame_captured_ns = time.perf_counter_ns()
 
         output_data = indata
         if (
@@ -1573,15 +2173,18 @@ class MicrophoneInput(BaseInputTransport):
             self._signal_queue_wakeup()
         except _queue.Full:
             self._dropped_chunks += 1
-            now = time.monotonic()
-            if self._dropped_chunks == 1 or now - self._last_drop_log_at >= 1.0:
-                self._last_drop_log_at = now
-                logger.warning(
-                    "Mic queue full; dropped {} audio chunk(s) (depth={}/{})",
-                    self._dropped_chunks,
-                    self._queue.qsize(),
-                    self._queue.maxsize,
-                )
+            self._capture_integrity_error = "microphoneAudioQueueOverflow"
+            self._consumer_error = "RuntimeError: microphoneAudioQueueOverflow"
+            self._running = False
+            self._accepting_audio = False
+            self._signal_queue_wakeup()
+            logger.error(
+                "Mic queue capacity exceeded; recording integrity failed closed "
+                "(depth={}/{})",
+                self._queue.qsize(),
+                self._queue.maxsize,
+            )
+            raise RuntimeError(self._capture_integrity_error)
 
         # Visualizer/input-warning calculation is capped to UI frame rate. The
         # raw audio still flows downstream on every callback.
@@ -1670,6 +2273,7 @@ class MicrophoneInput(BaseInputTransport):
         rust_circuit = _rust_audio_fallback_circuit_state()
         return {
             "running": bool(self._running),
+            "acceptingAudio": bool(self._accepting_audio),
             "engine": self._audio_engine,
             "requestedEngine": self._requested_audio_engine,
             "frameSource": self._frame_source_name,
@@ -1693,6 +2297,7 @@ class MicrophoneInput(BaseInputTransport):
             "audioQueueMaxDepth": int(self._max_queue_depth),
             "consumerTaskState": self._consumer_task_state(),
             "consumerError": self._consumer_error,
+            "captureIntegrityError": self._capture_integrity_error,
             "consumerRestartPending": bool(self._consumer_restart_pending),
             "consumerRestartCount": int(self._consumer_restart_count),
             "lastObservedRms": float(self._last_observed_rms),
@@ -1732,6 +2337,29 @@ class MicrophoneInput(BaseInputTransport):
             "rustAudioFallbackCircuitRemainingSeconds": rust_circuit.get("remainingSeconds"),
         }
 
+    def provider_replay_capture_attestation(self) -> dict | None:
+        source = self._frame_source
+        snapshot = getattr(source, "provider_replay_capture_attestation", None)
+        if not callable(snapshot):
+            return None
+        return snapshot()
+
+    async def _deliver_capture_wav_artifact(self) -> None:
+        take = getattr(self._frame_source, "take_capture_wav_artifact", None)
+        artifact = take() if callable(take) else None
+        if artifact is None:
+            return
+        if self._capture_integrity_error or not callable(self.on_capture_wav_artifact):
+            await artifact.release_async()
+            return
+        try:
+            accepted = bool(self.on_capture_wav_artifact(artifact))
+        except Exception as exc:
+            logger.debug(f"Rust capture WAV handoff failed: {exc}")
+            accepted = False
+        if not accepted:
+            await artifact.release_async()
+
     def _redacted_rust_prewarm_adoption(self) -> dict | None:
         if not isinstance(self._rust_prewarm_adoption, dict):
             return None
@@ -1749,6 +2377,9 @@ class MicrophoneInput(BaseInputTransport):
         max_callback_gap_seconds: float | None = None,
         min_restart_interval_seconds: float = 15.0,
     ) -> bool:
+        if self._capture_integrity_error:
+            self._last_health_failure_reason = "captureIntegrityFailure"
+            return False
         if not self._running:
             return True
         self._last_health_check_reason = str(reason or "watchdog")
@@ -1870,6 +2501,8 @@ class MicrophoneInput(BaseInputTransport):
     def force_stop_from_external_error(self, *, reason: str = "external_error") -> None:
         logger.warning(f"Microphone capture stopped by pipeline error ({reason})")
         self._running = False
+        self._accepting_audio = False
+        self._signal_queue_wakeup()
         with get_device_guard_lock():
             if self.stream:
                 try:
@@ -1891,6 +2524,7 @@ class MicrophoneInput(BaseInputTransport):
 
         logger.warning(f"Microphone capture stop requested by pipeline error ({reason})")
         self._running = False
+        self._accepting_audio = False
         self._signal_queue_wakeup()
 
     def _signal_queue_wakeup(self) -> None:
@@ -1967,7 +2601,7 @@ class MicrophoneInput(BaseInputTransport):
             try:
                 return self._queue.get_nowait()
             except _queue.Empty:
-                if not self._running:
+                if not self._accepting_audio:
                     return None
 
                 wakeup = self._queue_wakeup
@@ -2006,14 +2640,20 @@ class MicrophoneInput(BaseInputTransport):
                     self._drained_chunks += 1
                 finally:
                     self._queue.task_done()
+            if self._capture_integrity_error:
+                raise RuntimeError(self._capture_integrity_error)
             self._notify_last_audio_chunk_sent()
         except asyncio.CancelledError:
             # Clean up audio stream on cancellation
             self._running = False
-            await _run_bounded_blocking_transition(
-                self._stop_capture_source_blocking,
-                close_stream=True,
-            )
+            self._accepting_audio = False
+            try:
+                await _run_bounded_blocking_transition(
+                    self._stop_capture_source_blocking,
+                    close_stream=True,
+                )
+            except Exception as exc:
+                logger.debug(f"Microphone cancellation cleanup warning: {exc}")
             raise  # Re-raise to properly complete cancellation
 
     def _notify_last_audio_chunk_sent(self) -> None:
@@ -2057,19 +2697,29 @@ class MicrophoneInput(BaseInputTransport):
                 and (source_stream is not None or self.stream is not None)
             )
             if source_owns_partial_open:
+                stop_error: Exception | None = None
                 try:
                     source.stop(close=close_stream)
+                except Exception as exc:
+                    stop_error = exc
+                finally:
                     self._sync_frame_source_state()
-                except Exception:
-                    pass
+                if stop_error is not None:
+                    error_code = str(
+                        getattr(source, "terminal_integrity_error", "")
+                        or "microphoneCaptureStopFailed"
+                    )
+                    self._release_active_stream()
+                    raise RuntimeError(error_code) from stop_error
             elif self.stream:
                 try:
                     self.stream.stop()
                     if close_stream:
                         self.stream.close()
                         self.stream = None
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._release_active_stream()
+                    raise RuntimeError("microphoneCaptureStopFailed") from exc
             self._release_active_stream()
 
     async def stop_capture_for_finalization(self, *, close_stream: bool | None = None):
@@ -2081,17 +2731,43 @@ class MicrophoneInput(BaseInputTransport):
         Pipecat's audio task and can race the final STT frame, so final pipeline
         termination remains the caller's responsibility.
         """
+        # Stop watchdog/restart work immediately, but keep accepting callback
+        # frames and keep the consumer open until native Stop has drained and
+        # the Rust frame reader has observed its terminal EOS.
         self._running = False
-        self._signal_queue_wakeup()
 
         # OPTIMIZED: Always stop stream to prevent CPU usage and buffer overflow
         # With keep_alive: pause stream (fast restart via stream.start())
         # Without keep_alive: close stream entirely
         should_close_stream = (not self.keep_alive) if close_stream is None else bool(close_stream)
-        await _run_bounded_blocking_transition(
-            self._stop_capture_source_blocking,
-            close_stream=should_close_stream,
-        )
+        stop_completed_ns = 0
+        try:
+            await _run_bounded_blocking_transition(
+                self._stop_capture_source_blocking,
+                close_stream=should_close_stream,
+            )
+        except Exception as exc:
+            if not self._capture_integrity_error:
+                self._capture_integrity_error = str(exc) or "microphoneCaptureStopFailed"
+            if not self._consumer_error:
+                self._consumer_error = f"{type(exc).__name__}: {exc}"
+        finally:
+            stop_completed_ns = time.perf_counter_ns()
+            source_markers = getattr(self._frame_source, "sidecar_timing_markers", {})
+            if not isinstance(source_markers, dict):
+                source_markers = {}
+            if (
+                "last_audio_frame_captured" not in source_markers
+                and self._last_audio_frame_captured_ns > 0
+            ):
+                self._mark_start(
+                    "last_audio_frame_captured",
+                    timestamp_ns=self._last_audio_frame_captured_ns,
+                )
+            if "capture_stopped" not in source_markers:
+                self._mark_start("capture_stopped", timestamp_ns=stop_completed_ns)
+            self._accepting_audio = False
+            self._signal_queue_wakeup()
 
         # Wait for consumer task with timeout
         if self._consumer_task:
@@ -2101,9 +2777,16 @@ class MicrophoneInput(BaseInputTransport):
             except asyncio.TimeoutError:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+                if not self._capture_integrity_error:
+                    self._capture_integrity_error = "microphoneQueueDrainTimeout"
             except Exception as exc:
                 if not self._consumer_error:
                     self._consumer_error = f"{type(exc).__name__}: {exc}"
+                if not self._capture_integrity_error:
+                    self._capture_integrity_error = "microphoneQueueConsumerFailed"
                 logger.debug(f"Microphone queue consumer cleanup warning: {exc}")
 
         self._stopped.set()
+        await self._deliver_capture_wav_artifact()
+        if self._capture_integrity_error:
+            raise RuntimeError(self._capture_integrity_error)

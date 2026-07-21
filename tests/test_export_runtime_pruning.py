@@ -216,7 +216,10 @@ def test_spec_excludes_the_complete_legacy_export_dependency_graph() -> None:
         assert f'"{root}",' in excludes
     for root in ("PIL", "docx", "reportlab"):
         assert f'"{root}",' not in excludes
-    assert 'pathex=[str(stdlib_export_compat_root), str(repo_root)]' in spec
+    assert (
+        "pathex=[str(numpy_overlay_root), str(stdlib_export_compat_root), "
+        "str(repo_root)]"
+    ) in spec
     assert 'hookspath=[str(pyinstaller_hook_root)]' in spec
     for hook in ("hook-PIL.py", "hook-PIL.Image.py", "hook-docx.py", "hook-reportlab.py"):
         assert (REPO_ROOT / "packaging" / "pyinstaller_hooks" / hook).is_file()

@@ -1,6 +1,6 @@
 # Performance And Packaging
 
-Last verified: 2026-07-20
+Last verified: 2026-07-21
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
@@ -169,6 +169,99 @@ Live mic:
   route selection, capture-start IPC, first live frame, mic-ready, and overlay
   presentation. This keeps the user-visible `Preparing` interval attributable
   instead of folding all audio startup into one opaque number.
+- The canonical trace now spans activation through externally observed final
+  text. Hotkey and button origins remain distinct; the primary KPI is
+  `activation_received_to_final_text_observed_ms`, the stop-tail KPI is
+  `stop_requested_to_final_text_observed_ms`, and deterministic replay may
+  subtract only its declared fixture duration as non-speech overhead. Missing
+  or reversed markers remain unknown.
+- Controlled installed provider replay binds backend events and the independent
+  target-window observer to one run/sample/session, process generation, target
+  generation, and QPC clock. Its aggregate reports now include
+  p50/p90/p95/max, population variance, failure rate, and sample count for the
+  two canonical KPIs and non-speech overhead. A paste return or injection
+  callback is not accepted as visible-text completion.
+- Replay `arm` is control-plane setup only and cannot start capture or provider
+  work. It binds one exact run/sample and either the hotkey or primary-button
+  lane in the native shell. The actual global-shortcut callback records Windows
+  QPC before dispatch; the primary button records its QPC in the benchmark-only
+  Tauri command. Each marker is one-shot, starts through the strict Live Mic
+  endpoint, and any missing/mismatched marker leaves the KPI unknown.
+- The Issue #18 replay matrix is intentionally limited to 5, 15, 30,
+  and 60 seconds for Microsoft, Soniox, and Speechmatics. The Speechmatics
+  lane uses the real Batch-v2 adapter and JSON-v2 parser, but replaces HTTP
+  with a one-shot local transport that fully validates the captured WAV and
+  cannot issue a billable request. Its provenance records whether the frozen
+  `SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV` candidate was enabled; OFF records
+  `python_reserved_wav_header_v1`, while ON records `wav_pcm16_file_v1`.
+  The same expected-versus-actual contract distinguishes Azure's
+  `post_stop_ffmpeg_mp3_v1` and `capture_time_ffmpeg_mp3_v1`. Azure replay
+  prepares its deterministic ffmpeg decode references before the activation
+  clock starts, blanks the cloud key, and requires the real upload MP3 to decode
+  exactly to the authorized fixture plus a bounded zero tail under the frozen
+  URL/API/model/locale request contract. A safe production
+  fallback remains available, but invalidates that candidate benchmark sample
+  instead of being reported as a capture-time win. Scoring keeps every
+  provider-duration pair separate and evaluates both canonical KPIs; legacy
+  provider-final tails are diagnostics only. Promotion fails closed for a
+  missing/failed series or any canonical regression against its corresponding
+  baseline. Non-speech overhead is numeric only for a fixture whose bytes,
+  format, duration, and measurement phase were all attested.
+- The final 2026-07-21 installed A/B used five samples for every provider and
+  duration: 60 baseline samples with both candidates disabled, followed by 60
+  candidate samples with Azure capture-time MP3 and Speechmatics capture-time
+  WAV enabled. Both runs returned `PROVIDER_REPLAY_MEASURED`; all 120 samples,
+  all 24 series cleanups, both pre/post runtime attestations, and every exact
+  visible-text hash/length check passed. The table reports candidate minus
+  matching baseline for the two canonical KPIs; negative values are faster.
+  With `n=5`, p95 is the series maximum.
+
+  | Provider | Audio | activation to visible p50 | activation to visible p95 | Stop to visible p50 | Stop to visible p95 |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | Microsoft | 5 s | +240.8 ms (+4.0%) | -285.0 ms (-3.9%) | -63.4 ms (-15.2%) | +256.5 ms (+38.8%) |
+  | Microsoft | 15 s | -725.5 ms (-4.3%) | -782.4 ms (-4.5%) | -392.1 ms (-57.6%) | -338.2 ms (-33.4%) |
+  | Microsoft | 30 s | -61.3 ms (-0.2%) | +814.9 ms (+2.5%) | -103.9 ms (-19.6%) | +115.1 ms (+17.8%) |
+  | Microsoft | 60 s | -2,617.9 ms (-3.9%) | -3,180.6 ms (-4.7%) | -89.7 ms (-12.2%) | -293.4 ms (-21.3%) |
+  | Soniox control | 5 s | +191.5 ms (+3.3%) | +483.3 ms (+7.7%) | -79.4 ms (-21.4%) | +324.0 ms (+54.1%) |
+  | Soniox control | 15 s | -167.6 ms (-1.0%) | +179.7 ms (+1.0%) | -205.6 ms (-39.2%) | +125.4 ms (+22.4%) |
+  | Soniox control | 30 s | -50.4 ms (-0.2%) | +1,136.5 ms (+3.5%) | -18.5 ms (-7.8%) | -112.1 ms (-23.1%) |
+  | Soniox control | 60 s | -961.6 ms (-1.5%) | -1,175.4 ms (-1.8%) | -81.6 ms (-30.4%) | -298.3 ms (-53.8%) |
+  | Speechmatics | 5 s | -539.9 ms (-8.6%) | -472.5 ms (-7.0%) | -147.8 ms (-38.1%) | -276.2 ms (-33.0%) |
+  | Speechmatics | 15 s | -92.0 ms (-0.6%) | -102.7 ms (-0.6%) | +139.1 ms (+106.0%) | +93.4 ms (+23.3%) |
+  | Speechmatics | 30 s | -528.1 ms (-1.6%) | -2,564.5 ms (-7.2%) | +25.6 ms (+11.7%) | -30.0 ms (-4.5%) |
+  | Speechmatics | 60 s | +1,717.8 ms (+2.7%) | +3,150.4 ms (+4.7%) | +44.2 ms (+16.4%) | -28.6 ms (-6.4%) |
+
+  Azure's causal Stop-to-provider p50 improved in every duration by 19.5% to
+  70.8%, and Stop-to-visible p50 improved by 12.2% to 57.6%. It nevertheless
+  regressed canonical activation p50 at 5 seconds, activation p95 at 30 seconds,
+  and Stop-to-visible p95 at 5 and 30 seconds. Speechmatics regressed
+  Stop-to-visible p50 at 15, 30, and 60 seconds and activation p50/p95 at 60
+  seconds. Soniox also moved materially between the sequential runs, confirming
+  that the visible injection tail contains run noise. Under the no-regression
+  rule neither candidate is promoted: both
+  `SCRIBER_AZURE_MAI_CAPTURE_TIME_MP3` and
+  `SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV` remain default-off, explicit opt-in
+  switches. These network-free installed replays prove the product path and
+  local preparation behavior, not a live-cloud speed gain.
+- A bounded 2026-07-20 Speechmatics validation used only synthetic German
+  16-kHz mono PCM fixtures of exactly 5, 15, 30, and 60 seconds. The local
+  stop-tail comparison interleaved 30 old-copy and 30 in-place-WAV samples per
+  duration. The current SaaS check then made one explicit batch request and one
+  real-time PCM session per duration. Every live result was non-empty and no
+  provider error was observed:
+
+  | Audio | whole-spool WAV copy p50 | in-place header p50 | p50 saved | batch round trip | realtime Stop to provider final |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 5 s | 0.0161 ms | 0.0025 ms | 0.0136 ms (84.47%) | 2,877.402 ms | 437.666 ms |
+  | 15 s | 0.0332 ms | 0.0029 ms | 0.0303 ms (91.27%) | 1,665.934 ms | 449.804 ms |
+  | 30 s | 0.5216 ms | 0.0079 ms | 0.5137 ms (98.49%) | 3,508.778 ms | 493.943 ms |
+  | 60 s | 1.2384 ms | 0.0077 ms | 1.2307 ms (99.38%) | 4,015.648 ms | 374.305 ms |
+
+  The percentage reduction applies only to WAV container finalization. Its
+  absolute saving is at most 1.231 ms in this matrix, while the provider tail
+  is hundreds or thousands of milliseconds. The live values are single bounded
+  route-validation observations, not matched installed-app A/B distributions;
+  they therefore do not establish an activation-to-visible-text speedup.
 - Audio-level UI work is throttled to about 60 Hz.
 - Live waveform uses Canvas/RAF instead of per-frame React state.
 - The recording overlay is prepared hidden so the first hotkey has immediate
@@ -180,6 +273,12 @@ Live mic:
 
 Backend/WebSocket:
 
+- Production direct-provider pipelines share an event-loop-owned aiohttp
+  connector. Sequential requests can reuse DNS and TCP/TLS state with bounded
+  pool/timeout settings and no background keepalive traffic. The corresponding
+  trace retains hashed origins and timing/counter metadata only. When a request
+  may already have crossed the remote acceptance boundary, or a returned result
+  cannot be persisted durably, automatic job replay is suppressed.
 - WebSocket broadcast skips JSON serialization when no clients are connected.
 - Audio-level callback avoids scheduling frontend work when there are no clients
   and no overlay consumer.
@@ -244,6 +343,16 @@ Data and frontend:
 
 I/O:
 
+- Direct batch audio is selected by exact provider/route/model capability and
+  exact probed container+codec. Accepted originals pass through unchanged;
+  otherwise preparation uses a supported ffmpeg WAV/MP3/FLAC/Ogg-Opus/WebM-Opus
+  control path, enforces the effective upload limit, and removes the temporary
+  derivative after provider ownership ends. Job execution routes persist the
+  exact capability and preparation decision before upload.
+- Caption-first YouTube jobs keep the billable STT path as a planned fallback,
+  then persist the caption or audio route that was actually selected and
+  executed. Performance/cost evidence must use the executed route, not the
+  unused fallback.
 - Multipart upload writes use chunked helpers and offload file writes where
   practical.
 - Export rendering and cleanup paths are moved off async request hot paths where
@@ -904,7 +1013,9 @@ Current packaging choices:
 - H16 recursively rewrites the retained PyInstaller code cache to remove only
   compiler-owned module, class, function, and method docstrings. It deliberately
   keeps `Analysis(optimize=0)`, `__debug__`, and executable `assert` statements;
-  the frozen probe verifies all three properties. The H16 PYZ filter also keeps
+  pycparser/PLY grammar docstrings are explicitly exempt because they are
+  executable parser data. The frozen probe verifies all three properties and
+  imports pycparser after pruning. The H16 PYZ filter also keeps
   only Deepgram's required `listen.v1` graph and removes unused Deepgram
   surfaces, OpenAI SDK Realtime/Conversations/Webhooks implementation modules,
   and synchronous grpc channel/server/interceptor helpers. Supported OpenAI,
@@ -2150,6 +2261,14 @@ Missing prerequisites:
      payload length, sequence, timestamp, frame count, channels, and flags.
    - Tests keep a shared documented header fixture in sync across Rust and
      Python and validate payload length and sequence ordering.
+   - Implemented: protocol version 2 reserves
+     `AUDIO_FRAME_FLAG_END_OF_STREAM` for a zero-payload, zero-frame control
+     record. Successful synthetic and WASAPI capture drains remaining PCM,
+     writes exactly one ordered EOS record, finalizes any optional preparation
+     tail, and only then completes stop. Python keeps audio acceptance open
+     through the matching record, drains downstream audio before provider
+     shutdown, and reports a missing EOS as a mid-session failure. QPC markers
+     retain last-audio, capture-stop, and encoder-tail boundaries.
    - Python reads the binary frame pipe, validates sequence/order/channel count,
      forwards PCM frames through the existing callback path, and redacts the raw
      frame-pipe name in diagnostics.
@@ -2197,6 +2316,35 @@ Missing prerequisites:
      that resource.
    - Implemented: selected endpoint capture by redacted native endpoint hash,
      plus endpoint-selection diagnostics in sidecar responses.
+   - Implemented as a safe preparation contract: `captureStart` accepts an
+     allowlisted, schema-versioned `audioPreparation` plan.
+      `wav_pcm16_virtual` is capture-lab-only and advertises
+      `productionReady=false` and `artifactExposed=false`; a bounded worker
+      retains shared segments and generates a RIFF header without a second
+      whole-recording PCM assembly. Capture writes the authoritative frame pipe
+      before nonblocking worker submission, so queue overflow invalidates only
+      the candidate. Stop diagnostics expose bounded counts/state.
+   - Implemented: `wav_pcm16_file_v1` writes a provider-consumable WAV in the
+     same bounded worker while capture is active. Tauri, not the backend, creates
+     the random lease path and validates the final RIFF/data lengths before
+     transferring ownership to Python. The exact `speechmatics_async` WAV route
+     consumes the leased file directly and releases it through private shell
+     IPC after upload; failed validation uses the existing PCM-spool fallback,
+     and activation requires the frozen `batch_v2`/`enhanced` capability ID,
+     current revision, verified WAV selection, and default endpoint fingerprint.
+     Custom endpoints and stale/partial snapshots do not arm the Rust writer.
+     Shell shutdown cleans abandoned leases. The matched installed A/B above
+     exercised this exact artifact successfully, but its mixed canonical
+     distributions failed the no-regression rule, so it remains default-off.
+   - The Cargo feature names for flacenc, rezin-flac, ruopus, libopusenc,
+     mp3lame, and shine remain dependency-free experimental gates. The bounded
+     local codec labs found stable versus Nightly flacenc and LTO results mixed,
+     while FFmpeg FLAC fast decisively beat rezin-flac. In-process LAME beat the
+     FFmpeg MP3 control by 15.68% to 41.72% across all eight local series, but it
+     is not promoted without installed/provider WER/CER evidence and a resolved
+     LGPL static-link design. Ruopus produced valid output but was 4.6x to 20.8x
+     slower than libopus; Shine failed closed. None is a production dependency
+     or provider-format default.
    - Still open: more physical favorite/dock/USB smokes and long
      physical-device evidence for edge cases.
 7. Tauri audio sidecar client:

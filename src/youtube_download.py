@@ -15,6 +15,8 @@ from uuid import uuid4
 
 from loguru import logger
 
+from src.audio_prepare import AudioFormatProbeError, probe_audio_input_file
+from src.core.provider_audio_formats import AudioInputFormat
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_video_stream_args, webm_opus_transcode_args
 from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
@@ -625,13 +627,34 @@ async def _extract_audio_track(source_path: Path) -> Path:
     return target_path
 
 
+async def _is_exact_webm_opus(path: Path) -> bool:
+    """Attest both the WebM container and Opus codec off the event loop."""
+
+    try:
+        probe = await asyncio.to_thread(probe_audio_input_file, path)
+    except (AudioFormatProbeError, RuntimeError) as exc:
+        raise YouTubeDownloadError(
+            "Downloaded YouTube audio has an unverified container/codec pair."
+        ) from exc
+    return probe.audio_format == AudioInputFormat.WEBM_OPUS
+
+
 async def _ensure_audio_only_file(path: Path) -> Path:
-    """Guarantee that returned file is audio-only WebM."""
+    """Guarantee that returned file is audio-only, exact WebM/Opus."""
     suffix = path.suffix.lower()
     if suffix == ".webm":
         if not await _has_video_stream(path):
-            return path
-        logger.info(f"Downloaded WEBM contains video stream; extracting audio only: {path.name}")
+            if await _is_exact_webm_opus(path):
+                return path
+            logger.info(
+                "Downloaded WEBM audio is not Opus; normalizing the exact codec: {}",
+                path.name,
+            )
+        else:
+            logger.info(
+                "Downloaded WEBM contains video stream; extracting audio only: {}",
+                path.name,
+            )
     else:
         logger.info(f"Normalizing downloaded media to audio-only WebM: {path.name}")
 
@@ -640,6 +663,11 @@ async def _ensure_audio_only_file(path: Path) -> Path:
         audio_path.unlink(missing_ok=True)
         raise YouTubeDownloadError(
             "Normalized YouTube audio unexpectedly still contains a video stream."
+        )
+    if not await _is_exact_webm_opus(audio_path):
+        audio_path.unlink(missing_ok=True)
+        raise YouTubeDownloadError(
+            "Normalized YouTube audio is not the required WebM/Opus representation."
         )
     try:
         if path != audio_path:

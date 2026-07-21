@@ -28,12 +28,14 @@ let backendSessionTokenRequired =
 let frontendReadyReportKey = "";
 let backendAccessLoadInFlight: Promise<string> | null = null;
 let backendAccessRetryAfterMs = 0;
+let benchmarkActivationEnabled = false;
 let desktopAutostartLoadInFlight: Promise<AutostartStatus> | null = null;
 export const BACKEND_SESSION_TOKEN_REQUIRED_EVENT = "scriber-backend-session-token-required-change";
 
 interface BackendAccess {
   baseUrl: string;
   sessionToken: string;
+  benchmarkActivationEnabled?: boolean;
 }
 
 export interface TrayStatus {
@@ -143,6 +145,10 @@ export function loadBackendBaseUrlFromTauri(): Promise<string> {
   return request;
 }
 
+export function isBenchmarkActivationEnabled(): boolean {
+  return benchmarkActivationEnabled;
+}
+
 async function loadBackendAccessFromTauri(): Promise<string> {
   let loaded = false;
   try {
@@ -154,6 +160,7 @@ async function loadBackendAccessFromTauri(): Promise<string> {
     );
     setBackendBaseUrl(access.baseUrl);
     setBackendSessionToken(access.sessionToken);
+    benchmarkActivationEnabled = access.benchmarkActivationEnabled === true;
     loaded = true;
   } catch (error) {
     try {

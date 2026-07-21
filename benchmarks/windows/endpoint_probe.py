@@ -21,7 +21,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.perf.evaluator.local_wux import compute_local_wux, load_baseline_metrics
+from scripts.perf.evaluator.local_wux import (
+    PROVIDER_REPLAY_SCENARIO_WEIGHTS,
+    SCENARIO_METRICS,
+    canonical_provider_replay_evidence_valid,
+    canonical_provider_replay_promotion_eligible,
+    compute_local_wux,
+    load_baseline_metrics,
+)
 
 OVERLAY_PROVIDER_CONFIGS = [
     {
@@ -93,12 +100,14 @@ APP_UX_HARNESS_FILES = (
 )
 
 SAMPLE_PLANS = {
-    # FastLocal stays below the five-minute contract while still producing a
-    # distribution rather than labeling a single observation as a percentile.
+    # FastLocal keeps a smaller sample count while exercising the same bounded
+    # duration buckets as promotion runs; one observation is never labelled a
+    # percentile distribution.
     "FastLocal": {
         "overlayCold": 2,
         "overlayWarm": 4,
         "providerReplay": 5,
+        "providerReplayDurationsSeconds": (5, 15, 30, 60),
         "appUxPerScenario": 1,
     },
     # GOAL.md section 14.3 minimum distribution sizes.
@@ -106,12 +115,27 @@ SAMPLE_PLANS = {
         "overlayCold": 15,
         "overlayWarm": 30,
         "providerReplay": 30,
+        "providerReplayDurationsSeconds": (5, 15, 30, 60),
         "appUxPerScenario": 20,
+    },
+    # Bounded Issue 18 measurement lane. This intentionally excludes every
+    # overlay and App UX probe and is not a general Local-WUX promotion gate.
+    "ProviderReplay": {
+        "providerReplay": 5,
+        "providerReplayDurationsSeconds": (5, 15, 30, 60),
     },
 }
 
 PROVIDER_REPLAY_ROUTE = "/api/runtime/benchmark/provider-replay"
 PROVIDER_REPLAY_CONTRACT_VERSION = 1
+PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_RATE = 48_000
+PROVIDER_REPLAY_AUDIO_FIXTURE_CHANNELS = 1
+PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_WIDTH_BYTES = 2
+PROVIDER_REPLAY_AUDIO_FIXTURE_DURATION_MS = 350.0
+PROVIDER_REPLAY_REQUIRED_DURATION_SECONDS = (5, 15, 30, 60)
+PROVIDER_REPLAY_ACTIVATION_KINDS = ("hotkey", "button")
+PROVIDER_REPLAY_VISIBLE_TEXT_SEPARATOR = " "
+SPEECHMATICS_BATCH_DEFAULT_BASE_URL = "https://asr.api.speechmatics.com/v2"
 PROVIDER_REPLAY_SCENARIOS = (
     {
         "provider": "microsoft",
@@ -125,8 +149,19 @@ PROVIDER_REPLAY_SCENARIOS = (
         "startMarker": "last_final_token_received",
         "metricPrefix": "soniox_local_tail",
     },
+    {
+        "provider": "speechmatics",
+        "scenario": "speechmatics_local",
+        "startMarker": "provider_response_complete",
+        "metricPrefix": "speechmatics_local_tail",
+    },
 )
 PROVIDER_REPLAY_MARKER_SOURCES = {
+    "activation_received": "tauri_activation_boundary",
+    "hotkey_received": "tauri_global_shortcut",
+    "button_received": "tauri_ui_command",
+    "recording_state_visible": "installed_backend_state_event",
+    "stop_requested": "installed_backend_stop_event",
     "provider_response_complete": "installed_backend_provider_event",
     "last_final_token_received": "installed_backend_provider_event",
     "recording_state_transcribing_emitted": "installed_backend_state_event",
@@ -139,6 +174,18 @@ PROVIDER_REPLAY_MARKER_SOURCES = {
 
 def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def provider_replay_expected_visible_text(fixture_text: str) -> str:
+    """Return the exact text produced by the buffered live-mic injector.
+
+    The provider fixture remains the raw transcript contract. Scriber strips
+    each buffered final segment, joins the segments, and appends one ASCII
+    space so consecutive dictations remain separated. The external observer
+    must attest that exact visible result without trimming or normalization.
+    """
+
+    return fixture_text.strip() + PROVIDER_REPLAY_VISIBLE_TEXT_SEPARATOR
 
 
 def qpc_frequency() -> int:
@@ -180,6 +227,259 @@ def percentile_ms(values: list[Any], pct: float = 95.0) -> float | str:
         return "unknown"
     index = max(0, min(len(finite) - 1, math.ceil((pct / 100.0) * len(finite)) - 1))
     return round(finite[index], 3)
+
+
+def summarize_stage_zero_distribution(
+    values: list[Any],
+    *,
+    attempted: int,
+) -> dict[str, float | int | str]:
+    """Return the Issue #18 distribution without inventing failed samples."""
+
+    finite = [
+        float(value)
+        for value in values
+        if not isinstance(value, bool)
+        and finite_number(value)
+        and float(value) >= 0
+    ]
+    count = len(finite)
+    failure_count = max(0, int(attempted) - count)
+    if not finite:
+        return {
+            "count": 0,
+            "p50Ms": "unknown",
+            "p90Ms": "unknown",
+            "p95Ms": "unknown",
+            "maxMs": "unknown",
+            "varianceMs2": "unknown",
+            "failureRate": round(failure_count / max(1, int(attempted)), 6),
+        }
+    mean = sum(finite) / count
+    variance = sum((value - mean) ** 2 for value in finite) / count
+    return {
+        "count": count,
+        "p50Ms": percentile_ms(finite, 50.0),
+        "p90Ms": percentile_ms(finite, 90.0),
+        "p95Ms": percentile_ms(finite, 95.0),
+        "maxMs": round(max(finite), 3),
+        "varianceMs2": round(variance, 6),
+        "failureRate": round(failure_count / max(1, int(attempted)), 6),
+    }
+
+
+def write_provider_replay_audio_fixture(
+    path: Path,
+    *,
+    duration_ms: float = PROVIDER_REPLAY_AUDIO_FIXTURE_DURATION_MS,
+) -> dict[str, Any]:
+    """Write one deterministic 48 kHz mono signed-16 PCM benchmark fixture."""
+
+    duration_ms = float(duration_ms)
+    if (
+        not math.isfinite(duration_ms)
+        or duration_ms < 100.0
+        or duration_ms > 600_000.0
+    ):
+        raise ValueError("provider replay fixture duration is out of bounds")
+    frame_count = int(
+        PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_RATE
+        * duration_ms
+        / 1000.0
+    )
+    payload = bytearray()
+    for index in range(frame_count):
+        # Fixed amplitude/frequency keeps the fixture audible without clipping.
+        sample = int(
+            12_000
+            * math.sin(
+                (2.0 * math.pi * 440.0 * index)
+                / PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_RATE
+            )
+        )
+        payload.extend(sample.to_bytes(2, "little", signed=True))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return {
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "durationMs": duration_ms,
+        "sampleRate": PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_RATE,
+        "channels": PROVIDER_REPLAY_AUDIO_FIXTURE_CHANNELS,
+        "sampleWidthBytes": PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_WIDTH_BYTES,
+        "frameCount": frame_count,
+        "byteLength": len(payload),
+    }
+
+
+def attest_provider_replay_audio_fixture(
+    path: Path,
+    fixture: dict[str, Any],
+    *,
+    expected_duration_ms: float,
+) -> bool:
+    """Bind non-speech subtraction to exact generated PCM fixture bytes."""
+
+    if (
+        not path.is_file()
+        or isinstance(expected_duration_ms, bool)
+        or not finite_number(expected_duration_ms)
+    ):
+        return False
+    duration = float(expected_duration_ms)
+    if duration <= 0:
+        return False
+    expected_frames = int(PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_RATE * duration / 1000.0)
+    expected_bytes = (
+        expected_frames
+        * PROVIDER_REPLAY_AUDIO_FIXTURE_CHANNELS
+        * PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_WIDTH_BYTES
+    )
+    expected_sha256 = fixture.get("sha256")
+    return bool(
+        _is_sha256(expected_sha256)
+        and fixture.get("durationMs") == duration
+        and fixture.get("sampleRate") == PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_RATE
+        and fixture.get("channels") == PROVIDER_REPLAY_AUDIO_FIXTURE_CHANNELS
+        and fixture.get("sampleWidthBytes")
+        == PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_WIDTH_BYTES
+        and fixture.get("frameCount") == expected_frames
+        and fixture.get("byteLength") == expected_bytes
+        and path.stat().st_size == expected_bytes
+        and sha256_file(path) == expected_sha256
+    )
+
+
+def validate_provider_replay_capture_attestation(
+    payload: Any,
+    *,
+    fixture: dict[str, Any],
+    run_id: str,
+    sample_id: str,
+    session_id: str,
+    process_generation_fingerprint: str,
+) -> tuple[bool, list[str]]:
+    """Validate proof about PCM actually consumed from the Rust frame pipe."""
+
+    if not isinstance(payload, dict):
+        return False, ["capture_attestation_missing"]
+
+    reasons: list[str] = []
+    exact_fields = {
+        "contractVersion": 1,
+        "source": "rust_audio_frame_pipe_reader",
+        "runId": run_id,
+        "sampleId": sample_id,
+        "sessionId": session_id,
+        "processGenerationFingerprint": process_generation_fingerprint,
+        "fixturePcmSha256": fixture.get("sha256"),
+        "sampleRate": fixture.get("sampleRate"),
+        "channels": fixture.get("channels"),
+        "sampleWidthBytes": fixture.get("sampleWidthBytes"),
+        "fixturePayloadBytesRead": fixture.get("byteLength"),
+        "fixtureAudioFramesRead": fixture.get("frameCount"),
+        "exactFixtureEndAccepted": True,
+        "eosFramesRead": 1,
+        "eosObserved": True,
+        "sidecarEosWritten": True,
+        "droppedFrameCount": 0,
+        "sequenceErrorCount": 0,
+        "protocolErrorCount": 0,
+        "prebufferAfterLiveCount": 0,
+        "readerEndReason": "endOfStream",
+        "tailKind": "zero_pcm_s16le",
+        "fixturePrefixMatched": True,
+        "tailAllZero": True,
+    }
+    for field, expected in exact_fields.items():
+        actual = payload.get(field)
+        if isinstance(expected, bool):
+            valid = isinstance(actual, bool) and actual is expected
+        elif isinstance(expected, int):
+            valid = (
+                isinstance(actual, int)
+                and not isinstance(actual, bool)
+                and actual == expected
+            )
+        else:
+            valid = actual == expected
+        if not valid:
+            reasons.append(f"capture_attestation_{field}_mismatch")
+
+    captured_sha256 = payload.get("capturedPcmSha256")
+    if not _is_sha256(captured_sha256):
+        reasons.append("capture_attestation_pcm_sha256_invalid")
+
+    audio_frames = payload.get("audioFramesRead")
+    payload_bytes = payload.get("payloadBytesRead")
+    zero_tail_frames = payload.get("trailingZeroFrames")
+    expected_zero_tail_frames = payload.get("expectedTrailingZeroFrames")
+    block_size_frames = payload.get("captureBlockSizeFrames")
+    fixture_frames = fixture.get("frameCount")
+    fixture_bytes = fixture.get("byteLength")
+    sample_rate = fixture.get("sampleRate")
+    channels = fixture.get("channels")
+    sample_width = fixture.get("sampleWidthBytes")
+    numeric_fields = (
+        audio_frames,
+        payload_bytes,
+        zero_tail_frames,
+        expected_zero_tail_frames,
+        block_size_frames,
+        fixture_frames,
+        fixture_bytes,
+        sample_rate,
+        channels,
+        sample_width,
+    )
+    if any(
+        isinstance(value, bool) or not isinstance(value, int)
+        for value in numeric_fields
+    ):
+        reasons.append("capture_attestation_frame_shape_invalid")
+    else:
+        bytes_per_frame = int(channels) * int(sample_width)
+        shape_ok = bool(
+            int(fixture_frames) > 0
+            and int(fixture_bytes) == int(fixture_frames) * bytes_per_frame
+            and int(block_size_frames) > 0
+            and int(block_size_frames) <= int(sample_rate)
+            and int(expected_zero_tail_frames)
+            == (-int(fixture_frames)) % int(block_size_frames)
+            and int(zero_tail_frames) == int(expected_zero_tail_frames)
+            and int(audio_frames)
+            == int(fixture_frames) + int(zero_tail_frames)
+            and int(payload_bytes) == int(audio_frames) * bytes_per_frame
+        )
+        if not shape_ok:
+            reasons.append("capture_attestation_frame_shape_mismatch")
+        else:
+            fixture_path_raw = fixture.get("path")
+            fixture_path = (
+                Path(fixture_path_raw)
+                if isinstance(fixture_path_raw, str) and fixture_path_raw
+                else None
+            )
+            if (
+                fixture_path is None
+                or not fixture_path.is_file()
+                or fixture_path.stat().st_size != int(fixture_bytes)
+                or sha256_file(fixture_path) != fixture.get("sha256")
+            ):
+                reasons.append("capture_attestation_fixture_file_invalid")
+            else:
+                digest = hashlib.sha256()
+                with fixture_path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                zero_bytes_remaining = int(zero_tail_frames) * bytes_per_frame
+                zero_chunk = bytes(min(64 * 1024, max(1, zero_bytes_remaining)))
+                while zero_bytes_remaining > 0:
+                    chunk_size = min(len(zero_chunk), zero_bytes_remaining)
+                    digest.update(zero_chunk[:chunk_size])
+                    zero_bytes_remaining -= chunk_size
+                if digest.hexdigest() != captured_sha256:
+                    reasons.append("capture_attestation_captured_pcm_sha256_mismatch")
+    return not reasons, reasons
 
 
 def readiness_value(user_ready: dict[str, Any], key: str) -> float | str:
@@ -266,6 +566,10 @@ def import_dotenv_into_process(env_path: Path) -> list[str]:
         value = value.strip()
         if len(value) >= 2 and value[0] in {"'", '"'} and value[-1] == value[0]:
             value = value[1:-1]
+        # Command-line suite overrides are applied to the parent process before
+        # this probe starts. They remain authoritative over repository .env.
+        if name in os.environ:
+            continue
         os.environ[name] = value
         imported.append(name)
     return sorted(set(imported))
@@ -357,10 +661,17 @@ def validate_only_payload() -> dict[str, Any]:
             "overlay_warm_p95_ms": "unknown",
             "overlay_cold_p50_ms": "unknown",
             "overlay_cold_p95_ms": "unknown",
-            "microsoft_local_tail_p50_ms": "unknown",
-            "microsoft_local_tail_p95_ms": "unknown",
-            "soniox_local_tail_p50_ms": "unknown",
-            "soniox_local_tail_p95_ms": "unknown",
+            **{
+                f"{scenario}_{suffix}": "unknown"
+                for scenario in PROVIDER_REPLAY_SCENARIO_WEIGHTS
+                for suffix in (
+                    "p50_ms",
+                    "p95_ms",
+                    "failure_rate",
+                    "sample_count",
+                    "capture_attested",
+                )
+            },
             "app_ux_p50_ms": "unknown",
             "app_ux_p95_ms": "unknown",
             "hotkey_mic_ready_p95_ms": "unknown",
@@ -481,6 +792,64 @@ def send_global_hotkey_chord() -> int:
         user32.keybd_event(key, 0, key_up, 0)
         time.sleep(0.01)
     return started
+
+
+def trigger_provider_replay_activation(
+    *,
+    activation_kind: str,
+    repo_root: Path,
+    app_pid: int,
+    app_creation_time_100ns: int,
+    iteration_dir: Path,
+) -> dict[str, Any]:
+    """Trigger the real installed activation lane and retain bounded evidence."""
+
+    if activation_kind == "hotkey":
+        return {
+            "schemaVersion": 1,
+            "ok": True,
+            "endpoint": "user_input_received",
+            "source": "windows_send_input",
+            "qpcTicks": send_global_hotkey_chord(),
+            "qpcFrequency": qpc_frequency(),
+        }
+    if activation_kind != "button":
+        raise ValueError("provider replay activation kind is invalid")
+
+    action_path = iteration_dir / "button-activation.json"
+    result = run_capture(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-Sta",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(repo_root / "benchmarks" / "windows" / "app_action.ps1"),
+            "-ProcessId",
+            str(app_pid),
+            "-ProcessCreationTime100ns",
+            str(app_creation_time_100ns),
+            "-ControlAutomationId",
+            "live-mic-toggle-button",
+            "-ControlType",
+            "Button",
+            "-OutputPath",
+            str(action_path),
+            "-TimeoutSec",
+            "10",
+        ],
+        cwd=repo_root,
+        timeout=20,
+    )
+    action = load_json(action_path)
+    # The validator needs process-generation and QPC evidence, never a raw HWND.
+    action.pop("nativeWindowHandle", None)
+    action["expectedProcessId"] = app_pid
+    action["processExitCode"] = result.returncode
+    if result.returncode != 0:
+        action["ok"] = False
+    return action
 
 
 def hot_path_readiness(
@@ -623,6 +992,11 @@ def _process_creation_time_100ns(process_id: int) -> int | None:
         ctypes.POINTER(wintypes.FILETIME),
     ]
     kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.GetExitCodeProcess.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
     handle = kernel32.OpenProcess(process_query_limited_information, False, process_id)
@@ -640,6 +1014,15 @@ def _process_creation_time_100ns(process_id: int) -> int | None:
             ctypes.byref(kernel_time),
             ctypes.byref(user_time),
         ):
+            return None
+        exit_code = wintypes.DWORD()
+        if (
+            not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            or int(exit_code.value) != 259  # STILL_ACTIVE
+        ):
+            # A terminated process object can remain queryable while another
+            # process still owns a handle to it. Creation time alone therefore
+            # cannot prove that the PID still names a running process.
             return None
         return (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
     finally:
@@ -734,8 +1117,9 @@ def process_generation_snapshot(
     """Attest the exact app/backend/WebView process generations.
 
     PID alone is insufficient because Windows may reuse it. Creation times and
-    the complete descendant WebView2 identity set are therefore part of the
-    immutable generation fingerprint.
+    the complete descendant WebView2 identity set are therefore part of this
+    point-in-time fingerprint. Generation comparisons retain every baseline
+    identity while allowing later lazy WebView2 descendants.
     """
 
     inventory = _windows_process_inventory()
@@ -794,6 +1178,7 @@ def process_generation_snapshot(
     return {
         "ok": not reasons,
         "reasons": reasons,
+        "generationComparisonContract": "baseline-descendants-v1",
         "fingerprint": fingerprint,
         "app": app,
         "backend": backend,
@@ -824,11 +1209,129 @@ def process_generation_matches(
     baseline: dict[str, Any],
     observed: dict[str, Any],
 ) -> bool:
+    """Compare one runtime generation without treating heartbeats as restarts.
+
+    ``frontendReadyReceivedAt`` is a heartbeat receipt time, so it may advance
+    while the same WebView generation remains healthy. WebView2 may also start
+    additional utility descendants lazily. The authoritative invariant is that
+    the app and backend identities remain exact and every baseline WebView2
+    identity is still present. Creation time makes a reused PID a replacement,
+    which fails the comparison.
+
+    Opaque fingerprint-only fixtures predate the structured comparison
+    contract and retain their exact-match behavior. Runtime snapshots emitted
+    here always carry the explicit contract marker and use the strict path.
+    """
+
+    contract = "baseline-descendants-v1"
+    required_fields = {
+        "app",
+        "backend",
+        "webViewProcesses",
+        "backendStartedAt",
+        "frontendReadyReceivedAt",
+    }
+    structured = bool(
+        baseline.get("generationComparisonContract") == contract
+        or observed.get("generationComparisonContract") == contract
+        or (
+            required_fields.issubset(baseline)
+            and required_fields.issubset(observed)
+        )
+    )
+    if not structured:
+        return bool(
+            baseline.get("ok")
+            and observed.get("ok")
+            and baseline.get("fingerprint")
+            and baseline.get("fingerprint") == observed.get("fingerprint")
+        )
+
+    def canonical_process_identity(value: Any) -> tuple[int, int, str, int] | None:
+        if not isinstance(value, dict):
+            return None
+        pid = value.get("pid")
+        parent_pid = value.get("parentPid")
+        name = value.get("name")
+        creation_time = value.get("creationTime100ns")
+        if (
+            not isinstance(pid, int)
+            or isinstance(pid, bool)
+            or pid <= 0
+            or not isinstance(parent_pid, int)
+            or isinstance(parent_pid, bool)
+            or parent_pid < 0
+            or not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(creation_time, int)
+            or isinstance(creation_time, bool)
+            or creation_time <= 0
+        ):
+            return None
+        return pid, parent_pid, name.strip().casefold(), creation_time
+
+    def structured_identity(
+        snapshot: dict[str, Any],
+    ) -> tuple[
+        tuple[int, int, str, int],
+        tuple[int, int, str, int],
+        frozenset[tuple[int, int, str, int]],
+        str,
+    ] | None:
+        if snapshot.get("ok") is not True:
+            return None
+        if snapshot.get("generationComparisonContract") not in (None, contract):
+            return None
+        if not required_fields.issubset(snapshot):
+            return None
+        fingerprint = snapshot.get("fingerprint")
+        if (
+            not isinstance(fingerprint, str)
+            or fingerprint != process_generation_fingerprint(snapshot)
+        ):
+            return None
+        app = canonical_process_identity(snapshot.get("app"))
+        backend = canonical_process_identity(snapshot.get("backend"))
+        webview_values = snapshot.get("webViewProcesses")
+        if app is None or backend is None or not isinstance(webview_values, list):
+            return None
+        if backend[1] != app[0]:
+            return None
+        webviews: list[tuple[int, int, str, int]] = []
+        for value in webview_values:
+            identity = canonical_process_identity(value)
+            if identity is None or identity[2] != "msedgewebview2.exe":
+                return None
+            webviews.append(identity)
+        webview_set = frozenset(webviews)
+        if not webview_set or len(webview_set) != len(webviews):
+            return None
+        backend_started_at = snapshot.get("backendStartedAt")
+        frontend_ready_received_at = snapshot.get("frontendReadyReceivedAt")
+        if (
+            not isinstance(backend_started_at, str)
+            or not backend_started_at.strip()
+            or not isinstance(frontend_ready_received_at, str)
+            or not frontend_ready_received_at.strip()
+        ):
+            return None
+        return app, backend, webview_set, backend_started_at.strip()
+
+    baseline_identity = structured_identity(baseline)
+    observed_identity = structured_identity(observed)
+    if baseline_identity is None or observed_identity is None:
+        return False
+    baseline_app, baseline_backend, baseline_webviews, baseline_started_at = (
+        baseline_identity
+    )
+    observed_app, observed_backend, observed_webviews, observed_started_at = (
+        observed_identity
+    )
     return bool(
-        baseline.get("ok")
-        and observed.get("ok")
-        and baseline.get("fingerprint")
-        and baseline.get("fingerprint") == observed.get("fingerprint")
+        baseline_app == observed_app
+        and baseline_backend == observed_backend
+        and baseline_started_at == observed_started_at
+        and baseline_webviews.issubset(observed_webviews)
     )
 
 
@@ -1766,6 +2269,57 @@ def _provider_replay_target_attestation(
     }
 
 
+def ensure_provider_replay_target_focus_after_activation(
+    *,
+    activation_kind: str,
+    title: str,
+    receiver_pid: int,
+    expected_target_generation_sha256: str,
+) -> dict[str, Any]:
+    """Restore the guarded external target after a real UI button invoke.
+
+    UI Automation must invoke the actual Scriber button to produce the native
+    ``button_received`` marker. Windows consequently foregrounds the Scriber
+    WebView. The dictation still targets the pre-bound external receiver, so
+    return focus immediately after the activation boundary and include that
+    user-visible hop in the end-to-end timer. Hotkeys preserve foreground focus
+    and require no synthetic focus action.
+    """
+
+    normalized = str(activation_kind or "").strip().lower()
+    if normalized == "hotkey":
+        return {
+            "ok": True,
+            "required": False,
+            "method": "foreground_preserved_by_hotkey",
+        }
+    if normalized != "button":
+        return {
+            "ok": False,
+            "required": False,
+            "reason": "activation_kind_invalid",
+        }
+
+    focus = focus_receiver_window(title)
+    target = _provider_replay_target_attestation(
+        title=title,
+        receiver_pid=receiver_pid,
+    )
+    target_matches = bool(
+        target.get("ok")
+        and target.get("targetGenerationSha256")
+        == expected_target_generation_sha256
+    )
+    return {
+        "ok": bool(focus.get("ok") and target_matches),
+        "required": True,
+        "method": "foreground_receiver_restore_after_uia_invoke",
+        "focus": focus,
+        "target": target,
+        "targetGenerationMatches": target_matches,
+    }
+
+
 def wait_provider_replay_status(
     port: int,
     token: str,
@@ -1800,22 +2354,37 @@ def validate_provider_replay_sample(
     provider: str,
     run_id: str,
     start_marker: str,
+    activation_kind: str,
     prepared: dict[str, Any],
     armed: dict[str, Any],
     completed: dict[str, Any],
     observed: dict[str, Any],
     observer_ready: dict[str, Any],
     observer_exit_code: int | None,
+    activation_action: dict[str, Any],
     expected_process_generation_sha256: str,
     expected_target_generation_sha256: str,
+    expected_fixture_duration_ms: float | None = None,
+    expected_audio_fixture: dict[str, Any] | None = None,
+    expected_audio_preparation_implementation: str | None = None,
 ) -> dict[str, Any]:
     reasons: list[str] = []
     expected_run = _canonical_non_nil_uuid(run_id)
     sample_id = _canonical_non_nil_uuid(prepared.get("sampleId"))
-    session_id = _canonical_non_nil_uuid(armed.get("sessionId"))
+    session_id = _canonical_non_nil_uuid(completed.get("sessionId"))
     fixture_text = prepared.get("fixtureText")
     fixture_sha256 = str(prepared.get("fixtureTextSha256") or "")
     fixture_length = prepared.get("fixtureTextLength")
+    expected_visible_text = provider_replay_expected_visible_text(
+        fixture_text if isinstance(fixture_text, str) else ""
+    )
+    expected_visible_sha256 = sha256_text(expected_visible_text)
+    expected_visible_utf16_length = (
+        len(expected_visible_text.encode("utf-16-le")) // 2
+    )
+    actual_audio_preparation_implementation = completed.get(
+        "audioPreparationImplementationActual"
+    )
 
     if not expected_run:
         reasons.append("run_id_invalid")
@@ -1835,11 +2404,23 @@ def validate_provider_replay_sample(
     ):
         reasons.append("fixture_length_invalid")
 
+    normalized_activation = str(activation_kind or "").strip().lower()
+    if normalized_activation not in PROVIDER_REPLAY_ACTIVATION_KINDS:
+        reasons.append("activation_kind_invalid")
+    activation_marker_name = f"{normalized_activation}_received"
     phase_contracts = (
         ("prepared", prepared, "prepared"),
-        ("armed", armed, "armed"),
+        ("armed", armed, "activation_armed"),
         ("completed", completed, "completed"),
     )
+    fixture_duration_attested = expected_fixture_duration_ms is not None
+    if expected_fixture_duration_ms is not None and (
+        isinstance(expected_fixture_duration_ms, bool)
+        or not finite_number(expected_fixture_duration_ms)
+        or float(expected_fixture_duration_ms) <= 0
+    ):
+        reasons.append("fixture_duration_expectation_invalid")
+        fixture_duration_attested = False
     for phase, payload, state in phase_contracts:
         if payload.get("contractVersion") != PROVIDER_REPLAY_CONTRACT_VERSION:
             reasons.append(f"{phase}_contract_version_invalid")
@@ -1859,18 +2440,63 @@ def validate_provider_replay_sample(
             reasons.append(f"{phase}_fixture_length_mismatch")
         if payload.get("processGenerationFingerprint") != expected_process_generation_sha256:
             reasons.append(f"{phase}_process_generation_mismatch")
+        if expected_fixture_duration_ms is not None:
+            actual_duration = payload.get("authoritativeFixtureDurationMs")
+            if (
+                isinstance(actual_duration, bool)
+                or not finite_number(actual_duration)
+                or float(actual_duration) != float(expected_fixture_duration_ms)
+            ):
+                reasons.append(f"{phase}_fixture_duration_mismatch")
+                fixture_duration_attested = False
+        if expected_audio_preparation_implementation is not None and (
+            payload.get("audioPreparationImplementationExpected")
+            != expected_audio_preparation_implementation
+        ):
+            reasons.append(f"{phase}_audio_preparation_expected_mismatch")
+
+    if expected_audio_preparation_implementation is not None:
+        if prepared.get("audioPreparationImplementationActual") is not None:
+            reasons.append("prepared_audio_preparation_actual_must_be_null")
+        if armed.get("audioPreparationImplementationActual") is not None:
+            reasons.append("armed_audio_preparation_actual_must_be_null")
+        if (
+            actual_audio_preparation_implementation
+            != expected_audio_preparation_implementation
+        ):
+            reasons.append("completed_audio_preparation_actual_mismatch")
 
     if prepared.get("sessionId") is not None:
         reasons.append("prepared_session_must_be_null")
+    if armed.get("sessionId") is not None:
+        reasons.append("armed_session_must_be_null")
     if prepared.get("targetGenerationSha256") is not None:
         reasons.append("prepared_target_generation_must_be_null")
     if _canonical_non_nil_uuid(completed.get("sessionId")) != session_id:
         reasons.append("completed_session_id_mismatch")
+    if prepared.get("activationKind") is not None:
+        reasons.append("prepared_activation_kind_must_be_null")
     for phase, payload in (("armed", armed), ("completed", completed)):
         if payload.get("targetGenerationSha256") != expected_target_generation_sha256:
             reasons.append(f"{phase}_target_generation_mismatch")
+        if payload.get("activationKind") != normalized_activation:
+            reasons.append(f"{phase}_activation_kind_mismatch")
     if completed.get("errorCode") is not None:
         reasons.append("completed_error_code_present")
+
+    capture_fixture_attested = False
+    if expected_audio_fixture is not None:
+        capture_fixture_attested, capture_reasons = (
+            validate_provider_replay_capture_attestation(
+                completed.get("captureAttestation"),
+                fixture=expected_audio_fixture,
+                run_id=expected_run,
+                sample_id=sample_id,
+                session_id=session_id,
+                process_generation_fingerprint=expected_process_generation_sha256,
+            )
+        )
+        reasons.extend(capture_reasons)
 
     raw_markers = completed.get("markers")
     markers: dict[str, dict[str, Any]] = {}
@@ -1907,13 +2533,17 @@ def validate_provider_replay_sample(
                 reasons.append(f"marker_{field}_invalid:{marker_name}")
 
     required_markers = {
+        "activation_received",
+        activation_marker_name,
+        "recording_state_visible",
+        "stop_requested",
         start_marker,
         "clipboard_set",
         "paste",
         "injection_callback_completed",
         "session_finished_emitted",
     }
-    if provider == "microsoft":
+    if provider in {"microsoft", "speechmatics"}:
         required_markers.add("recording_state_transcribing_emitted")
     for marker_name in sorted(required_markers):
         if marker_name not in markers:
@@ -1927,6 +2557,10 @@ def validate_provider_replay_sample(
         reasons.append("armed_markers_not_empty")
 
     ordered_markers = (
+        "activation_received",
+        activation_marker_name,
+        "recording_state_visible",
+        "stop_requested",
         start_marker,
         "clipboard_set",
         "paste",
@@ -1953,14 +2587,18 @@ def validate_provider_replay_sample(
         reasons.append("observer_exit_invalid")
     if observer_ready.get("ok") is not True or observer_ready.get("endpoint") != "target_text_observer_ready":
         reasons.append("observer_ready_invalid")
-    if observed.get("ok") is not True or observed.get("endpoint") != "target_text_observed":
+    if observed.get("ok") is not True or observed.get("endpoint") not in {
+        "final_text_observed",
+        # Accept old captured artifacts as input, but all newly emitted events
+        # and metrics use the canonical Issue #18 name.
+        "target_text_observed",
+    }:
         reasons.append("target_text_not_observed")
-    if observed.get("expectedSha256") != fixture_sha256:
+    if observed.get("expectedSha256") != expected_visible_sha256:
         reasons.append("observer_expected_hash_mismatch")
-    if observed.get("observedSha256") != fixture_sha256:
+    if observed.get("observedSha256") != expected_visible_sha256:
         reasons.append("observer_hash_mismatch")
-    expected_utf16_length = len(fixture_text.encode("utf-16-le")) // 2
-    if observed.get("observedChars") != expected_utf16_length:
+    if observed.get("observedChars") != expected_visible_utf16_length:
         reasons.append("observer_length_mismatch")
     if (
         not isinstance(observed_ticks, int)
@@ -1973,9 +2611,76 @@ def validate_provider_replay_sample(
     ):
         reasons.append("observer_qpc_invalid")
 
-    measured = duration_ms(start_ticks, observed_ticks, start_frequency)
-    if measured is None:
+    provider_to_observed_ms = duration_ms(
+        start_ticks,
+        observed_ticks,
+        start_frequency,
+    )
+    activation_to_observed_ms = duration_ms(
+        markers.get("activation_received", {}).get("qpcTicks"),
+        observed_ticks,
+        start_frequency,
+    )
+    native_activation_to_observed_ms = duration_ms(
+        markers.get(activation_marker_name, {}).get("qpcTicks"),
+        observed_ticks,
+        start_frequency,
+    )
+    stop_to_observed_ms = duration_ms(
+        markers.get("stop_requested", {}).get("qpcTicks"),
+        observed_ticks,
+        start_frequency,
+    )
+    stop_to_provider_ms = duration_ms(
+        markers.get("stop_requested", {}).get("qpcTicks"),
+        start_ticks,
+        start_frequency,
+    )
+    if provider_to_observed_ms is None or provider_to_observed_ms <= 0:
         reasons.append("provider_to_visible_duration_invalid")
+    if activation_to_observed_ms is None or activation_to_observed_ms <= 0:
+        reasons.append("activation_to_visible_duration_invalid")
+    if (
+        native_activation_to_observed_ms is None
+        or native_activation_to_observed_ms <= 0
+    ):
+        reasons.append("native_activation_to_visible_duration_invalid")
+
+    native_activation = markers.get(activation_marker_name, {})
+    if native_activation.get("qpcTicks") != markers.get(
+        "activation_received", {}
+    ).get("qpcTicks"):
+        reasons.append("activation_marker_qpc_mismatch")
+    action_frequency = activation_action.get("qpcFrequency")
+    action_start_ticks = activation_action.get(
+        "inputQpcTicks",
+        activation_action.get("qpcTicks"),
+    )
+    if (
+        activation_action.get("ok") is not True
+        or not isinstance(action_start_ticks, int)
+        or isinstance(action_start_ticks, bool)
+        or action_start_ticks <= 0
+        or not isinstance(action_frequency, int)
+        or isinstance(action_frequency, bool)
+        or action_frequency != start_frequency
+    ):
+        reasons.append("activation_action_invalid")
+    elif int(native_activation.get("qpcTicks") or 0) < action_start_ticks:
+        reasons.append("native_activation_precedes_input")
+    if normalized_activation == "hotkey" and activation_action.get("source") != "windows_send_input":
+        reasons.append("hotkey_activation_action_source_invalid")
+    if normalized_activation == "button":
+        if activation_action.get("source") != "uia_invoke":
+            reasons.append("button_activation_action_source_invalid")
+        if activation_action.get("processId") != activation_action.get(
+            "expectedProcessId"
+        ):
+            reasons.append("button_activation_process_mismatch")
+    if stop_to_observed_ms is None or stop_to_observed_ms <= 0:
+        reasons.append("stop_to_visible_duration_invalid")
+    if stop_to_provider_ms is None or stop_to_provider_ms <= 0:
+        reasons.append("stop_to_provider_duration_invalid")
 
     return {
         "ok": not reasons,
@@ -1985,12 +2690,64 @@ def validate_provider_replay_sample(
         "sessionId": session_id,
         "fixtureTextSha256": fixture_sha256,
         "fixtureTextLength": fixture_length,
+        "expectedVisibleTextSha256": expected_visible_sha256,
+        "expectedVisibleTextLength": expected_visible_utf16_length,
         "markerNames": list(markers),
         "startMarker": start_marker,
         "startQpcTicks": start_ticks,
         "endQpcTicks": observed_ticks,
         "qpcFrequency": start_frequency,
-        "durationMs": measured if measured is not None else "unknown",
+        "fixtureDurationAttested": fixture_duration_attested,
+        "captureFixtureAttested": capture_fixture_attested,
+        "audioPreparationImplementationExpected": (
+            expected_audio_preparation_implementation
+        ),
+        "audioPreparationImplementationActual": (
+            actual_audio_preparation_implementation
+        ),
+        "durationMs": (
+            provider_to_observed_ms
+            if provider_to_observed_ms is not None
+            else "unknown"
+        ),
+        "activationReceivedToFinalTextObservedMs": (
+            activation_to_observed_ms
+            if activation_to_observed_ms is not None
+            else "unknown"
+        ),
+        "nativeActivationToFinalTextObservedMs": (
+            native_activation_to_observed_ms
+            if native_activation_to_observed_ms is not None
+            else "unknown"
+        ),
+        "stopRequestedToFinalTextObservedMs": (
+            stop_to_observed_ms if stop_to_observed_ms is not None else "unknown"
+        ),
+        "canonicalKpis": {
+            "activation_received_to_final_text_observed_ms": (
+                activation_to_observed_ms
+                if activation_to_observed_ms is not None
+                else "unknown"
+            ),
+            f"{activation_marker_name}_to_final_text_observed_ms": (
+                native_activation_to_observed_ms
+                if native_activation_to_observed_ms is not None
+                else "unknown"
+            ),
+            "stop_requested_to_final_text_observed_ms": (
+                stop_to_observed_ms
+                if stop_to_observed_ms is not None
+                else "unknown"
+            ),
+            "provider_final_received_to_final_text_observed_ms": (
+                provider_to_observed_ms
+                if provider_to_observed_ms is not None
+                else "unknown"
+            ),
+            "stop_requested_to_provider_final_received_ms": (
+                stop_to_provider_ms if stop_to_provider_ms is not None else "unknown"
+            ),
+        },
     }
 
 
@@ -2000,24 +2757,128 @@ def run_provider_text_replay(
     output_dir: Path,
     timeout_sec: int,
     iterations: int,
+    fixture_durations_ms: tuple[int | float, ...] | None = None,
 ) -> dict[str, Any]:
     probe_dir = output_dir / "provider-replay"
     probe_dir.mkdir(parents=True, exist_ok=True)
     results: list[dict[str, Any]] = []
     series_results: list[dict[str, Any]] = []
+    series_distributions: dict[str, dict[str, Any]] = {}
     metrics: dict[str, float | str] = {}
     text_errors = 0
     focus_errors = 0
     clipboard_errors = 0
     events: list[dict[str, Any]] = []
     requested_iterations = max(1, iterations)
+    azure_capture_time_mp3 = (
+        "enabled"
+        if os.environ.get("SCRIBER_AZURE_MAI_CAPTURE_TIME_MP3", "")
+        .strip()
+        .lower()
+        not in {"", "0", "false", "no", "off"}
+        else "disabled"
+    )
+    speechmatics_capture_time_wav = (
+        "enabled"
+        if os.environ.get("SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV", "")
+        .strip()
+        .lower()
+        not in {"", "0", "false", "no", "off"}
+        else "disabled"
+    )
+    raw_durations = (
+        fixture_durations_ms
+        if fixture_durations_ms is not None
+        else (PROVIDER_REPLAY_AUDIO_FIXTURE_DURATION_MS,)
+    )
+    duration_values = tuple(float(value) for value in raw_durations)
+    if (
+        not duration_values
+        or len(set(duration_values)) != len(duration_values)
+        or any(
+            not math.isfinite(value) or value < 100.0 or value > 600_000.0
+            for value in duration_values
+        )
+        or (
+            fixture_durations_ms is not None
+            and any(
+                value / 1000.0 not in PROVIDER_REPLAY_REQUIRED_DURATION_SECONDS
+                for value in duration_values
+            )
+        )
+    ):
+        raise ValueError("provider replay duration matrix is invalid")
+    series_specs = [
+        {**scenario, "fixtureDurationMs": duration_ms}
+        for scenario in PROVIDER_REPLAY_SCENARIOS
+        for duration_ms in duration_values
+    ]
+    audio_fixtures: list[dict[str, Any]] = []
 
-    for scenario in PROVIDER_REPLAY_SCENARIOS:
+    for scenario in series_specs:
         provider = str(scenario["provider"])
-        scenario_name = str(scenario["scenario"])
+        expected_audio_preparation_implementation = {
+            "microsoft": (
+                "capture_time_ffmpeg_mp3_v1"
+                if azure_capture_time_mp3 == "enabled"
+                else "post_stop_ffmpeg_mp3_v1"
+            ),
+            "speechmatics": (
+                "wav_pcm16_file_v1"
+                if speechmatics_capture_time_wav == "enabled"
+                else "python_reserved_wav_header_v1"
+            ),
+        }.get(provider)
+        base_scenario_name = str(scenario["scenario"])
+        fixture_duration_ms = float(scenario["fixtureDurationMs"])
+        duration_seconds = fixture_duration_ms / 1000.0
+        duration_slug = (
+            f"{int(duration_seconds)}s"
+            if duration_seconds.is_integer()
+            else f"{duration_seconds:g}s".replace(".", "p")
+        )
+        scenario_name = (
+            base_scenario_name
+            if fixture_durations_ms is None
+            else f"{base_scenario_name}_{duration_slug}"
+        )
         start_marker = str(scenario["startMarker"])
-        scenario_dir = probe_dir / provider
+        scenario_dir = (
+            probe_dir / provider
+            if fixture_durations_ms is None
+            else probe_dir / provider / duration_slug
+        )
         scenario_dir.mkdir(parents=True, exist_ok=True)
+        audio_fixture_path = probe_dir / (
+            "provider-replay-fixture-s16le-48000-mono.pcm"
+            if fixture_durations_ms is None
+            else f"provider-replay-fixture-s16le-48000-mono-{duration_slug}.pcm"
+        )
+        audio_fixture = write_provider_replay_audio_fixture(
+            audio_fixture_path,
+            duration_ms=fixture_duration_ms,
+        )
+        audio_fixture_attested = attest_provider_replay_audio_fixture(
+            audio_fixture_path,
+            audio_fixture,
+            expected_duration_ms=fixture_duration_ms,
+        )
+        if not audio_fixture_attested:
+            raise RuntimeError("provider replay audio fixture attestation failed")
+        fixture_record = {
+            **audio_fixture,
+            "path": str(audio_fixture_path),
+            "durationBucket": duration_slug,
+            "bytesAttested": audio_fixture_attested,
+        }
+        if not any(
+            item.get("path") == fixture_record["path"] for item in audio_fixtures
+        ):
+            audio_fixtures.append(fixture_record)
+        sample_timeout_sec = max(
+            int(timeout_sec),
+            int(math.ceil(duration_seconds)) + 120,
+        )
         smoke_path = scenario_dir / "smoke.json"
         token = uuid.uuid4().hex
         run_id = uuid.uuid4().hex
@@ -2025,12 +2886,32 @@ def run_provider_text_replay(
         child_env.update(
             {
                 "SCRIBER_B7_PROVIDER_REPLAY_RUN_ID": run_id,
+                "SCRIBER_TAURI_BENCHMARK_HOTKEY_RUN_ID": run_id,
+                "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_DURATION_MS": str(
+                    int(round(fixture_duration_ms))
+                ),
+                "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_PCM_SHA256": str(
+                    audio_fixture["sha256"]
+                ),
                 "SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL": "1",
+                "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH": str(
+                    audio_fixture_path
+                ),
                 "SCRIBER_MIC_ALWAYS_ON": "0",
                 "SCRIBER_MIC_DEVICE": "default",
                 "SCRIBER_FAVORITE_MIC": "",
                 "SCRIBER_DISABLE_TEXT_INJECTION": "0",
+                "SCRIBER_TAURI_GLOBAL_HOTKEY": "1",
+                "SCRIBER_HOTKEY": "ctrl+alt+shift+f12",
                 "SCRIBER_AUTO_SUMMARIZE": "0",
+                "SCRIBER_AZURE_MAI_REGION": "northeurope",
+                # The Speechmatics replay must bind the production default
+                # route while its one-shot raw transport prevents network I/O.
+                "SCRIBER_SPEECHMATICS_BATCH_BASE_URL": (
+                    SPEECHMATICS_BATCH_DEFAULT_BASE_URL
+                ),
+                "AZURE_MAI_SPEECH_KEY": "",
+                "SPEECHMATICS_API_KEY": "",
             }
         )
         smoke = {}
@@ -2039,6 +2920,9 @@ def run_provider_text_replay(
         backend_pid = 0
         port = 0
         durations: list[float] = []
+        activation_durations: list[float] = []
+        stop_durations: list[float] = []
+        non_speech_overheads: list[float] = []
         series_reason = ""
         process_baseline: dict[str, Any] = {}
         expected_process_fingerprint = ""
@@ -2054,6 +2938,7 @@ def run_provider_text_replay(
                     extra=[
                         "-KeepAppOpen",
                         "-OccupyDefaultPort",
+                        "-VerifyFrontend",
                         "-LiveRecordingAudioEngine",
                         "rust-wasapi",
                         "-LiveRecordingRustAudioCaptureMode",
@@ -2097,6 +2982,9 @@ def run_provider_text_replay(
                 if series_reason:
                     break
                 title = f"Scriber B7 TextReceiver {provider} {iteration}"
+                activation_kind = PROVIDER_REPLAY_ACTIVATION_KINDS[
+                    (iteration - 1) % len(PROVIDER_REPLAY_ACTIVATION_KINDS)
+                ]
                 iteration_dir = scenario_dir / f"iteration-{iteration:02d}"
                 iteration_dir.mkdir(parents=True, exist_ok=True)
                 receiver_stdout = iteration_dir / "receiver.stdout.txt"
@@ -2139,6 +3027,10 @@ def run_provider_text_replay(
                 }
                 observer_exit: int | None = None
                 sample_error = ""
+                activation_action: dict[str, Any] = {}
+                target_focus_after_activation: dict[str, Any] = {}
+                expected_visible_text_sha256 = ""
+                expected_visible_text_length: int | None = None
                 try:
                     prepared = request_runtime_json(
                         port,
@@ -2150,7 +3042,10 @@ def run_provider_text_replay(
                             "runId": run_id,
                             "provider": provider,
                         },
-                        timeout_sec=5.0,
+                        timeout_sec=max(
+                            15.0,
+                            min(120.0, duration_seconds * 0.25 + 10.0),
+                        ),
                     )
                     fixture_text = prepared.get("fixtureText")
                     fixture_hash = str(prepared.get("fixtureTextSha256") or "")
@@ -2163,11 +3058,22 @@ def run_provider_text_replay(
                         or not fixture_text
                         or fixture_hash != sha256_text(fixture_text)
                         or prepared.get("fixtureTextLength") != len(fixture_text)
+                        or prepared.get("authoritativeFixtureDurationMs")
+                        != int(round(fixture_duration_ms))
                         or prepared.get("processGenerationFingerprint")
                         != expected_process_fingerprint
                     ):
                         raise RuntimeError("prepare_contract_invalid")
                     sample_id = _canonical_non_nil_uuid(prepared.get("sampleId"))
+                    expected_visible_text = provider_replay_expected_visible_text(
+                        fixture_text
+                    )
+                    expected_visible_text_sha256 = sha256_text(
+                        expected_visible_text
+                    )
+                    expected_visible_text_length = (
+                        len(expected_visible_text.encode("utf-16-le")) // 2
+                    )
 
                     observer = run_process(
                         [
@@ -2181,9 +3087,9 @@ def run_provider_text_replay(
                             "-WindowTitle",
                             title,
                             "-ExpectedSha256",
-                            fixture_hash,
+                            expected_visible_text_sha256,
                             "-TimeoutSec",
-                            str(max(5, timeout_sec)),
+                            str(max(5, sample_timeout_sec)),
                             "-OutputPath",
                             str(observer_path),
                             "-ReadyPath",
@@ -2212,6 +3118,7 @@ def run_provider_text_replay(
                         payload={
                             "schemaVersion": PROVIDER_REPLAY_CONTRACT_VERSION,
                             "runId": run_id,
+                            "activationKind": activation_kind,
                             "targetProcessId": receiver.pid,
                             "targetCreationTime100ns": int(
                                 target_attestation["creationTime100ns"]
@@ -2219,20 +3126,59 @@ def run_provider_text_replay(
                         },
                         timeout_sec=10.0,
                     )
+                    if (
+                        armed.get("state") != "activation_armed"
+                        or armed.get("sessionId") is not None
+                        or armed.get("activationKind") != activation_kind
+                    ):
+                        raise RuntimeError("native_activation_arm_contract_invalid")
+                    app_creation_time_100ns = int(
+                        (process_baseline.get("app") or {}).get(
+                            "creationTime100ns"
+                        )
+                        or 0
+                    )
+                    activation_action = trigger_provider_replay_activation(
+                        activation_kind=activation_kind,
+                        repo_root=repo_root,
+                        app_pid=app_pid,
+                        app_creation_time_100ns=app_creation_time_100ns,
+                        iteration_dir=iteration_dir,
+                    )
+                    if activation_action.get("ok") is not True:
+                        raise RuntimeError("native_activation_dispatch_failed")
+                    target_focus_after_activation = (
+                        ensure_provider_replay_target_focus_after_activation(
+                            activation_kind=activation_kind,
+                            title=title,
+                            receiver_pid=receiver.pid,
+                            expected_target_generation_sha256=str(
+                                target_attestation.get(
+                                    "targetGenerationSha256"
+                                )
+                                or ""
+                            ),
+                        )
+                    )
+                    if target_focus_after_activation.get("ok") is not True:
+                        raise RuntimeError("button_target_refocus_failed")
                     completed = wait_provider_replay_status(
                         port,
                         token,
                         run_id,
                         sample_id,
-                        max(20, timeout_sec),
+                        max(20, sample_timeout_sec),
                     )
-                    observer_exit = wait_process(observer, max(10, timeout_sec + 10))
+                    observer_exit = wait_process(
+                        observer,
+                        max(10, sample_timeout_sec + 10),
+                    )
                     observed = load_json(observer_path)
                     terminal = wait_runtime_state(
                         port,
                         token,
                         successful_terminal_state,
-                        max(20, timeout_sec),
+                        max(20, sample_timeout_sec),
                     )
                     generation_after = process_generation_snapshot(
                         app_pid,
@@ -2248,17 +3194,24 @@ def run_provider_text_replay(
                         provider=provider,
                         run_id=run_id,
                         start_marker=start_marker,
+                        activation_kind=activation_kind,
                         prepared=prepared,
                         armed=armed,
                         completed=completed,
                         observed=observed,
                         observer_ready=observer_ready,
                         observer_exit_code=observer_exit,
+                        activation_action=activation_action,
                         expected_process_generation_sha256=(
                             expected_process_fingerprint
                         ),
                         expected_target_generation_sha256=str(
                             target_attestation.get("targetGenerationSha256") or ""
+                        ),
+                        expected_fixture_duration_ms=fixture_duration_ms,
+                        expected_audio_fixture=fixture_record,
+                        expected_audio_preparation_implementation=(
+                            expected_audio_preparation_implementation
                         ),
                     )
                     if not successful_terminal_state(terminal):
@@ -2291,7 +3244,9 @@ def run_provider_text_replay(
                 target_text_observed = bool(
                     observed.get("ok")
                     and observed.get("observedSha256")
-                    == prepared.get("fixtureTextSha256")
+                    == expected_visible_text_sha256
+                    and observed.get("observedChars")
+                    == expected_visible_text_length
                 )
                 if not target_text_observed:
                     text_errors += 1
@@ -2300,20 +3255,71 @@ def run_provider_text_replay(
                 if not clipboard_ok:
                     clipboard_errors += 1
                 measured = validation.get("durationMs", "unknown")
-                if finite_number(measured) and validation.get("ok"):
+                activation_measured = validation.get(
+                    "activationReceivedToFinalTextObservedMs",
+                    "unknown",
+                )
+                stop_measured = validation.get(
+                    "stopRequestedToFinalTextObservedMs",
+                    "unknown",
+                )
+                capture_fixture_attested = bool(
+                    audio_fixture_attested
+                    and validation.get("fixtureDurationAttested") is True
+                    and validation.get("captureFixtureAttested") is True
+                )
+                non_speech_overhead: float | str = "unknown"
+                if capture_fixture_attested and finite_number(activation_measured):
+                    candidate_overhead = (
+                        float(activation_measured) - float(audio_fixture["durationMs"])
+                    )
+                    if math.isfinite(candidate_overhead) and candidate_overhead >= 0:
+                        non_speech_overhead = round(candidate_overhead, 3)
+                    else:
+                        validation.setdefault("reasons", []).append(
+                            "non_speech_overhead_invalid"
+                        )
+                        validation["ok"] = False
+                if (
+                    finite_number(measured)
+                    and finite_number(activation_measured)
+                    and finite_number(stop_measured)
+                    and float(measured) >= 0
+                    and float(activation_measured) > 0
+                    and float(stop_measured) > 0
+                    and validation.get("ok")
+                ):
                     durations.append(float(measured))
+                    activation_durations.append(float(activation_measured))
+                    stop_durations.append(float(stop_measured))
+                    if finite_number(non_speech_overhead):
+                        non_speech_overheads.append(float(non_speech_overhead))
+                    validation_markers = {
+                        str(item.get("marker") or ""): item
+                        for item in completed.get("markers", [])
+                        if isinstance(item, dict)
+                    }
                     events.extend(
                         [
                             {
                                 "session_id": validation.get("sessionId"),
                                 "scenario": scenario_name,
-                                "marker": start_marker,
+                                "marker": marker_name,
+                                "qpc_ticks": int(marker["qpcTicks"]),
+                            }
+                            for marker_name, marker in validation_markers.items()
+                        ]
+                        + [
+                            {
+                                "session_id": validation.get("sessionId"),
+                                "scenario": scenario_name,
+                                "marker": "provider_final_received",
                                 "qpc_ticks": int(validation["startQpcTicks"]),
                             },
                             {
                                 "session_id": validation.get("sessionId"),
                                 "scenario": scenario_name,
-                                "marker": "target_text_observed",
+                                "marker": "final_text_observed",
                                 "qpc_ticks": int(validation["endQpcTicks"]),
                             },
                         ]
@@ -2322,20 +3328,40 @@ def run_provider_text_replay(
                     "provider": provider,
                     "iteration": iteration,
                     "scenario": scenario_name,
+                    "activationKind": activation_kind,
+                    "fixtureDurationMs": fixture_duration_ms,
+                    "durationBucket": duration_slug,
                     "runId": validation.get("runId", run_id),
                     "sampleId": validation.get("sampleId"),
                     "sessionId": validation.get("sessionId"),
                     "startMarker": start_marker,
-                    "targetMarker": "target_text_observed",
-                    "expectedSha256": prepared.get("fixtureTextSha256"),
+                    "targetMarker": "final_text_observed",
+                    "expectedSha256": expected_visible_text_sha256,
+                    "providerFixtureSha256": prepared.get("fixtureTextSha256"),
                     "fixtureTextLength": prepared.get("fixtureTextLength"),
+                    "expectedVisibleTextSha256": expected_visible_text_sha256,
+                    "expectedVisibleTextLength": expected_visible_text_length,
                     "inputMethod": "installed_backend_provider_replay",
+                    "providerCandidate": {
+                        "azureMaiCaptureTimeMp3": azure_capture_time_mp3,
+                        "speechmaticsCaptureTimeWav": (
+                            speechmatics_capture_time_wav
+                        )
+                    },
                     "processGenerationFingerprint": expected_process_fingerprint,
                     "targetGenerationSha256": target_attestation.get(
                         "targetGenerationSha256"
                     ),
                     "markerNames": validation.get("markerNames", []),
+                    "canonicalMarkerNames": sorted(
+                        set(validation.get("markerNames", []))
+                        | {"provider_final_received", "final_text_observed"}
+                    ),
                     "observerReady": observer_ready,
+                    "activationAction": activation_action,
+                    "targetFocusAfterActivation": (
+                        target_focus_after_activation
+                    ),
                     "focus": focus,
                     "targetAttestation": target_attestation,
                     "targetAfter": target_after,
@@ -2349,6 +3375,20 @@ def run_provider_text_replay(
                     "observerExitCode": observer_exit,
                     "targetTextObserved": target_text_observed,
                     "durationMs": measured,
+                    "activationReceivedToFinalTextObservedMs": activation_measured,
+                    "stopRequestedToFinalTextObservedMs": stop_measured,
+                    "captureFixtureAttested": capture_fixture_attested,
+                    "audioPreparationImplementationExpected": (
+                        expected_audio_preparation_implementation
+                    ),
+                    "audioPreparationImplementationActual": validation.get(
+                        "audioPreparationImplementationActual"
+                    ),
+                    "nonSpeechOverheadMs": non_speech_overhead,
+                    "canonicalKpis": {
+                        **dict(validation.get("canonicalKpis") or {}),
+                        "non_speech_overhead_ms": non_speech_overhead,
+                    },
                     "metricEligible": bool(validation.get("ok")),
                     "reasons": list(validation.get("reasons") or []),
                     "error": sample_error,
@@ -2366,20 +3406,80 @@ def run_provider_text_replay(
             cleanup = terminate_runtime(app_pid, backend_pid, port, token)
 
         metric_prefix = str(scenario["metricPrefix"])
+        if fixture_durations_ms is not None:
+            metric_prefix = f"{metric_prefix}_{duration_slug}"
         metrics[f"{metric_prefix}_p50_ms"] = percentile_ms(durations, 50.0)
         metrics[f"{metric_prefix}_p95_ms"] = percentile_ms(durations, 95.0)
         metrics[f"{metric_prefix}_sample_count"] = len(durations)
-        provider_samples = [item for item in results if item.get("provider") == provider]
+        provider_samples = [
+            item
+            for item in results
+            if item.get("provider") == provider
+            and item.get("scenario") == scenario_name
+        ]
+        series_capture_fixture_attested = bool(
+            audio_fixture_attested
+            and len(provider_samples) == requested_iterations
+            and all(
+                item.get("captureFixtureAttested") is True
+                for item in provider_samples
+            )
+        )
+        stage_zero_distributions = {
+            "activation_received_to_final_text_observed": (
+                activation_durations
+            ),
+            "stop_requested_to_final_text_observed": stop_durations,
+            "non_speech_overhead": non_speech_overheads,
+        }
+        for kpi_name, values in stage_zero_distributions.items():
+            distribution = summarize_stage_zero_distribution(
+                values,
+                attempted=requested_iterations,
+            )
+            prefix = f"{scenario_name}_{kpi_name}"
+            metrics[f"{prefix}_p50_ms"] = distribution["p50Ms"]
+            metrics[f"{prefix}_p90_ms"] = distribution["p90Ms"]
+            metrics[f"{prefix}_p95_ms"] = distribution["p95Ms"]
+            metrics[f"{prefix}_max_ms"] = distribution["maxMs"]
+            metrics[f"{prefix}_variance_ms2"] = distribution["varianceMs2"]
+            metrics[f"{prefix}_failure_rate"] = distribution["failureRate"]
+            metrics[f"{prefix}_sample_count"] = distribution["count"]
+            if kpi_name in {
+                "activation_received_to_final_text_observed",
+                "stop_requested_to_final_text_observed",
+            }:
+                metrics[f"{prefix}_capture_attested"] = int(
+                    series_capture_fixture_attested
+                )
+        series_distributions[scenario_name] = {
+            "provider": provider,
+            "fixtureDurationMs": fixture_duration_ms,
+            "durationBucket": duration_slug,
+            "audioFixtureBytesAttested": audio_fixture_attested,
+            "captureFixtureAttested": series_capture_fixture_attested,
+            "kpis": {
+                kpi_name: summarize_stage_zero_distribution(
+                    values,
+                    attempted=requested_iterations,
+                )
+                for kpi_name, values in stage_zero_distributions.items()
+            },
+        }
         series_ok = bool(
             not series_reason
             and len(provider_samples) == requested_iterations
             and len(durations) == requested_iterations
+            and series_capture_fixture_attested
             and all(item.get("metricEligible") for item in provider_samples)
             and cleanup.get("ok")
         )
         series_results.append(
             {
                 "provider": provider,
+                "scenario": scenario_name,
+                "fixtureDurationMs": fixture_duration_ms,
+                "durationBucket": duration_slug,
                 "runId": run_id,
                 "smokePath": str(smoke_path),
                 "smokeExitCode": smoke_exit_code,
@@ -2389,6 +3489,24 @@ def run_provider_text_replay(
                 "processGenerationFingerprint": expected_process_fingerprint,
                 "requestedSamples": requested_iterations,
                 "measuredSamples": len(durations),
+                "captureFixtureAttested": series_capture_fixture_attested,
+                "providerCandidate": {
+                    "azureMaiCaptureTimeMp3": azure_capture_time_mp3,
+                    "speechmaticsCaptureTimeWav": speechmatics_capture_time_wav
+                },
+                "audioPreparationImplementationExpected": (
+                    expected_audio_preparation_implementation
+                ),
+                "audioPreparationImplementationActual": (
+                    expected_audio_preparation_implementation
+                    if provider_samples
+                    and all(
+                        item.get("audioPreparationImplementationActual")
+                        == expected_audio_preparation_implementation
+                        for item in provider_samples
+                    )
+                    else None
+                ),
                 "runtimeStarted": bool(smoke.get("ok")),
                 "cleanup": cleanup,
                 "ok": series_ok,
@@ -2396,7 +3514,7 @@ def run_provider_text_replay(
             }
         )
 
-    expected_sample_count = requested_iterations * len(PROVIDER_REPLAY_SCENARIOS)
+    expected_sample_count = requested_iterations * len(series_specs)
     ok = bool(
         len(results) == expected_sample_count
         and all(item.get("metricEligible") for item in results)
@@ -2408,11 +3526,35 @@ def run_provider_text_replay(
         "ok": ok,
         "reason": "measured" if ok else "installed_provider_replay_failed_closed",
         "installedRuntimeOnly": True,
-        "requestedSamplesPerProvider": requested_iterations,
+        "requestedSamplesPerProviderDuration": requested_iterations,
+        "requestedSamplesPerProvider": requested_iterations * len(duration_values),
+        "providerCandidate": {
+            "azureMaiCaptureTimeMp3": azure_capture_time_mp3,
+            "speechmaticsCaptureTimeWav": speechmatics_capture_time_wav
+        },
         "series": series_results,
         "results": results,
         "metrics": metrics,
+        "stageZeroDistributions": series_distributions,
         "events": events,
+        "audioFixture": (
+            dict(audio_fixtures[0])
+            if len(audio_fixtures) == 1
+            else {
+                "matrix": True,
+                "durationsMs": [item["durationMs"] for item in audio_fixtures],
+                "sampleRate": PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_RATE,
+                "channels": PROVIDER_REPLAY_AUDIO_FIXTURE_CHANNELS,
+                "sampleWidthBytes": (
+                    PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_WIDTH_BYTES
+                ),
+                "bytesAttested": all(
+                    item.get("bytesAttested") is True
+                    for item in audio_fixtures
+                ),
+            }
+        ),
+        "audioFixtures": audio_fixtures,
         "textErrors": text_errors,
         "focusErrors": focus_errors,
         "clipboardErrors": clipboard_errors,
@@ -3750,40 +4892,61 @@ def main(argv: list[str] | None = None) -> int:
 
     imported_env_names = import_dotenv_into_process(repo_root / ".env")
     sample_plan = dict(SAMPLE_PLANS[args.suite])
+    provider_replay_only = args.suite == "ProviderReplay"
     evidence: dict[str, Any] = {}
-    try:
-        evidence["overlayHotkey"] = run_overlay_hotkey_probes(
-            repo_root,
-            install_root,
-            output_dir,
-            args.timeout_sec,
-            args.python,
-            cold_samples=int(sample_plan["overlayCold"]),
-            warm_samples=int(sample_plan["overlayWarm"]),
-        )
-    except Exception as exc:
-        evidence["overlayHotkey"] = {"attempted": True, "metricEligible": False, "error": str(exc)}
-
-    try:
-        if args.app_ux_evidence:
-            evidence["appFrame"] = load_and_validate_app_ux_evidence(
-                Path(args.app_ux_evidence).resolve(),
-                required_samples_per_scenario=int(
-                    sample_plan["appUxPerScenario"]
-                ),
-                installed_exe_path=install_root / "scriber-desktop.exe",
-                repo_root=repo_root,
-            )
-        else:
-            evidence["appFrame"] = run_app_frame_probes(
+    if provider_replay_only:
+        evidence["overlayHotkey"] = {
+            "attempted": False,
+            "metricEligible": False,
+            "reason": "excluded_by_provider_replay_suite",
+        }
+        evidence["appFrame"] = {
+            "attempted": False,
+            "metricEligible": False,
+            "reason": "excluded_by_provider_replay_suite",
+        }
+    else:
+        try:
+            evidence["overlayHotkey"] = run_overlay_hotkey_probes(
                 repo_root,
                 install_root,
                 output_dir,
                 args.timeout_sec,
-                int(sample_plan["appUxPerScenario"]),
+                args.python,
+                cold_samples=int(sample_plan["overlayCold"]),
+                warm_samples=int(sample_plan["overlayWarm"]),
             )
-    except Exception as exc:
-        evidence["appFrame"] = {"attempted": True, "metricEligible": False, "error": str(exc)}
+        except Exception as exc:
+            evidence["overlayHotkey"] = {
+                "attempted": True,
+                "metricEligible": False,
+                "error": str(exc),
+            }
+
+        try:
+            if args.app_ux_evidence:
+                evidence["appFrame"] = load_and_validate_app_ux_evidence(
+                    Path(args.app_ux_evidence).resolve(),
+                    required_samples_per_scenario=int(
+                        sample_plan["appUxPerScenario"]
+                    ),
+                    installed_exe_path=install_root / "scriber-desktop.exe",
+                    repo_root=repo_root,
+                )
+            else:
+                evidence["appFrame"] = run_app_frame_probes(
+                    repo_root,
+                    install_root,
+                    output_dir,
+                    args.timeout_sec,
+                    int(sample_plan["appUxPerScenario"]),
+                )
+        except Exception as exc:
+            evidence["appFrame"] = {
+                "attempted": True,
+                "metricEligible": False,
+                "error": str(exc),
+            }
 
     overlay_ok = bool(evidence.get("overlayHotkey", {}).get("externalVisibleFrameObserved"))
     app_ok = bool(evidence.get("appFrame", {}).get("externalStableFrameObserved"))
@@ -3799,6 +4962,10 @@ def main(argv: list[str] | None = None) -> int:
             output_dir,
             args.timeout_sec,
             int(sample_plan["providerReplay"]),
+            fixture_durations_ms=tuple(
+                int(seconds) * 1000
+                for seconds in sample_plan["providerReplayDurationsSeconds"]
+            ),
         )
     except Exception as exc:
         evidence["providerReplay"] = {
@@ -3815,19 +4982,20 @@ def main(argv: list[str] | None = None) -> int:
         "overlay_warm_p95_ms": "unknown",
         "overlay_cold_p50_ms": "unknown",
         "overlay_cold_p95_ms": "unknown",
-        "microsoft_local_tail_p50_ms": "unknown",
-        "microsoft_local_tail_p95_ms": "unknown",
-        "soniox_local_tail_p50_ms": "unknown",
-        "soniox_local_tail_p95_ms": "unknown",
         "app_ux_p50_ms": "unknown",
         "app_ux_p95_ms": "unknown",
         "hotkey_mic_ready_p95_ms": "unknown",
         "hotkey_first_audio_frame_p95_ms": "unknown",
         "hotkey_first_audible_audio_frame_p95_ms": "unknown",
         "text_errors": evidence["providerReplay"].get("textErrors", "unknown"),
-        "focus_errors": (0 if app_ok else 1) + int(evidence["providerReplay"].get("focusErrors", 0) or 0),
+        "focus_errors": (
+            int(evidence["providerReplay"].get("focusErrors", 0) or 0)
+            if provider_replay_only
+            else (0 if app_ok else 1)
+            + int(evidence["providerReplay"].get("focusErrors", 0) or 0)
+        ),
         "clipboard_errors": evidence["providerReplay"].get("clipboardErrors", "unknown"),
-        "overlay_errors": 0 if overlay_ok else 1,
+        "overlay_errors": "unknown" if provider_replay_only else (0 if overlay_ok else 1),
         "ui_long_tasks_gt_200ms": "unknown",
         "idle_cpu_pct": "unknown",
         "working_set_mb": "unknown",
@@ -3846,17 +5014,62 @@ def main(argv: list[str] | None = None) -> int:
         if key in resource_metrics:
             metrics[key] = resource_metrics[key]
     provider_ok = bool(evidence["providerReplay"].get("ok"))
+    if provider_replay_only:
+        canonical_provider_evidence_valid = canonical_provider_replay_evidence_valid(
+            metrics
+        )
+        provider_replay_succeeded = bool(
+            provider_ok
+            and evidence["providerReplay"].get("metricEligible")
+            and canonical_provider_evidence_valid
+        )
+        status = (
+            "PROVIDER_REPLAY_MEASURED"
+            if provider_replay_succeeded
+            else "BLOCKED"
+        )
+        reason = (
+            "installed_provider_replay_measured_not_general_promotion_gate"
+            if provider_replay_succeeded
+            else str(
+                evidence["providerReplay"].get("reason")
+                or "installed_provider_replay_failed_closed"
+            )
+        )
+        payload = {
+            "schemaVersion": 1,
+            "status": status,
+            "reason": reason,
+            "scope": "installed_provider_replay_only",
+            "generatedAtUtc": utc_now(),
+            "suite": args.suite,
+            "promotionEligible": False,
+            "promotionEvaluation": {
+                "evaluated": False,
+                "reason": "provider_replay_suite_not_general_promotion_gate",
+                "canonicalProviderReplayEvidenceValid": (
+                    canonical_provider_evidence_valid
+                ),
+                "providerDurationPoolingAllowed": False,
+                "localWuxEvaluated": False,
+            },
+            "samplePlan": sample_plan,
+            "importedEnvNames": imported_env_names,
+            "qpcFrequency": qpc_frequency(),
+            "evidence": evidence,
+            "metrics": metrics,
+        }
+        output_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0 if provider_replay_succeeded else 2
+
     score_required = [
-        "overlay_warm_p50_ms",
-        "overlay_warm_p95_ms",
-        "overlay_cold_p50_ms",
-        "overlay_cold_p95_ms",
-        "microsoft_local_tail_p50_ms",
-        "microsoft_local_tail_p95_ms",
-        "soniox_local_tail_p50_ms",
-        "soniox_local_tail_p95_ms",
-        "app_ux_p50_ms",
-        "app_ux_p95_ms",
+        metric_name
+        for scenario_metrics in SCENARIO_METRICS.values()
+        for metric_name in scenario_metrics.values()
     ]
     guard_required = [
         "hotkey_mic_ready_p95_ms",
@@ -3869,8 +5082,16 @@ def main(argv: list[str] | None = None) -> int:
         "idle_cpu_pct",
         "working_set_mb",
     ]
-    score_complete = all(metrics.get(name) != "unknown" for name in score_required)
-    guards_complete = all(metrics.get(name) != "unknown" for name in guard_required)
+    score_complete = all(
+        finite_number(metrics.get(name)) and float(metrics[name]) > 0
+        for name in score_required
+    )
+    guards_complete = all(
+        not isinstance(metrics.get(name), bool)
+        and finite_number(metrics.get(name))
+        and float(metrics[name]) >= 0
+        for name in guard_required
+    )
     clean_errors = all(
         finite_number(metrics.get(name)) and float(metrics[name]) == 0.0
         for name in (
@@ -3881,13 +5102,18 @@ def main(argv: list[str] | None = None) -> int:
             "ui_long_tasks_gt_200ms",
         )
     )
+    baseline_metrics = load_baseline_metrics(repo_root)
+    canonical_provider_promotion_eligible = (
+        canonical_provider_replay_promotion_eligible(metrics, baseline_metrics)
+    )
     if score_complete and all(
         finite_number(metrics.get(name)) and float(metrics[name]) == 0.0
         for name in ("text_errors", "focus_errors", "clipboard_errors", "overlay_errors")
     ):
-        metrics["local_wux"] = compute_local_wux(metrics, load_baseline_metrics(repo_root))
+        metrics["local_wux"] = compute_local_wux(metrics, baseline_metrics)
     promotion_eligible = (
         metrics["local_wux"] != "unknown"
+        and canonical_provider_promotion_eligible
         and guards_complete
         and clean_errors
         and bool(evidence.get("overlayHotkey", {}).get("metricEligible"))
@@ -3899,6 +5125,8 @@ def main(argv: list[str] | None = None) -> int:
         reason = "measured"
     elif not provider_ok:
         reason = "provider_text_replay_harness_missing"
+    elif not canonical_provider_promotion_eligible:
+        reason = "canonical_provider_replay_not_promotion_eligible"
     elif not overlay_ok:
         reason = "overlay_visible_frame_missing"
     else:
@@ -3909,6 +5137,11 @@ def main(argv: list[str] | None = None) -> int:
         "reason": reason,
         "generatedAtUtc": utc_now(),
         "suite": args.suite,
+        "promotionEligible": promotion_eligible,
+        "promotionEvaluation": {
+            "canonicalProviderReplay": canonical_provider_promotion_eligible,
+            "providerDurationPoolingAllowed": False,
+        },
         "samplePlan": sample_plan,
         "importedEnvNames": imported_env_names,
         "qpcFrequency": qpc_frequency(),

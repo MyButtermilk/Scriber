@@ -289,6 +289,8 @@ async def test_start_youtube_transcription_persists_job_lifecycle(monkeypatch, t
     assert job.status == JobStatus.COMPLETED
     assert job.job_type.value == "youtube"
     assert job.payload["preferCaptions"] is True
+    assert "plannedFallbackRoute" in job.payload
+    assert "executionRoute" not in job.payload
     assert rec.processing_started_at
     assert rec.to_public(include_content=False)["processingStartedAt"] == rec.processing_started_at
 
@@ -319,6 +321,8 @@ async def test_start_youtube_transcription_persists_caption_override(tmp_path):
     job = store.get(ctl._job_ids_by_transcript[rec.id])
     assert job is not None
     assert job.payload["preferCaptions"] is False
+    assert "plannedFallbackRoute" not in job.payload
+    assert job.payload["executionRoute"]["provider"]
     assert rec._youtube_prefer_captions is False
 
 
@@ -1497,10 +1501,25 @@ def _completed_record(*, transcript_type: str, tmp_path) -> TranscriptRecord:
 
 @pytest.mark.asyncio
 async def test_youtube_captions_skip_audio_download_and_stt_provider(monkeypatch, tmp_path):
-    ctl = ScriberWebController(asyncio.get_running_loop())
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
     ctl._downloads_dir = tmp_path / "downloads"
     rec = _completed_record(transcript_type="youtube", tmp_path=tmp_path)
     rec._youtube_prefer_captions = True
+    fallback_route = ctl._freeze_background_provider_route(
+        workload="youtube",
+        provider="soniox",
+        language=rec.language,
+    )
+    job = store.enqueue(
+        transcript_id=rec.id,
+        job_type=web_api.JobType.YOUTUBE,
+        payload={
+            "plannedFallbackRoute": ctl._job_execution_route(fallback_route),
+        },
+    )
+    assert store.mark_running(job.id)
+    ctl._remember_job_id(rec.id, job.id)
     monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
 
     with (
@@ -1536,6 +1555,12 @@ async def test_youtube_captions_skip_audio_download_and_stt_provider(monkeypatch
     audio_mock.assert_not_awaited()
     pipeline_mock.assert_not_called()
     save_mock.assert_awaited_once()
+    persisted = store.get(job.id)
+    assert persisted is not None
+    assert persisted.payload["plannedFallbackRoute"]["provider"] == "soniox"
+    assert persisted.payload["executionRoute"]["provider"] == "youtube_captions_auto"
+    assert persisted.payload["executionRoute"]["transport"] == "caption_track"
+    assert persisted.payload["executedRoute"] == persisted.payload["executionRoute"]
 
 
 @pytest.mark.asyncio

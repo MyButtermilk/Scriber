@@ -3,7 +3,7 @@
 use std::fmt;
 
 pub const AUDIO_FRAME_MAGIC: [u8; 4] = *b"SAF1";
-pub const AUDIO_FRAME_VERSION: u16 = 1;
+pub const AUDIO_FRAME_VERSION: u16 = 2;
 pub const AUDIO_FRAME_HEADER_LEN: usize = 36;
 pub const AUDIO_FRAME_MAX_PAYLOAD_BYTES: u32 = 1024 * 1024;
 pub const AUDIO_FRAME_FLAG_PREBUFFER: u16 = 0x0001;
@@ -102,7 +102,11 @@ impl AudioFrameHeader {
                 channels: self.channels,
             });
         }
-        if self.frame_count == 0 {
+        let zero_length_eos = self.frame_count == 0
+            && self.payload_len == 0
+            && self.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0
+            && self.flags & AUDIO_FRAME_FLAG_PREBUFFER == 0;
+        if self.frame_count == 0 && !zero_length_eos {
             return Err(AudioFrameProtocolError::InvalidFrameCount {
                 frame_count: self.frame_count,
             });
@@ -236,7 +240,7 @@ mod tests {
     use std::fmt::Write as _;
 
     const DOCUMENTED_HEADER_HEX: &str =
-        "5341463124000100000800002a0000000000000015cd5b07000000000002000002000100";
+        "5341463124000200000800002a0000000000000015cd5b07000000000002000002000100";
 
     fn documented_header() -> AudioFrameHeader {
         AudioFrameHeader::new(2048, 42, 123_456_789, 512, 2, AUDIO_FRAME_FLAG_PREBUFFER).unwrap()
@@ -307,6 +311,25 @@ mod tests {
                 expected: 1,
                 actual: 2
             })
+        ));
+    }
+
+    #[test]
+    fn zero_length_end_of_stream_control_frame_round_trips() {
+        let header =
+            AudioFrameHeader::new(0, 7, 123, 0, 1, AUDIO_FRAME_FLAG_END_OF_STREAM).unwrap();
+        let frame = encode_audio_frame(&header, &[]).unwrap();
+        let (decoded, payload) = decode_audio_frame(&frame).unwrap();
+
+        assert_eq!(decoded, header);
+        assert!(payload.is_empty());
+    }
+
+    #[test]
+    fn zero_length_non_eos_frame_is_rejected() {
+        assert!(matches!(
+            AudioFrameHeader::new(0, 0, 0, 0, 1, 0),
+            Err(AudioFrameProtocolError::InvalidFrameCount { frame_count: 0 })
         ));
     }
 }

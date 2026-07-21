@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "rust": {
+    "channel": "1.90.0",
+    "release": "1.90.0",
+    "commit": "1159e78c4747b02ef996e55082b704c09b970588",
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "crates": {
+    "mp3lame-encoder": {
+      "version": "0.2.4",
+      "sourceCommit": "b0072a9e5d8e8316448b223a8ae5aa4c6fa6e5ec",
+      "license": "LGPL-3.0"
+    },
+    "mp3lame-sys": {
+      "version": "0.1.11",
+      "sourceCommit": "7a038452d3a1357529ad435485fba909d6001e1a",
+      "bundledLameVersion": "3.100",
+      "license": "LGPL-3.0"
+    },
+    "ruopus": {
+      "version": "0.1.2",
+      "sourceCommit": "b7aab670bce04eaa10731b152e9834b89a21cde3",
+      "license": "MIT",
+      "features": ["std"],
+      "defaultFeatures": false
+    }
+  },
+  "externalControls": {
+    "ffmpeg": {
+      "requiredEncoders": ["libmp3lame", "libopus"],
+      "minimumMajorVersion": 7,
+      "identityPolicy": "hash-and-version-attested-per-run"
+    }
+  }
+}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import wave
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import AsyncMock, patch
@@ -11,6 +12,7 @@ import pytest
 
 from pipecat.frames.frames import (
     AudioRawFrame,
+    EndFrame,
     ErrorFrame,
     StartFrame,
     TranscriptionFrame,
@@ -214,6 +216,50 @@ def test_modulate_top_level_text_parser_never_falls_back_to_utterances():
         )
         == ""
     )
+
+
+@pytest.mark.asyncio
+async def test_modulate_buffer_finalizes_reserved_wav_in_place():
+    processor = ModulateAsyncProcessor(
+        api_key="test-key",
+        session=object(),  # type: ignore[arg-type]
+    )
+    original_buffer = processor._buffer
+    pcm = b"\x01\x02" * (16_000 * 5)
+    observed: dict[str, object] = {}
+
+    async def inspect_wav(wav_source):
+        observed["sameBuffer"] = wav_source is original_buffer
+        with wave.open(wav_source, "rb") as reader:
+            observed["sampleRate"] = reader.getframerate()
+            observed["channels"] = reader.getnchannels()
+            observed["frames"] = reader.getnframes()
+            observed["pcm"] = reader.readframes(reader.getnframes())
+        return "done"
+
+    processor._transcribe_wav = inspect_wav  # type: ignore[method-assign]
+    processor.push_frame = AsyncMock()  # type: ignore[method-assign]
+    with patch(
+        "src.modulate_stt.FrameProcessor.process_frame",
+        new=AsyncMock(),
+    ):
+        await processor.process_frame(
+            AudioRawFrame(audio=pcm, sample_rate=16_000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
+        )
+        await processor.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
+
+    assert observed == {
+        "sameBuffer": True,
+        "sampleRate": 16_000,
+        "channels": 1,
+        "frames": 16_000 * 5,
+        "pcm": pcm,
+    }
+    assert original_buffer.closed
+    assert processor._buffer is not original_buffer
+    assert processor._buffer.tell() == 44
+    processor._buffer.close()
 
 
 def test_modulate_stream_url_is_raw_pcm_final_only_with_all_signals_disabled():

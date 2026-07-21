@@ -11,11 +11,50 @@ PERCENTILE_WEIGHTS = {
     "p95": 0.60,
 }
 
+PROVIDER_REPLAY_DURATION_SECONDS = (5, 15, 30, 60)
+PROVIDER_REPLAY_KPIS = (
+    "activation_received_to_final_text_observed",
+    "stop_requested_to_final_text_observed",
+)
+PROVIDER_REPLAY_WEIGHTS = {
+    "microsoft_local": 0.25,
+    "soniox_local": 0.30,
+    # Speechmatics is an independent fail-closed/non-regression gate. Keeping
+    # its score weight at zero preserves the existing Microsoft/Soniox score
+    # contribution while still requiring every exact Speechmatics series.
+    "speechmatics_local": 0.0,
+}
+
+
+def provider_replay_scenario_name(
+    provider_scenario: str,
+    duration_seconds: int,
+    kpi: str,
+) -> str:
+    if provider_scenario not in PROVIDER_REPLAY_WEIGHTS:
+        raise ValueError("provider replay scenario is not scoreable")
+    if duration_seconds not in PROVIDER_REPLAY_DURATION_SECONDS:
+        raise ValueError("provider replay duration is not scoreable")
+    if kpi not in PROVIDER_REPLAY_KPIS:
+        raise ValueError("provider replay KPI is not scoreable")
+    return f"{provider_scenario}_{duration_seconds}s_{kpi}"
+
+
+PROVIDER_REPLAY_SCENARIO_WEIGHTS = {
+    provider_replay_scenario_name(provider, duration, kpi): (
+        provider_weight
+        / len(PROVIDER_REPLAY_DURATION_SECONDS)
+        / len(PROVIDER_REPLAY_KPIS)
+    )
+    for provider, provider_weight in PROVIDER_REPLAY_WEIGHTS.items()
+    for duration in PROVIDER_REPLAY_DURATION_SECONDS
+    for kpi in PROVIDER_REPLAY_KPIS
+}
+
 SCENARIO_WEIGHTS = {
     "overlay_warm": 0.20,
     "overlay_cold": 0.10,
-    "microsoft_local_tail": 0.25,
-    "soniox_local_tail": 0.30,
+    **PROVIDER_REPLAY_SCENARIO_WEIGHTS,
     "app_ux": 0.15,
 }
 
@@ -43,6 +82,89 @@ def finite_positive(value: Any) -> float | None:
     if not math.isfinite(parsed) or parsed <= 0:
         return None
     return parsed
+
+
+def finite_non_negative(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        parsed = float(value)
+    elif isinstance(value, str):
+        try:
+            parsed = float(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    if not math.isfinite(parsed) or parsed < 0:
+        return None
+    return parsed
+
+
+def canonical_provider_replay_metric_names() -> tuple[str, ...]:
+    return tuple(
+        metric_name
+        for scenario in PROVIDER_REPLAY_SCENARIO_WEIGHTS
+        for metric_name in (
+            f"{scenario}_p50_ms",
+            f"{scenario}_p95_ms",
+        )
+    )
+
+
+def canonical_provider_replay_evidence_valid(metrics: dict[str, Any]) -> bool:
+    """Require complete, non-negative evidence for every provider-duration KPI.
+
+    Failure rates and sample counts stay provider- and duration-specific.  A
+    pooled aggregate is deliberately not accepted as a substitute.
+    """
+
+    for scenario in PROVIDER_REPLAY_SCENARIO_WEIGHTS:
+        for percentile in PERCENTILE_WEIGHTS:
+            if finite_positive(metrics.get(f"{scenario}_{percentile}_ms")) is None:
+                return False
+        failure_rate = finite_non_negative(metrics.get(f"{scenario}_failure_rate"))
+        sample_count = metrics.get(f"{scenario}_sample_count")
+        capture_attested = metrics.get(f"{scenario}_capture_attested")
+        if failure_rate is None or failure_rate != 0.0:
+            return False
+        if (
+            isinstance(sample_count, bool)
+            or not isinstance(sample_count, int)
+            or sample_count <= 0
+        ):
+            return False
+        if (
+            isinstance(capture_attested, bool)
+            or not isinstance(capture_attested, int)
+            or capture_attested != 1
+        ):
+            return False
+    return True
+
+
+def canonical_provider_replay_non_regression(
+    metrics: dict[str, Any],
+    baseline: dict[str, Any],
+) -> bool:
+    """Reject a candidate when any canonical provider-duration KPI regresses."""
+
+    for metric_name in canonical_provider_replay_metric_names():
+        candidate = finite_positive(metrics.get(metric_name))
+        reference = finite_positive(baseline.get(metric_name))
+        if candidate is None or reference is None or candidate > reference:
+            return False
+    return True
+
+
+def canonical_provider_replay_promotion_eligible(
+    metrics: dict[str, Any],
+    baseline: dict[str, Any],
+) -> bool:
+    return bool(
+        canonical_provider_replay_evidence_valid(metrics)
+        and canonical_provider_replay_non_regression(metrics, baseline)
+    )
 
 
 def load_baseline_metrics(repo_root: Path) -> dict[str, Any]:
@@ -84,10 +206,13 @@ def compute_scenario_score(
 
 
 def compute_local_wux(metrics: dict[str, Any], baseline: dict[str, Any]) -> float | str:
-    """Compute the B7 local-WUX geometric composite from all five scenarios.
+    """Compute local-WUX from UI and canonical visible-text latency.
 
-    Readiness and resource metrics are intentionally outside this scorer. A
-    missing, non-finite, or non-positive required p50/p95 value fails closed.
+    Provider-final tails are diagnostics only.  Provider replay contributes
+    through each exact provider x duration x canonical KPI series, so a short
+    sample cannot hide a long-sample regression (or vice versa).  Readiness and
+    resource metrics remain outside this scorer.  Missing, non-finite, or
+    non-positive required p50/p95 evidence fails closed.
     """
 
     weighted_log_sum = 0.0

@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-07-20
+Last verified: 2026-07-21
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -50,6 +50,10 @@ Backend and runtime:
   jobs, transcript history, mic control, uploads, logs, support bundles.
 - `src/pipeline.py`: STT pipeline orchestration, provider factory, analyzer
   cache, mic resolution, async/direct transcription.
+- `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact
+  provider/route/model audio-format registry, ffprobe container+codec
+  validation, pass-through-first batch selection, bounded ffmpeg preparation,
+  and task-scoped cleanup of generated upload artifacts.
 - `src/modulate_stt.py`: Modulate multilingual batch and streaming adapters.
   Both paths expose final transcript text only; they explicitly disable
   diarization, partials, emotion, accent, deepfake, and PII/PHI signals and
@@ -74,6 +78,8 @@ Backend and runtime:
 - `src/core/`: contracts, state machine, circuit breaker, logging, tracing.
 - `src/runtime/audio_frame_pipe.py`: Python decoder/validator for the Rust
   audio frame-pipe protocol.
+- `src/runtime/provider_http.py`: event-loop-owned reusable aiohttp provider
+  transport, bounded DNS/connection pooling, and privacy-safe request timing.
 - `src/native_overlay.py`: Python facade for the Tauri-owned recording overlay
   exposed through private shell IPC.
 - `src/main.py`: compatibility notice for the removed Python desktop UI; use
@@ -125,6 +131,22 @@ Frontend and shell:
   executable paths to hashes in diagnostics.
 - `Frontend/src-tauri/src/audio_frame_pipe.rs`: Rust encoder/validator for the
   audio sidecar binary frame protocol.
+- `Frontend/src-tauri/src/audio_codec.rs` and
+  `Frontend/src-tauri/src/audio_prepare.rs`: fail-closed capture-time audio
+  preparation contract and bounded worker. `wav_pcm16_virtual` is a
+  capture-lab-only virtual PCM16 WAV view over shared capture segments and must
+  advertise `productionReady=false` and `artifactExposed=false`; it is not a
+  provider upload artifact. `wav_pcm16_file_v1` is the production PCM16/WAV
+  writer: it streams into a shell-created bounded lease file during capture,
+  patches the RIFF header at finalization, and hands the validated file to the
+  Python backend for the exact Speechmatics batch upload. The backend must
+  release it through `audioCaptureArtifactRelease`; shell shutdown is the final
+  cleanup owner. Enable it only from a frozen `speechmatics_async` + `batch_v2`
+  + `enhanced` capability snapshot with verified `wav_pcm16`, the current
+  capability revision, and the default endpoint fingerprint; custom or stale
+  routes keep the existing PCM-spool fallback. Experimental codec feature
+  names are inert lab gates until a measured implementation is pinned and
+  promoted.
 - `Frontend/src-tauri/src/lib.rs`: Rust supervisor, Tauri commands, tray/menu,
   autostart, global hotkey, single instance, updater/process plugins.
 - `Frontend/src-tauri/src/shell_ipc.rs`: private backend-to-shell named-pipe
@@ -247,6 +269,12 @@ Packaging and scripts:
   the shell PID, and QPC integers. The managed backend must validate its direct
   parent PID, timestamp freshness, and the configured run before binding the
   marker to that session; Windows key dispatch remains diagnostic-only.
+  Installed provider replay must stop at `activation_armed`: the native shell
+  binds one exact run/sample/lane and only the actual hotkey callback or the
+  primary-button Tauri command may consume it. Replay hotkeys route to the
+  strict start endpoint, never through toggle interpretation. Missing QPC,
+  lane mismatch, duplicate activation, or an unarmed marker fails closed and
+  leaves the activation KPI unknown.
 - Rust owns Windows autostart, global hotkey registration, single-instance
   startup, tray/menu shell actions, and worker crash recovery. The supervisor
   must keep the named single-instance restore event: a second launch exits
@@ -410,6 +438,37 @@ Packaging and scripts:
   keys, authenticated URLs, request payloads, or transcript text. Keep full
   pairwise hot-path matrices in the latency metrics store rather than normal
   human-facing log messages.
+- Live-dictation latency traces use the canonical activation-to-visible-text
+  vocabulary in `src/core/hot_path_tracer.py`. Preserve distinct hotkey and
+  button activation markers, the primary
+  `activation_received_to_final_text_observed_ms` KPI, the secondary
+  `stop_requested_to_final_text_observed_ms` KPI, and non-speech overhead only
+  when an authoritative fixture duration is supplied. `final_text_observed`
+  is an external target-observer event bound by run/sample/session and QPC
+  identity; an injector callback or paste return is not proof that text became
+  visible. Missing markers remain missing/unknown and must never be synthesized
+  as zero.
+- Installed provider replay runs Microsoft, Soniox, and Speechmatics separately
+  at exactly 5, 15, 30, and 60 seconds. Speechmatics traverses the real
+  `speechmatics_async` Batch-v2 adapter/parser through a one-shot local raw
+  transport that fully validates the uploaded WAV and never performs network
+  I/O. Microsoft's one-shot transport likewise keeps the real Azure-MAI
+  adapter/parser but requires the frozen North Europe URL, API version, model,
+  locale, request definition, and `local-replay` credential sentinel. Before
+  activation it builds bounded references with the bundled ffmpeg; after stop
+  it decodes the actual uploaded MP3 and binds it exactly to the hash-verified
+  48-kHz PCM fixture plus at most two seconds of zero tail. Candidate evidence
+  must attest the preparation actually used, not only the requested switch:
+  capture-time fallbacks or failed media validation invalidate that replay sample.
+  Promotion evaluates both canonical KPIs for every
+  provider-duration series; it must fail closed when a series is missing,
+  invalid, failed, or slower than its matching baseline. Do not pool durations
+  or score the legacy provider-final tail. Non-speech overhead is numeric only
+  when fixture bytes, format, duration, and measurement phase are attested. The
+  final 2026-07-21 matched matrix passed 120/120 exact samples but found
+  canonical duration regressions for both candidates; keep Azure capture-time
+  MP3 and Speechmatics Rust WAV default-off unless newer matched evidence passes
+  the same no-regression contract.
 - Soniox Realtime transcript insertion uses only finalized transcript frames.
   Soniox owns semantic endpoint detection; local VAD may support diagnostics
   but must not force provider turn endpoints or transcript commits. A Live Mic
@@ -700,6 +759,15 @@ Packaging and scripts:
   or attach default-device metadata to a resolved favorite.
 - The Rust audio frame-pipe protocol is length-prefixed and versioned. Keep the
   Rust and Python header fixtures in sync when changing it.
+- A successful Rust capture stop ends with exactly one ordered, zero-payload
+  `AUDIO_FRAME_FLAG_END_OF_STREAM` control frame after every remaining PCM
+  block. Python validates that frame, waits for it after an acknowledged
+  sidecar stop, and reports missing EOS as a mid-session failure; pipe EOF or a
+  stop response alone is not proof that the last captured audio reached Python.
+  Keep Python audio acceptance open through that EOS and drain the downstream
+  audio queue before final provider shutdown. The sidecar may finalize an
+  optional preparation worker only after EOS and must retain ordered QPC
+  markers for last audio, capture stop, and encoder-tail start/completion.
 - Frame-pipe client connection waits must have a hard deadline. Live and
   synthetic capture pipes remain nonblocking after connection so a stalled
   Python reader cannot block the audio writer; Meeting relay output pipes may
@@ -707,6 +775,17 @@ Packaging and scripts:
 - Rust frame-pipe PCM is read into Python for downstream Pipecat/provider
   processing. If capture fails before the first frame, the recording fails
   visibly; do not reintroduce a Python capture fallback.
+- Optional capture-time preparation receives shared PCM segments only after the
+  authoritative frame-pipe write succeeds. Its bounded nonblocking queue may
+  invalidate and discard only the derived candidate on overflow, worker loss,
+  size overflow, or capture failure; it must never block capture or drop the
+  authoritative PCM stream. A production artifact may cross processes only
+  through the shell-created `wav_pcm16_file_v1` lease. Tauri validates the
+  exact path, lease ID, size, and RIFF/data lengths before ownership transfers;
+  Python validates the WAV again before opening it and releases the opaque
+  lease after upload. Never accept a caller-supplied artifact path or unlink a
+  leased file directly from Python. `wav_pcm16_file_v1` is production-capable
+  but remains an explicit Speechmatics opt-in after the installed A/B decision.
 - Preserve Rust audio stop-health diagnostics across all layers: sidecar stop
   reason, writer connection state, frames/bytes written, writer error, uptime,
   PID, exit status, reader-thread liveness, prewarm session counters, and
@@ -724,6 +803,37 @@ Packaging and scripts:
 
 ### Providers and Media
 
+- Batch audio capabilities are keyed by exact provider, route, and model family
+  in `src/core/provider_audio_formats.py`; batch and realtime capabilities are
+  separate. A generic OGG or WebM container claim never proves Opus support,
+  and capability lookup for unknown models, inactive routes, or declared custom
+  endpoints fails closed. Preserve the registry revision, verification date,
+  evidence reference, exact container+codec format, upload bound, and explicit
+  direct-pass-through allowlist.
+- File-backed direct STT probes both container and codec before selecting
+  provider input. Preserve an accepted original byte-for-byte before generating
+  a replacement, and generate only formats with an implemented preparation
+  command. Generated provider artifacts are task-scoped, size-checked, and
+  deleted when their async context exits. File/YouTube jobs persist the frozen
+  provider route, exact format, capability id/revision, selection mode, and
+  implementation before the provider request; recovery must not switch any of
+  those fields silently.
+- Caption-first YouTube jobs persist the audio STT route only as
+  `plannedFallbackRoute`. They select one actual `executionRoute` after caption
+  resolution, and `executedRoute` must later match that selection. A successful
+  caption run must never be reported as if the planned billable audio fallback
+  executed.
+- Direct aiohttp provider calls created by the production controller share one
+  `ProviderHttpTransport` on the owning asyncio event loop. Keep its bounded
+  Happy-Eyeballs/DNS/connection pool and close it during backend shutdown.
+  Diagnostics may retain only a bounded provider label, opaque flow id, hashed
+  origin, connection/DNS outcome, chunk counts, and timings; never URL paths,
+  queries, headers, filenames, request bodies, or transcripts. Once
+  `request_started` makes remote acceptance ambiguous, or a provider result was
+  received but its durable provider-stage write cannot be confirmed, automatic
+  job retry is disabled so billable work is not replayed. A durable recovered
+  provider StageResult remains the only safe way to continue without a second
+  provider call.
 - Standard backend builds pin `pipecat-ai[silero]==1.5.0`. Provider factories
   must use the Pipecat 1.5 `Settings` API; do not restore deprecated
   `InputParams`, `LiveOptions`, or pre-1.5 fallback paths. Synthetic VAD turn
@@ -860,7 +970,9 @@ Packaging and scripts:
 - For Azure MAI 1.5, `SCRIBER_CUSTOM_VOCAB` is sent as `phraseList`.
 - Azure MAI upload preparation is latency-first: existing MP3 uploads directly,
   non-MP3 inputs are transcoded to mono 64k MP3, and live PCM buffers are encoded
-  to MP3 before upload. Do not restore WAV upload without measured provider need.
+  to MP3 before upload. The shipped control remains post-stop FFmpeg MP3;
+  capture-time FFmpeg MP3 is production-safe but default-off after its mixed
+  canonical A/B result. Do not restore WAV upload without measured provider need.
 - AssemblyAI defaults to Universal-3.5-Pro for both async/batch and realtime
   paths. Keep `SCRIBER_ASSEMBLYAI_ASYNC_MODEL` and
   `SCRIBER_ASSEMBLYAI_RT_MODEL` as temporary compatibility overrides, but do not
@@ -1227,7 +1339,8 @@ Already implemented and should not be regressed:
 - Lazy STT provider imports.
 - Frozen-backend size pruning keeps PyInstaller `Analysis(optimize=0)` and real
   assertion execution, then recursively removes only compiler-owned docstrings
-  from the retained code cache. Preserve the Deepgram `listen.v1` runtime
+  from the retained code cache. Preserve pycparser/PLY grammar docstrings as
+  executable parser data. Preserve the Deepgram `listen.v1` runtime
   allowlist and the exclusions for unused Deepgram surfaces, OpenAI SDK
   Realtime/Conversations/Webhooks implementation modules, and synchronous grpc
   helpers. The frozen gate must initialize every supported provider path, reject
@@ -1247,6 +1360,10 @@ Already implemented and should not be regressed:
 - Cached VAD/analyzer setup.
 - No-client WebSocket broadcast fast path.
 - About 60 Hz audio-level throttling.
+- Canonical activation-to-visible-text tracing with separate hotkey/button
+  origins, externally observed visible-text completion, primary/secondary KPI
+  helpers, and p50/p90/p95/max/variance/failure-rate aggregation for controlled
+  provider replay evidence.
 - Canvas/RAF waveform drawing instead of per-frame React state.
 - Buffered transcript appends for long live sessions.
 - Paginated transcript endpoints and virtualized history lists.
@@ -1263,6 +1380,11 @@ Already implemented and should not be regressed:
 - Coalesced `history_updated` events.
 - Chunked/offloaded upload writes and export/cleanup work where practical.
 - JobStore and latency metrics store connection reuse.
+- App-owned aiohttp provider connection reuse with DNS caching and bounded
+  privacy-safe connection/chunk timing.
+- Provider-aware file preparation is pass-through first and records its exact
+  format/capability decision before upload; generated derivatives are cleaned
+  without becoming canonical source evidence.
 - CORS origin decision cache.
 - Primary-tab code for Live Mic, Meetings, YouTube, File, and Settings is loaded eagerly
   in the local WebView. Do not restore route-level Suspense blanks for these

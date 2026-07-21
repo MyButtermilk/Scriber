@@ -36,12 +36,27 @@ from src.audio_devices import (
     rank_hostapi,
 )
 from src.config import Config
+from src.audio_prepare import (
+    PreparedProviderAudio,
+    audio_preparation_implementation,
+    prepare_provider_audio_file,
+)
 from src.device_monitor import DeviceMonitor, devices_contain_name, get_device_guard_lock
 from src.core.provider_capabilities import (
     get_capabilities,
     meeting_max_duration_seconds,
     supports_direct_file_upload,
     supports_five_hour_meeting,
+)
+from src.core.provider_audio_formats import (
+    AudioInputFormat,
+    ProviderAudioRouteKind,
+    SPEECHMATICS_BATCH_DEFAULT_BASE_URL,
+    resolve_batch_provider_audio_capabilities,
+    select_audio_input_format,
+    speechmatics_batch_endpoint_is_custom,
+    speechmatics_realtime_base_url,
+    speechmatics_realtime_endpoint_is_custom,
 )
 from src.core.error_taxonomy import ErrorCategory, classify_error_message, is_retryable
 from src.core.hot_path_tracer import HotPathTracer
@@ -57,6 +72,7 @@ from src.core.rest_contracts import (
     validate_provider_replay_arm_request_payload,
     validate_provider_replay_prepare_request_payload,
     validate_provider_replay_status_query,
+    validate_tauri_activation_marker_request_payload,
     validate_tauri_hotkey_marker_request_payload,
 )
 from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
@@ -87,7 +103,14 @@ from src.core.ws_contracts import (
     validate_event_payload,
     version_event_payload,
 )
-from src.data.job_store import JobRecord, JobStatus, JobStore, JobType
+from src.data.job_store import (
+    PROVIDER_REQUEST_MAY_BE_COMMITTED,
+    PROVIDER_REQUEST_RESULT_DURABLE,
+    JobRecord,
+    JobStatus,
+    JobStore,
+    JobType,
+)
 from src.data.latency_metrics_store import LatencyMetricsStore
 from src.data.audio_admission_store import (
     AudioAdmissionClaim,
@@ -123,6 +146,10 @@ from src.runtime.env_values import env_float as _safe_env_float, env_int as _saf
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_duration_args, webm_opus_transcode_args
 from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.runtime.provider_dependencies import import_provider_runtime_module
+from src.runtime.provider_http import (
+    ProviderHttpTransport,
+    ProviderRequestAcceptanceUnknown,
+)
 from src.runtime.shell_ipc import (
     available as shell_ipc_available,
     call_shell_ipc,
@@ -164,6 +191,7 @@ from src.speaker_intelligence import WeSpeakerModel
 from src.soniox_region import (
     normalize_soniox_region,
     soniox_realtime_websocket_url,
+    soniox_rest_api_base_url,
 )
 from src.speaker_enrollment import VoiceEnrollmentCapture, assess_voice_sample
 from src.speaker_diarization import (
@@ -174,6 +202,9 @@ from src.speaker_diarization import (
 )
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.provider_replay import (
+    PROVIDER_REPLAY_AZURE_REGION,
+    PROVIDER_REPLAY_FIXTURE_PCM_PATH_ENV,
+    PROVIDER_REPLAY_FIXTURE_PCM_SHA256_ENV,
     LocalSonioxReplayServer,
     ProviderReplayCapacityError,
     ProviderReplayConflict,
@@ -183,6 +214,9 @@ from src.runtime.provider_replay import (
     ProviderReplayRegistry,
     ProviderReplayRuntimeGate,
     create_azure_mai_replay_transport,
+    create_speechmatics_batch_replay_transport,
+    prewarm_azure_mai_replay_validation,
+    provider_replay_fixture_duration_ms_from_environment,
 )
 from src.runtime.retry_scheduler import RetryScheduler
 from src.runtime.debug_logs import clear_debug_logs, collect_debug_logs
@@ -905,33 +939,6 @@ def _request_has_valid_session_token(request: web.Request, token: str | None = N
         return False
     provided = _request_session_token(request)
     return bool(provided) and hmac.compare_digest(provided, expected)
-
-
-async def _tauri_hotkey_marker_from_request(
-    request: web.Request,
-) -> dict[str, Any] | None:
-    """Read one benchmark marker without widening normal Live Mic input."""
-
-    if not request.can_read_body or request.content_length == 0:
-        return None
-    if request.content_length is not None and request.content_length > 2048:
-        raise RESTContractError("Live Mic request body exceeds the benchmark marker limit")
-    try:
-        payload = await request.json()
-    except Exception as exc:
-        raise RESTContractError("Live Mic request body must be JSON") from exc
-    if not isinstance(payload, dict):
-        raise RESTContractError("Live Mic request body must be a dict")
-    if "benchmarkHotkeyMarker" not in payload:
-        # Existing clients historically sent no semantic body. Preserve that
-        # behavior while making the new benchmark field strict when present.
-        return None
-    return validate_tauri_hotkey_marker_request_payload(
-        payload,
-        configured_run_id=os.getenv(_TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV),
-        expected_parent_pid=os.getppid(),
-        now_ns=time.perf_counter_ns(),
-    )
 
 
 def _session_token_required() -> bool:
@@ -2347,6 +2354,47 @@ class TranscriptPersistenceError(RuntimeError):
     """Raised when a critical transcript save cannot be confirmed."""
 
 
+class ProviderResultReconciliationRequired(RuntimeError):
+    """A completed provider result must not be replayed automatically."""
+
+    provider_request_may_be_committed = True
+
+    def __init__(self, provider: str) -> None:
+        self.provider = str(provider or "provider").strip().lower()[:48] or "provider"
+        super().__init__(
+            f"{self.provider} returned a result; automatic provider replay is disabled"
+        )
+
+
+def _retry_error_after_provider_result(
+    provider: str,
+    error: Exception,
+    *,
+    provider_result_received: bool,
+    provider_result_attempt_id: str = "",
+) -> Exception:
+    """Preserve no-replay errors once billable provider work completed."""
+
+    if not provider_result_received or getattr(
+        error, "provider_request_may_be_committed", False
+    ):
+        return error
+    attempt_id = str(provider_result_attempt_id or "").strip()
+    try:
+        # Preserve the actionable error type/message for UI and diagnostics;
+        # the marker changes only automatic retry policy.
+        error.provider_request_may_be_committed = True  # type: ignore[attr-defined]
+        if attempt_id:
+            error.provider_result_attempt_id = attempt_id  # type: ignore[attr-defined]
+        return error
+    except (AttributeError, TypeError):
+        wrapped = ProviderResultReconciliationRequired(provider)
+        if attempt_id:
+            wrapped.provider_result_attempt_id = attempt_id
+        wrapped.__cause__ = error
+        return wrapped
+
+
 class _LiveMicStartAborted(RuntimeError):
     """Internal control flow for a user-cancelled in-flight start transition."""
 
@@ -3515,6 +3563,7 @@ class ScriberWebController:
         *,
         job_store: JobStore | None = None,
         latency_metrics_store: LatencyMetricsStore | None = None,
+        provider_http_transport: ProviderHttpTransport | None = None,
     ):
         self._loop = loop
         self._clients: set[web.WebSocketResponse] = set()
@@ -3547,7 +3596,19 @@ class ScriberWebController:
         self._resume_jobs_lock = asyncio.Lock()
         self._shutting_down = False
         self._job_store = job_store or JobStore()
+        # Startup recovery must never sweep a job accepted after the HTTP
+        # listener opens. Capture the exact pre-listener RUNNING set while the
+        # controller is constructed and use it as an immutable recovery
+        # allowlist later in background initialization.
+        self._startup_running_job_ids = frozenset(
+            self._job_store.list_running_job_ids()
+        )
         self._job_ids_by_transcript: dict[str, str] = {}
+        # Scheduler-owned immutable routes are handed to the worker without
+        # widening the long-standing private runner call signature.  This also
+        # keeps test and extension mocks that implement the legacy signature
+        # source-compatible.
+        self._scheduled_frozen_routes: dict[str, FrozenTranscriptionRoute] = {}
         self._job_id_cache_limit = _env_int(
             "SCRIBER_JOB_ID_CACHE_LIMIT",
             1000,
@@ -3555,6 +3616,9 @@ class ScriberWebController:
             maximum=10_000,
         )
         self._latency_metrics_store = latency_metrics_store or LatencyMetricsStore()
+        self._provider_http_transport = (
+            provider_http_transport or ProviderHttpTransport()
+        )
         self._metrics_persist_tasks: set[asyncio.Task] = set()
         self._transcript_persist_tasks: set[asyncio.Task] = set()
         self._job_max_attempts = _env_int("SCRIBER_JOB_MAX_ATTEMPTS", 3, minimum=1, maximum=20)
@@ -3914,6 +3978,9 @@ class ScriberWebController:
                 self._speaker_model,
                 self._speaker_diarizer,
                 self._transcript_artifacts,
+                provider_http_transport=getattr(
+                    self, "_provider_http_transport", None
+                ),
             )
             for meeting_id in meeting_ids:
                 await finalizer.resume_pending_pcm_purge(meeting_id)
@@ -5258,6 +5325,7 @@ class ScriberWebController:
         if not transcript_id or not job_id:
             return
         self._job_ids_by_transcript.pop(transcript_id, None)
+        self._scheduled_frozen_routes.pop(transcript_id, None)
         self._job_ids_by_transcript[transcript_id] = job_id
         while len(self._job_ids_by_transcript) > self._job_id_cache_limit:
             evict_id = next(
@@ -5365,11 +5433,717 @@ class ScriberWebController:
     async def _set_job_running_async(self, transcript_id: str) -> None:
         await asyncio.to_thread(self._set_job_running, transcript_id)
 
+    def _background_job_id(self, transcript_id: str) -> str:
+        job_id = self._job_ids_by_transcript.get(transcript_id)
+        if not job_id:
+            raise TranscriptPersistenceError(
+                "Background job is missing persisted lifecycle state"
+            )
+        return job_id
+
+    async def _mark_job_provider_request_may_be_committed(
+        self,
+        rec: TranscriptRecord,
+        *,
+        provider: str,
+    ) -> bool:
+        """Persist the no-replay fence before remote audio can leave Scriber."""
+
+        if str(provider or "").strip().lower() == "onnx_local":
+            return False
+        job_id = self._job_ids_by_transcript.get(rec.id)
+        if not job_id:
+            # Compatibility for focused internal tests and non-job helper
+            # callers. Production schedulers have already crossed
+            # ``_set_job_running_async``, which requires this mapping.
+            return False
+        updated = await asyncio.to_thread(
+            self._job_store.mark_provider_request_may_be_committed,
+            job_id,
+        )
+        if not updated:
+            raise TranscriptPersistenceError(
+                "Could not persist the provider request acceptance boundary"
+            )
+        return True
+
+    async def _mark_job_provider_request_safe_to_retry(
+        self,
+        rec: TranscriptRecord,
+        *,
+        provider: str,
+    ) -> bool:
+        if str(provider or "").strip().lower() == "onnx_local":
+            return False
+        job_id = self._job_ids_by_transcript.get(rec.id)
+        if not job_id:
+            return False
+        updated = await asyncio.to_thread(
+            self._job_store.mark_provider_request_safe_to_retry,
+            job_id,
+        )
+        if not updated:
+            raise ProviderRequestAcceptanceUnknown(provider)
+        return True
+
+    async def _mark_job_provider_result_durable(
+        self,
+        rec: TranscriptRecord,
+        *,
+        provider: str,
+        attempt_id: str,
+    ) -> bool:
+        if str(provider or "").strip().lower() == "onnx_local":
+            return False
+        job_id = self._job_ids_by_transcript.get(rec.id)
+        if not job_id:
+            return False
+        updated = await asyncio.to_thread(
+            self._job_store.mark_provider_result_durable,
+            job_id,
+            attempt_id=attempt_id,
+        )
+        if not updated:
+            raise TranscriptPersistenceError(
+                "Could not persist the durable provider-result boundary"
+            )
+        return True
+
     def _provider_candidates(self) -> list[str]:
         return self._provider_router.candidates()
 
     def _select_available_provider(self) -> str:
         return self._provider_router.select()
+
+    def _freeze_background_provider_route(
+        self,
+        *,
+        workload: str,
+        provider: str,
+        language: str,
+        model: str | None = None,
+        transport: str | None = None,
+        provider_route: str | None = None,
+        audio_input_format: str | None = None,
+        audio_selection_mode: str | None = None,
+        audio_preparation_implementation: str | None = None,
+        provider_region: str | None = None,
+        provider_endpoint_sha256: str | None = None,
+    ) -> FrozenTranscriptionRoute:
+        local_status = self._speaker_diarizer.status()
+        provider_key = str(provider or "").strip().lower()
+        resolved_region = ""
+        endpoint_identity = ""
+        if provider_key in {"soniox", "soniox_async"}:
+            resolved_region = normalize_soniox_region(
+                provider_region or Config.SONIOX_REGION
+            )
+            endpoint_identity = soniox_rest_api_base_url(resolved_region).rstrip("/")
+        elif provider_key == "azure_mai":
+            resolved_region = str(
+                provider_region or getattr(Config, "AZURE_MAI_REGION", "northeurope")
+            ).strip().lower()
+            endpoint_identity = f"azure-mai-region:{resolved_region}"
+        elif provider_key == "speechmatics":
+            endpoint_identity = speechmatics_realtime_base_url(
+                os.getenv("SPEECHMATICS_RT_URL")
+            )
+        elif provider_key == "speechmatics_async":
+            endpoint_identity = os.getenv(
+                "SCRIBER_SPEECHMATICS_BATCH_BASE_URL",
+                SPEECHMATICS_BATCH_DEFAULT_BASE_URL,
+            ).rstrip("/")
+        elif provider_key == "groq":
+            endpoint_identity = "https://api.groq.com/openai/v1"
+        resolved_endpoint_sha256 = (
+            hashlib.sha256(endpoint_identity.encode("utf-8")).hexdigest()
+            if endpoint_identity
+            else ""
+        )
+        expected_endpoint_sha256 = str(
+            provider_endpoint_sha256 or ""
+        ).strip().lower()
+        if (
+            expected_endpoint_sha256
+            and expected_endpoint_sha256 != resolved_endpoint_sha256
+        ):
+            raise TranscriptPersistenceError(
+                "Persisted provider endpoint no longer matches the frozen route"
+            )
+        custom_endpoint = (
+            provider_key == "speechmatics"
+            and speechmatics_realtime_endpoint_is_custom(
+                os.getenv("SPEECHMATICS_RT_URL")
+            )
+        ) or (
+            provider_key == "speechmatics_async"
+            and speechmatics_batch_endpoint_is_custom(
+                os.getenv("SCRIBER_SPEECHMATICS_BATCH_BASE_URL")
+            )
+        )
+        return freeze_provider_route(
+            workload=workload,
+            provider=provider,
+            language=language,
+            model=model,
+            transport=transport,
+            provider_route=provider_route,
+            audio_input_format=audio_input_format,
+            audio_selection_mode=audio_selection_mode,
+            audio_preparation_implementation=(
+                audio_preparation_implementation
+            ),
+            custom_endpoint=custom_endpoint,
+            provider_region=resolved_region,
+            provider_endpoint_sha256=resolved_endpoint_sha256,
+            diarization_requested=True,
+            local_worker_manifest={
+                "enabled": bool(Config.SPEAKER_DIARIZATION_FALLBACK_ENABLED),
+                "engine": "sherpa-onnx",
+                "componentPresent": bool(local_status.get("installed")),
+                "workerVersion": str(
+                    local_status.get("workerVersion") or "unknown"
+                ),
+            },
+        )
+
+    @staticmethod
+    def _job_execution_route(
+        route: FrozenTranscriptionRoute,
+        *,
+        prepared: PreparedProviderAudio | None = None,
+    ) -> dict[str, Any]:
+        vocabulary_terms = [
+            item.strip() for item in route.custom_vocab.split(",") if item.strip()
+        ]
+        safe: dict[str, Any] = {
+            "provider": route.provider,
+            "providerRoute": route.provider_route,
+            "model": route.model,
+            "transport": route.transport,
+            "language": route.language,
+            "audioInputFormat": (
+                route.audio_input_format.value
+                if route.audio_input_format is not None
+                else None
+            ),
+            "providerAudioCapabilityId": (
+                route.provider_audio_capability_id or None
+            ),
+            "providerAudioCapabilityRevision": (
+                route.provider_audio_capability_revision or None
+            ),
+            "audioInputFormatVerified": route.audio_input_format_verified,
+            "audioSelectionMode": (
+                route.audio_selection_mode.value
+                if route.audio_selection_mode is not None
+                else None
+            ),
+            "audioPreparationImplementation": (
+                route.audio_preparation_implementation or None
+            ),
+            "customVocabularyPresent": bool(vocabulary_terms),
+            "customVocabularyCount": len(vocabulary_terms),
+            "customVocabularySha256": (
+                hashlib.sha256(route.custom_vocab.encode("utf-8")).hexdigest()
+                if vocabulary_terms
+                else None
+            ),
+            "providerRegion": route.provider_region or None,
+            "providerEndpointSha256": (
+                route.provider_endpoint_sha256 or None
+            ),
+        }
+        if prepared is not None:
+            safe.update(prepared.frozen_request_options())
+        return safe
+
+    def _persisted_job_execution_route(
+        self,
+        transcript_id: str,
+        *,
+        include_planned_fallback: bool = False,
+    ) -> dict[str, Any] | None:
+        job_id = self._job_ids_by_transcript.get(transcript_id)
+        if not job_id:
+            return None
+        job = self._job_store.get(job_id)
+        if job is None:
+            return None
+        route = job.payload.get("executionRoute")
+        if not isinstance(route, dict) and include_planned_fallback:
+            route = job.payload.get("plannedFallbackRoute")
+        return dict(route) if isinstance(route, dict) else None
+
+    @staticmethod
+    def _persisted_endpoint_evidence_complete(persisted: Any) -> bool:
+        """Require endpoint identity for routes whose destination can drift."""
+
+        if not isinstance(persisted, dict):
+            return False
+        provider = str(persisted.get("provider") or "").strip().lower()
+        endpoint_bound = {
+            "soniox",
+            "soniox_async",
+            "azure_mai",
+            "groq",
+            "speechmatics",
+            "speechmatics_async",
+        }
+        if provider not in endpoint_bound:
+            return True
+        endpoint_sha256 = str(
+            persisted.get("providerEndpointSha256") or ""
+        ).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", endpoint_sha256):
+            return False
+        if provider in {"soniox", "soniox_async", "azure_mai"}:
+            return bool(str(persisted.get("providerRegion") or "").strip())
+        return True
+
+    @staticmethod
+    def _persisted_route_matches_recovery_snapshot(
+        persisted: dict[str, Any],
+        route: FrozenTranscriptionRoute,
+        recovery: RecoveryBundle,
+    ) -> bool:
+        """Bind a paid durable result to the exact selected job route."""
+
+        snapshot = recovery.route_snapshot
+        core_matches = all(
+            (
+                snapshot.workload == route.workload,
+                snapshot.source_track == route.source_track,
+                snapshot.provider == route.provider,
+                snapshot.model == route.model,
+                snapshot.transport == str(persisted.get("transport") or ""),
+                snapshot.language == (str(persisted.get("language") or "") or "auto"),
+                snapshot.response_shape == route.response_shape,
+                snapshot.timestamp_mode == route.timestamp_mode,
+                snapshot.diarization_mode == route.diarization_mode,
+                snapshot.parser_id == route.parser_id,
+                snapshot.parser_version == route.parser_version,
+                snapshot.local_worker_manifest == dict(route.local_worker_manifest or {}),
+            )
+        )
+        if not core_matches:
+            return False
+        options = snapshot.request_options
+        expected_options = {
+            "providerRoute": persisted.get("providerRoute") or None,
+            "audioInputFormat": persisted.get("audioInputFormat") or None,
+            "providerAudioCapabilityId": (
+                persisted.get("providerAudioCapabilityId") or None
+            ),
+            "providerAudioCapabilityRevision": (
+                persisted.get("providerAudioCapabilityRevision") or None
+            ),
+            "audioInputFormatVerified": persisted.get("audioInputFormatVerified"),
+            "audioSelectionMode": persisted.get("audioSelectionMode") or None,
+            "audioPreparationImplementation": (
+                persisted.get("audioPreparationImplementation") or None
+            ),
+            "customVocabularyPresent": bool(
+                persisted.get("customVocabularyPresent", False)
+            ),
+            "customVocabularyCount": int(
+                persisted.get("customVocabularyCount", 0) or 0
+            ),
+            "customVocabularySha256": (
+                persisted.get("customVocabularySha256") or None
+            ),
+            "providerRegion": persisted.get("providerRegion") or None,
+            "providerEndpointSha256": (
+                persisted.get("providerEndpointSha256") or None
+            ),
+            "speakerDiarizationRequested": route.diarization_mode != "disabled",
+        }
+        return all(options.get(key) == value for key, value in expected_options.items())
+
+    @staticmethod
+    def _persisted_job_route_matches_bundle(
+        persisted: Any,
+        recovery: RecoveryBundle,
+    ) -> bool:
+        """Compare a job's privacy-safe route evidence with one exact stage."""
+
+        if not isinstance(persisted, dict):
+            return False
+        required_vocab = {
+            "customVocabularyPresent",
+            "customVocabularyCount",
+            "customVocabularySha256",
+        }
+        if (
+            not required_vocab.issubset(persisted)
+            or not ScriberWebController._persisted_endpoint_evidence_complete(
+                persisted
+            )
+        ):
+            return False
+        snapshot = recovery.route_snapshot
+        if not all(
+            (
+                snapshot.provider == str(persisted.get("provider") or ""),
+                snapshot.model == str(persisted.get("model") or ""),
+                snapshot.transport == str(persisted.get("transport") or ""),
+                snapshot.language
+                == (str(persisted.get("language") or "") or "auto"),
+            )
+        ):
+            return False
+        options = snapshot.request_options
+        expected = {
+            "providerRoute": persisted.get("providerRoute") or None,
+            "audioInputFormat": persisted.get("audioInputFormat") or None,
+            "providerAudioCapabilityId": (
+                persisted.get("providerAudioCapabilityId") or None
+            ),
+            "providerAudioCapabilityRevision": (
+                persisted.get("providerAudioCapabilityRevision") or None
+            ),
+            "audioInputFormatVerified": persisted.get("audioInputFormatVerified"),
+            "audioSelectionMode": persisted.get("audioSelectionMode") or None,
+            "audioPreparationImplementation": (
+                persisted.get("audioPreparationImplementation") or None
+            ),
+            "customVocabularyPresent": persisted.get("customVocabularyPresent"),
+            "customVocabularyCount": persisted.get("customVocabularyCount"),
+            "customVocabularySha256": (
+                persisted.get("customVocabularySha256") or None
+            ),
+            "providerRegion": persisted.get("providerRegion") or None,
+            "providerEndpointSha256": (
+                persisted.get("providerEndpointSha256") or None
+            ),
+        }
+        return all(options.get(key) == value for key, value in expected.items())
+
+    def _provider_result_bundle_for_attempt(
+        self,
+        attempt_id: str,
+    ) -> RecoveryBundle:
+        """Load exact paid evidence, including an already committed attempt."""
+
+        attempt = self._transcript_artifacts.require_attempt(attempt_id)
+        if attempt.state in {
+            AttemptState.PROVIDER_RESULT_READY,
+            AttemptState.DIARIZING,
+            AttemptState.CANONICALIZING,
+            AttemptState.COMMITTING,
+        }:
+            return self._transcript_artifacts.get_recovery_bundle(attempt_id)
+        if attempt.state != AttemptState.COMPLETED:
+            raise TranscriptPersistenceError(
+                "Bound provider result is no longer locally recoverable"
+            )
+        snapshot = self._transcript_artifacts.get_route_snapshot(attempt_id)
+        stage = self._transcript_artifacts.get_stage_result(attempt_id)
+        head = self._transcript_artifacts.get_head(attempt.transcript_id)
+        artifact = (
+            self._transcript_artifacts.get_artifact(head.artifact_id)
+            if head is not None
+            else None
+        )
+        if (
+            snapshot is None
+            or stage is None
+            or artifact is None
+            or artifact.attempt_id != attempt_id
+        ):
+            raise TranscriptPersistenceError(
+                "Completed provider result is missing its canonical artifact"
+            )
+        return RecoveryBundle(
+            attempt=attempt,
+            route_snapshot=snapshot,
+            stage_result=stage,
+        )
+
+    async def _provider_result_bundle_for_attempt_async(
+        self,
+        attempt_id: str,
+    ) -> RecoveryBundle:
+        return await asyncio.to_thread(
+            self._provider_result_bundle_for_attempt,
+            attempt_id,
+        )
+
+    async def _recover_bound_provider_result(
+        self,
+        rec: TranscriptRecord,
+        route: FrozenTranscriptionRoute,
+    ) -> str | None:
+        """Finish exactly the paid attempt bound to this job, without source I/O."""
+
+        job_id = self._job_ids_by_transcript.get(rec.id)
+        if not job_id:
+            return None
+        job = await asyncio.to_thread(self._job_store.get, job_id)
+        if (
+            job is None
+            or job.provider_request_attempt != job.attempts
+            or job.provider_request_state != PROVIDER_REQUEST_RESULT_DURABLE
+        ):
+            return None
+        attempt_id = job.provider_result_attempt_id
+        if not attempt_id:
+            raise TranscriptPersistenceError(
+                "Durable provider result is missing its exact attempt binding"
+            )
+        persisted = job.payload.get("executionRoute")
+        if not isinstance(persisted, dict):
+            raise TranscriptPersistenceError(
+                "Durable provider result is missing its frozen execution route"
+            )
+        bundle = await self._provider_result_bundle_for_attempt_async(attempt_id)
+        if (
+            bundle.attempt.transcript_id != rec.id
+            or not self._persisted_route_matches_recovery_snapshot(
+                persisted,
+                route,
+                bundle,
+            )
+        ):
+            raise TranscriptPersistenceError(
+                "Durable provider result does not match the frozen job route"
+            )
+        if bundle.attempt.state == AttemptState.COMPLETED:
+            head = await asyncio.to_thread(
+                self._transcript_artifacts.get_head,
+                rec.id,
+            )
+            artifact = (
+                await asyncio.to_thread(
+                    self._transcript_artifacts.get_artifact,
+                    head.artifact_id,
+                )
+                if head is not None
+                else None
+            )
+            if artifact is None or artifact.attempt_id != attempt_id:
+                raise TranscriptPersistenceError(
+                    "Completed provider result is not the canonical transcript head"
+                )
+            content = self._transcript_artifacts.render_legacy_content(
+                artifact.segments
+            )
+            rec.replace_content(content)
+        else:
+            attempt, owner, claimed = await self._begin_transcript_artifact_async(
+                rec,
+                route,
+                recovery_attempt_id=attempt_id,
+            )
+            if claimed is None or claimed.attempt.id != attempt_id:
+                raise TranscriptPersistenceError(
+                    "Exact provider-result recovery claim was not honored"
+                )
+            content = await self._commit_transcript_artifact_async(
+                rec,
+                attempt=attempt,
+                owner=owner,
+                transcript_text=claimed.stage_result.transcript_text,
+                units=claimed.stage_result.units,
+                evidence=claimed.stage_result.evidence,
+            )
+        await self._record_job_executed_route(rec, route)
+        return content
+
+    async def _select_job_execution_route(
+        self,
+        rec: TranscriptRecord,
+        route: FrozenTranscriptionRoute,
+        *,
+        prepared: PreparedProviderAudio | None = None,
+    ) -> None:
+        job_id = self._job_ids_by_transcript.get(rec.id)
+        if not job_id:
+            raise TranscriptPersistenceError(
+                "Background job is missing its frozen execution route"
+            )
+        selected = self._job_execution_route(route, prepared=prepared)
+        updated = await asyncio.to_thread(
+            self._job_store.freeze_execution_route,
+            job_id,
+            selected,
+        )
+        if not updated:
+            raise TranscriptPersistenceError(
+                "Background job execution route changed before provider upload"
+            )
+
+    async def _record_job_executed_route(
+        self,
+        rec: TranscriptRecord,
+        route: FrozenTranscriptionRoute,
+        *,
+        prepared: PreparedProviderAudio | None = None,
+    ) -> None:
+        job_id = self._job_ids_by_transcript.get(rec.id)
+        if not job_id:
+            raise TranscriptPersistenceError(
+                "Background job is missing its selected execution route"
+            )
+        executed = self._job_execution_route(route, prepared=prepared)
+        updated = await asyncio.to_thread(
+            self._job_store.record_executed_route,
+            job_id,
+            executed,
+        )
+        if not updated:
+            raise TranscriptPersistenceError(
+                "Background job executed route does not match its frozen selection"
+            )
+
+    async def _finalize_job_execution_route(
+        self,
+        rec: TranscriptRecord,
+        route: FrozenTranscriptionRoute,
+        prepared: PreparedProviderAudio,
+    ) -> None:
+        await self._select_job_execution_route(rec, route, prepared=prepared)
+
+    async def _load_or_freeze_background_route(
+        self,
+        rec: TranscriptRecord,
+        *,
+        workload: str,
+        allow_unready_provider: bool = False,
+    ) -> FrozenTranscriptionRoute:
+        persisted = await asyncio.to_thread(
+            self._persisted_job_execution_route,
+            rec.id,
+            include_planned_fallback=(
+                workload == "youtube" and allow_unready_provider
+            ),
+        )
+        if persisted is None:
+            provider = self._select_available_provider()
+            route = self._freeze_background_provider_route(
+                workload=workload,
+                provider=provider,
+                language=rec.language,
+            )
+            job_id = self._job_ids_by_transcript.get(rec.id)
+            if not job_id or not await asyncio.to_thread(
+                self._job_store.freeze_execution_route,
+                job_id,
+                self._job_execution_route(route),
+            ):
+                raise TranscriptPersistenceError(
+                    "Could not freeze the background provider route"
+                )
+        else:
+            provider = str(persisted.get("provider") or "").strip().lower()
+            model = str(persisted.get("model") or "").strip()
+            if not provider or not model:
+                raise TranscriptPersistenceError(
+                    "Persisted background provider route is incomplete"
+                )
+            vocabulary_evidence_fields = {
+                "customVocabularyPresent",
+                "customVocabularyCount",
+                "customVocabularySha256",
+            }
+            if not vocabulary_evidence_fields.issubset(persisted):
+                # Jobs created before vocabulary evidence was part of the
+                # frozen route cannot prove which request semantics were used.
+                # Treat that as unknown instead of silently equating it with
+                # an empty current vocabulary and risking a changed upload.
+                raise TranscriptPersistenceError(
+                    "Persisted provider vocabulary evidence is incomplete"
+                )
+            if not self._persisted_endpoint_evidence_complete(persisted):
+                raise TranscriptPersistenceError(
+                    "Persisted provider endpoint evidence is incomplete"
+                )
+            verified_format = (
+                str(persisted.get("audioInputFormat") or "").strip()
+                if persisted.get("audioInputFormatVerified") is True
+                else None
+            )
+            route = self._freeze_background_provider_route(
+                workload=workload,
+                provider=provider,
+                language=str(persisted.get("language") or rec.language),
+                model=model,
+                transport=str(persisted.get("transport") or "") or None,
+                provider_route=str(persisted.get("providerRoute") or "") or None,
+                audio_input_format=verified_format,
+                audio_selection_mode=(
+                    str(persisted.get("audioSelectionMode") or "") or None
+                ),
+                audio_preparation_implementation=(
+                    str(
+                        persisted.get("audioPreparationImplementation") or ""
+                    )
+                    or None
+                ),
+                provider_region=(
+                    str(persisted.get("providerRegion") or "") or None
+                ),
+                provider_endpoint_sha256=(
+                    str(persisted.get("providerEndpointSha256") or "") or None
+                ),
+            )
+            expected_capability_id = str(
+                persisted.get("providerAudioCapabilityId") or ""
+            )
+            expected_revision = str(
+                persisted.get("providerAudioCapabilityRevision") or ""
+            )
+            if expected_capability_id and (
+                route.provider_audio_capability_id != expected_capability_id
+                or route.provider_audio_capability_revision != expected_revision
+            ):
+                raise TranscriptPersistenceError(
+                    "Persisted provider audio capability no longer matches"
+                )
+        durable_recovery = False
+        job_id = self._job_ids_by_transcript.get(rec.id)
+        job = (
+            await asyncio.to_thread(self._job_store.get, job_id)
+            if job_id
+            else None
+        )
+        if (
+            persisted is not None
+            and job is not None
+            and job.provider_request_state == PROVIDER_REQUEST_RESULT_DURABLE
+            and job.provider_request_attempt == job.attempts
+        ):
+            attempt_id = job.provider_result_attempt_id
+            if attempt_id:
+                recovery = await self._provider_result_bundle_for_attempt_async(
+                    attempt_id
+                )
+                durable_recovery = self._persisted_route_matches_recovery_snapshot(
+                    persisted,
+                    route,
+                    recovery,
+                ) and recovery.attempt.transcript_id == rec.id
+            if not durable_recovery:
+                raise TranscriptPersistenceError(
+                    "Durable provider result does not match the frozen job route"
+                )
+
+        if persisted is not None and not durable_recovery:
+            current_route = self._job_execution_route(route)
+            for key in (
+                "customVocabularyPresent",
+                "customVocabularyCount",
+                "customVocabularySha256",
+            ):
+                expected = persisted.get(key)
+                if expected != current_route.get(key):
+                    raise TranscriptPersistenceError(
+                        "Persisted provider vocabulary no longer matches settings"
+                    )
+
+        if not allow_unready_provider and not durable_recovery:
+            _validate_provider_ready(route.provider)
+        return route
 
     def _validate_live_provider_ready(self, provider: str) -> None:
         _validate_provider_ready(provider)
@@ -5411,10 +6185,87 @@ class ScriberWebController:
             return False
         if not job:
             return False
+        attempts = max(1, int(job.attempts))
+        current_fence = (
+            job.provider_request_state
+            if job.provider_request_attempt == job.attempts
+            else ""
+        )
+        error_attempt_id = str(
+            getattr(error, "provider_result_attempt_id", "") or ""
+        ).strip()
+        if (
+            current_fence == PROVIDER_REQUEST_MAY_BE_COMMITTED
+            and error_attempt_id
+        ):
+            try:
+                bundle = await self._provider_result_bundle_for_attempt_async(
+                    error_attempt_id
+                )
+                if bundle.attempt.transcript_id != rec.id:
+                    return False
+                repaired = await asyncio.to_thread(
+                    self._job_store.mark_provider_result_durable,
+                    job_id,
+                    attempt_id=error_attempt_id,
+                )
+                if not repaired:
+                    return False
+                job = await asyncio.to_thread(self._job_store.get, job_id)
+                if job is None:
+                    return False
+                current_fence = (
+                    job.provider_request_state
+                    if job.provider_request_attempt == job.attempts
+                    else ""
+                )
+            except Exception as repair_exc:
+                logger.warning(
+                    "Could not bind durable provider evidence for transcript {}: {}",
+                    rec.id,
+                    type(repair_exc).__name__,
+                )
+                return False
+        if current_fence == PROVIDER_REQUEST_RESULT_DURABLE:
+            if not job.provider_result_attempt_id:
+                return False
+            delay_seconds = self._retry_delay_seconds(attempts)
+            retry_at = (datetime.now() + timedelta(seconds=delay_seconds)).isoformat()
+            queued = await asyncio.to_thread(
+                self._job_store.queue_provider_result_recovery,
+                job_id,
+                retry_at=retry_at,
+            )
+            if not queued:
+                return False
+            retry_label = int(round(delay_seconds))
+            rec.status = "processing"
+            rec.step = (
+                f"Retrying local completion in {retry_label}s "
+                f"({attempts}/{self._job_max_attempts})"
+            )
+            rec.updated_at = datetime.now().isoformat()
+            rec.reset_transcription_attempt()
+            rec._persistence_failed = persistence_retry
+            self._schedule_retry_scan(delay_seconds)
+            logger.warning(
+                "Scheduled local provider-result recovery for transcript {} in {:.1f}s",
+                rec.id,
+                delay_seconds,
+            )
+            return True
+        if current_fence == PROVIDER_REQUEST_MAY_BE_COMMITTED or getattr(
+            error, "provider_request_may_be_committed", False
+        ):
+            logger.warning(
+                "Suppressing automatic retry for transcript {} because its "
+                "provider request outcome may be committed",
+                rec.id,
+            )
+            return False
         category = classify_error_message(str(error))
         if not persistence_retry and not is_retryable(category):
             return False
-        attempts = max(1, int(job.attempts))
         if attempts >= self._job_max_attempts:
             return False
 
@@ -5542,14 +6393,15 @@ class ScriberWebController:
     def _schedule_youtube_job(self, rec: TranscriptRecord, *, resumed: bool = False) -> None:
         async def _runner() -> None:
             provider: str | None = None
+            frozen_route: FrozenTranscriptionRoute | None = None
             try:
                 await self._set_job_running_async(rec.id)
-                if rec._youtube_prefer_captions is True:
-                    candidates = self._provider_candidates()
-                    provider = candidates[0] if candidates else str(Config.DEFAULT_STT_SERVICE or "soniox")
-                else:
-                    provider = self._select_available_provider()
-                    _validate_provider_ready(provider)
+                frozen_route = await self._load_or_freeze_background_route(
+                    rec,
+                    workload="youtube",
+                    allow_unready_provider=rec._youtube_prefer_captions is True,
+                )
+                provider = frozen_route.provider
             except asyncio.CancelledError:
                 if not self._shutting_down:
                     await self._finalize_canceled_background_job(rec)
@@ -5567,7 +6419,11 @@ class ScriberWebController:
                     await self._sync_job_status_async(rec)
                 return
             try:
-                await self._run_youtube_transcription(rec, provider=provider)
+                self._scheduled_frozen_routes[rec.id] = frozen_route
+                await self._run_youtube_transcription(
+                    rec,
+                    provider=provider,
+                )
                 used_provider = rec._youtube_stt_provider_used
                 if used_provider and rec.status == "completed":
                     self._record_provider_success(used_provider)
@@ -5585,6 +6441,7 @@ class ScriberWebController:
                 await self._save_transcript_to_db_async(rec)
                 await self._broadcast_history_updated(record=rec, reason="job_failed")
             finally:
+                self._scheduled_frozen_routes.pop(rec.id, None)
                 if rec.status != "stopped":
                     await self._sync_job_status_async(rec)
 
@@ -5594,10 +6451,14 @@ class ScriberWebController:
 
     def _schedule_file_job(self, rec: TranscriptRecord, file_path: Path, *, resumed: bool = False) -> None:
         async def _runner() -> None:
+            frozen_route: FrozenTranscriptionRoute | None = None
             try:
                 await self._set_job_running_async(rec.id)
-                provider = self._select_available_provider()
-                _validate_provider_ready(provider)
+                frozen_route = await self._load_or_freeze_background_route(
+                    rec,
+                    workload="file",
+                )
+                provider = frozen_route.provider
             except asyncio.CancelledError:
                 if not self._shutting_down:
                     await self._finalize_canceled_background_job(rec)
@@ -5619,7 +6480,12 @@ class ScriberWebController:
                         )
                 return
             try:
-                await self._run_file_transcription(rec, file_path, provider=provider)
+                self._scheduled_frozen_routes[rec.id] = frozen_route
+                await self._run_file_transcription(
+                    rec,
+                    file_path,
+                    provider=provider,
+                )
                 if rec.status == "completed":
                     self._record_provider_success(provider)
             except asyncio.CancelledError:
@@ -5627,6 +6493,7 @@ class ScriberWebController:
                     await self._finalize_canceled_background_job(rec)
                 raise
             finally:
+                self._scheduled_frozen_routes.pop(rec.id, None)
                 if rec.status != "stopped":
                     await self._sync_job_status_async(rec)
 
@@ -5740,6 +6607,141 @@ class ScriberWebController:
         except asyncio.TimeoutError as exc:
             raise TimeoutError(f"{timeout_label} timed out after {timeout_seconds:.1f}s") from exc
 
+    async def _reconcile_running_provider_outcomes(
+        self,
+        *,
+        limit: int,
+        eligible_job_ids: frozenset[str],
+    ) -> int:
+        """Recover durable results and fail unknown remote outcomes without replay."""
+
+        batch_limit = max(1, int(limit))
+        reconciled = 0
+        recoverable_states = {
+            AttemptState.PROVIDER_RESULT_READY,
+            AttemptState.DIARIZING,
+            AttemptState.CANONICALIZING,
+            AttemptState.COMMITTING,
+            AttemptState.COMPLETED,
+        }
+        while True:
+            jobs = await asyncio.to_thread(
+                self._job_store.list_running_provider_outcomes,
+                limit=batch_limit,
+                eligible_job_ids=eligible_job_ids,
+            )
+            if not jobs:
+                break
+            for job in jobs:
+                persisted = await asyncio.to_thread(
+                    db.get_transcript,
+                    job.transcript_id,
+                )
+                persisted_status = (
+                    str(persisted.get("status") or "").strip().lower()
+                    if isinstance(persisted, dict)
+                    else ""
+                )
+                if persisted_status in {"completed", "stopped"}:
+                    if persisted_status == "completed":
+                        await asyncio.to_thread(
+                            self._job_store.mark_completed,
+                            job.id,
+                        )
+                    elif persisted_status == "stopped":
+                        await asyncio.to_thread(
+                            self._job_store.mark_canceled,
+                            job.id,
+                            last_error="Stopped by user",
+                        )
+                    reconciled += 1
+                    continue
+
+                bound_attempt_id = job.provider_result_attempt_id
+                if not bound_attempt_id:
+                    candidates = await asyncio.to_thread(
+                        self._transcript_artifacts.recoverable_provider_results_for_transcript,
+                        job.transcript_id,
+                    )
+                    matching_candidates = [
+                        candidate
+                        for candidate in candidates
+                        if self._persisted_job_route_matches_bundle(
+                            job.payload.get("executionRoute"),
+                            candidate,
+                        )
+                    ]
+                    if len(matching_candidates) == 1:
+                        candidate = matching_candidates[0]
+                        repaired = await asyncio.to_thread(
+                            self._job_store.mark_provider_result_durable,
+                            job.id,
+                            attempt_id=candidate.attempt.id,
+                        )
+                        if repaired:
+                            bound_attempt_id = candidate.attempt.id
+                            job = await asyncio.to_thread(
+                                self._job_store.get,
+                                job.id,
+                            )
+                bound_bundle = None
+                if bound_attempt_id:
+                    try:
+                        bound_bundle = (
+                            await self._provider_result_bundle_for_attempt_async(
+                                bound_attempt_id
+                            )
+                        )
+                    except Exception as bundle_exc:
+                        logger.warning(
+                            "Bound provider result could not be reconciled for {}: {}",
+                            job.transcript_id,
+                            type(bundle_exc).__name__,
+                        )
+                if (
+                    job is not None
+                    and bound_bundle is not None
+                    and bound_bundle.attempt.transcript_id == job.transcript_id
+                    and self._persisted_job_route_matches_bundle(
+                        job.payload.get("executionRoute"),
+                        bound_bundle,
+                    )
+                    and bound_bundle.attempt.state in recoverable_states
+                ):
+                    queued = await asyncio.to_thread(
+                        self._job_store.queue_provider_result_recovery,
+                        job.id,
+                        retry_at=(
+                            bound_bundle.attempt.lease_expires_at
+                            if bound_bundle.attempt.lease_owner
+                            else ""
+                        ),
+                    )
+                    if queued:
+                        reconciled += 1
+                        continue
+                if persisted_status == "failed":
+                    await asyncio.to_thread(
+                        self._job_store.mark_failed,
+                        job.id,
+                        last_error="Transcription failed",
+                    )
+                    reconciled += 1
+                    continue
+
+                rec = self._get_history_record(job.transcript_id)
+                if rec is None:
+                    rec = self._build_processing_record_from_job(job)
+                    self._add_to_history(rec)
+                self._remember_job_id(rec.id, job.id)
+                await self._fail_resumed_job(
+                    rec,
+                    "The provider request outcome is unknown after restart; "
+                    "automatic replay was disabled to avoid duplicate provider work.",
+                )
+                reconciled += 1
+        return reconciled
+
     async def resume_pending_jobs(
         self,
         *,
@@ -5758,11 +6760,24 @@ class ScriberWebController:
         limit: int,
         recover_running: bool,
     ) -> int:
-        reset_count = (
-            await asyncio.to_thread(self._job_store.reset_running_to_queued)
-            if recover_running
-            else 0
+        startup_running_job_ids = (
+            self._startup_running_job_ids if recover_running else frozenset()
         )
+        if recover_running:
+            provider_outcome_count = await self._reconcile_running_provider_outcomes(
+                limit=max(25, int(limit)),
+                eligible_job_ids=startup_running_job_ids,
+            )
+            reset_count = await asyncio.to_thread(
+                self._job_store.reset_running_to_queued,
+                eligible_job_ids=startup_running_job_ids,
+            )
+            # Clear only after both startup mutations succeeded. A failed scan
+            # can then be retried without ever widening the allowlist.
+            self._startup_running_job_ids = frozenset()
+        else:
+            provider_outcome_count = 0
+            reset_count = 0
         active_count = sum(not task.done() for task in self._running_tasks.values())
         available_slots = max(0, self._job_concurrency_limit - active_count)
         if available_slots <= 0:
@@ -5785,21 +6800,51 @@ class ScriberWebController:
             if job.transcript_id in self._running_tasks:
                 continue
 
+            durable_local_recovery = bool(
+                job.provider_request_state == PROVIDER_REQUEST_RESULT_DURABLE
+                and job.provider_request_attempt == job.attempts
+                and job.provider_result_attempt_id
+            )
+
             rec = self._get_history_record(job.transcript_id)
             if rec is None:
                 persisted = await asyncio.to_thread(db.get_transcript, job.transcript_id)
-                if persisted and persisted.get("status") in ("completed", "failed", "stopped"):
+                persisted_status = (
+                    str(persisted.get("status") or "").strip().lower()
+                    if isinstance(persisted, dict)
+                    else ""
+                )
+                if persisted and (
+                    persisted_status in {"completed", "stopped"}
+                    or (
+                        persisted_status == "failed"
+                        and not durable_local_recovery
+                    )
+                ):
                     rec = self._record_from_persisted_data(persisted)
                     self._remember_job_id(rec.id, job.id)
                     await self._reconcile_terminal_background_job(rec)
                     continue
-            if rec and rec.status in ("completed", "failed", "stopped"):
+                if persisted and durable_local_recovery:
+                    rec = self._record_from_persisted_data(persisted)
+                    rec.status = "processing"
+                    rec.step = "Queued (provider result recovery)"
+                    rec.updated_at = datetime.now().isoformat()
+                    self._add_to_history(rec)
+            if rec and (
+                rec.status in ("completed", "stopped")
+                or (rec.status == "failed" and not durable_local_recovery)
+            ):
                 self._remember_job_id(rec.id, job.id)
                 await self._reconcile_terminal_background_job(rec)
                 continue
             if rec is None:
                 rec = self._build_processing_record_from_job(job)
                 self._add_to_history(rec)
+            elif durable_local_recovery and rec.status == "failed":
+                rec.status = "processing"
+                rec.step = "Queued (provider result recovery)"
+                rec.updated_at = datetime.now().isoformat()
 
             self._remember_job_id(rec.id, job.id)
             # A resumed attempt starts now. Do not make the UI count time while
@@ -5808,7 +6853,7 @@ class ScriberWebController:
             rec.processing_started_at = datetime.now().isoformat()
 
             if job.job_type == JobType.YOUTUBE:
-                if not rec.source_url:
+                if not rec.source_url and not durable_local_recovery:
                     await self._fail_resumed_job(rec, "Missing source URL for resumed YouTube job.")
                     continue
                 rec.step = "Queued (resumed)"
@@ -5818,11 +6863,18 @@ class ScriberWebController:
                 continue
 
             file_path_raw = str(job.payload.get("path", "") or "").strip()
-            if not file_path_raw:
+            if not file_path_raw and not durable_local_recovery:
                 await self._fail_resumed_job(rec, "Missing source file path for resumed file transcription.")
                 continue
-            file_path = Path(file_path_raw)
-            if not file_path.exists():
+            file_path = (
+                Path(file_path_raw)
+                if file_path_raw
+                else self._downloads_dir
+                / "files"
+                / _safe_work_directory_component(rec.id)
+                / "missing-source"
+            )
+            if not file_path.exists() and not durable_local_recovery:
                 await self._fail_resumed_job(rec, "Source file is no longer available for resumed file transcription.")
                 continue
             rec.source_url = str(file_path)
@@ -5831,10 +6883,15 @@ class ScriberWebController:
             self._schedule_file_job(rec, file_path, resumed=True)
             resumed_count += 1
 
-        if reset_count or resumed_count:
+        if provider_outcome_count or reset_count or resumed_count:
             await self._broadcast_history_updated()
             logger.info(
-                f"Job resume startup scan: reset_running={reset_count}, resumed={resumed_count}, pending={len(pending_jobs)}"
+                "Job resume startup scan: provider_outcomes={}, reset_running={}, "
+                "resumed={}, pending={}",
+                provider_outcome_count,
+                reset_count,
+                resumed_count,
+                len(pending_jobs),
             )
         if len(pending_jobs) >= query_limit:
             # The bounded scan may have left immediately due rows behind. Run
@@ -5874,12 +6931,28 @@ class ScriberWebController:
         session_id: str,
         *,
         tauri_hotkey_marker: dict[str, Any] | None = None,
+        start_request_timestamp_ns: int | None = None,
     ) -> None:
         tracer = HotPathTracer(session_id)
         if tauri_hotkey_marker is not None:
-            tracer.bind_tauri_hotkey_received(tauri_hotkey_marker)
+            tracer.bind_tauri_activation_received(tauri_hotkey_marker)
         else:
-            tracer.mark("hotkey_received")
+            activation_timestamp_ns = (
+                int(start_request_timestamp_ns)
+                if start_request_timestamp_ns is not None
+                else time.perf_counter_ns()
+            )
+            # Direct REST/controller starts represent the button/API lane.  A
+            # hotkey marker is created only from the validated Tauri callback.
+            tracer.mark(
+                "activation_received",
+                timestamp_ns=activation_timestamp_ns,
+            )
+            tracer.mark("button_received", timestamp_ns=activation_timestamp_ns)
+        tracer.mark(
+            "start_request_dispatched",
+            timestamp_ns=start_request_timestamp_ns,
+        )
         with self._hot_path_lock:
             self._hot_path_tracers[session_id] = tracer
             self._hot_path_reports_emitted.discard(session_id)
@@ -5916,15 +6989,24 @@ class ScriberWebController:
             tracer = self._hot_path_tracers.get(session_id)
             if not tracer:
                 return False
-            if not tracer.has_mark("hotkey_received"):
+            if not tracer.has_mark("activation_received"):
                 return False
             if required_marker and not tracer.has_mark(required_marker):
                 return False
             report = tracer.report()
+            canonical_kpis = tracer.canonical_kpis()
+            report.update(canonical_kpis)
             if report:
                 self._hot_path_reports_emitted.add(session_id)
         if report:
             key_metric_names = (
+                "activation_received_to_final_text_observed_ms",
+                "hotkey_received_to_final_text_observed_ms",
+                "button_received_to_final_text_observed_ms",
+                "stop_requested_to_final_text_observed_ms",
+                "provider_final_received_to_final_text_observed_ms",
+                "activation_received_to_mic_ready_ms",
+                "activation_received_to_first_audible_audio_frame_ms",
                 "hotkey_received_to_mic_ready_ms",
                 "hotkey_received_to_first_audible_audio_frame_ms",
                 "stop_requested_to_provider_final_received_ms",
@@ -5936,10 +7018,17 @@ class ScriberWebController:
                 if key in report
             }
             labels = {
+                "activation_received_to_final_text_observed_ms": "text visible",
+                "hotkey_received_to_final_text_observed_ms": "hotkey to visible",
+                "button_received_to_final_text_observed_ms": "button to visible",
+                "stop_requested_to_final_text_observed_ms": "stop to visible",
+                "provider_final_received_to_final_text_observed_ms": "provider to visible",
+                "activation_received_to_mic_ready_ms": "mic ready",
+                "activation_received_to_first_audible_audio_frame_ms": "audio ready",
                 "hotkey_received_to_mic_ready_ms": "mic ready",
                 "hotkey_received_to_first_audible_audio_frame_ms": "audio ready",
                 "stop_requested_to_provider_final_received_ms": "final transcript",
-                "stop_requested_to_first_paste_ms": "text inserted",
+                "stop_requested_to_first_paste_ms": "paste returned",
             }
 
             def format_timing(value: float) -> str:
@@ -5957,7 +7046,9 @@ class ScriberWebController:
             if summary:
                 message = f"{message} · {summary}"
             total_duration_ms = (
-                report.get("hotkey_received_to_first_paste_ms")
+                report.get("activation_received_to_final_text_observed_ms")
+                or report.get("activation_received_to_first_paste_ms")
+                or report.get("hotkey_received_to_first_paste_ms")
                 or max(report.values(), default=0.0)
             )
             self._emit_workflow_event(
@@ -7087,6 +8178,7 @@ class ScriberWebController:
         if is_final and text:
             self._mark_hot_path(session_id or self._session_id, "first_final_token")
             self._mark_hot_path(session_id or self._session_id, "provider_final_received")
+            self._mark_hot_path(session_id or self._session_id, "transcript_parsed")
             with self._current_lock:
                 if self._current and (session_id is None or self._current.id == session_id):
                     self._current.append_final_text(text)
@@ -7357,7 +8449,12 @@ class ScriberWebController:
             )
 
         def on_injection_marker(marker: str, timestamp_ns: int | None = None) -> None:
-            if marker in {"clipboard_set", "paste"}:
+            if marker in {
+                "injection_target_validated",
+                "clipboard_set",
+                "paste_requested",
+                "paste",
+            }:
                 self._mark_hot_path(session_id, marker, timestamp_ns=timestamp_ns)
 
         return inject_text_once(
@@ -7427,6 +8524,7 @@ class ScriberWebController:
                 post_processed = True
             duration_ms = (time.monotonic() - started) * 1000
             self._mark_hot_path(session_id, "post_processing_done")
+            self._mark_hot_path(session_id, "post_processing_completed")
             diagnostic.update(
                 {
                     "status": "success" if post_processed else "empty_output",
@@ -7611,11 +8709,28 @@ class ScriberWebController:
         self,
         rec: TranscriptRecord,
         route: FrozenTranscriptionRoute,
+        *,
+        recovery_attempt_id: str | None = None,
+        allow_unbound_recovery: bool | None = None,
     ) -> tuple[AttemptRecord, str, RecoveryBundle | None]:
         """Claim persisted evidence or create one fully frozen provider attempt."""
         owner = f"web-{os.getpid()}-{uuid4().hex}"
-        recovered = self._transcript_artifacts.latest_recoverable_for_transcript(rec.id)
+        if allow_unbound_recovery is None:
+            allow_unbound_recovery = rec.id not in self._job_ids_by_transcript
+        recovered = (
+            self._transcript_artifacts.get_recovery_bundle(recovery_attempt_id)
+            if recovery_attempt_id
+            else (
+                self._transcript_artifacts.latest_recoverable_for_transcript(rec.id)
+                if allow_unbound_recovery
+                else None
+            )
+        )
         if recovered is not None:
+            if recovered.attempt.transcript_id != rec.id:
+                raise TranscriptPersistenceError(
+                    "Provider-result attempt is bound to a different transcript"
+                )
             claimed = self._transcript_artifacts.claim_recovery_bundle(
                 recovered.attempt.id,
                 owner=owner,
@@ -7669,11 +8784,21 @@ class ScriberWebController:
         self,
         rec: TranscriptRecord,
         route: FrozenTranscriptionRoute,
+        *,
+        recovery_attempt_id: str | None = None,
     ) -> tuple[AttemptRecord, str, RecoveryBundle | None]:
         """Run the complete attempt-claim transaction outside the aiohttp loop."""
-        result, pending_cancel = await _await_with_delayed_cancellation(
-            asyncio.to_thread(self._begin_transcript_artifact, rec, route)
+        begin_worker = (
+            asyncio.to_thread(
+                self._begin_transcript_artifact,
+                rec,
+                route,
+                recovery_attempt_id=recovery_attempt_id,
+            )
+            if recovery_attempt_id
+            else asyncio.to_thread(self._begin_transcript_artifact, rec, route)
         )
+        result, pending_cancel = await _await_with_delayed_cancellation(begin_worker)
         if pending_cancel is not None:
             attempt, owner, _recovery = result
             await _to_thread_cancellation_barrier(
@@ -8097,6 +9222,14 @@ class ScriberWebController:
             if isinstance(payload.get("preferCaptions"), bool)
             else bool(Config.YOUTUBE_PREFER_CAPTIONS)
         )
+        candidates = self._provider_candidates()
+        frozen_provider = (
+            candidates[0]
+            if candidates
+            else str(Config.DEFAULT_STT_SERVICE or "soniox")
+        )
+        if not prefer_captions:
+            _validate_provider_ready(frozen_provider)
 
         started_at = datetime.now()
         rec = TranscriptRecord(
@@ -8114,6 +9247,12 @@ class ScriberWebController:
             processing_started_at=started_at.isoformat(),
             _youtube_prefer_captions=prefer_captions,
         )
+        frozen_route = self._freeze_background_provider_route(
+            workload="youtube",
+            provider=frozen_provider,
+            language=rec.language,
+        )
+        frozen_route_payload = self._job_execution_route(frozen_route)
         await self._enqueue_background_job_async(
             rec,
             job_type=JobType.YOUTUBE,
@@ -8125,6 +9264,11 @@ class ScriberWebController:
                 "duration": rec.duration,
                 "language": rec.language,
                 "preferCaptions": prefer_captions,
+                **(
+                    {"plannedFallbackRoute": frozen_route_payload}
+                    if prefer_captions
+                    else {"executionRoute": frozen_route_payload}
+                ),
             },
         )
         self._emit_workflow_event(
@@ -8322,9 +9466,32 @@ class ScriberWebController:
             rec.replace_content(rendered)
         return segments
 
-    async def _run_youtube_transcription(self, rec: TranscriptRecord, *, provider: str | None) -> None:
+    async def _run_youtube_transcription(
+        self,
+        rec: TranscriptRecord,
+        *,
+        provider: str | None,
+        frozen_route: FrozenTranscriptionRoute | None = None,
+    ) -> None:
         workflow_started = time.monotonic()
         await self._ensure_artifact_transcript_row(rec)
+        if frozen_route is None:
+            frozen_route = self._scheduled_frozen_routes.get(rec.id)
+        if frozen_route is not None:
+            recovered_content = await self._recover_bound_provider_result(
+                rec,
+                frozen_route,
+            )
+            if recovered_content is not None:
+                rec._youtube_stt_provider_used = frozen_route.provider
+                await self._finalize_youtube_content(
+                    rec,
+                    content=recovered_content,
+                    provider=frozen_route.provider,
+                    started_at=workflow_started,
+                    source="audio",
+                )
+                return
         out_dir = self._downloads_dir / "youtube" / _safe_work_directory_component(rec.id)
         prefer_captions = (
             rec._youtube_prefer_captions
@@ -8362,6 +9529,8 @@ class ScriberWebController:
                     language=rec.language,
                     automatic=captions.is_automatic,
                 )
+                if rec.id in self._job_ids_by_transcript:
+                    await self._select_job_execution_route(rec, route)
                 attempt, owner, recovery = await self._begin_transcript_artifact_async(rec, route)
                 if recovery is None:
                     units, evidence = stage_units_from_captions(captions.cues)
@@ -8378,6 +9547,8 @@ class ScriberWebController:
                     units=units,
                     evidence=evidence,
                 )
+                if rec.id in self._job_ids_by_transcript:
+                    await self._record_job_executed_route(rec, route)
                 await self._finalize_youtube_content(
                     rec,
                     content=content,
@@ -8408,20 +9579,56 @@ class ScriberWebController:
             provider = self._select_available_provider()
         _validate_provider_ready(provider)
         rec._youtube_stt_provider_used = provider
-        local_manifest = {
-            "enabled": bool(Config.SPEAKER_DIARIZATION_FALLBACK_ENABLED),
-            "engine": "sherpa-onnx",
-            "componentPresent": bool(self._speaker_diarizer.status().get("installed")),
-            "workerVersion": str(self._speaker_diarizer.status().get("workerVersion") or "unknown"),
-        }
-        route = freeze_provider_route(
+        route = frozen_route or self._freeze_background_provider_route(
             workload="youtube",
             provider=provider,
             language=rec.language,
-            diarization_requested=True,
-            local_worker_manifest=local_manifest,
         )
-        attempt, owner, recovery = await self._begin_transcript_artifact_async(rec, route)
+        frozen_audio_selection = None
+        if frozen_route is not None and supports_direct_file_upload(provider):
+            if not route.provider_audio_capability_id:
+                raise ValueError(
+                    "The frozen provider/model route has no verified batch audio capability."
+                )
+            capability = resolve_batch_provider_audio_capabilities(
+                route.provider,
+                route.model,
+            )
+            frozen_audio_selection = select_audio_input_format(
+                capability,
+                route_kind=ProviderAudioRouteKind.BATCH,
+                # The downloader owns this exact postcondition; it validates
+                # container and codec rather than inferring Opus from .webm.
+                original_format=AudioInputFormat.WEBM_OPUS,
+            )
+            if (
+                route.audio_input_format_verified is True
+                and route.audio_input_format != frozen_audio_selection.audio_format
+            ):
+                raise TranscriptPersistenceError(
+                    "Persisted YouTube audio format no longer matches the frozen route"
+                )
+            route = self._freeze_background_provider_route(
+                workload="youtube",
+                provider=route.provider,
+                language=route.language,
+                model=route.model,
+                provider_route=route.provider_route,
+                audio_input_format=frozen_audio_selection.audio_format.value,
+                audio_selection_mode=frozen_audio_selection.mode.value,
+                audio_preparation_implementation=(
+                    audio_preparation_implementation(frozen_audio_selection)
+                ),
+                provider_region=route.provider_region,
+                provider_endpoint_sha256=route.provider_endpoint_sha256,
+                )
+
+        if rec.id in self._job_ids_by_transcript:
+            await self._select_job_execution_route(rec, route)
+
+        attempt, owner, recovery = await self._begin_transcript_artifact_async(
+            rec, route
+        )
         if recovery is not None:
             content = await self._commit_transcript_artifact_async(
                 rec,
@@ -8431,6 +9638,8 @@ class ScriberWebController:
                 units=recovery.stage_result.units,
                 evidence=recovery.stage_result.evidence,
             )
+            if rec.id in self._job_ids_by_transcript:
+                await self._record_job_executed_route(rec, route)
             await self._finalize_youtube_content(
                 rec,
                 content=content,
@@ -8439,11 +9648,35 @@ class ScriberWebController:
                 source="audio",
             )
             return
-        lease_guard_stop, lease_guard_task = self._start_transcript_artifact_lease_guard(
-            attempt=attempt,
-            owner=owner,
+        lease_guard_stop, lease_guard_task = (
+            self._start_transcript_artifact_lease_guard(
+                attempt=attempt,
+                owner=owner,
+            )
         )
+        pipeline: Any | None = None
+        prepared_audio: PreparedProviderAudio | None = None
+        provider_audio_path: Path | None = None
+        prepare_stack = contextlib.AsyncExitStack()
+        await prepare_stack.__aenter__()
+
+        async def stop_current_attempt(*, canceled: bool | None) -> None:
+            if lease_guard_stop is not None and lease_guard_task is not None:
+                await self._stop_transcript_artifact_lease_guard(
+                    lease_guard_stop,
+                    lease_guard_task,
+                )
+            if canceled is not None and attempt is not None:
+                await self._terminate_artifact_attempt_before_result_async(
+                    attempt,
+                    owner=owner,
+                    canceled=canceled,
+                )
+
         workflow_phase = {"value": "downloading"}
+        provider_result_received = False
+        provider_result_attempt_id = ""
+        provider_request_fence_persisted = False
         rec.step = "Downloading audio..."
         rec.updated_at = datetime.now().isoformat()
         await self._broadcast_history_updated(record=rec, reason="progress")
@@ -8523,6 +9756,37 @@ class ScriberWebController:
             source_asset_id = await self._register_transcript_source_asset(
                 rec, Path(audio_path), asset_kind="youtube_audio"
             )
+            provider_audio_path = Path(audio_path)
+            if frozen_route is not None and supports_direct_file_upload(provider):
+                if not route.provider_audio_capability_id:
+                    raise ValueError(
+                        "The frozen provider/model route has no verified batch audio capability."
+                    )
+                prepared_audio = await prepare_stack.enter_async_context(
+                    prepare_provider_audio_file(
+                        audio_path,
+                        provider=route.provider,
+                        model=route.model,
+                        work_dir=out_dir,
+                        max_bytes=_get_audio_upload_max_bytes(provider),
+                        frozen_selection=frozen_audio_selection,
+                    )
+                )
+                route = self._freeze_background_provider_route(
+                    workload="youtube",
+                    provider=route.provider,
+                    language=route.language,
+                    model=route.model,
+                    provider_route=route.provider_route,
+                    audio_input_format=prepared_audio.selected_format.value,
+                    audio_selection_mode=prepared_audio.selection_mode.value,
+                    audio_preparation_implementation=(
+                        prepared_audio.implementation
+                    ),
+                    provider_region=route.provider_region,
+                    provider_endpoint_sha256=route.provider_endpoint_sha256,
+                )
+                await self._finalize_job_execution_route(rec, route, prepared_audio)
             workflow_phase["value"] = "preparing"
             rec.step = "Preparing transcription..."
             rec.updated_at = datetime.now().isoformat()
@@ -8583,6 +9847,9 @@ class ScriberWebController:
                 enable_speaker_diarization=True,
                 execution_route=route.execution_route(),
                 direct_file_expected_duration_seconds=duration_seconds,
+                provider_http_transport=getattr(
+                    self, "_provider_http_transport", None
+                ),
             )
             
             # Use direct file upload for Soniox/Mistral async APIs (more efficient), fallback to pipecat for others
@@ -8590,21 +9857,48 @@ class ScriberWebController:
                 pipeline,
                 env_key="SCRIBER_TIMEOUT_YOUTUBE_TRANSCRIBE_SEC",
             )
-            if supports_direct_file_upload(provider):
-                workflow_phase["value"] = "provider"
-                await self._await_with_timeout(
-                    pipeline.transcribe_file_direct(str(audio_path)),
-                    timeout_seconds=transcribe_timeout,
-                    timeout_label="YouTube transcription",
+            workflow_phase["value"] = "provider"
+            provider_request_fence_persisted = await self._mark_job_provider_request_may_be_committed(
+                rec,
+                provider=provider,
+            )
+            try:
+                if supports_direct_file_upload(provider):
+                    provider_path = provider_audio_path or Path(audio_path)
+                    if prepared_audio is None:
+                        provider_call = pipeline.transcribe_file_direct(
+                            str(provider_path)
+                        )
+                    else:
+                        provider_call = pipeline.transcribe_file_direct(
+                            str(provider_path),
+                            prepared_audio=prepared_audio,
+                        )
+                    await self._await_with_timeout(
+                        provider_call,
+                        timeout_seconds=transcribe_timeout,
+                        timeout_label="YouTube transcription",
+                    )
+                else:
+                    await self._await_with_timeout(
+                        pipeline.transcribe_file(str(audio_path)),
+                        timeout_seconds=transcribe_timeout,
+                        timeout_label="YouTube transcription",
+                    )
+            except Exception as exc:
+                request_may_be_committed = bool(
+                    getattr(pipeline, "_provider_request_started", False)
                 )
-            else:
-                workflow_phase["value"] = "provider"
-                await self._await_with_timeout(
-                    pipeline.transcribe_file(str(audio_path)),
-                    timeout_seconds=transcribe_timeout,
-                    timeout_label="YouTube transcription",
-                )
+                if provider_request_fence_persisted and not request_may_be_committed:
+                    await self._mark_job_provider_request_safe_to_retry(
+                        rec,
+                        provider=provider,
+                    )
+                if request_may_be_committed:
+                    raise ProviderRequestAcceptanceUnknown(provider) from exc
+                raise
 
+            provider_result_received = True
             provider_text = rec.content_text()
             provider_units, evidence = stage_units_from_provider(
                 provider=provider,
@@ -8624,6 +9918,19 @@ class ScriberWebController:
                 units=provider_units,
                 evidence=evidence,
             )
+            provider_result_attempt_id = attempt.id
+            await self._mark_job_provider_result_durable(
+                rec,
+                provider=provider,
+                attempt_id=attempt.id,
+            )
+            mark_result_durable = getattr(
+                pipeline,
+                "mark_provider_result_durable",
+                None,
+            )
+            if callable(mark_result_durable):
+                mark_result_durable()
             local_segments = await self._apply_speaker_diarization_fallback(
                 rec,
                 provider=provider,
@@ -8651,6 +9958,12 @@ class ScriberWebController:
                 source_asset_id=source_asset_id,
             )
             workflow_phase["value"] = "completed"
+            if rec.id in self._job_ids_by_transcript:
+                await self._record_job_executed_route(
+                    rec,
+                    route,
+                    prepared=prepared_audio,
+                )
             await self._finalize_youtube_content(
                 rec,
                 content=content,
@@ -8659,26 +9972,20 @@ class ScriberWebController:
                 source="audio",
             )
         except asyncio.CancelledError:
-            await self._stop_transcript_artifact_lease_guard(
-                lease_guard_stop,
-                lease_guard_task,
-            )
-            await self._terminate_artifact_attempt_before_result_async(
-                attempt, owner=owner, canceled=True
-            )
+            await stop_current_attempt(canceled=True)
             raise
         except (ValueError, ImportError) as exc:
             logger.warning("YouTube transcription rejected: {}", exc)
-            await self._stop_transcript_artifact_lease_guard(
-                lease_guard_stop,
-                lease_guard_task,
-            )
-            await self._terminate_artifact_attempt_before_result_async(
-                attempt, owner=owner, canceled=False
-            )
+            await stop_current_attempt(canceled=False)
             if workflow_phase["value"] == "provider":
                 self._record_provider_failure(provider, exc)
-            if await self._schedule_retry_if_allowed(rec, exc):
+            retry_error = _retry_error_after_provider_result(
+                provider,
+                exc,
+                provider_result_received=provider_result_received,
+                provider_result_attempt_id=provider_result_attempt_id,
+            )
+            if await self._schedule_retry_if_allowed(rec, retry_error):
                 return
             rec.status = "failed"
             rec.step = "Failed"
@@ -8697,16 +10004,16 @@ class ScriberWebController:
                 meta={"error": str(exc)},
             )
         except TimeoutError as exc:
-            await self._stop_transcript_artifact_lease_guard(
-                lease_guard_stop,
-                lease_guard_task,
-            )
-            await self._terminate_artifact_attempt_before_result_async(
-                attempt, owner=owner, canceled=False
-            )
+            await stop_current_attempt(canceled=False)
             if workflow_phase["value"] == "provider":
                 self._record_provider_failure(provider, exc)
-            if await self._schedule_retry_if_allowed(rec, exc):
+            retry_error = _retry_error_after_provider_result(
+                provider,
+                exc,
+                provider_result_received=provider_result_received,
+                provider_result_attempt_id=provider_result_attempt_id,
+            )
+            if await self._schedule_retry_if_allowed(rec, retry_error):
                 return
             rec.status = "failed"
             rec.step = "Failed"
@@ -8725,14 +10032,14 @@ class ScriberWebController:
                 meta={"error": str(exc)},
             )
         except YouTubeDownloadError as exc:
-            await self._stop_transcript_artifact_lease_guard(
-                lease_guard_stop,
-                lease_guard_task,
+            await stop_current_attempt(canceled=False)
+            retry_error = _retry_error_after_provider_result(
+                provider,
+                exc,
+                provider_result_received=provider_result_received,
+                provider_result_attempt_id=provider_result_attempt_id,
             )
-            await self._terminate_artifact_attempt_before_result_async(
-                attempt, owner=owner, canceled=False
-            )
-            if await self._schedule_retry_if_allowed(rec, exc):
+            if await self._schedule_retry_if_allowed(rec, retry_error):
                 return
             rec.status = "failed"
             rec.step = "Failed"
@@ -8752,14 +10059,14 @@ class ScriberWebController:
                 meta={"error": str(exc)},
             )
         except TranscriptPersistenceError as exc:
-            await self._stop_transcript_artifact_lease_guard(
-                lease_guard_stop,
-                lease_guard_task,
+            await stop_current_attempt(canceled=False)
+            retry_error = _retry_error_after_provider_result(
+                provider,
+                exc,
+                provider_result_received=provider_result_received,
+                provider_result_attempt_id=provider_result_attempt_id,
             )
-            await self._terminate_artifact_attempt_before_result_async(
-                attempt, owner=owner, canceled=False
-            )
-            if await self._schedule_retry_if_allowed(rec, exc):
+            if await self._schedule_retry_if_allowed(rec, retry_error):
                 return
             rec.status = "failed"
             rec.step = "Failed to save transcript"
@@ -8778,16 +10085,16 @@ class ScriberWebController:
             )
         except Exception as exc:
             logger.exception("YouTube transcription failed")
-            await self._stop_transcript_artifact_lease_guard(
-                lease_guard_stop,
-                lease_guard_task,
-            )
-            await self._terminate_artifact_attempt_before_result_async(
-                attempt, owner=owner, canceled=False
-            )
+            await stop_current_attempt(canceled=False)
             if workflow_phase["value"] == "provider":
                 self._record_provider_failure(provider, exc)
-            if await self._schedule_retry_if_allowed(rec, exc):
+            retry_error = _retry_error_after_provider_result(
+                provider,
+                exc,
+                provider_result_received=provider_result_received,
+                provider_result_attempt_id=provider_result_attempt_id,
+            )
+            if await self._schedule_retry_if_allowed(rec, retry_error):
                 return
             rec.status = "failed"
             rec.step = "Failed"
@@ -8806,10 +10113,8 @@ class ScriberWebController:
                 meta={"error": str(exc)},
             )
         finally:
-            await self._stop_transcript_artifact_lease_guard(
-                lease_guard_stop,
-                lease_guard_task,
-            )
+            await stop_current_attempt(canceled=None)
+            await prepare_stack.aclose()
             if rec.status == "completed":
                 self._emit_workflow_event(
                     message="YouTube job completed",
@@ -8846,6 +10151,9 @@ class ScriberWebController:
         if not file_path.exists():
             raise ValueError("Uploaded file not found")
 
+        frozen_provider = self._select_available_provider()
+        _validate_provider_ready(frozen_provider)
+
         title = original_filename or file_path.name
         duration_seconds = await asyncio.to_thread(_probe_media_duration_seconds, file_path)
         duration_label = _format_duration(duration_seconds) if duration_seconds is not None else "--:--"
@@ -8879,6 +10187,11 @@ class ScriberWebController:
         # Store file size in content temporarily for display
         if file_size:
             rec.channel = file_size  # Reuse channel field for file size display
+        frozen_route = self._freeze_background_provider_route(
+            workload="file",
+            provider=frozen_provider,
+            language=rec.language,
+        )
         await self._enqueue_background_job_async(
             rec,
             job_type=JobType.FILE,
@@ -8887,6 +10200,7 @@ class ScriberWebController:
                 "title": rec.title,
                 "language": rec.language,
                 "originalFilename": original_filename,
+                "executionRoute": self._job_execution_route(frozen_route),
             },
         )
         self._emit_workflow_event(
@@ -8910,21 +10224,69 @@ class ScriberWebController:
         file_path: Path,
         *,
         provider: str,
+        frozen_route: FrozenTranscriptionRoute | None = None,
     ) -> str:
-        await self._ensure_artifact_transcript_row(rec)
-        local_status = self._speaker_diarizer.status()
-        route = freeze_provider_route(
+        route = frozen_route or self._freeze_background_provider_route(
             workload="file",
             provider=provider,
             language=rec.language,
-            diarization_requested=True,
-            local_worker_manifest={
-                "enabled": bool(Config.SPEAKER_DIARIZATION_FALLBACK_ENABLED),
-                "engine": "sherpa-onnx",
-                "componentPresent": bool(local_status.get("installed")),
-                "workerVersion": str(local_status.get("workerVersion") or "unknown"),
-            },
         )
+        recovered_content = await self._recover_bound_provider_result(rec, route)
+        if recovered_content is not None:
+            return recovered_content
+        if frozen_route is not None and supports_direct_file_upload(provider):
+            if not route.provider_audio_capability_id:
+                raise ValueError(
+                    "The frozen provider/model route has no verified batch audio capability."
+                )
+            async with prepare_provider_audio_file(
+                file_path,
+                provider=route.provider,
+                model=route.model,
+                max_bytes=_get_audio_upload_max_bytes(provider),
+            ) as prepared:
+                exact_route = self._freeze_background_provider_route(
+                    workload="file",
+                    provider=route.provider,
+                    language=route.language,
+                    model=route.model,
+                    provider_route=route.provider_route,
+                    audio_input_format=prepared.selected_format.value,
+                    audio_selection_mode=prepared.selection_mode.value,
+                    audio_preparation_implementation=prepared.implementation,
+                    provider_region=route.provider_region,
+                    provider_endpoint_sha256=route.provider_endpoint_sha256,
+                )
+                await self._finalize_job_execution_route(rec, exact_route, prepared)
+                return await self._transcribe_file_route_to_canonical_artifact(
+                    rec,
+                    file_path,
+                    provider=provider,
+                    provider_file_path=prepared.path,
+                    route=exact_route,
+                    prepared_audio=prepared,
+                )
+
+        return await self._transcribe_file_route_to_canonical_artifact(
+            rec,
+            file_path,
+            provider=provider,
+            provider_file_path=file_path,
+            route=route,
+            prepared_audio=None,
+        )
+
+    async def _transcribe_file_route_to_canonical_artifact(
+        self,
+        rec: TranscriptRecord,
+        file_path: Path,
+        *,
+        provider: str,
+        provider_file_path: Path,
+        route: FrozenTranscriptionRoute,
+        prepared_audio: PreparedProviderAudio | None,
+    ) -> str:
+        await self._ensure_artifact_transcript_row(rec)
         probed_duration_seconds = await asyncio.to_thread(
             _probe_media_duration_seconds, file_path
         )
@@ -8944,7 +10306,7 @@ class ScriberWebController:
         )
         attempt, owner, recovery = await self._begin_transcript_artifact_async(rec, route)
         if recovery is not None:
-            return await self._commit_transcript_artifact_async(
+            content = await self._commit_transcript_artifact_async(
                 rec,
                 attempt=attempt,
                 owner=owner,
@@ -8953,6 +10315,9 @@ class ScriberWebController:
                 evidence=recovery.stage_result.evidence,
                 source_asset_id=source_asset_id,
             )
+            if rec.id in self._job_ids_by_transcript:
+                await self._record_job_executed_route(rec, route)
+            return content
         lease_guard_stop, lease_guard_task = self._start_transcript_artifact_lease_guard(
             attempt=attempt,
             owner=owner,
@@ -8977,6 +10342,8 @@ class ScriberWebController:
                 )
             )
 
+        pipeline: Any | None = None
+        provider_request_fence_persisted = False
         try:
             pipeline = await _create_scriber_pipeline_off_loop(
                 service_name=provider,
@@ -8987,16 +10354,30 @@ class ScriberWebController:
                 enable_speaker_diarization=True,
                 execution_route=route.execution_route(),
                 direct_file_expected_duration_seconds=duration_seconds,
+                provider_http_transport=getattr(
+                    self, "_provider_http_transport", None
+                ),
             )
             transcribe_timeout = self._pipeline_transcription_timeout_seconds(
                 pipeline,
                 env_key="SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC",
             )
-            provider_call = (
-                pipeline.transcribe_file_direct(str(file_path))
-                if supports_direct_file_upload(provider)
-                else pipeline.transcribe_file(str(file_path))
+            provider_request_fence_persisted = await self._mark_job_provider_request_may_be_committed(
+                rec,
+                provider=provider,
             )
+            if supports_direct_file_upload(provider):
+                if prepared_audio is None:
+                    provider_call = pipeline.transcribe_file_direct(
+                        str(provider_file_path)
+                    )
+                else:
+                    provider_call = pipeline.transcribe_file_direct(
+                        str(provider_file_path),
+                        prepared_audio=prepared_audio,
+                    )
+            else:
+                provider_call = pipeline.transcribe_file(str(provider_file_path))
             await self._await_with_timeout(
                 provider_call,
                 timeout_seconds=transcribe_timeout,
@@ -9011,7 +10392,7 @@ class ScriberWebController:
                 attempt, owner=owner, canceled=True
             )
             raise
-        except Exception:
+        except Exception as exc:
             await self._stop_transcript_artifact_lease_guard(
                 lease_guard_stop,
                 lease_guard_task,
@@ -9019,6 +10400,16 @@ class ScriberWebController:
             await self._terminate_artifact_attempt_before_result_async(
                 attempt, owner=owner, canceled=False
             )
+            request_may_be_committed = bool(
+                getattr(pipeline, "_provider_request_started", False)
+            )
+            if provider_request_fence_persisted and not request_may_be_committed:
+                await self._mark_job_provider_request_safe_to_retry(
+                    rec,
+                    provider=provider,
+                )
+            if request_may_be_committed:
+                raise ProviderRequestAcceptanceUnknown(provider) from exc
             raise
 
         try:
@@ -9040,6 +10431,18 @@ class ScriberWebController:
                 units=provider_units,
                 evidence=evidence,
             )
+            await self._mark_job_provider_result_durable(
+                rec,
+                provider=provider,
+                attempt_id=attempt.id,
+            )
+            mark_result_durable = getattr(
+                pipeline,
+                "mark_provider_result_durable",
+                None,
+            )
+            if callable(mark_result_durable):
+                mark_result_durable()
             local_segments = await self._apply_speaker_diarization_fallback(
                 rec,
                 provider=provider,
@@ -9057,7 +10460,7 @@ class ScriberWebController:
                     "localDiarizationApplied": True,
                     "localSpeakerIntervals": len(units),
                 }
-            return await self._commit_transcript_artifact_async(
+            content = await self._commit_transcript_artifact_async(
                 rec,
                 attempt=attempt,
                 owner=owner,
@@ -9066,6 +10469,13 @@ class ScriberWebController:
                 evidence=evidence,
                 source_asset_id=source_asset_id,
             )
+            if rec.id in self._job_ids_by_transcript:
+                await self._record_job_executed_route(
+                    rec,
+                    route,
+                    prepared=prepared_audio,
+                )
+            return content
         except asyncio.CancelledError:
             await self._stop_transcript_artifact_lease_guard(
                 lease_guard_stop,
@@ -9077,7 +10487,7 @@ class ScriberWebController:
                 canceled=True,
             )
             raise
-        except Exception:
+        except Exception as exc:
             await self._stop_transcript_artifact_lease_guard(
                 lease_guard_stop,
                 lease_guard_task,
@@ -9087,16 +10497,32 @@ class ScriberWebController:
                 owner=owner,
                 canceled=False,
             )
-            raise
+            retry_error = _retry_error_after_provider_result(
+                provider,
+                exc,
+                provider_result_received=True,
+                provider_result_attempt_id=attempt.id,
+            )
+            raise retry_error
         finally:
             await self._stop_transcript_artifact_lease_guard(
                 lease_guard_stop,
                 lease_guard_task,
             )
 
-    async def _run_file_transcription(self, rec: TranscriptRecord, file_path: Path, *, provider: str) -> None:
+    async def _run_file_transcription(
+        self,
+        rec: TranscriptRecord,
+        file_path: Path,
+        *,
+        provider: str,
+        frozen_route: FrozenTranscriptionRoute | None = None,
+    ) -> None:
         """Run transcription on an uploaded file."""
+        if frozen_route is None:
+            frozen_route = self._scheduled_frozen_routes.get(rec.id)
         workflow_started = time.monotonic()
+        provider_result_durable = False
         rec.step = "Preparing audio..."
         rec.updated_at = datetime.now().isoformat()
         await self._broadcast_history_updated(record=rec, reason="progress")
@@ -9116,9 +10542,18 @@ class ScriberWebController:
             rec.updated_at = datetime.now().isoformat()
             await self._broadcast_history_updated(record=rec, reason="progress")
             transcribe_started = time.monotonic()
-            content = await self._transcribe_file_to_canonical_artifact(
-                rec, file_path, provider=provider
-            )
+            if frozen_route is None:
+                content = await self._transcribe_file_to_canonical_artifact(
+                    rec, file_path, provider=provider
+                )
+            else:
+                content = await self._transcribe_file_to_canonical_artifact(
+                    rec,
+                    file_path,
+                    provider=provider,
+                    frozen_route=frozen_route,
+                )
+            provider_result_durable = True
             if not content.strip():
                 _raise_empty_transcript(provider, "file transcription")
             logger.info(f"File transcription completed: {len(content)} chars")
@@ -9221,7 +10656,12 @@ class ScriberWebController:
         except (ValueError, ImportError) as exc:
             logger.warning("File transcription rejected: {}", exc)
             self._record_provider_failure(provider, exc)
-            if await self._schedule_retry_if_allowed(rec, exc):
+            retry_error = _retry_error_after_provider_result(
+                provider,
+                exc,
+                provider_result_received=provider_result_durable,
+            )
+            if await self._schedule_retry_if_allowed(rec, retry_error):
                 return
             rec.status = "failed"
             rec.step = "Failed"
@@ -9241,7 +10681,12 @@ class ScriberWebController:
             )
         except TimeoutError as exc:
             self._record_provider_failure(provider, exc)
-            if await self._schedule_retry_if_allowed(rec, exc):
+            retry_error = _retry_error_after_provider_result(
+                provider,
+                exc,
+                provider_result_received=provider_result_durable,
+            )
+            if await self._schedule_retry_if_allowed(rec, retry_error):
                 return
             rec.status = "failed"
             rec.step = "Failed"
@@ -9260,7 +10705,12 @@ class ScriberWebController:
                 meta={"error": str(exc)},
             )
         except TranscriptPersistenceError as exc:
-            if await self._schedule_retry_if_allowed(rec, exc):
+            retry_error = _retry_error_after_provider_result(
+                provider,
+                exc,
+                provider_result_received=provider_result_durable,
+            )
+            if await self._schedule_retry_if_allowed(rec, retry_error):
                 return
             rec.status = "failed"
             rec.step = "Failed to save transcript"
@@ -9280,7 +10730,12 @@ class ScriberWebController:
         except Exception as exc:
             logger.exception("File transcription failed")
             self._record_provider_failure(provider, exc)
-            if await self._schedule_retry_if_allowed(rec, exc):
+            retry_error = _retry_error_after_provider_result(
+                provider,
+                exc,
+                provider_result_received=provider_result_durable,
+            )
+            if await self._schedule_retry_if_allowed(rec, retry_error):
                 return
             rec.status = "failed"
             rec.step = "Failed"
@@ -9329,6 +10784,7 @@ class ScriberWebController:
         tauri_hotkey_marker: dict[str, Any] | None = None,
         provider_replay_execution: ProviderReplayExecution | None = None,
     ) -> ProviderUserError | None:
+        controller_entry_ns = time.perf_counter_ns()
         # Acquire lock for entire operation - no parallel start/stop allowed
         async with _audio_admission_lock(self):
             # Don't start if already listening or if stop is in progress
@@ -9343,6 +10799,7 @@ class ScriberWebController:
             self._start_hot_path_tracer(
                 session_id,
                 tauri_hotkey_marker=tauri_hotkey_marker,
+                start_request_timestamp_ns=controller_entry_ns,
             )
             self._mark_hot_path(session_id, "controller_accepted")
 
@@ -9369,11 +10826,11 @@ class ScriberWebController:
                 return info
 
             if provider_replay_execution is not None:
-                if post_process or tauri_hotkey_marker is not None:
+                if post_process or tauri_hotkey_marker is None:
                     self._finish_live_mic_start_transition(start_generation)
                     self._clear_hot_path_tracer(session_id)
                     raise ProviderReplayConflict(
-                        "provider replay cannot use hotkey or post-processing overrides"
+                        "provider replay requires one native activation marker"
                     )
                 if self._provider_replay_execution is not None:
                     self._finish_live_mic_start_transition(start_generation)
@@ -9385,11 +10842,15 @@ class ScriberWebController:
             live_provider: str | None = None
             try:
                 if provider_replay_execution is not None:
-                    live_provider = (
-                        "azure_mai"
-                        if provider_replay_execution.provider == "microsoft"
-                        else "soniox"
-                    )
+                    live_provider = {
+                        "microsoft": "azure_mai",
+                        "soniox": "soniox",
+                        "speechmatics": "speechmatics_async",
+                    }.get(provider_replay_execution.provider)
+                    if live_provider is None:
+                        raise ProviderReplayConflict(
+                            "provider replay provider is invalid"
+                        )
                 else:
                     live_provider = self._select_available_provider()
                     self._validate_live_provider_ready(live_provider)
@@ -9458,6 +10919,13 @@ class ScriberWebController:
                 self._set_status("Listening", session_id=session_id)
                 self._overlay_audio_enabled = True
                 self._show_recording_overlay_async(session_id=session_id)
+                # This is the narrowest currently acknowledged visibility
+                # boundary: recording state has transitioned and both status
+                # and overlay updates have been queued for their owners.
+                self._mark_hot_path(session_id, "recording_state_visible")
+                if provider_replay_execution is not None:
+                    with contextlib.suppress(ProviderReplayError):
+                        provider_replay_execution.marker("recording_state_visible")
                 logger.info("Microphone ready - recording started")
                 self._emit_workflow_event(
                     message="Microphone ready - recording started",
@@ -9539,9 +11007,17 @@ class ScriberWebController:
             def on_injection_marker(marker: str, timestamp_ns: int | None = None):
                 if session_id != self._session_id:
                     return
-                if marker in {"clipboard_set", "paste"}:
+                if marker in {
+                    "injection_target_validated",
+                    "clipboard_set",
+                    "paste_requested",
+                    "paste",
+                }:
                     self._mark_hot_path(session_id, marker, timestamp_ns=timestamp_ns)
-                    if provider_replay_execution is not None:
+                    if provider_replay_execution is not None and marker in {
+                        "clipboard_set",
+                        "paste",
+                    }:
                         provider_replay_execution.marker(marker)
                 elif (
                     provider_replay_execution is not None
@@ -9550,35 +11026,47 @@ class ScriberWebController:
                     provider_replay_execution.fail("target_mismatch")
 
             def on_last_audio_chunk_sent():
-                self._mark_hot_path(session_id, "last_chunk_sent")
+                timestamp_ns = time.perf_counter_ns()
+                self._mark_hot_path(
+                    session_id,
+                    "last_chunk_sent_to_pipeline",
+                    timestamp_ns=timestamp_ns,
+                )
+                self._mark_hot_path(
+                    session_id,
+                    "last_chunk_sent",
+                    timestamp_ns=timestamp_ns,
+                )
 
-            def on_audio_level(rms: float):
-                self._on_audio_level(rms, session_id=session_id)
-                if (
-                    provider_replay_execution is None
-                    or max(0.0, float(rms)) < self._mic_low_rms_clear_threshold
-                ):
+            def schedule_provider_replay_stop(
+                delay_seconds: float,
+                *,
+                replace_existing: bool = False,
+                failure_code: str | None = None,
+            ) -> None:
+                if provider_replay_execution is None:
                     return
 
                 def schedule_replay_stop() -> None:
-                    if (
-                        self._provider_replay_execution
-                        is not provider_replay_execution
-                        or provider_replay_execution.auto_stop_task is not None
-                    ):
+                    if self._provider_replay_execution is not provider_replay_execution:
                         return
+                    existing = provider_replay_execution.auto_stop_task
+                    if existing is not None and not existing.done():
+                        if not replace_existing:
+                            return
+                        existing.cancel()
 
                     async def stop_after_fixture_audio() -> None:
-                        # Preserve a bounded slice of the real synthetic capture
-                        # after the first audible frame, then exercise the normal
-                        # controller/provider finalization path automatically.
-                        await asyncio.sleep(0.35)
+                        if delay_seconds > 0:
+                            await asyncio.sleep(delay_seconds)
                         if (
                             self._provider_replay_execution
                             is provider_replay_execution
                             and self._is_listening
                             and self._session_id == session_id
                         ):
+                            if failure_code:
+                                provider_replay_execution.fail(failure_code)
                             await self.stop_listening()
 
                     provider_replay_execution.auto_stop_task = self._loop.create_task(
@@ -9587,6 +11075,36 @@ class ScriberWebController:
                     )
 
                 self._loop.call_soon_threadsafe(schedule_replay_stop)
+
+            def on_provider_replay_fixture_consumed() -> None:
+                # The frame reader fires this after consuming the block that
+                # contains the fixture's final byte. Stop immediately so the
+                # synthetic sidecar cannot accumulate more than its bounded
+                # final zero-padding block.
+                schedule_provider_replay_stop(0.0, replace_existing=True)
+
+            def on_audio_level(rms: float):
+                self._on_audio_level(rms, session_id=session_id)
+                if (
+                    provider_replay_execution is None
+                    or max(0.0, float(rms)) < self._mic_low_rms_clear_threshold
+                ):
+                    return
+                # The exact replay source is paced by the Windows audio worker,
+                # so wall-clock fixture duration is not an authoritative end
+                # boundary: scheduler oversleep can leave valid fixture blocks
+                # unwritten. The reader's final-byte callback above owns the
+                # normal stop. This delayed task is only a fail-closed watchdog
+                # for a missing callback and must never produce measured data.
+                duration_seconds = (
+                    provider_replay_execution.authoritative_fixture_duration_ms
+                    / 1000.0
+                )
+                schedule_provider_replay_stop(
+                    duration_seconds
+                    + max(5.0, min(30.0, duration_seconds * 0.25)),
+                    failure_code="capture_timeout",
+                )
 
             self._active_provider = live_provider
             self._cancel_post_recording_mic_prewarm_timer()
@@ -9709,6 +11227,83 @@ class ScriberWebController:
                         "Live microphone start was cancelled before provider activation"
                     )
 
+                live_execution_route = None
+                speechmatics_capture_time_wav_enabled: bool | None = None
+                if (
+                    provider_replay_execution is not None
+                    and provider_replay_execution.provider == "microsoft"
+                ):
+                    live_execution_route = {
+                        "language": "en-US",
+                        "model": "mai-transcribe-1.5",
+                        "provider_region": PROVIDER_REPLAY_AZURE_REGION,
+                        "custom_vocab": "",
+                        "audio_preparation_implementation": (
+                            provider_replay_execution.expected_audio_preparation_implementation
+                        ),
+                    }
+                elif str(live_provider or "").strip().lower() == "speechmatics_async":
+                    speechmatics_replay = bool(
+                        provider_replay_execution is not None
+                        and provider_replay_execution.provider == "speechmatics"
+                    )
+                    configured_batch_endpoint = (
+                        SPEECHMATICS_BATCH_DEFAULT_BASE_URL
+                        if speechmatics_replay
+                        else os.getenv(
+                            "SCRIBER_SPEECHMATICS_BATCH_BASE_URL",
+                            SPEECHMATICS_BATCH_DEFAULT_BASE_URL,
+                        )
+                    ).strip().rstrip("/")
+                    custom_batch_endpoint = bool(
+                        not speechmatics_replay
+                        and speechmatics_batch_endpoint_is_custom(
+                            os.getenv("SCRIBER_SPEECHMATICS_BATCH_BASE_URL")
+                        )
+                    )
+                    candidate_requested = (
+                        provider_replay_execution.expected_audio_preparation_implementation
+                        == "wav_pcm16_file_v1"
+                        if speechmatics_replay
+                        else os.getenv(
+                            "SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV",
+                            "0",
+                        ).strip().lower()
+                        not in {"0", "false", "no", "off"}
+                    )
+                    speechmatics_capture_time_wav_enabled = bool(
+                        candidate_requested and not custom_batch_endpoint
+                    )
+                    route_kwargs: dict[str, Any] = {
+                        "workload": "live_mic",
+                        "provider": "speechmatics_async",
+                        "model": "batch-v2",
+                        "provider_route": "batch_v2",
+                        "transport": "direct_upload",
+                        "language": "en-US" if speechmatics_replay else Config.LANGUAGE,
+                        "custom_vocab": "" if speechmatics_replay else Config.CUSTOM_VOCAB,
+                        "custom_endpoint": custom_batch_endpoint,
+                        "provider_endpoint_sha256": hashlib.sha256(
+                            configured_batch_endpoint.encode("utf-8")
+                        ).hexdigest(),
+                        "diarization_requested": False,
+                    }
+                    if not custom_batch_endpoint:
+                        route_kwargs.update(
+                            {
+                                "audio_input_format": AudioInputFormat.WAV_PCM16,
+                                "audio_selection_mode": "generated",
+                                "audio_preparation_implementation": (
+                                    "wav_pcm16_file_v1"
+                                    if speechmatics_capture_time_wav_enabled
+                                    else "python_reserved_wav_header_v1"
+                                ),
+                            }
+                        )
+                    live_execution_route = freeze_provider_route(
+                        **route_kwargs
+                    ).execution_route()
+
                 pipeline = _create_scriber_pipeline(
                     service_name=live_provider,
                     on_status_change=lambda status: self._set_live_pipeline_status(status, session_id=session_id),
@@ -9718,9 +11313,15 @@ class ScriberWebController:
                     on_injection_marker=on_injection_marker,
                     on_mic_ready=on_mic_ready,
                     on_last_audio_chunk_sent=on_last_audio_chunk_sent,
-                    on_audio_start_marker=lambda marker: self._mark_hot_path(
+                    on_audio_start_marker=lambda marker, timestamp_ns=None: self._mark_hot_path(
                         session_id,
                         marker,
+                        timestamp_ns=timestamp_ns,
+                    ),
+                    on_provider_replay_fixture_consumed=(
+                        on_provider_replay_fixture_consumed
+                        if provider_replay_execution is not None
+                        else None
                     ),
                     on_error=on_pipeline_error,
                     mic_prewarm_manager=mic_prewarm_manager,
@@ -9728,16 +11329,7 @@ class ScriberWebController:
                     text_injection_enabled=not (
                         post_process and Config.POST_PROCESSING_ENABLED
                     ),
-                    execution_route=(
-                        {
-                            "language": "en-US",
-                            "model": "mai-transcribe-1.5",
-                            "custom_vocab": "",
-                        }
-                        if provider_replay_execution is not None
-                        and provider_replay_execution.provider == "microsoft"
-                        else None
-                    ),
+                    execution_route=live_execution_route,
                     injection_target_guard=(
                         provider_replay_execution.injection_target_guard
                         if provider_replay_execution is not None
@@ -9751,6 +11343,21 @@ class ScriberWebController:
                         if provider_replay_execution is not None
                         else None
                     ),
+                    speechmatics_batch_raw_transport=(
+                        provider_replay_execution.speechmatics_batch_raw_transport
+                        if provider_replay_execution is not None
+                        else None
+                    ),
+                    azure_mai_capture_time_mp3_enabled=(
+                        provider_replay_execution.expected_audio_preparation_implementation
+                        == "capture_time_ffmpeg_mp3_v1"
+                        if provider_replay_execution is not None
+                        and provider_replay_execution.provider == "microsoft"
+                        else None
+                    ),
+                    speechmatics_capture_time_wav_enabled=(
+                        speechmatics_capture_time_wav_enabled
+                    ),
                     on_provider_response_complete=(
                         (
                             lambda: provider_replay_execution.marker(
@@ -9758,7 +11365,8 @@ class ScriberWebController:
                             )
                         )
                         if provider_replay_execution is not None
-                        and provider_replay_execution.provider == "microsoft"
+                        and provider_replay_execution.provider
+                        in {"microsoft", "speechmatics"}
                         else None
                     ),
                     soniox_replay_url=(
@@ -9786,6 +11394,9 @@ class ScriberWebController:
                         if provider_replay_execution is not None
                         and provider_replay_execution.provider == "soniox"
                         else None
+                    ),
+                    provider_http_transport=getattr(
+                        self, "_provider_http_transport", None
                     ),
                 )
                 self._mark_hot_path(session_id, "pipeline_constructed")
@@ -10086,6 +11697,31 @@ class ScriberWebController:
         if self._live_mic_start_task is current:
             self._live_mic_start_task = None
 
+    def _mark_live_mic_stop_requested(
+        self,
+        *,
+        timestamp_ns: int | None = None,
+    ) -> None:
+        """Record stop intent at the earliest controller ingress boundary."""
+
+        session_id = self._session_id
+        if not session_id or not (self._is_listening or self._is_stopping):
+            return
+        self._mark_hot_path(
+            session_id,
+            "stop_requested",
+            timestamp_ns=(
+                timestamp_ns if timestamp_ns is not None else time.perf_counter_ns()
+            ),
+        )
+        replay_execution = self._provider_replay_execution
+        if (
+            replay_execution is not None
+            and replay_execution.session_id == session_id
+        ):
+            with contextlib.suppress(ProviderReplayError):
+                replay_execution.marker("stop_requested")
+
     def request_async_stop_listening(self) -> dict[str, bool]:
         """Schedule an explicit Live Mic stop without waiting for finalization.
 
@@ -10101,6 +11737,8 @@ class ScriberWebController:
                 "alreadyFinalizing": False,
                 "alreadyStopped": False,
             }
+
+        self._mark_live_mic_stop_requested()
 
         background_stop_active = bool(
             self._background_stop_task is not None
@@ -10150,6 +11788,7 @@ class ScriberWebController:
     def request_background_stop_listening(self) -> bool:
         if self._loop.is_closed():
             return False
+        self._mark_live_mic_stop_requested()
         if self._live_mic_start_in_progress_generation is not None:
             self._cancel_live_mic_start_transition()
             if (
@@ -10210,6 +11849,7 @@ class ScriberWebController:
         return True
 
     async def stop_listening(self) -> ProviderUserError | None:
+        self._mark_live_mic_stop_requested()
         # Acquire lock for entire operation - no parallel start/stop allowed
         stop_owner = object()
         async with self._listening_lock:
@@ -10285,7 +11925,6 @@ class ScriberWebController:
             self._live_transcribing_visible = bool(
                 not is_realtime_service and not silent_early_exit
             )
-            self._mark_hot_path(session_id, "stop_requested")
             self._set_recording_state(RecordingState.FINALIZING, context="stop_listening")
             self._emit_workflow_event(
                 message="Live mic stop requested",
@@ -10392,6 +12031,15 @@ class ScriberWebController:
                             )
                         else:
                             raise
+                    if provider_replay_execution is not None:
+                        capture_snapshot = getattr(
+                            pipeline,
+                            "provider_replay_capture_attestation",
+                            None,
+                        )
+                        provider_replay_execution.attach_capture_attestation(
+                            capture_snapshot() if callable(capture_snapshot) else None
+                        )
                     self._record_provider_success(provider_used or "")
              
             # Now that pipeline has stopped and transcription callback has fired,
@@ -11417,6 +13065,9 @@ class ScriberWebController:
             self._speaker_model,
             self._speaker_diarizer,
             getattr(self, "_transcript_artifacts", None),
+            provider_http_transport=getattr(
+                self, "_provider_http_transport", None
+            ),
         )
         try:
             result = await finalizer.reprocess_speaker_identity(meeting_id)
@@ -12057,6 +13708,9 @@ class ScriberWebController:
             self._speaker_model,
             self._speaker_diarizer,
             getattr(self, "_transcript_artifacts", None),
+            provider_http_transport=getattr(
+                self, "_provider_http_transport", None
+            ),
         )
         try:
             ready = await finalizer.run(meeting_id, progress)
@@ -12197,9 +13851,20 @@ class ScriberWebController:
         for task in tasks:
             task.cancel()
 
-        # The detached SQLite lease release is cleanup, not cancellable work.
-        # Observe it within the same bounded drain window without canceling it.
+        # Live Mic finalization and the detached SQLite lease release are
+        # cleanup, not cancellable background work. Observe both within the
+        # same bounded drain window without canceling them. In particular, an
+        # already-running stop owns provider finalization and the transcript
+        # commit after it has lowered ``_is_listening``; a second shutdown stop
+        # is therefore an idempotent no-op and cannot replace this join.
         wait_tasks = set(tasks)
+        background_stop_task = getattr(self, "_background_stop_task", None)
+        if (
+            background_stop_task is not None
+            and background_stop_task is not current
+            and not background_stop_task.done()
+        ):
+            wait_tasks.add(background_stop_task)
         shutdown_audio_release_task = getattr(
             self, "_shutdown_audio_release_task", None
         )
@@ -12265,6 +13930,13 @@ class ScriberWebController:
             await asyncio.gather(
                 *(transcriber.stop() for transcriber in live_transcribers),
                 return_exceptions=True,
+            )
+        try:
+            await self._provider_http_transport.close()
+        except Exception as exc:
+            logger.warning(
+                "Provider HTTP transport shutdown warning: {}",
+                type(exc).__name__,
             )
         return len(pending) + transcript_write_pending + metric_pending
 
@@ -12947,6 +14619,7 @@ class ScriberWebController:
 
         removed = self._remove_from_history(transcript_id) or rec
         self._job_ids_by_transcript.pop(transcript_id, None)
+        self._scheduled_frozen_routes.pop(transcript_id, None)
         await self._broadcast_history_updated(record=removed, reason="deleted")
         return "deleted", removed
 
@@ -13259,6 +14932,31 @@ APP_PROVIDER_REPLAY: web.AppKey[ProviderReplayRegistry] = web.AppKey(
 _PROVIDER_REPLAY_ROUTE_PREFIX = "/api/runtime/benchmark/provider-replay"
 
 
+def _provider_replay_audio_preparation_snapshot(provider: str) -> str | None:
+    normalized = str(provider or "").strip().lower()
+    if normalized == "microsoft":
+        enabled = os.getenv(
+            "SCRIBER_AZURE_MAI_CAPTURE_TIME_MP3",
+            "0",
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        return (
+            "capture_time_ffmpeg_mp3_v1"
+            if enabled
+            else "post_stop_ffmpeg_mp3_v1"
+        )
+    if normalized == "speechmatics":
+        enabled = os.getenv(
+            "SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV",
+            "0",
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        return (
+            "wav_pcm16_file_v1"
+            if enabled
+            else "python_reserved_wav_header_v1"
+        )
+    return None
+
+
 def _live_mic_runtime_unavailable_payload() -> dict[str, Any]:
     """Return a stable public error without exposing runtime internals."""
 
@@ -13381,10 +15079,63 @@ def _group_meeting_audio_endpoints(endpoints: Any) -> dict[str, list[dict[str, A
     return grouped
 
 
+async def _tauri_activation_marker_from_request(
+    request: web.Request,
+) -> tuple[dict[str, Any] | None, bool]:
+    """Return a native activation marker and whether it claims provider replay.
+
+    Empty bodies and the established generic hotkey body keep their existing
+    behavior. The provider-replay form is strict and cannot silently degrade to
+    a normal Live Mic start when its sample binding is missing.
+    """
+
+    if not request.can_read_body or request.content_length == 0:
+        return None, False
+    if request.content_length is not None and request.content_length > 2048:
+        raise RESTContractError(
+            "Live Mic request body exceeds the benchmark marker limit"
+        )
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise RESTContractError("Live Mic request body must be JSON") from exc
+    if not isinstance(payload, dict):
+        raise RESTContractError("Live Mic request body must be a dict")
+    if "benchmarkActivationMarker" in payload:
+        marker = validate_tauri_activation_marker_request_payload(
+            payload,
+            configured_run_id=os.getenv(_TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV),
+            expected_parent_pid=os.getppid(),
+            now_ns=time.perf_counter_ns(),
+        )
+        return marker, True
+    if "benchmarkHotkeyMarker" in payload:
+        marker = validate_tauri_hotkey_marker_request_payload(
+            payload,
+            configured_run_id=os.getenv(_TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV),
+            expected_parent_pid=os.getppid(),
+            now_ns=time.perf_counter_ns(),
+        )
+        return marker, False
+    return None, False
+
+
 def create_app(controller: ScriberWebController) -> web.Application:
-    provider_replay = ProviderReplayRegistry(
-        ProviderReplayRuntimeGate.from_environment()
+    replay_fixture_duration_ms = (
+        provider_replay_fixture_duration_ms_from_environment()
     )
+    replay_gate = ProviderReplayRuntimeGate.from_environment()
+    if replay_fixture_duration_ms == 350:
+        provider_replay = ProviderReplayRegistry(replay_gate)
+    else:
+        provider_replay = ProviderReplayRegistry(
+            replay_gate,
+            ttl_seconds=min(
+                1_200.0,
+                max(60.0, replay_fixture_duration_ms / 1000.0 + 120.0),
+            ),
+            authoritative_fixture_duration_ms=replay_fixture_duration_ms,
+        )
 
     @web.middleware
     async def provider_replay_visibility_middleware(request: web.Request, handler):
@@ -13407,6 +15158,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
     )
     app[APP_CONTROLLER] = controller
     app[APP_PROVIDER_REPLAY] = provider_replay
+    # At most one entry can exist because ProviderReplayRegistry itself admits
+    # only one non-terminal sample. The target guard is held here between the
+    # control-plane arm and the actual native hotkey/button activation.
+    pending_provider_replay_activations: dict[str, dict[str, Any]] = {}
     speaker_preview_grants: dict[str, SpeakerProfilePreviewGrant] = {}
 
     def prune_speaker_preview_grants(now: float) -> None:
@@ -13429,7 +15184,23 @@ def create_app(controller: ScriberWebController) -> web.Application:
         yield
         await session.close()
 
+    async def provider_replay_activation_ctx(_app: web.Application):
+        yield
+        watchdogs = [
+            task
+            for pending in pending_provider_replay_activations.values()
+            if isinstance(pending, dict)
+            for task in (pending.get("watchdogTask"),)
+            if isinstance(task, asyncio.Task)
+        ]
+        pending_provider_replay_activations.clear()
+        for watchdog in watchdogs:
+            watchdog.cancel()
+        if watchdogs:
+            await asyncio.gather(*watchdogs, return_exceptions=True)
+
     app.cleanup_ctx.append(http_session_ctx)
+    app.cleanup_ctx.append(provider_replay_activation_ctx)
 
     async def health(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -13683,9 +15454,41 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 payload,
                 configured_run_id=replay.gate.run_id,
             )
+            if validated["provider"] == "microsoft":
+                try:
+                    await prewarm_azure_mai_replay_validation(
+                        authoritative_fixture_duration_ms=(
+                            replay.authoritative_fixture_duration_ms
+                        ),
+                        expected_fixture_pcm_sha256=os.getenv(
+                            PROVIDER_REPLAY_FIXTURE_PCM_SHA256_ENV,
+                            "",
+                        ),
+                        authoritative_fixture_pcm_path=os.getenv(
+                            PROVIDER_REPLAY_FIXTURE_PCM_PATH_ENV,
+                            "",
+                        ),
+                        capture_block_size_frames=int(
+                            getattr(Config, "MIC_BLOCK_SIZE", 512) or 512
+                        ),
+                    )
+                except (RuntimeError, ValueError):
+                    return web.json_response(
+                        {
+                            "message": (
+                                "Provider replay MAI validator is unavailable"
+                            )
+                        },
+                        status=503,
+                    )
             result = replay.prepare(
                 run_id=validated["runId"],
                 provider=validated["provider"],
+                expected_audio_preparation_implementation=(
+                    _provider_replay_audio_preparation_snapshot(
+                        validated["provider"]
+                    )
+                ),
             )
         except RESTContractError as exc:
             return _provider_replay_contract_error(exc)
@@ -13725,9 +15528,9 @@ def create_app(controller: ScriberWebController) -> web.Application:
     async def arm_provider_replay(request: web.Request):
         replay = request.app[APP_PROVIDER_REPLAY]
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        execution: ProviderReplayExecution | None = None
         validated: dict[str, Any] | None = None
         sample_id = request.match_info.get("sampleId", "")
+        canonical_sample_id: str | None = None
         arm_started = False
         try:
             if request.content_length is not None and request.content_length > 2048:
@@ -13746,6 +15549,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 target_creation_time_100ns=validated[
                     "targetCreationTime100ns"
                 ],
+                activation_kind=validated["activationKind"],
             )
             arm_started = True
             guard = await _capture_provider_replay_injection_target(
@@ -13754,34 +15558,229 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     "targetCreationTime100ns"
                 ],
             )
-            provider = str(starting["provider"])
+            canonical_sample_id = str(starting["sampleId"])
+            pending: dict[str, Any] = {
+                "runId": validated["runId"],
+                "sampleId": canonical_sample_id,
+                "provider": str(starting["provider"]),
+                "expectedAudioPreparationImplementation": starting.get(
+                    "audioPreparationImplementationExpected"
+                ),
+                "activationKind": validated["activationKind"],
+                "guard": guard,
+                "watchdogTask": None,
+            }
+            pending_provider_replay_activations[canonical_sample_id] = pending
+            shell_result = await asyncio.to_thread(
+                call_shell_ipc,
+                "benchmarkProviderReplayArm",
+                {
+                    "runId": validated["runId"],
+                    "sampleId": canonical_sample_id,
+                    "activationKind": validated["activationKind"],
+                },
+                timeout_seconds=1.5,
+            )
+            shell_payload = shell_result.get("payload")
+            if (
+                shell_result.get("success") is not True
+                or not isinstance(shell_payload, dict)
+                or shell_payload.get("armed") is not True
+                or shell_payload.get("activationKind")
+                != validated["activationKind"]
+            ):
+                pending_provider_replay_activations.pop(canonical_sample_id, None)
+                raise RuntimeError("native provider replay activation arm failed")
+
+            async def _expire_pending_activation() -> None:
+                delay = max(
+                    0.05,
+                    float(starting.get("expiresInMs", 0)) / 1000.0 - 0.1,
+                )
+                await asyncio.sleep(delay)
+                if pending_provider_replay_activations.get(canonical_sample_id) is pending:
+                    pending_provider_replay_activations.pop(canonical_sample_id, None)
+                    with contextlib.suppress(ProviderReplayError):
+                        replay.fail(
+                            run_id=validated["runId"],
+                            sample_id=canonical_sample_id,
+                            error_code="expired",
+                        )
+
+            pending["watchdogTask"] = asyncio.create_task(
+                _expire_pending_activation(),
+                name="provider_replay_activation_watchdog",
+            )
+            result = starting
+        except RESTContractError as exc:
+            return _provider_replay_contract_error(exc)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return web.json_response({"message": "Expected JSON object"}, status=400)
+        except ProviderReplayNotFound:
+            return web.json_response({"message": "Not found"}, status=404)
+        except ProviderReplayConflict as exc:
+            if validated is not None and arm_started:
+                with contextlib.suppress(ProviderReplayError):
+                    replay.fail(
+                        run_id=validated["runId"],
+                        sample_id=sample_id,
+                        error_code="target_mismatch",
+                    )
+            return web.json_response({"message": str(exc)}, status=409)
+        except Exception:
+            logger.exception("Installed provider replay arm failed")
+            if validated is not None and arm_started:
+                with contextlib.suppress(ProviderReplayError):
+                    replay.fail(
+                        run_id=validated["runId"],
+                        sample_id=sample_id,
+                        error_code="arm_failed",
+                    )
+            pending = pending_provider_replay_activations.pop(
+                canonical_sample_id or sample_id,
+                None,
+            )
+            pending_watchdog = (
+                pending.get("watchdogTask") if isinstance(pending, dict) else None
+            )
+            if isinstance(pending_watchdog, asyncio.Task):
+                pending_watchdog.cancel()
+            return web.json_response(
+                {"message": "Installed provider replay could not start"},
+                status=503,
+            )
+        return web.json_response(result, status=202)
+
+    async def activate_provider_replay(
+        marker: dict[str, Any],
+    ) -> tuple[ProviderReplayExecution, dict[str, Any]]:
+        """Consume one shell-bound activation and start the real controller."""
+
+        replay = app[APP_PROVIDER_REPLAY]
+        ctl: ScriberWebController = app[APP_CONTROLLER]
+        sample_id = str(marker["sampleId"])
+        run_id = str(marker["runId"])
+        activation_kind = str(marker["activationKind"])
+        pending = pending_provider_replay_activations.get(sample_id)
+        if (
+            not isinstance(pending, dict)
+            or pending.get("runId") != run_id
+            or pending.get("activationKind") != activation_kind
+        ):
+            raise ProviderReplayConflict(
+                "provider replay native activation is not armed"
+            )
+        replay.claim_activation(
+            run_id=run_id,
+            sample_id=sample_id,
+            activation_kind=activation_kind,
+        )
+        pending_provider_replay_activations.pop(sample_id, None)
+        pending_watchdog = pending.get("watchdogTask")
+        if isinstance(pending_watchdog, asyncio.Task):
+            pending_watchdog.cancel()
+
+        execution: ProviderReplayExecution | None = None
+        try:
+            provider = str(pending["provider"])
+            expected_audio_preparation_implementation = str(
+                pending.get("expectedAudioPreparationImplementation") or ""
+            ).strip() or None
+
+            def on_audio_preparation_validated(actual: str) -> None:
+                if execution is None:
+                    raise ProviderReplayConflict(
+                        "provider replay execution is unavailable"
+                    )
+                execution.attach_audio_preparation_attestation(actual)
+
             soniox_server: LocalSonioxReplayServer | None = None
             azure_raw_transport = None
+            speechmatics_batch_raw_transport = None
             if provider == "soniox":
                 soniox_server = await LocalSonioxReplayServer().start()
             elif provider == "microsoft":
-                azure_raw_transport = create_azure_mai_replay_transport()
+                azure_raw_transport = create_azure_mai_replay_transport(
+                    authoritative_fixture_duration_ms=(
+                        replay.authoritative_fixture_duration_ms
+                    ),
+                    expected_fixture_pcm_sha256=os.getenv(
+                        PROVIDER_REPLAY_FIXTURE_PCM_SHA256_ENV,
+                        "",
+                    ),
+                    authoritative_fixture_pcm_path=os.getenv(
+                        PROVIDER_REPLAY_FIXTURE_PCM_PATH_ENV,
+                        "",
+                    ),
+                    capture_block_size_frames=int(
+                        getattr(Config, "MIC_BLOCK_SIZE", 512) or 512
+                    ),
+                    expected_audio_preparation_implementation=(
+                        expected_audio_preparation_implementation or ""
+                    ),
+                    on_audio_preparation_validated=(
+                        on_audio_preparation_validated
+                    ),
+                )
+            elif provider == "speechmatics":
+                speechmatics_batch_raw_transport = (
+                    create_speechmatics_batch_replay_transport(
+                        authoritative_fixture_duration_ms=(
+                            replay.authoritative_fixture_duration_ms
+                        ),
+                        expected_fixture_pcm_sha256=os.getenv(
+                            PROVIDER_REPLAY_FIXTURE_PCM_SHA256_ENV,
+                            "",
+                        ),
+                        capture_block_size_frames=int(
+                            getattr(Config, "MIC_BLOCK_SIZE", 512) or 512
+                        ),
+                        expected_audio_preparation_implementation=(
+                            expected_audio_preparation_implementation or ""
+                        ),
+                        on_audio_preparation_validated=(
+                            on_audio_preparation_validated
+                        ),
+                    )
+                )
             else:  # pragma: no cover - registry contract prevents this
                 raise ProviderReplayConflict("provider replay provider is invalid")
-
             execution = ProviderReplayExecution(
                 registry=replay,
-                run_id=validated["runId"],
+                run_id=run_id,
                 sample_id=sample_id,
                 provider=provider,
-                injection_target_guard=guard,
+                injection_target_guard=pending["guard"],
+                expected_audio_preparation_implementation=(
+                    expected_audio_preparation_implementation
+                ),
                 azure_raw_transport=azure_raw_transport,
+                speechmatics_batch_raw_transport=(
+                    speechmatics_batch_raw_transport
+                ),
                 soniox_server=soniox_server,
+                authoritative_fixture_duration_ms=(
+                    replay.authoritative_fixture_duration_ms
+                ),
+            )
+            activation_qpc = (
+                int(marker["qpcTicks"]),
+                int(marker["qpcFrequency"]),
+            )
+            execution.marker(
+                "activation_received",
+                qpc_snapshot=activation_qpc,
+            )
+            execution.marker(
+                str(marker["marker"]),
+                qpc_snapshot=activation_qpc,
             )
             start_error = await ctl.start_listening(
+                tauri_hotkey_marker=marker,
                 provider_replay_execution=execution,
             )
             if start_error is not None:
                 raise RuntimeError("provider replay pipeline was rejected")
-
-            # A 202 means the real PipelineTask was scheduled and survived an
-            # event-loop turn. Merely constructing provider objects is not an
-            # armed installed replay.
             await asyncio.sleep(0)
             pipeline_task = ctl._pipeline_task
             session_id = ctl._session_id
@@ -13797,7 +15796,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
             result = execution.bind_session(session_id)
 
             async def _expire_installed_replay() -> None:
-                delay = max(0.05, float(result.get("expiresInMs", 0)) / 1000.0 - 0.1)
+                delay = max(
+                    0.05,
+                    float(result.get("expiresInMs", 0)) / 1000.0 - 0.1,
+                )
                 try:
                     await asyncio.sleep(delay)
                     if ctl._provider_replay_execution is not execution:
@@ -13813,42 +15815,17 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 _expire_installed_replay(),
                 name="provider_replay_ttl_watchdog",
             )
-        except RESTContractError as exc:
-            return _provider_replay_contract_error(exc)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            return web.json_response({"message": "Expected JSON object"}, status=400)
-        except ProviderReplayNotFound:
-            return web.json_response({"message": "Not found"}, status=404)
-        except ProviderReplayConflict as exc:
-            if validated is not None and arm_started:
-                with contextlib.suppress(ProviderReplayError):
-                    replay.fail(
-                        run_id=validated["runId"],
-                        sample_id=sample_id,
-                        error_code="target_mismatch",
-                    )
-            if execution is not None:
-                await execution.close()
-            return web.json_response({"message": str(exc)}, status=409)
+            return execution, result
         except Exception:
-            logger.exception("Installed provider replay arm failed")
-            if validated is not None and arm_started:
-                with contextlib.suppress(ProviderReplayError):
-                    replay.fail(
-                        run_id=validated["runId"],
-                        sample_id=sample_id,
-                        error_code="arm_failed",
-                    )
+            with contextlib.suppress(ProviderReplayError):
+                replay.fail(
+                    run_id=run_id,
+                    sample_id=sample_id,
+                    error_code="arm_failed",
+                )
             if execution is not None:
-                if ctl._provider_replay_execution is execution and ctl._session_id:
-                    await ctl._emergency_stop_pipeline(session_id=ctl._session_id)
-                    ctl._provider_replay_execution = None
                 await execution.close()
-            return web.json_response(
-                {"message": "Installed provider replay could not start"},
-                status=503,
-            )
-        return web.json_response(result, status=202)
+            raise
 
     async def provider_replay_not_found(_request: web.Request):
         return web.json_response({"message": "Not found"}, status=404)
@@ -13862,16 +15839,31 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         try:
-            tauri_hotkey_marker = await _tauri_hotkey_marker_from_request(request)
+            tauri_hotkey_marker, provider_replay_activation = (
+                await _tauri_activation_marker_from_request(request)
+            )
         except RESTContractError as exc:
             return web.json_response({"message": str(exc)}, status=400)
         try:
+            if provider_replay_activation:
+                if post_process or tauri_hotkey_marker is None:
+                    raise ProviderReplayConflict(
+                        "provider replay activation path is invalid"
+                    )
+                await activate_provider_replay(tauri_hotkey_marker)
+                return web.json_response(ctl.get_state())
+            if pending_provider_replay_activations:
+                raise ProviderReplayConflict(
+                    "provider replay requires its armed native activation"
+                )
             start_kwargs: dict[str, Any] = {
                 "tauri_hotkey_marker": tauri_hotkey_marker,
             }
             if post_process:
                 start_kwargs["post_process"] = True
             start_error = await ctl.start_listening(**start_kwargs)
+        except ProviderReplayConflict as exc:
+            return web.json_response({"message": str(exc)}, status=409)
         except Exception:
             # The local log retains the traceback needed to diagnose a broken
             # frozen runtime.  Never reflect module names, filesystem paths, or
@@ -19611,6 +21603,18 @@ async def _background_init(controller: ScriberWebController) -> None:
         except Exception as e:
             logger.debug(f"Overlay prewarm skipped: {e}")
 
+    async def _prewarm_provider_http_transport() -> None:
+        """Create the bounded shared pool without issuing provider traffic."""
+
+        try:
+            await controller._provider_http_transport.session()
+            logger.debug("Provider HTTP connection pool initialized")
+        except Exception as e:
+            # A later provider request retries normal lazy construction. Pool
+            # setup performs no DNS lookup or network request, so failure here
+            # must not prevent the local server from becoming ready.
+            logger.debug(f"Provider HTTP pool initialization skipped: {e}")
+
     async def _prewarm_models() -> None:
         try:
             def _warm_analyzers() -> None:
@@ -19670,6 +21674,7 @@ async def _background_init(controller: ScriberWebController) -> None:
         _sync_idle_mic_prewarm(),
         _load_startup_data(),
         _prewarm_overlay(),
+        _prewarm_provider_http_transport(),
     ]
     if _prewarm_models_on_startup():
         background_tasks.append(_prewarm_models())

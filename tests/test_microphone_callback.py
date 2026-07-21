@@ -33,10 +33,18 @@ async def test_audio_callback_throttles_visualizer_work_to_sixty_hz(monkeypatch)
     levels: list[float] = []
     times = iter([99.99, 100.0, 100.005, 100.01, 100.015, 100.02, 100.025, 100.03])
 
-    monkeypatch.setattr(microphone, "time", types.SimpleNamespace(monotonic=lambda: next(times)))
+    monkeypatch.setattr(
+        microphone,
+        "time",
+        types.SimpleNamespace(
+            monotonic=lambda: next(times),
+            perf_counter_ns=lambda: 1,
+        ),
+    )
 
     mic.on_audio_level = levels.append
     mic._running = True
+    mic._accepting_audio = True
     mic._loop = asyncio.get_running_loop()
 
     data = np.full((512, 1), 1000, dtype=np.int16)
@@ -343,6 +351,7 @@ async def test_microphone_drain_keeps_up_with_sustained_callback_flow():
     mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=512)
     mic._audio_in_queue = object()
     mic._running = True
+    mic._accepting_audio = True
     mic._consumer_loop = asyncio.get_running_loop()
     mic._queue_wakeup = asyncio.Event()
 
@@ -359,6 +368,7 @@ async def test_microphone_drain_keeps_up_with_sustained_callback_flow():
             await asyncio.sleep(0)
 
     mic._running = False
+    mic._accepting_audio = False
     mic._signal_queue_wakeup()
     await asyncio.wait_for(consumer, timeout=1.0)
 
@@ -368,6 +378,46 @@ async def test_microphone_drain_keeps_up_with_sustained_callback_flow():
     assert snapshot["drainedFrameCount"] == 1024
     assert snapshot["audioQueueDepth"] == 0
     assert snapshot["audioQueueMaxDepth"] < snapshot["audioQueueCapacity"]
+
+
+@pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")
+@pytest.mark.asyncio
+async def test_microphone_queue_overflow_fails_closed_without_success_marker():
+    markers: list[str] = []
+    pushed: list[bytes] = []
+    mic = microphone.MicrophoneInput(
+        sample_rate=16000,
+        channels=1,
+        block_size=512,
+        on_last_audio_chunk_sent=lambda: markers.append("last_chunk_sent"),
+    )
+    mic._audio_in_queue = object()
+    mic._queue = microphone._queue.Queue(maxsize=1)
+    mic._queue.put_nowait(b"already-buffered")
+    mic._running = True
+    mic._accepting_audio = True
+    mic._consumer_loop = asyncio.get_running_loop()
+    mic._queue_wakeup = asyncio.Event()
+
+    async def fake_push_audio_frame(frame):
+        pushed.append(frame.audio)
+
+    mic.push_audio_frame = fake_push_audio_frame
+    data = np.full((512, 1), 1000, dtype=np.int16)
+
+    with pytest.raises(RuntimeError, match="microphoneAudioQueueOverflow"):
+        mic._process_audio_callback(data, 512, None, None)
+    with pytest.raises(RuntimeError, match="microphoneAudioQueueOverflow"):
+        await mic._drain_queue()
+
+    snapshot = mic.diagnostic_snapshot()
+    assert pushed == [b"already-buffered"]
+    assert markers == []
+    assert mic._running is False
+    assert snapshot["droppedFrameCount"] == 1
+    assert snapshot["captureIntegrityError"] == "microphoneAudioQueueOverflow"
+    assert snapshot["consumerError"] == "RuntimeError: microphoneAudioQueueOverflow"
+    assert mic.ensure_stream_health(reason="test") is False
 
 
 @pytest.mark.skipif(not microphone.HAS_SOUNDDEVICE, reason="sounddevice unavailable")

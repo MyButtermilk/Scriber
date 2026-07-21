@@ -6,6 +6,24 @@ import re
 import sys
 from pathlib import Path
 
+try:
+    from .evaluator.local_wux import PROVIDER_REPLAY_SCENARIO_WEIGHTS
+except ImportError:
+    from evaluator.local_wux import PROVIDER_REPLAY_SCENARIO_WEIGHTS
+
+
+CANONICAL_PROVIDER_REPLAY_METRICS = [
+    f"{scenario}_{suffix}"
+    for scenario in PROVIDER_REPLAY_SCENARIO_WEIGHTS
+    for suffix in (
+        "p50_ms",
+        "p95_ms",
+        "failure_rate",
+        "sample_count",
+        "capture_attested",
+    )
+]
+
 
 REQUIRED_METRICS = [
     "local_wux",
@@ -13,10 +31,7 @@ REQUIRED_METRICS = [
     "overlay_warm_p95_ms",
     "overlay_cold_p50_ms",
     "overlay_cold_p95_ms",
-    "microsoft_local_tail_p50_ms",
-    "microsoft_local_tail_p95_ms",
-    "soniox_local_tail_p50_ms",
-    "soniox_local_tail_p95_ms",
+    *CANONICAL_PROVIDER_REPLAY_METRICS,
     "app_ux_p50_ms",
     "app_ux_p95_ms",
     "hotkey_mic_ready_p95_ms",
@@ -36,6 +51,12 @@ INTEGER_METRICS = {
     "clipboard_errors",
     "overlay_errors",
     "ui_long_tasks_gt_200ms",
+    *{
+        name
+        for name in CANONICAL_PROVIDER_REPLAY_METRICS
+        if name.endswith("_sample_count")
+        or name.endswith("_capture_attested")
+    },
 }
 
 METRIC_RE = re.compile(r"^METRIC\s+([A-Za-z0-9_]+)=([^\s]+)\s*$")
@@ -75,10 +96,16 @@ def validate_value(name: str, value: str, *, allow_unknown: bool) -> str | None:
         return f"{name} is not finite: {value!r}"
     if name in INTEGER_METRICS and int(parsed) != parsed:
         return f"{name} must be an integer"
+    if name.endswith("_sample_count") and parsed <= 0:
+        return f"{name} must be positive"
+    if name.endswith("_capture_attested") and parsed != 1:
+        return f"{name} must equal one"
+    if name.endswith("_failure_rate") and not 0 <= parsed <= 1:
+        return f"{name} must be between zero and one"
     if name == "local_wux" and parsed <= 0:
         return "local_wux must be positive"
-    if name.endswith("_ms") and parsed < 0:
-        return f"{name} must be non-negative"
+    if name.endswith("_ms") and parsed <= 0:
+        return f"{name} must be positive"
     if name in {"idle_cpu_pct", "working_set_mb"} and parsed < 0:
         return f"{name} must be non-negative"
     return None

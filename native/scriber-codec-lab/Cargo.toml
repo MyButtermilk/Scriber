@@ -1,0 +1,48 @@
+[package]
+name = "scriber-codec-lab"
+version = "0.1.0"
+description = "Isolated, non-production FLAC candidate lab for Scriber issue 18"
+authors = ["Scriber"]
+edition = "2021"
+license = "MIT"
+publish = false
+build = "build.rs"
+
+[features]
+default = []
+# This is the real upstream flacenc portable-SIMD gate. It intentionally
+# requires the separately pinned nightly toolchain.
+nightly-simd = ["flacenc/simd-nightly"]
+rezin-candidate = ["dep:rezin-flac"]
+
+[dependencies]
+# Upstream's own 0.5.1 benchmark/test profiles pair `experimental` with
+# `simd-nightly`. In this release Weight::apply_simd is gated by experimental,
+# so both lab profiles enable it and keep the SIMD comparison like-for-like.
+flacenc = { version = "=0.5.1", default-features = true, features = ["experimental"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+sha2 = "=0.10.9"
+rezin-flac = { version = "=0.2.1", optional = true }
+
+[patch.crates-io]
+rezin-flac = { path = "vendor/rezin-flac-0.2.1" }
+
+[[bin]]
+name = "scriber-rezin-candidate"
+path = "src/bin/rezin_candidate.rs"
+required-features = ["rezin-candidate"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+# Same stable compiler and source as release, but Cargo's ordinary release
+# codegen defaults. This is the isolated control for the existing thin-LTO,
+# one-codegen-unit release profile above.
+[profile.lab-release-default]
+inherits = "release"
+lto = false
+codegen-units = 16

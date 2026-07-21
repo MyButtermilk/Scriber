@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "stable": "1.90.0",
+  "rezinStable": "1.97.0",
+  "nightlySimd": "nightly-2025-10-15",
+  "crate": {
+    "name": "flacenc",
+    "version": "0.5.1",
+    "sourceTag": "flacenc-v0.5.1",
+    "sourceCommit": "a040b004497346132d9a8a8f144f7ecf6fd9d4d8",
+    "commonFeature": "experimental",
+    "nightlyFeature": "simd-nightly"
+  },
+  "rezinCrate": {
+    "name": "rezin-flac",
+    "version": "0.2.1",
+    "registry": "crates.io",
+    "rustVersion": "1.96.0",
+    "sourceCommit": "ed8beb27de8aa56fdaabc06c210ee96e7769fbcc",
+    "labPatch": {
+      "scope": "bound worker count to total FLAC frame count",
+      "crateArchiveSha256": "61d993f51d1e4c2300573baf6226ba832f43d8b197584f5adf24be3c45482ed2",
+      "originalEncodeSha256": "4cfe2a4281d24d17d661a2f43a4c92706970d53b4f1165a9d34858d6b7093e17",
+      "patchedEncodeSha256": "ad054beaa097d5b9547269f92746bf92affcd1a64442dcd9c1b68d421e8ee848"
+    },
+    "executionModel": "available_parallelism child processes"
+  },
+  "ffmpegControl": {
+    "encoder": "flac",
+    "compressionLevel": 0,
+    "profile": "ffmpeg_flac_fast"
+  }
+}

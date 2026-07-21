@@ -5,7 +5,7 @@ import struct
 from typing import Final
 
 AUDIO_FRAME_MAGIC: Final[bytes] = b"SAF1"
-AUDIO_FRAME_VERSION: Final[int] = 1
+AUDIO_FRAME_VERSION: Final[int] = 2
 AUDIO_FRAME_HEADER_LEN: Final[int] = 36
 AUDIO_FRAME_MAX_PAYLOAD_BYTES: Final[int] = 1024 * 1024
 AUDIO_FRAME_FLAG_PREBUFFER: Final[int] = 0x0001
@@ -34,7 +34,13 @@ class AudioFrameHeader:
     def validate(self) -> None:
         if not (1 <= int(self.channels) <= 16):
             raise AudioFrameProtocolError(f"invalid audio frame channel count: {self.channels}")
-        if int(self.frame_count) <= 0:
+        zero_length_eos = (
+            int(self.frame_count) == 0
+            and int(self.payload_len) == 0
+            and bool(int(self.flags) & AUDIO_FRAME_FLAG_END_OF_STREAM)
+            and not bool(int(self.flags) & AUDIO_FRAME_FLAG_PREBUFFER)
+        )
+        if int(self.frame_count) <= 0 and not zero_length_eos:
             raise AudioFrameProtocolError(f"invalid audio frame count: {self.frame_count}")
         if not (0 <= int(self.payload_len) <= AUDIO_FRAME_MAX_PAYLOAD_BYTES):
             raise AudioFrameProtocolError(f"audio frame payload too large: {self.payload_len}")

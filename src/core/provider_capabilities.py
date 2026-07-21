@@ -46,6 +46,16 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         supports_five_hour_meeting=True,
         meeting_max_duration_seconds=18_000,
     ),
+    "gemini_stt": ProviderCapabilities(
+        supports_live_streaming=False,
+        # The implemented generate-content route accepts complete audio files.
+        # Exact formats are constrained separately by provider_audio_formats.
+        supports_direct_file_upload=True,
+        injects_immediately_in_live_mode=False,
+        supports_batch_diarization=False,
+        supports_word_timestamps=False,
+        supports_five_hour_meeting=False,
+    ),
     "mistral": ProviderCapabilities(
         supports_live_streaming=False,
         supports_direct_file_upload=True,

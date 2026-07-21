@@ -43,6 +43,21 @@ def test_latency_metrics_store_persists_and_reads_latest(tmp_path):
     assert first.total_ms == 110.0
 
 
+def test_latency_metrics_store_prefers_exact_visible_text_primary_kpi(tmp_path):
+    store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
+
+    metric = store.record(
+        "stage-zero",
+        {
+            "activation_received_to_final_text_observed_ms": 420.0,
+            "activation_received_to_first_paste_ms": 390.0,
+            "hotkey_received_to_first_paste_ms": 380.0,
+        },
+    )
+
+    assert metric.total_ms == 420.0
+
+
 def test_latency_metrics_store_reuses_thread_local_connection(tmp_path):
     store = LatencyMetricsStore(db_path=tmp_path / "metrics.db")
 

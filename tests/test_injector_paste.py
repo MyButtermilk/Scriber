@@ -88,7 +88,12 @@ def test_paste_text_emits_clipboard_and_paste_markers(monkeypatch):
         mock_kb.press_and_release.return_value = None
         assert _paste_text("new text", on_marker=markers.append) is True
 
-    assert markers == ["clipboard_set", "paste"]
+    assert markers == [
+        "injection_target_validated",
+        "clipboard_set",
+        "paste_requested",
+        "paste",
+    ]
     mock_kb.press_and_release.assert_called_once_with("ctrl+v")
 
 
@@ -151,7 +156,7 @@ def test_paste_text_rechecks_target_title_before_ctrl_v(monkeypatch):
     ):
         assert _paste_text("new text", on_marker=markers.append) is False
 
-    assert markers == ["clipboard_set"]
+    assert markers == ["injection_target_validated", "clipboard_set"]
     set_clip.assert_called_once_with("new text")
     restore_clip.assert_called_once()
     mock_kb.press_and_release.assert_not_called()
@@ -209,7 +214,13 @@ def test_paste_text_rechecks_explicit_process_generation_after_ctrl_v(monkeypatc
             is True
         )
 
-    assert markers == ["clipboard_set", "paste", "target_changed_after_paste"]
+    assert markers == [
+        "injection_target_validated",
+        "clipboard_set",
+        "paste_requested",
+        "paste",
+        "target_changed_after_paste",
+    ]
     mock_kb.press_and_release.assert_called_once_with("ctrl+v")
     restore_clip.assert_called_once()
 
@@ -232,7 +243,12 @@ def test_paste_text_never_retries_after_uncertain_keyboard_dispatch(monkeypatch)
         mock_keyboard.press_and_release.side_effect = RuntimeError("partial dispatch")
         assert _paste_text("new text", on_marker=markers.append) is True
 
-    assert markers == ["clipboard_set", "paste_dispatch_uncertain"]
+    assert markers == [
+        "injection_target_validated",
+        "clipboard_set",
+        "paste_requested",
+        "paste_dispatch_uncertain",
+    ]
     mock_keyboard.press_and_release.assert_called_once_with("ctrl+v")
     mock_pyautogui.hotkey.assert_not_called()
 

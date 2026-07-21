@@ -1,10 +1,14 @@
+import asyncio
 import io
 import threading
 import wave
 
 import pytest
+from pipecat.frames.frames import EndFrame, InputAudioRawFrame, TranscriptionFrame
+from pipecat.processors.frame_processor import FrameDirection
 
 from src.cloud_async_stt import (
+    SpeechmaticsAsyncProcessor,
     _delete_speechmatics_job,
     _pcm_stream_to_wav,
     _wait_for_gemini_file_active,
@@ -16,6 +20,8 @@ from src.cloud_async_stt import (
     transcribe_with_openai_audio_transcription,
 )
 from src.config import Config
+from src.microphone import RustCaptureWavArtifact
+from src.runtime.audio_spool import create_pcm_spool
 
 
 def test_pcm_stream_to_wav_reads_source_in_bounded_chunks():
@@ -42,6 +48,281 @@ def test_pcm_stream_to_wav_reads_source_in_bounded_chunks():
             assert reader.readframes(reader.getnframes()) == pcm
     finally:
         wav_source.close()
+
+
+def test_reserved_pcm_spool_becomes_wav_without_copying_payload():
+    pcm = b"\x01\x02" * 32_000
+    source = create_pcm_spool(reserve_wav_header=True)
+    source.write(pcm)
+
+    wav_source = _pcm_stream_to_wav(
+        source,
+        16_000,
+        1,
+        reserved_wav_header=True,
+        pcm_size=len(pcm),
+    )
+    try:
+        assert wav_source is source
+        with wave.open(wav_source, "rb") as reader:
+            assert reader.getframerate() == 16_000
+            assert reader.getnchannels() == 1
+            assert reader.getnframes() == 32_000
+            assert reader.readframes(reader.getnframes()) == pcm
+    finally:
+        wav_source.close()
+
+
+@pytest.mark.asyncio
+async def test_speechmatics_async_uses_rust_capture_wav_lease_and_releases_it():
+    pcm = b"\x01\x00" * 160
+    local_wav = io.BytesIO()
+    with wave.open(local_wav, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(16_000)
+        writer.writeframes(pcm)
+    wav_bytes = local_wav.getvalue()
+
+    class Artifact:
+        released = False
+        opened = False
+
+        def matches_pcm(self, *, sample_rate, channels, pcm_bytes):
+            return (sample_rate, channels, pcm_bytes) == (16_000, 1, len(pcm))
+
+        def open(self):
+            self.opened = True
+            return io.BytesIO(wav_bytes)
+
+        async def open_async(self):
+            return self.open()
+
+        async def release_async(self):
+            self.released = True
+            return True
+
+    artifact = Artifact()
+    processor = SpeechmaticsAsyncProcessor(
+        api_key="test-key",
+        language="en",
+        session=object(),
+    )
+    captured = []
+
+    async def push(frame, direction):
+        captured.append((frame, direction))
+
+    async def transcribe(wav_source):
+        assert wav_source.read() == wav_bytes
+        assert processor._audio_preparation_implementation == "wav_pcm16_file_v1"
+        return "leased transcript"
+
+    processor.push_frame = push
+    processor._transcribe_wav = transcribe
+    assert processor.adopt_capture_wav_artifact(artifact) is True
+
+    await processor.process_frame(
+        InputAudioRawFrame(audio=pcm, sample_rate=16_000, num_channels=1),
+        FrameDirection.DOWNSTREAM,
+    )
+    await processor.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
+
+    assert artifact.opened is True
+    assert artifact.released is True
+    assert any(
+        isinstance(frame, TranscriptionFrame) and frame.text == "leased transcript"
+        for frame, _direction in captured
+    )
+    assert processor.adopt_capture_wav_artifact(Artifact()) is False
+
+
+@pytest.mark.asyncio
+async def test_speechmatics_async_cancel_during_rust_wav_open_closes_before_release(
+    tmp_path,
+    monkeypatch,
+):
+    pcm = b"\x01\x00" * 160
+    lease_id = "323456781234423481234567890abcde"
+    path = tmp_path / f"{lease_id}.wav"
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(16_000)
+        writer.writeframes(pcm)
+
+    open_started = threading.Event()
+    allow_open = threading.Event()
+    opened_handle = None
+    release_calls = []
+
+    def shell_call(command, payload, **_kwargs):
+        assert opened_handle is not None
+        assert opened_handle.closed is True
+        path.unlink()
+        release_calls.append((command, payload))
+        return {"success": True, "payload": {"released": True}}
+
+    artifact = RustCaptureWavArtifact(
+        {
+            "schemaVersion": "1",
+            "leaseId": lease_id,
+            "path": str(path),
+            "format": "wav_pcm16",
+            "contentType": "audio/wav",
+            "owner": "pythonBackendLease",
+            "cleanupCommand": "audioCaptureArtifactRelease",
+            "byteLength": len(pcm) + 44,
+            "pcmBytes": len(pcm),
+            "sampleRate": 16_000,
+            "channels": 1,
+            "bitsPerSample": 16,
+        },
+        shell_call=shell_call,
+    )
+    original_open = artifact.open
+
+    def blocking_open():
+        nonlocal opened_handle
+        open_started.set()
+        if not allow_open.wait(timeout=2.0):
+            raise TimeoutError("test did not release artifact open")
+        opened_handle = original_open()
+        return opened_handle
+
+    monkeypatch.setattr(artifact, "open", blocking_open)
+    processor = SpeechmaticsAsyncProcessor(
+        api_key="test-key",
+        language="en",
+        session=object(),
+    )
+
+    async def push(_frame, _direction):
+        return None
+
+    async def unexpected_transcribe(_wav_source):
+        raise AssertionError("canceled artifact open must not start provider work")
+
+    processor.push_frame = push
+    processor._transcribe_wav = unexpected_transcribe
+    assert processor.adopt_capture_wav_artifact(artifact) is True
+    await processor.process_frame(
+        InputAudioRawFrame(audio=pcm, sample_rate=16_000, num_channels=1),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    terminal_task = asyncio.create_task(
+        processor.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
+    )
+    try:
+        assert await asyncio.to_thread(open_started.wait, 1.0)
+        terminal_task.cancel()
+        await asyncio.sleep(0)
+        assert terminal_task.done() is False
+    finally:
+        allow_open.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await terminal_task
+
+    assert opened_handle is not None
+    assert opened_handle.closed is True
+    assert artifact.released is True
+    assert path.exists() is False
+    assert release_calls == [
+        ("audioCaptureArtifactRelease", {"leaseId": lease_id})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_speechmatics_async_rust_wav_open_error_uses_pcm_spool_fallback(
+    tmp_path,
+    monkeypatch,
+):
+    pcm = b"\x03\x00" * 160
+    lease_id = "423456781234423481234567890abcde"
+    path = tmp_path / f"{lease_id}.wav"
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(16_000)
+        writer.writeframes(pcm)
+
+    release_calls = []
+
+    def shell_call(command, payload, **_kwargs):
+        path.unlink()
+        release_calls.append((command, payload))
+        return {"success": True, "payload": {"released": True}}
+
+    artifact = RustCaptureWavArtifact(
+        {
+            "schemaVersion": "1",
+            "leaseId": lease_id,
+            "path": str(path),
+            "format": "wav_pcm16",
+            "contentType": "audio/wav",
+            "owner": "pythonBackendLease",
+            "cleanupCommand": "audioCaptureArtifactRelease",
+            "byteLength": len(pcm) + 44,
+            "pcmBytes": len(pcm),
+            "sampleRate": 16_000,
+            "channels": 1,
+            "bitsPerSample": 16,
+        },
+        shell_call=shell_call,
+    )
+    open_calls = 0
+
+    def failing_open():
+        nonlocal open_calls
+        open_calls += 1
+        raise RuntimeError("normal Rust WAV open failure")
+
+    monkeypatch.setattr(artifact, "open", failing_open)
+    with pytest.raises(RuntimeError, match="normal Rust WAV open failure"):
+        await artifact.open_async()
+
+    processor = SpeechmaticsAsyncProcessor(
+        api_key="test-key",
+        language="en",
+        session=object(),
+    )
+    captured = []
+
+    async def push(frame, direction):
+        captured.append((frame, direction))
+
+    async def transcribe(wav_source):
+        assert processor._audio_preparation_implementation == (
+            "python_reserved_wav_header_v1"
+        )
+        with wave.open(wav_source, "rb") as reader:
+            assert reader.getframerate() == 16_000
+            assert reader.getnchannels() == 1
+            assert reader.readframes(reader.getnframes()) == pcm
+        return "PCM spool fallback transcript"
+
+    processor.push_frame = push
+    processor._transcribe_wav = transcribe
+    assert processor.adopt_capture_wav_artifact(artifact) is True
+    await processor.process_frame(
+        InputAudioRawFrame(audio=pcm, sample_rate=16_000, num_channels=1),
+        FrameDirection.DOWNSTREAM,
+    )
+    await processor.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
+
+    assert open_calls == 2
+    assert artifact.released is True
+    assert path.exists() is False
+    assert release_calls == [
+        ("audioCaptureArtifactRelease", {"leaseId": lease_id})
+    ]
+    assert any(
+        isinstance(frame, TranscriptionFrame)
+        and frame.text == "PCM spool fallback transcript"
+        for frame, _direction in captured
+    )
 
 
 @pytest.mark.asyncio

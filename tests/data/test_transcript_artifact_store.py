@@ -74,6 +74,13 @@ def _route(workload: str = "file") -> RouteSnapshotDraft:
             "speakerDiarizationRequested": True,
             "customVocabularySha256": SHA_A,
             "customVocabularyCount": 3,
+            "providerRoute": "async_transcription",
+            "audioInputFormat": "webm_opus",
+            "providerAudioCapabilityId": (
+                "soniox_async:async_transcription:stt-async-v5"
+            ),
+            "providerAudioCapabilityRevision": "provider-audio-formats-v1",
+            "audioInputFormatVerified": True,
             "apiKeyPresent": True,
             "secretDigest": SHA_B,
             "promptSha256": SHA_A,
@@ -275,6 +282,12 @@ def test_route_snapshot_allows_only_digest_presence_and_count_secret_metadata(ar
     attempt = artifact_store.create_attempt(transcript_id="transcript-1", workload="file")
     snapshot = artifact_store.persist_route_snapshot(attempt.id, _route())
     assert snapshot.request_options["customVocabularySha256"] == SHA_A
+    assert snapshot.request_options["providerRoute"] == "async_transcription"
+    assert snapshot.request_options["audioInputFormat"] == "webm_opus"
+    assert (
+        snapshot.request_options["providerAudioCapabilityRevision"]
+        == "provider-audio-formats-v1"
+    )
     assert snapshot.request_options["apiKeyPresent"] is True
     assert snapshot.request_options["secretDigest"] == SHA_B
 

@@ -1,4 +1,5 @@
 import asyncio
+import wave
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -6,6 +7,18 @@ import pytest
 
 from src.config import Config
 from src.web_api import ScriberWebController
+
+
+def _write_five_second_wav(path: Path) -> None:
+    """Write the shortest benchmark-approved fixture: 5 s of mono PCM16."""
+
+    sample_rate = 16_000
+    duration_seconds = 5
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(b"\0\0" * sample_rate * duration_seconds)
 
 
 class _FakeAssemblyPipeline:
@@ -43,7 +56,7 @@ class _FakeAssemblyPipeline:
         if self.on_transcription:
             self.on_transcription("Live async final transcript", True)
 
-    async def transcribe_file_direct(self, path: str):
+    async def transcribe_file_direct(self, path: str, *, prepared_audio=None):
         type(self).direct_paths.append(path)
         if self.on_progress:
             self.on_progress("Processing transcription...")
@@ -111,7 +124,7 @@ async def test_assemblyai_file_transcription_smoke(monkeypatch, tmp_path):
     file_dir = tmp_path / "files"
     file_dir.mkdir(parents=True, exist_ok=True)
     sample_file = file_dir / "sample.wav"
-    sample_file.write_bytes(b"RIFF....WAVEfmt ")
+    _write_five_second_wav(sample_file)
 
     with (
         patch("src.web_api.ScriberPipeline", _FakeAssemblyPipeline),
@@ -139,8 +152,8 @@ async def test_assemblyai_youtube_transcription_smoke(monkeypatch, tmp_path):
 
     with patch("src.web_api.DeviceMonitor.start", return_value=None):
         ctl = ScriberWebController(loop)
-    downloaded = tmp_path / "yt-audio.webm"
-    downloaded.write_bytes(b"fake")
+    downloaded = tmp_path / "yt-audio.wav"
+    _write_five_second_wav(downloaded)
 
     with (
         patch("src.web_api.ScriberPipeline", _FakeAssemblyPipeline),
@@ -157,5 +170,5 @@ async def test_assemblyai_youtube_transcription_smoke(monkeypatch, tmp_path):
     assert rec.status == "completed"
     assert "[Speaker 1]: Hello" in rec.content
     assert _FakeAssemblyPipeline.direct_paths
-    assert "yt-audio.webm" in _FakeAssemblyPipeline.direct_paths[0]
+    assert "yt-audio.wav" in _FakeAssemblyPipeline.direct_paths[0]
     assert _FakeAssemblyPipeline.fallback_paths == []

@@ -559,6 +559,57 @@ def validate_tauri_hotkey_marker_request_payload(
     }
 
 
+def validate_tauri_activation_marker_request_payload(
+    payload: dict[str, Any],
+    *,
+    configured_run_id: str | None,
+    expected_parent_pid: int,
+    now_ns: int,
+) -> dict[str, Any]:
+    """Validate a benchmark-only native hotkey or primary-button marker.
+
+    This is separate from the established generic hotkey benchmark field: the
+    provider replay arm explicitly binds one activation lane and one sample id
+    before either native callback can consume it.
+    """
+
+    contract = "POST /api/live-mic/* benchmarkActivationMarker"
+    if not isinstance(payload, dict) or set(payload) != {"benchmarkActivationMarker"}:
+        raise RESTContractError(
+            f"{contract} permits only 'benchmarkActivationMarker'"
+        )
+    marker = _require_dict(payload, "benchmarkActivationMarker", contract)
+    marker_name = _require_string(marker, "marker", contract)
+    source = _require_string(marker, "source", contract)
+    allowed = {
+        "hotkey_received": "tauri_global_shortcut",
+        "button_received": "tauri_ui_command",
+    }
+    if allowed.get(marker_name) != source:
+        raise RESTContractError(
+            f"{contract} marker/source pair is not an authoritative activation"
+        )
+
+    # Reuse the strict identity, parent-process, QPC-normalization, and
+    # freshness checks of the existing native hotkey contract. Only the
+    # semantic marker/source pair differs for the button lane.
+    proxy_marker = dict(marker)
+    proxy_marker["marker"] = "hotkey_received"
+    proxy_marker["source"] = "tauri_global_shortcut"
+    validated = validate_tauri_hotkey_marker_request_payload(
+        {"benchmarkHotkeyMarker": proxy_marker},
+        configured_run_id=configured_run_id,
+        expected_parent_pid=expected_parent_pid,
+        now_ns=now_ns,
+    )
+    validated["marker"] = marker_name
+    validated["source"] = source
+    validated["activationKind"] = (
+        "hotkey" if marker_name == "hotkey_received" else "button"
+    )
+    return validated
+
+
 def _canonical_provider_replay_uuid(
     raw: str,
     *,
@@ -615,9 +666,9 @@ def validate_provider_replay_prepare_request_payload(
         contract=contract,
     )
     provider = _require_string(payload, "provider", contract).strip().lower()
-    if provider not in {"microsoft", "soniox"}:
+    if provider not in {"microsoft", "soniox", "speechmatics"}:
         raise RESTContractError(
-            f"{contract} provider must be 'microsoft' or 'soniox'"
+            f"{contract} provider must be 'microsoft', 'soniox', or 'speechmatics'"
         )
     return {
         "schemaVersion": 1,
@@ -637,6 +688,7 @@ def validate_provider_replay_arm_request_payload(
     expected = {
         "schemaVersion",
         "runId",
+        "activationKind",
         "targetProcessId",
         "targetCreationTime100ns",
     }
@@ -651,6 +703,11 @@ def validate_provider_replay_arm_request_payload(
     )
     process_id = _require_int(payload, "targetProcessId", contract)
     creation_time = _require_int(payload, "targetCreationTime100ns", contract)
+    activation_kind = _require_string(payload, "activationKind", contract).strip().lower()
+    if activation_kind not in {"hotkey", "button"}:
+        raise RESTContractError(
+            f"{contract} activationKind must be 'hotkey' or 'button'"
+        )
     if not (0 < process_id <= (1 << 32) - 1):
         raise RESTContractError(f"{contract} requires bounded targetProcessId")
     if not (0 < creation_time <= (1 << 64) - 1):
@@ -660,6 +717,7 @@ def validate_provider_replay_arm_request_payload(
     return {
         "schemaVersion": 1,
         "runId": run_id,
+        "activationKind": activation_kind,
         "targetProcessId": process_id,
         "targetCreationTime100ns": creation_time,
     }

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from scripts.perf import doctor
+from scripts.perf.evaluator.local_wux import PROVIDER_REPLAY_SCENARIO_WEIGHTS
 
 
 SEGMENT = "B7-user-endpoint-p50-p95-baseline"
@@ -24,6 +25,18 @@ def b7_metrics() -> dict[str, float]:
     return {
         "local_wux": 1.0,
         **{name: 100.0 for name in doctor.B7_REQUIRED_BASELINE_METRICS},
+        **{
+            f"{scenario}_failure_rate": 0.0
+            for scenario in PROVIDER_REPLAY_SCENARIO_WEIGHTS
+        },
+        **{
+            f"{scenario}_sample_count": 30
+            for scenario in PROVIDER_REPLAY_SCENARIO_WEIGHTS
+        },
+        **{
+            f"{scenario}_capture_attested": 1
+            for scenario in PROVIDER_REPLAY_SCENARIO_WEIGHTS
+        },
     }
 
 
@@ -232,6 +245,19 @@ def test_doctor_rejects_active_b6_baseline_under_b7(tmp_path: Path) -> None:
 
     codes = blocking_codes(tmp_path)
     assert "autoresearch_baseline_segment_mismatch" in codes
+
+
+def test_doctor_rejects_baseline_without_capture_attested_provider_series(
+    tmp_path: Path,
+) -> None:
+    paths = coherent_b7_state(tmp_path)
+    baseline = read_json(paths["baseline"])
+    baseline["metrics"].pop(
+        "microsoft_local_5s_activation_received_to_final_text_observed_capture_attested"
+    )
+    write_json(paths["baseline"], baseline)
+
+    assert "autoresearch_b7_baseline_metrics_incomplete" in blocking_codes(tmp_path)
 
 
 def test_doctor_rejects_stale_resume_segment_and_last_run_binding(tmp_path: Path) -> None:

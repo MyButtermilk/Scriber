@@ -1338,6 +1338,24 @@ class TranscriptArtifactStore:
         ).fetchone()
         return self._attempt_from_row(row) if row else None
 
+    def latest_attempt_for_transcript(
+        self,
+        transcript_id: str,
+    ) -> AttemptRecord | None:
+        """Return the newest attempt without changing or bypassing its lease."""
+
+        transcript_id = _safe_scalar(transcript_id, field_name="transcript_id")
+        row = self._connect().execute(
+            """
+            SELECT * FROM transcription_attempts
+            WHERE transcript_id = ?
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (transcript_id,),
+        ).fetchone()
+        return self._attempt_from_row(row) if row else None
+
     def require_attempt(self, attempt_id: str) -> AttemptRecord:
         record = self.get_attempt(attempt_id)
         if record is None:
@@ -2216,6 +2234,40 @@ class TranscriptArtifactStore:
             if not bundle.attempt.lease_owner or expiry is None or expiry <= now:
                 return bundle
         return None
+
+    def recoverable_provider_results_for_transcript(
+        self,
+        transcript_id: str,
+        *,
+        limit: int = 16,
+    ) -> tuple[RecoveryBundle, ...]:
+        """Return bounded durable provider results without claiming a lease.
+
+        Startup reconciliation uses this only to repair the narrow crash gap
+        between stage persistence and the job's exact attempt binding.  The
+        caller must require a unique candidate before binding it.
+        """
+
+        transcript_id = _safe_scalar(transcript_id, field_name="transcript_id")
+        rows = self._connect().execute(
+            """
+            SELECT id FROM transcription_attempts
+            WHERE transcript_id = ? AND state IN (?, ?, ?, ?)
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            (
+                transcript_id,
+                AttemptState.PROVIDER_RESULT_READY.value,
+                AttemptState.DIARIZING.value,
+                AttemptState.CANONICALIZING.value,
+                AttemptState.COMMITTING.value,
+                max(1, min(64, int(limit))),
+            ),
+        ).fetchall()
+        return tuple(
+            self.get_recovery_bundle(str(row["id"])) for row in rows
+        )
 
     @staticmethod
     def _coerce_segment(

@@ -1,0 +1,15 @@
+[package]
+name = "rezin-flac"
+version = "0.2.1"
+edition = "2024"
+rust-version = "1.96.0"
+description = "A high-performance parallel FLAC audio codec"
+license = "MIT"
+repository = "https://gitlab.com/calebjdt/rezin"
+readme = "README.md"
+keywords = ["audio", "flac", "codec", "lossless", "parallel"]
+categories = ["multimedia::audio", "parser-implementations"]
+
+[dependencies]
+rezin-wav = { path = "../rezin-wav", version = "0.2.0" }
+rezin-lpc = { path = "../rezin-lpc", version = "0.2.0" }

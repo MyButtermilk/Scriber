@@ -1,13 +1,15 @@
 import asyncio
 import threading
 import types
+import hashlib
 
 import numpy as np
 import pytest
 
 import src.microphone as microphone
-from src.microphone import RustPrototypeFrameSource
+from src.microphone import RustCaptureWavArtifact, RustPrototypeFrameSource
 from src.runtime.audio_frame_pipe import (
+    AUDIO_FRAME_FLAG_END_OF_STREAM,
     AUDIO_FRAME_FLAG_PREBUFFER,
     AudioFrameHeader,
     encode_audio_frame,
@@ -86,6 +88,197 @@ class _FakeRustFrameSource:
             "frameSource": self.name,
             "streamActive": self.stream.active,
         }
+
+
+def _write_test_pcm16_wav(path, pcm: bytes = b"\x01\x00\x02\x00") -> None:
+    header = bytearray(44)
+    header[0:4] = b"RIFF"
+    header[4:8] = (len(pcm) + 36).to_bytes(4, "little")
+    header[8:12] = b"WAVE"
+    header[12:16] = b"fmt "
+    header[16:20] = (16).to_bytes(4, "little")
+    header[20:22] = (1).to_bytes(2, "little")
+    header[22:24] = (1).to_bytes(2, "little")
+    header[24:28] = (16_000).to_bytes(4, "little")
+    header[28:32] = (32_000).to_bytes(4, "little")
+    header[32:34] = (2).to_bytes(2, "little")
+    header[34:36] = (16).to_bytes(2, "little")
+    header[36:40] = b"data"
+    header[40:44] = len(pcm).to_bytes(4, "little")
+    path.write_bytes(bytes(header) + pcm)
+
+
+def test_rust_capture_wav_artifact_validates_opens_and_releases(tmp_path):
+    lease_id = "123456781234423481234567890abcde"
+    path = tmp_path / f"{lease_id}.wav"
+    _write_test_pcm16_wav(path)
+    calls = []
+
+    def shell_call(command, payload, **_kwargs):
+        calls.append((command, payload))
+        return {
+            "success": True,
+            "payload": {"released": True},
+        }
+
+    artifact = RustCaptureWavArtifact(
+        {
+            "schemaVersion": "1",
+            "leaseId": lease_id,
+            "path": str(path),
+            "format": "wav_pcm16",
+            "contentType": "audio/wav",
+            "owner": "pythonBackendLease",
+            "cleanupCommand": "audioCaptureArtifactRelease",
+            "byteLength": 48,
+            "pcmBytes": 4,
+            "sampleRate": 16_000,
+            "channels": 1,
+            "bitsPerSample": 16,
+        },
+        shell_call=shell_call,
+    )
+
+    assert artifact.matches_pcm(sample_rate=16_000, channels=1, pcm_bytes=4)
+    with artifact.open() as wav:
+        assert wav.read() == path.read_bytes()
+    snapshot = artifact.diagnostic_snapshot()
+    assert "path" not in snapshot
+    assert lease_id not in str(snapshot)
+    assert artifact.release() is True
+    assert artifact.released is True
+    assert calls == [
+        ("audioCaptureArtifactRelease", {"leaseId": lease_id})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rust_capture_wav_artifact_release_async_joins_shell_ack_before_propagating_cancellation(
+    tmp_path,
+):
+    lease_id = "133456781234423481234567890abcde"
+    path = tmp_path / f"{lease_id}.wav"
+    _write_test_pcm16_wav(path)
+    release_started = threading.Event()
+    allow_release = threading.Event()
+    calls = []
+
+    def shell_call(command, payload, **_kwargs):
+        calls.append((command, payload))
+        release_started.set()
+        if not allow_release.wait(timeout=2.0):
+            raise TimeoutError("test did not release shell acknowledgement")
+        return {
+            "success": True,
+            "payload": {"released": True},
+        }
+
+    artifact = RustCaptureWavArtifact(
+        {
+            "schemaVersion": "1",
+            "leaseId": lease_id,
+            "path": str(path),
+            "format": "wav_pcm16",
+            "contentType": "audio/wav",
+            "owner": "pythonBackendLease",
+            "cleanupCommand": "audioCaptureArtifactRelease",
+            "byteLength": 48,
+            "pcmBytes": 4,
+            "sampleRate": 16_000,
+            "channels": 1,
+            "bitsPerSample": 16,
+        },
+        shell_call=shell_call,
+    )
+
+    release_task = asyncio.create_task(artifact.release_async())
+    try:
+        assert await asyncio.to_thread(release_started.wait, 1.0)
+        release_task.cancel()
+        await asyncio.sleep(0)
+        assert release_task.done() is False
+    finally:
+        allow_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await release_task
+
+    assert artifact.released is True
+    assert calls == [
+        ("audioCaptureArtifactRelease", {"leaseId": lease_id})
+    ]
+
+
+def test_rust_capture_wav_artifact_rejects_inconsistent_pcm_header(tmp_path):
+    lease_id = "223456781234423481234567890abcde"
+    path = tmp_path / f"{lease_id}.wav"
+    _write_test_pcm16_wav(path)
+    bytes_ = bytearray(path.read_bytes())
+    bytes_[28:32] = (31_998).to_bytes(4, "little")
+    path.write_bytes(bytes_)
+    artifact = RustCaptureWavArtifact(
+        {
+            "schemaVersion": "1",
+            "leaseId": lease_id,
+            "path": str(path),
+            "format": "wav_pcm16",
+            "contentType": "audio/wav",
+            "owner": "pythonBackendLease",
+            "cleanupCommand": "audioCaptureArtifactRelease",
+            "byteLength": 48,
+            "pcmBytes": 4,
+            "sampleRate": 16_000,
+            "channels": 1,
+            "bitsPerSample": 16,
+        },
+        shell_call=lambda *_args, **_kwargs: {
+            "success": True,
+            "payload": {"released": True},
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="header is invalid"):
+        artifact.open()
+
+
+def test_invalid_python_artifact_contract_releases_tauri_lease():
+    lease_id = "323456781234423481234567890abcde"
+    calls = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        calls.append((command, payload or {}))
+        return {"success": True, "payload": {"released": True}}
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16_000,
+        target_channels=1,
+        block_size=512,
+        device="default",
+        shell_call=shell_call,
+    )
+    source._record_sidecar_stop(
+        {
+            "captureArtifact": {
+                "schemaVersion": "1",
+                "leaseId": lease_id,
+                "path": f"C:\\Temp\\{lease_id}.wav",
+                "format": "wav_pcm16",
+                "contentType": "audio/wav",
+                "owner": "invalid-owner",
+                "cleanupCommand": "audioCaptureArtifactRelease",
+                "byteLength": 48,
+                "pcmBytes": 4,
+                "sampleRate": 16_000,
+                "channels": 1,
+                "bitsPerSample": 16,
+            }
+        }
+    )
+
+    assert source.take_capture_wav_artifact() is None
+    assert calls == [
+        ("audioCaptureArtifactRelease", {"leaseId": lease_id})
+    ]
 
 def test_rust_audio_default_without_favorite_uses_windows_default(monkeypatch):
     monkeypatch.setattr(microphone.Config, "MIC_DEVICE", "default", raising=False)
@@ -203,6 +396,16 @@ def test_rust_audio_selection_prefers_shell_inventory_hash(monkeypatch):
 
 def test_rust_prototype_frame_source_honors_selection_device_preference(monkeypatch):
     commands: list[tuple[str, dict]] = []
+    preparation = {
+        "schemaVersion": "1",
+        "format": "wav_pcm16",
+        "implementation": "wav_pcm16_file_v1",
+        "sampleRate": 16_000,
+        "channels": 1,
+        "bitsPerSample": 16,
+        "queueCapacityFrames": 64,
+        "maxPcmBytes": 64 * 1024 * 1024,
+    }
     monkeypatch.setattr(
         microphone,
         "_rust_audio_device_selection_payload",
@@ -242,6 +445,7 @@ def test_rust_prototype_frame_source_honors_selection_device_preference(monkeypa
         block_size=512,
         device="7",
         shell_call=shell_call,
+        audio_preparation=preparation,
     )
 
     source.open(lambda *_args: None)
@@ -249,6 +453,7 @@ def test_rust_prototype_frame_source_honors_selection_device_preference(monkeypa
 
     assert commands[0][1]["devicePreference"] == "default"
     assert commands[0][1]["nativeEndpointIdHash"] is None
+    assert commands[0][1]["audioPreparation"] == preparation
     assert snapshot["nativeEndpointIdHash"] == "windows-default-hash"
     assert snapshot["endpointSelection"]["mode"] == "default"
     assert snapshot["endpointSelection"]["usedDefaultEndpoint"] is True
@@ -313,6 +518,18 @@ def test_rust_prototype_frame_source_reuses_leased_prewarm_route(monkeypatch):
         ({"sampleRate": 48000}, "sample rate"),
         ({"sampleFormat": "float32"}, "sample format"),
         ({"framePipe": ""}, "frame pipe"),
+        (
+            {
+                "audioFrameProtocol": {
+                    "magic": "SAF1",
+                    "version": 1,
+                    "headerBytes": microphone.AUDIO_FRAME_HEADER_LEN,
+                    "sampleFormat": "pcm_i16_le",
+                    "zeroLengthEndOfStream": False,
+                }
+            },
+            "frame protocol",
+        ),
     ],
 )
 def test_rust_frame_source_stops_started_sidecar_on_contract_mismatch(
@@ -438,6 +655,118 @@ def test_rust_frame_source_retains_redacted_owner_after_unconfirmed_stop():
     assert "stream-deferred-stop" not in str(snapshot)
     assert snapshot["sidecarStopConfirmed"] is False
     assert snapshot["framePipeHash"] is None
+
+
+def test_rust_frame_source_accepts_no_active_retry_only_after_observed_v2_eos():
+    calls: list[str] = []
+    source = None
+
+    def shell_call(command, _payload, **_kwargs):
+        calls.append(command)
+        if len(calls) == 1:
+            return {
+                "success": False,
+                "errorCode": "transportError",
+                "fallbackReason": "audio shell IPC timed out",
+                "payload": {},
+            }
+        source._end_of_stream_event.set()
+        return {
+            "success": True,
+            "payload": {"stopped": False, "reason": "noActiveCapture"},
+        }
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16_000,
+        target_channels=1,
+        block_size=512,
+        device=None,
+        shell_call=shell_call,
+    )
+    source.stream_id = "stream-reconciled-eos"
+    source._requires_terminal_eos = True
+    source._end_of_stream_wait_seconds = 0.01
+
+    source.stop(close=True)
+
+    assert calls == ["audioCaptureStop", "audioCaptureStop"]
+    assert source.diagnostic_snapshot()["terminalIntegrityError"] == ""
+
+
+def test_rust_frame_source_rejects_no_active_retry_without_observed_v2_eos():
+    calls = 0
+
+    def shell_call(_command, _payload, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
+                "success": False,
+                "errorCode": "transportError",
+                "fallbackReason": "audio shell IPC timed out",
+                "payload": {},
+            }
+        return {
+            "success": True,
+            "payload": {"stopped": False, "reason": "noActiveCapture"},
+        }
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16_000,
+        target_channels=1,
+        block_size=512,
+        device=None,
+        shell_call=shell_call,
+    )
+    source.stream_id = "stream-missing-eos"
+    source._requires_terminal_eos = True
+    source._end_of_stream_wait_seconds = 0.01
+
+    with pytest.raises(RuntimeError, match="rustFramePipeMissingEndOfStream"):
+        source.stop(close=True)
+
+    snapshot = source.diagnostic_snapshot()
+    assert snapshot["terminalIntegrityError"] == "rustFramePipeMissingEndOfStream"
+    assert snapshot["midSessionFailureReason"] == "captureIntegrityFailure"
+
+
+@pytest.mark.parametrize(
+    ("stop_payload", "expected_error"),
+    [
+        (
+            {"stopped": True, "eosWritten": False, "writerError": None},
+            "rustSidecarDidNotWriteEndOfStream",
+        ),
+        (
+            {"stopped": True, "eosWritten": True, "writerError": "pipeFailed"},
+            "rustAudioSidecarWriterFailed",
+        ),
+    ],
+)
+def test_rust_frame_source_terminal_stop_failure_is_fail_closed(
+    stop_payload,
+    expected_error,
+):
+    source = RustPrototypeFrameSource(
+        sample_rate=16_000,
+        target_channels=1,
+        block_size=512,
+        device=None,
+        shell_call=lambda *_args, **_kwargs: {
+            "success": True,
+            "payload": stop_payload,
+        },
+    )
+    source.stream_id = "stream-terminal-failure"
+    source._requires_terminal_eos = True
+    source._end_of_stream_wait_seconds = 0.01
+    if stop_payload.get("eosWritten"):
+        source._end_of_stream_event.set()
+
+    with pytest.raises(RuntimeError, match=expected_error):
+        source.stop(close=True)
+
+    assert source.diagnostic_snapshot()["terminalIntegrityError"] == expected_error
 
 
 def test_rust_frame_source_rejects_success_without_stream_id(monkeypatch):
@@ -685,6 +1014,273 @@ def test_rust_prototype_frame_source_reads_binary_frame_pipe(monkeypatch):
     assert "framePipe" not in snapshot
 
 
+def test_provider_replay_capture_attests_consumed_fixture_tail_and_eos(
+    monkeypatch,
+    tmp_path,
+):
+    import io
+
+    fixture = np.arange(1, 7, dtype="<i2").tobytes()
+    fixture_path = tmp_path / "fixture.pcm"
+    fixture_path.write_bytes(fixture)
+    monkeypatch.setenv(
+        "SCRIBER_B7_PROVIDER_REPLAY_RUN_ID",
+        "11111111-1111-4111-8111-111111111111",
+    )
+    monkeypatch.setenv(
+        "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH",
+        str(fixture_path),
+    )
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+
+    first_payload = fixture[:8]
+    second_payload = fixture[8:] + b"\0" * 4
+    frames = b"".join(
+        (
+            encode_audio_frame(
+                AudioFrameHeader(
+                    payload_len=len(first_payload),
+                    sequence=0,
+                    timestamp_micros=1,
+                    frame_count=4,
+                    channels=1,
+                ),
+                first_payload,
+            ),
+            encode_audio_frame(
+                AudioFrameHeader(
+                    payload_len=len(second_payload),
+                    sequence=1,
+                    timestamp_micros=2,
+                    frame_count=4,
+                    channels=1,
+                ),
+                second_payload,
+            ),
+            encode_audio_frame(
+                AudioFrameHeader(
+                    payload_len=0,
+                    sequence=2,
+                    timestamp_micros=3,
+                    frame_count=0,
+                    channels=1,
+                    flags=AUDIO_FRAME_FLAG_END_OF_STREAM,
+                ),
+                b"",
+            ),
+        )
+    )
+    fixture_consumed = threading.Event()
+    source = RustPrototypeFrameSource(
+        sample_rate=48_000,
+        target_channels=1,
+        block_size=4,
+        device="default",
+        shell_call=lambda *_args, **_kwargs: None,
+        reader_factory=lambda *_args, **_kwargs: io.BytesIO(frames),
+        on_provider_replay_fixture_consumed=fixture_consumed.set,
+    )
+    source._frame_pipe = "memory-pipe"
+    source._callback = lambda *_args: None
+    source._provider_replay_exact_end_accepted = True
+    source._read_frame_pipe()
+    source.sidecar_eos_written = True
+
+    attestation = source.provider_replay_capture_attestation()
+
+    assert fixture_consumed.is_set()
+    assert attestation is not None
+    assert attestation["fixturePcmSha256"] == hashlib.sha256(fixture).hexdigest()
+    assert attestation["capturedPcmSha256"] == hashlib.sha256(
+        fixture + b"\0" * 4
+    ).hexdigest()
+    assert attestation["fixturePayloadBytesRead"] == len(fixture)
+    assert attestation["fixtureAudioFramesRead"] == 6
+    assert attestation["payloadBytesRead"] == 16
+    assert attestation["audioFramesRead"] == 8
+    assert attestation["trailingZeroFrames"] == 2
+    assert attestation["expectedTrailingZeroFrames"] == 2
+    assert attestation["captureBlockSizeFrames"] == 4
+    assert attestation["exactFixtureEndAccepted"] is True
+    assert attestation["eosFramesRead"] == 1
+    assert attestation["eosObserved"] is True
+    assert attestation["readerEndReason"] == "endOfStream"
+    assert attestation["tailKind"] == "zero_pcm_s16le"
+    assert attestation["fixturePrefixMatched"] is True
+    assert attestation["tailAllZero"] is True
+    assert "capturedPcmSha256" not in source.diagnostic_snapshot()
+
+
+def test_provider_replay_capture_hashing_is_disabled_without_valid_private_gate(
+    monkeypatch,
+    tmp_path,
+):
+    fixture_path = tmp_path / "fixture.pcm"
+    fixture_path.write_bytes(b"\1\0" * 4)
+    monkeypatch.setenv("SCRIBER_B7_PROVIDER_REPLAY_RUN_ID", "not-a-uuid")
+    monkeypatch.setenv(
+        "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH",
+        str(fixture_path),
+    )
+
+    source = RustPrototypeFrameSource(
+        sample_rate=48_000,
+        target_channels=1,
+        block_size=4,
+        device="default",
+        shell_call=lambda *_args, **_kwargs: None,
+    )
+
+    assert source.provider_replay_capture_attestation() is None
+    assert source._provider_replay_capture_fixture is None
+
+
+def test_provider_replay_capture_requests_and_attests_exact_fixture_end(
+    monkeypatch,
+    tmp_path,
+):
+    fixture_path = tmp_path / "fixture.pcm"
+    fixture_path.write_bytes(b"\1\0" * 4)
+    monkeypatch.setenv(
+        "SCRIBER_B7_PROVIDER_REPLAY_RUN_ID",
+        "11111111-1111-4111-8111-111111111111",
+    )
+    monkeypatch.setenv(
+        "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH",
+        str(fixture_path),
+    )
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+    commands: list[tuple[str, dict]] = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        rendered = payload or {}
+        commands.append((command, rendered))
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream-replay-exact",
+                    "framePipe": "memory-pipe",
+                    "sampleRate": 48_000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                    "providerReplayFixtureExactEndAccepted": True,
+                },
+            }
+        if command == "audioCaptureStop":
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "reason": "captureStop",
+                    "writerError": None,
+                },
+            }
+        raise AssertionError(command)
+
+    source = RustPrototypeFrameSource(
+        sample_rate=48_000,
+        target_channels=1,
+        block_size=4,
+        device="default",
+        shell_call=shell_call,
+        prewarm_id="must-not-be-adopted",
+        capture_route={
+            "devicePreference": "leased-route",
+            "nativeEndpointIdHash": "leased-endpoint",
+        },
+    )
+
+    source.open(lambda *_args: None)
+    source.stop(close=True)
+
+    assert commands[0][0] == "audioCaptureStart"
+    assert commands[0][1]["providerReplayFixtureExactEnd"] is True
+    assert commands[0][1]["prebufferMs"] == 0
+    assert commands[0][1]["prewarmId"] == ""
+    assert commands[0][1]["devicePreference"] == "default"
+    assert source.capture_route_source == "freshResolution"
+    assert source._provider_replay_exact_end_accepted is True
+
+
+def test_provider_replay_capture_rejects_unattested_exact_fixture_end(
+    monkeypatch,
+    tmp_path,
+):
+    fixture_path = tmp_path / "fixture.pcm"
+    fixture_path.write_bytes(b"\1\0" * 4)
+    monkeypatch.setenv(
+        "SCRIBER_B7_PROVIDER_REPLAY_RUN_ID",
+        "11111111-1111-4111-8111-111111111111",
+    )
+    monkeypatch.setenv(
+        "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH",
+        str(fixture_path),
+    )
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+    commands: list[str] = []
+
+    def shell_call(command, _payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream-replay-unattested",
+                    "framePipe": "memory-pipe",
+                    "sampleRate": 48_000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                },
+            }
+        if command == "audioCaptureStop":
+            return {
+                "success": True,
+                "payload": {"stopped": True, "reason": "captureStop"},
+            }
+        raise AssertionError(command)
+
+    source = RustPrototypeFrameSource(
+        sample_rate=48_000,
+        target_channels=1,
+        block_size=4,
+        device="default",
+        shell_call=shell_call,
+    )
+
+    with pytest.raises(RuntimeError, match="exact provider replay fixture boundary"):
+        source.open(lambda *_args: None)
+
+    assert commands == ["audioCaptureStart", "audioCaptureStop"]
+    assert source.fallback_reason == "rustProviderReplayFixtureExactEndRejected"
+
+
 def test_rust_prototype_frame_source_reports_sequence_error_before_first_frame(monkeypatch):
     audio = np.zeros((16, 1), dtype=np.int16)
     frame = encode_audio_frame(
@@ -844,7 +1440,8 @@ def test_rust_prototype_frame_source_records_pipe_closed_mid_session_failure(mon
     if source._reader_thread is not None:
         source._reader_thread.join(timeout=1.0)
     snapshot = source.diagnostic_snapshot()
-    source.stop(close=True)
+    with pytest.raises(RuntimeError, match="rustAudioSidecarWriterFailed"):
+        source.stop(close=True)
 
     assert snapshot["callbackCount"] == 1
     assert snapshot["framePipeReaderEndReason"] == "pipeClosed"
@@ -1104,6 +1701,156 @@ def test_rust_prototype_frame_source_tracks_prebuffer_before_live_frames(monkeyp
     assert snapshot["sidecarLiveFramesWritten"] == 1
     np.testing.assert_array_equal(calls[0][0], prebuffer_audio)
     np.testing.assert_array_equal(calls[1][0], live_audio)
+
+
+def test_rust_prototype_stop_keeps_reader_alive_until_sidecar_eos(monkeypatch):
+    live_audio = np.full((16, 1), 321, dtype=np.int16)
+    live_frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=len(live_audio.tobytes()),
+            sequence=0,
+            timestamp_micros=1,
+            frame_count=16,
+            channels=1,
+        ),
+        live_audio.tobytes(),
+    )
+    eos_frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=0,
+            sequence=1,
+            timestamp_micros=2,
+            frame_count=0,
+            channels=1,
+            flags=AUDIO_FRAME_FLAG_END_OF_STREAM,
+        ),
+        b"",
+    )
+
+    class BlockingReader:
+        def __init__(self, initial: bytes):
+            self._buffer = bytearray(initial)
+            self._condition = threading.Condition()
+            self._closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            with self._condition:
+                self._closed = True
+                self._condition.notify_all()
+
+        def feed(self, data: bytes) -> None:
+            with self._condition:
+                self._buffer.extend(data)
+                self._condition.notify_all()
+
+        def read(self, size: int) -> bytes:
+            if size == 0:
+                return b""
+            with self._condition:
+                while len(self._buffer) < size and not self._closed:
+                    self._condition.wait(timeout=1.0)
+                if len(self._buffer) < size:
+                    return b""
+                result = bytes(self._buffer[:size])
+                del self._buffer[:size]
+                return result
+
+    reader = BlockingReader(live_frame)
+    commands: list[str] = []
+    markers: list[tuple[str, int | None]] = []
+    monkeypatch.setattr(
+        microphone,
+        "_rust_audio_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "portAudioLabel": "Default Mic, Windows WASAPI",
+            "nativeEndpointIdHash": "endpoint-hash",
+        },
+    )
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioCaptureStart":
+            return {
+                "success": True,
+                "payload": {
+                    "streamId": "stream-eos",
+                    "framePipe": "memory-pipe",
+                    "sampleRate": 16000,
+                    "channels": 1,
+                    "captureChannels": 1,
+                    "sampleFormat": "pcm_i16_le",
+                    "nativeEndpointIdHash": "endpoint-hash",
+                    "audioFrameProtocol": {
+                        "magic": "SAF1",
+                        "version": microphone.AUDIO_FRAME_VERSION,
+                        "headerBytes": microphone.AUDIO_FRAME_HEADER_LEN,
+                        "sampleFormat": "pcm_i16_le",
+                        "zeroLengthEndOfStream": True,
+                    },
+                },
+            }
+        if command == "audioCaptureStop":
+            reader.feed(eos_frame)
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "reason": "captureStop",
+                    "connected": True,
+                    "framesWritten": 1,
+                    "prebufferFramesWritten": 0,
+                    "liveFramesWritten": 1,
+                    "bytesWritten": len(live_frame) + len(eos_frame),
+                    "eosWritten": True,
+                    "writerError": None,
+                    "timingMarkers": {
+                        "last_audio_frame_captured": 100,
+                        "capture_stopped": 200,
+                        "encoder_tail_started": 300,
+                        "encoder_tail_completed": 400,
+                    },
+                    "exitStatus": 0,
+                },
+            }
+        raise AssertionError(command)
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=shell_call,
+        reader_factory=lambda *_args, **_kwargs: reader,
+        first_frame_timeout_seconds=1.0,
+        on_start_marker=lambda marker, timestamp_ns=None: markers.append(
+            (marker, timestamp_ns)
+        ),
+    )
+    callbacks: list[np.ndarray] = []
+    source.open(lambda audio, *_args: callbacks.append(audio.copy()))
+    source.start()
+
+    source.stop(close=True)
+
+    snapshot = source.diagnostic_snapshot()
+    assert commands[-1] == "audioCaptureStop"
+    assert len(callbacks) == 1
+    assert snapshot["framePipeFramesRead"] == 2
+    assert snapshot["framePipeEosFramesRead"] == 1
+    assert snapshot["framePipeLiveFramesRead"] == 1
+    assert snapshot["framePipeReaderEndReason"] == "endOfStream"
+    assert snapshot["sidecarEosWritten"] is True
+    assert snapshot["terminalEosRequired"] is True
+    assert snapshot["midSessionFailureReason"] == ""
+    assert markers[-4:] == [
+        ("last_audio_frame_captured", 100),
+        ("capture_stopped", 200),
+        ("encoder_tail_started", 300),
+        ("encoder_tail_completed", 400),
+    ]
 
 
 def test_rust_prototype_start_waits_for_live_frame_after_callbacking_prebuffer(monkeypatch):
@@ -2278,6 +3025,91 @@ async def test_microphone_stop_releases_native_source_off_event_loop(monkeypatch
     assert events.index("event-loop-heartbeat") < events.index("stop-returned")
     assert fake_source.stream.active is False
     assert fake_source.stream.closed is True
+
+
+@pytest.mark.asyncio
+async def test_microphone_stop_accepts_rust_tail_until_eos_before_success_marker(monkeypatch):
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
+    tail_audio = np.full((16, 1), 777, dtype=np.int16)
+    events: list[str] = []
+    pushed: list[bytes] = []
+    markers: list[tuple[str, int | None]] = []
+
+    class TailOnStopFrameSource(_FakeRustFrameSource):
+        sidecar_timing_markers: dict[str, int] = {}
+
+        def stop(self, *, close: bool) -> None:
+            events.append("source-stop-entered")
+            self.callback(tail_audio, len(tail_audio), None, None)
+            events.append("tail-callback-returned")
+            super().stop(close=close)
+            events.append("source-stop-returned")
+
+    fake_source = TailOnStopFrameSource()
+    mic = microphone.MicrophoneInput(
+        sample_rate=16_000,
+        channels=1,
+        block_size=16,
+        on_last_audio_chunk_sent=lambda: events.append("last-chunk-sent"),
+        on_start_marker=lambda marker, timestamp_ns=None: markers.append(
+            (marker, timestamp_ns)
+        ),
+    )
+    mic._audio_in_queue = object()
+    mic._create_audio_task = lambda: None
+    mic._create_frame_source = lambda: fake_source
+
+    async def fake_push_audio_frame(frame):
+        pushed.append(frame.audio)
+        events.append("tail-pushed")
+
+    mic.push_audio_frame = fake_push_audio_frame
+
+    await mic.start(microphone.StartFrame())
+    await mic.stop_capture_for_finalization(close_stream=True)
+
+    assert pushed == [tail_audio.tobytes()]
+    assert events.index("source-stop-returned") < events.index("last-chunk-sent")
+    assert events.index("tail-pushed") < events.index("last-chunk-sent")
+    marker_map = dict(markers)
+    assert marker_map["last_audio_frame_captured"] is not None
+    assert marker_map["capture_stopped"] >= marker_map["last_audio_frame_captured"]
+    assert mic.diagnostic_snapshot()["acceptingAudio"] is False
+
+
+@pytest.mark.asyncio
+async def test_microphone_terminal_eos_failure_suppresses_last_chunk_marker(monkeypatch):
+    monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
+    completion_markers: list[str] = []
+
+    class MissingEosFrameSource(_FakeRustFrameSource):
+        sidecar_timing_markers: dict[str, int] = {}
+        terminal_integrity_error = "rustFramePipeMissingEndOfStream"
+
+        def stop(self, *, close: bool) -> None:
+            super().stop(close=close)
+            raise RuntimeError(self.terminal_integrity_error)
+
+    fake_source = MissingEosFrameSource()
+    mic = microphone.MicrophoneInput(
+        sample_rate=16_000,
+        channels=1,
+        block_size=16,
+        on_last_audio_chunk_sent=lambda: completion_markers.append("last-chunk-sent"),
+    )
+    mic._audio_in_queue = object()
+    mic._create_audio_task = lambda: None
+    mic._create_frame_source = lambda: fake_source
+    mic.push_audio_frame = lambda *_args, **_kwargs: None
+
+    await mic.start(microphone.StartFrame())
+    with pytest.raises(RuntimeError, match="rustFramePipeMissingEndOfStream"):
+        await mic.stop_capture_for_finalization(close_stream=True)
+
+    snapshot = mic.diagnostic_snapshot()
+    assert completion_markers == []
+    assert snapshot["captureIntegrityError"] == "rustFramePipeMissingEndOfStream"
+    assert snapshot["acceptingAudio"] is False
 
 
 def test_rust_audio_timeout_configuration_is_finite_and_bounded(monkeypatch):

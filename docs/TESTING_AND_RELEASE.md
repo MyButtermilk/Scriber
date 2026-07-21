@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-07-19
+Last verified: 2026-07-21
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -143,6 +143,10 @@ Mic/device:
 Pipeline/provider/runtime:
 
 - `tests/test_pipeline_stop.py`
+- `tests/core/test_provider_audio_formats.py`
+- `tests/test_audio_prepare.py`
+- `tests/test_pipeline_audio_prepare.py`
+- `tests/runtime/test_provider_http.py`
 - `tests/test_azure_mai_stt.py`
 - `tests/runtime/test_provider_router.py`
 - `tests/runtime/test_retry_scheduler.py`
@@ -160,6 +164,9 @@ Web/API/jobs:
 Performance/packaging:
 
 - `tests/perf/test_hot_path_tracer.py`
+- `tests/perf/test_windows_autoresearch_contract.py`
+- `tests/test_provider_replay_runtime.py`
+- `tests/runtime/test_audio_frame_pipe.py`
 - `tests/perf/test_frontend_vendor_chunk_config.py`
 - `tests/test_tauri_security_gates.py`
 - `tests/test_tauri_stability_smoke_gates.py`
@@ -213,6 +220,27 @@ scripts\project-python.cmd scripts\smoke_diarization_worker_resource.py `
   output. Debug coverage should also verify that post-processing diagnostics are
   exposed only as redacted metadata through the Debug Console, hot-path metrics,
   and support bundles.
+- Provider-audio tests must resolve an exact provider/route/model key, keep
+  batch and realtime formats separate, reject generic OGG/WebM codec inference,
+  reject inactive/custom/unknown routes, prefer an allowlisted original, and
+  verify generated derivative cleanup plus upload bounds. Pipeline coverage
+  must reject mismatched frozen capability revisions, unverified formats,
+  changed prepared files, and provider-session creation before those checks.
+- Provider HTTP transport tests run a local aiohttp server and verify sequential
+  connection reuse, one-loop ownership, idempotent close, canonical request
+  chunk markers, and absence of URL paths, queries, and bodies from retained
+  diagnostics. Retry tests must keep a possibly accepted provider request, and
+  a returned result whose first durable provider-stage write failed, from being
+  replayed automatically. JobStore tests must distinguish YouTube's planned
+  caption fallback, selected execution route, and matching executed route.
+- Hot-path replay contract tests keep the deterministic PCM fixture identical
+  across Microsoft, Soniox, and Speechmatics, require exact external observer
+  hash/length and QPC binding, and validate p50/p90/p95/max/variance/failure
+  aggregation without inventing failed values. Rust/Python frame-protocol tests
+  keep the zero-length EOS control record and ordered stop/encoder-tail markers
+  aligned, including Python acceptance and downstream drain through EOS. Rust
+  sidecar tests also prove that preparation queue overflow invalidates only the
+  derived candidate while the authoritative capture stream remains complete.
 
 ## Compact NumPy packaging gates
 
@@ -387,18 +415,73 @@ unchanged staged directory: Doctor and the scorer reject missing manifests,
 source changes, or a mismatched desktop, backend, or audio sidecar, even when
 the stale component reports the same semantic version.
 
-AutoResearch B7 provider-tail evidence must use the installed app. The endpoint
+AutoResearch B7 canonical visible-text evidence must use the installed app. The endpoint
 probe launches one isolated Tauri runtime per provider with a UUID-gated replay
 capability, prepares a fixed product-owned fixture, binds `arm` to the focused
 TextReceiver PID plus process creation time, and polls status until the normal
 Live Mic pipeline completes. Microsoft traverses the real Azure-MAI adapter and
-parser through a local one-shot raw transport; Soniox traverses Pipecat 1.5's
-real `stt-rt-v5` WebSocket parser through a loopback server. Eligible latency is
-the installed backend's provider-bound Windows-QPC marker to the external
-observer's QPC marker. Fixture hash/length, run/sample/session/process
-generation, target generation, marker source/order, clipboard/paste callback,
-and cleanup all fail closed. Source-level `TextInjector` imports or fabricated
-provider markers are not valid evidence.
+parser through a local one-shot raw transport. Before activation that lane
+prepares bounded decode references from the exact PCM fixture; the measured
+transport then uses bundled ffmpeg to decode the actual MP3 upload and rejects
+corruption, content/duration mismatch, a non-zero or overlong tail, and any
+URL/API/model/locale/definition or credential-sentinel drift. Soniox traverses Pipecat 1.5's
+real `stt-rt-v5` WebSocket parser through a loopback server. Speechmatics
+traverses the real `speechmatics_async` Batch-v2 adapter and JSON-v2 parser;
+its local one-shot raw transport fully consumes and validates the uploaded WAV
+without network I/O or an API key. Microsoft and Speechmatics replay also
+require the adapter transport to attest the actual frozen preparation ID;
+requested candidate paths that fall back remain production-safe but fail the
+benchmark sample closed. Both FastLocal and
+FullLocal use only 5-, 15-, 30-, and 60-second fixtures. Eligible promotion
+latency consists of the external-observer-bound
+`activation_received_to_final_text_observed` and
+`stop_requested_to_final_text_observed` distributions for every
+provider-duration series. Fixture bytes/format/duration/phase,
+run/sample/session/process generation, target generation, marker source/order,
+clipboard/paste callback, and cleanup all fail closed. Each series must have a
+zero failure rate and non-regressing p50/p95 against its matching baseline;
+legacy provider-final tails are diagnostic only. Source-level `TextInjector`
+imports or fabricated provider markers are not valid evidence.
+
+FastLocal requests five samples per provider-duration series; FullLocal requests
+30. A report missing any Microsoft, Soniox, or Speechmatics series at 5, 15,
+30, or 60 seconds
+is incomplete and cannot promote a candidate. These local replay runs validate
+the product path and scorer, but they are not evidence of a live cloud-provider
+speed gain or of a production Rust codec.
+
+`scripts/perf/run.ps1 -Suite ProviderReplay` is the bounded Issue #18 lane. It
+keeps runtime-attestation checks before and after the endpoint probe, runs five
+installed samples for every provider at exactly 5, 15, 30, and 60 seconds, and
+does not invoke overlay-hotkey or App-UX probes. A scoped successful run may exit
+zero with `PROVIDER_REPLAY_MEASURED`, while `promotionEligible` stays false and
+`local_wux` stays unknown; it is not a general promotion gate.
+
+The matched candidate check uses explicit switches so `.env` defaults cannot
+change either side accidentally:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\perf\run.ps1 `
+  -Suite ProviderReplay `
+  -InstallRoot Frontend\src-tauri\target\release `
+  -OutputDir tmp\issue18-provider-replay-baseline `
+  -AzureMaiCaptureTimeMp3 Disabled `
+  -SpeechmaticsCaptureTimeWav Disabled
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\perf\run.ps1 `
+  -Suite ProviderReplay `
+  -InstallRoot Frontend\src-tauri\target\release `
+  -OutputDir tmp\issue18-provider-replay-candidate `
+  -AzureMaiCaptureTimeMp3 Enabled `
+  -SpeechmaticsCaptureTimeWav Enabled
+```
+
+The 2026-07-21 final runs each passed 12/12 series and 60/60 exact samples with
+zero text, focus, or clipboard errors and drift-free runtime attestations. Both
+candidates remain default-off because at least one matching duration regressed
+a canonical p50 or p95. Azure still showed a useful diagnostic reduction in
+Stop-to-provider p50 for all four durations; that supporting phase cannot
+override an externally observed canonical regression.
 
 Default real YouTube smoke URL:
 

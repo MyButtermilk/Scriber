@@ -47,8 +47,8 @@ async def test_hot_path_log_is_human_readable_and_keeps_full_report_out_of_messa
     assert "{" not in call["message"]
     assert len(call["message"]) < 240
     assert set(call["meta"]) == {
-        "hotkey_received_to_mic_ready_ms",
-        "hotkey_received_to_first_audible_audio_frame_ms",
+        "activation_received_to_mic_ready_ms",
+        "activation_received_to_first_audible_audio_frame_ms",
         "stop_requested_to_provider_final_received_ms",
         "stop_requested_to_first_paste_ms",
         "measurement_count",
@@ -74,9 +74,9 @@ async def test_hot_path_audio_frame_marker_is_persisted(tmp_path):
 
     rows = metrics_store.latest(limit=10)
     assert len(rows) == 1
-    assert "hotkey_received_to_first_audio_frame_ms" in rows[0].segments
+    assert "activation_received_to_first_audio_frame_ms" in rows[0].segments
     assert "first_audio_frame_to_first_paste_ms" in rows[0].segments
-    assert "hotkey_received_to_first_audible_audio_frame_ms" in rows[0].segments
+    assert "activation_received_to_first_audible_audio_frame_ms" in rows[0].segments
 
 
 @pytest.mark.asyncio
@@ -95,8 +95,8 @@ async def test_hot_path_silent_audio_frame_does_not_mark_audible_audio(tmp_path)
 
     rows = metrics_store.latest(limit=10)
     assert len(rows) == 1
-    assert "hotkey_received_to_first_audio_frame_ms" in rows[0].segments
-    assert "hotkey_received_to_first_audible_audio_frame_ms" not in rows[0].segments
+    assert "activation_received_to_first_audio_frame_ms" in rows[0].segments
+    assert "activation_received_to_first_audible_audio_frame_ms" not in rows[0].segments
 
 
 @pytest.mark.asyncio
@@ -117,8 +117,8 @@ async def test_hot_path_partial_report_can_be_persisted_without_text_injection(t
 
     rows = metrics_store.latest(limit=10)
     assert len(rows) == 1
-    assert "hotkey_received_to_mic_ready_ms" in rows[0].segments
-    assert "hotkey_received_to_first_audio_frame_ms" in rows[0].segments
+    assert "activation_received_to_mic_ready_ms" in rows[0].segments
+    assert "activation_received_to_first_audio_frame_ms" in rows[0].segments
     assert "stop_requested_to_session_finished_ms" in rows[0].segments
     assert "stop_requested_to_first_paste_ms" not in rows[0].segments
 
@@ -139,7 +139,7 @@ async def test_hot_path_marks_non_empty_final_transcript_only(tmp_path):
     await ctl._wait_for_pending_metric_writes()
 
     rows = metrics_store.latest(limit=10)
-    assert "hotkey_received_to_first_final_token_ms" not in rows[0].segments
+    assert "activation_received_to_first_final_token_ms" not in rows[0].segments
 
     second_id = "session-final-token-text"
     ctl._session_id = second_id
@@ -151,8 +151,9 @@ async def test_hot_path_marks_non_empty_final_transcript_only(tmp_path):
 
     rows = metrics_store.latest(limit=10)
     latest = next(row for row in rows if row.session_id == second_id)
-    assert "hotkey_received_to_first_final_token_ms" in latest.segments
-    assert "hotkey_received_to_provider_final_received_ms" in latest.segments
+    assert "activation_received_to_first_final_token_ms" in latest.segments
+    assert "activation_received_to_provider_final_received_ms" in latest.segments
+    assert "activation_received_to_transcript_parsed_ms" in latest.segments
 
 
 @pytest.mark.asyncio
@@ -164,9 +165,13 @@ async def test_hot_path_persists_stop_to_injection_breakdown(tmp_path):
 
     ctl._start_hot_path_tracer(session_id)
     ctl._mark_hot_path(session_id, "stop_requested")
+    ctl._mark_hot_path(session_id, "last_chunk_sent_to_pipeline")
     ctl._mark_hot_path(session_id, "last_chunk_sent")
     ctl._mark_hot_path(session_id, "provider_final_received")
+    ctl._mark_hot_path(session_id, "transcript_parsed")
+    ctl._mark_hot_path(session_id, "injection_target_validated")
     ctl._mark_hot_path(session_id, "clipboard_set")
+    ctl._mark_hot_path(session_id, "paste_requested")
     ctl._mark_hot_path(session_id, "paste")
     ctl._mark_hot_path(session_id, "first_paste")
 
@@ -176,10 +181,35 @@ async def test_hot_path_persists_stop_to_injection_breakdown(tmp_path):
     rows = metrics_store.latest(limit=10)
     latest = next(row for row in rows if row.session_id == session_id)
     assert "stop_requested_to_last_chunk_sent_ms" in latest.segments
+    assert "stop_requested_to_last_chunk_sent_to_pipeline_ms" in latest.segments
     assert "last_chunk_sent_to_provider_final_received_ms" in latest.segments
     assert "provider_final_received_to_clipboard_set_ms" in latest.segments
     assert "clipboard_set_to_paste_ms" in latest.segments
+    assert "injection_target_validated_to_paste_requested_ms" in latest.segments
     assert "paste_to_first_paste_ms" in latest.segments
+
+
+@pytest.mark.asyncio
+async def test_async_stop_marks_request_before_background_finalization(tmp_path):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(
+        loop,
+        latency_metrics_store=LatencyMetricsStore(db_path=tmp_path / "metrics.db"),
+    )
+    session_id = "early-stop"
+    ctl._session_id = session_id
+    ctl._is_listening = True
+    ctl._start_hot_path_tracer(session_id)
+    ctl.stop_listening = AsyncMock(return_value=None)
+
+    outcome = ctl.request_async_stop_listening()
+    snapshot = ctl.get_hot_path_metrics(limit=1, include_active=True)["activeItems"][0]
+
+    assert outcome["stopScheduled"] is True
+    assert "stop_requested" in snapshot["markerNames"]
+    assert ctl.stop_listening.await_count == 0
+    await asyncio.sleep(0)
+    assert ctl.stop_listening.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -254,9 +284,15 @@ async def test_hot_path_metrics_can_include_active_readiness_snapshot(tmp_path):
     active = next(item for item in out["activeItems"] if item["sessionId"] == session_id)
     assert active["active"] is True
     assert active["reportEmitted"] is False
-    assert active["markerNames"] == ["hotkey_received", "mic_ready", "first_audio_frame"]
-    assert "hotkey_received_to_mic_ready_ms" in active["segments"]
-    assert "hotkey_received_to_first_audio_frame_ms" in active["segments"]
+    assert active["markerNames"] == [
+        "activation_received",
+        "button_received",
+        "start_request_dispatched",
+        "mic_ready",
+        "first_audio_frame",
+    ]
+    assert "activation_received_to_mic_ready_ms" in active["segments"]
+    assert "activation_received_to_first_audio_frame_ms" in active["segments"]
 
 
 @pytest.mark.asyncio
@@ -290,6 +326,8 @@ async def test_hot_path_metrics_expose_request_bound_tauri_marker_only_for_its_s
     assert active["tauriHotkeyReceived"] == marker
     assert active["segments"]["hotkey_received_to_mic_ready_ms"] == 125.0
     assert "tauriHotkeyReceived" not in ordinary
+    assert "hotkey_received" not in ordinary["markerNames"]
+    assert "button_received" in ordinary["markerNames"]
 
 
 @pytest.mark.asyncio
@@ -312,10 +350,12 @@ async def test_overlay_commands_mark_hot_path_readiness_segments(tmp_path):
     active = next(item for item in out["activeItems"] if item["sessionId"] == session_id)
 
     assert active["markerNames"] == [
-        "hotkey_received",
+        "activation_received",
+        "button_received",
+        "start_request_dispatched",
         "overlay_initializing_scheduled",
         "overlay_initializing_started",
         "overlay_initializing_done",
     ]
     assert "overlay_initializing_scheduled_to_overlay_initializing_done_ms" in active["segments"]
-    assert "hotkey_received_to_overlay_initializing_done_ms" in active["segments"]
+    assert "activation_received_to_overlay_initializing_done_ms" in active["segments"]

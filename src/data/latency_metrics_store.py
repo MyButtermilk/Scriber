@@ -130,7 +130,11 @@ class LatencyMetricsStore:
                 continue
             if math.isfinite(number):
                 payload[str(key)] = number
-        total_ms = payload.get("hotkey_received_to_first_paste_ms")
+        total_ms = payload.get("activation_received_to_final_text_observed_ms")
+        if total_ms is None:
+            total_ms = payload.get("activation_received_to_first_paste_ms")
+        if total_ms is None:
+            total_ms = payload.get("hotkey_received_to_first_paste_ms")
         if total_ms is None:
             total_ms = max(payload.values(), default=0.0)
         metric = HotPathMetric(

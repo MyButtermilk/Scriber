@@ -4,8 +4,8 @@ param(
     [Parameter(Mandatory = $true)]
     [long]$ProcessCreationTime100ns,
     [string]$WindowTitle = "Scriber",
-    [Parameter(Mandatory = $true)]
-    [string]$ControlName,
+    [string]$ControlName = "",
+    [string]$ControlAutomationId = "",
     [ValidateSet("Exact", "Prefix")]
     [string]$ControlNameMatch = "Exact",
     [ValidateSet("", "Button", "Hyperlink", "ListItem", "MenuItem", "TabItem")]
@@ -18,6 +18,10 @@ param(
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+
+if (-not $ControlName -and -not $ControlAutomationId) {
+    throw "ControlName or ControlAutomationId is required."
+}
 
 function Get-TextSha256 {
     param([string]$Text)
@@ -88,10 +92,16 @@ do {
     if ($eligibleWindows.Count -eq 1) {
         $window = $eligibleWindows[0]
         $conditions = New-Object System.Collections.Generic.List[System.Windows.Automation.Condition]
-        if ($ControlNameMatch -eq "Exact") {
+        if ($ControlName -and $ControlNameMatch -eq "Exact") {
             $conditions.Add((New-Object System.Windows.Automation.PropertyCondition(
                 [System.Windows.Automation.AutomationElement]::NameProperty,
                 $ControlName
+            )))
+        }
+        if ($ControlAutomationId) {
+            $conditions.Add((New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+                $ControlAutomationId
             )))
         }
         $requestedControlType = Resolve-ControlType -Name $ControlType
@@ -119,13 +129,20 @@ do {
             try {
                 $bounds = $candidateControl.Current.BoundingRectangle
                 $candidateName = [string]$candidateControl.Current.Name
-                $nameMatches = if ($ControlNameMatch -eq "Prefix") {
+                $nameMatches = if (-not $ControlName) {
+                    $true
+                } elseif ($ControlNameMatch -eq "Prefix") {
                     $candidateName.StartsWith($ControlName, [System.StringComparison]::Ordinal)
                 } else {
                     $candidateName -eq $ControlName
                 }
+                $automationIdMatches = (
+                    -not $ControlAutomationId -or
+                    [string]$candidateControl.Current.AutomationId -eq $ControlAutomationId
+                )
                 if (
                     $nameMatches -and
+                    $automationIdMatches -and
                     -not $candidateControl.Current.IsOffscreen -and
                     $candidateControl.Current.IsEnabled -and
                     $bounds.Width -gt 0 -and
@@ -188,6 +205,7 @@ $result = [ordered]@{
     processCreationTime100ns = $ProcessCreationTime100ns
     nativeWindowHandle = [int64]$window.Current.NativeWindowHandle
     controlNameSha256 = Get-TextSha256 -Text $ControlName
+    controlAutomationIdSha256 = Get-TextSha256 -Text $ControlAutomationId
     controlNameMatch = $ControlNameMatch
     controlType = [string]$control.Current.ControlType.ProgrammaticName
     actionPattern = $patternName

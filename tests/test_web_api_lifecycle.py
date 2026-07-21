@@ -1,5 +1,6 @@
 import asyncio
 import builtins
+import hashlib
 import json
 import sys
 import threading
@@ -3389,6 +3390,10 @@ class _PrewarmAwarePipeline:
     def __init__(self, *_, mic_prewarm_manager=None, **kwargs):
         self.mic_prewarm_manager = mic_prewarm_manager
         self.text_injection_enabled = kwargs.get("text_injection_enabled")
+        self.execution_route = kwargs.get("execution_route")
+        self.speechmatics_capture_time_wav_enabled = kwargs.get(
+            "speechmatics_capture_time_wav_enabled"
+        )
         self.stop_gate = asyncio.Event()
         type(self).instances.append(self)
 
@@ -3600,6 +3605,73 @@ async def test_start_listening_does_not_wait_for_overlay_shell_ipc(monkeypatch):
             )
 
         pipeline = _PrewarmAwarePipeline.instances[-1]
+        pipeline.stop_gate.set()
+        await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
+
+    ctl.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("candidate_flag", "expected_implementation", "expected_enabled"),
+    [
+        ("0", "python_reserved_wav_header_v1", False),
+        ("1", "wav_pcm16_file_v1", True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_live_speechmatics_freezes_exact_production_wav_route(
+    monkeypatch,
+    candidate_flag,
+    expected_implementation,
+    expected_enabled,
+):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+    _PrewarmAwarePipeline.instances.clear()
+    monkeypatch.delenv("SCRIBER_SPEECHMATICS_BATCH_BASE_URL", raising=False)
+    monkeypatch.setenv(
+        "SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV",
+        candidate_flag,
+    )
+
+    with (
+        patch("src.web_api.ScriberPipeline", _PrewarmAwarePipeline),
+        patch.object(
+            ctl,
+            "_select_available_provider",
+            return_value="speechmatics_async",
+        ),
+        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.show_recording_overlay"),
+        patch("src.web_api.show_transcribing_overlay"),
+        patch("src.web_api.hide_recording_overlay"),
+    ):
+        await ctl.start_listening()
+        pipeline = _PrewarmAwarePipeline.instances[-1]
+        route = pipeline.execution_route
+
+        assert route["model"] == "batch-v2"
+        assert route["provider_route"] == "batch_v2"
+        assert route["audio_input_format"] == "wav_pcm16"
+        assert route["audio_input_format_verified"] is True
+        assert route["audio_selection_mode"] == "generated"
+        assert route["audio_preparation_implementation"] == expected_implementation
+        assert pipeline.speechmatics_capture_time_wav_enabled is expected_enabled
+        assert (
+            route["provider_audio_capability_id"]
+            == "speechmatics_async:batch_v2:enhanced"
+        )
+        assert route["provider_audio_capability_revision"]
+        assert route["provider_endpoint_sha256"] == hashlib.sha256(
+            web_api.SPEECHMATICS_BATCH_DEFAULT_BASE_URL.rstrip("/").encode(
+                "utf-8"
+            )
+        ).hexdigest()
+
         pipeline.stop_gate.set()
         await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
 
@@ -4077,7 +4149,9 @@ async def test_live_start_trace_exists_before_first_audio_conflict_lookup():
             await ctl.start_listening()
 
     assert observed_snapshot["markerNames"] == [
-        "hotkey_received",
+        "activation_received",
+        "button_received",
+        "start_request_dispatched",
         "controller_accepted",
     ]
     assert ctl._hot_path_tracers == {}
@@ -4258,6 +4332,73 @@ async def test_shutdown_during_cold_start_drains_transition_without_starting_pip
     assert ctl._live_mic_start_task is None
     assert ctl._live_mic_start_in_progress_generation is None
     assert ctl._is_listening is False
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drain_joins_active_live_mic_stop_without_cancelling_it():
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    session_id = "shutdown-drains-live-stop"
+    record = _make_record(session_id)
+    stop_entered = asyncio.Event()
+    allow_stop = asyncio.Event()
+
+    class _DurableSlowStopPipeline:
+        service_name = "openai"
+
+        def __init__(self):
+            self.cancelled = False
+            self.completed = False
+
+        async def stop(self, *, timeout_secs=None):
+            del timeout_secs
+            stop_entered.set()
+            try:
+                await allow_stop.wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+            self.completed = True
+
+    pipeline = _DurableSlowStopPipeline()
+    ctl._current = record
+    ctl._session_id = session_id
+    ctl._pipeline = pipeline
+    ctl._pipeline_task = None
+    ctl._active_provider = "openai"
+    ctl._is_listening = True
+
+    with (
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()) as save_mock,
+        patch.object(ctl, "_resume_idle_mic_prewarm_after_capture"),
+        patch.object(ctl, "_show_transcribing_overlay_async"),
+        patch.object(ctl, "_hide_recording_overlay_async"),
+    ):
+        outcome = ctl.request_async_stop_listening()
+        background_stop = ctl._background_stop_task
+        assert outcome["stopScheduled"] is True
+        assert background_stop is not None
+        await asyncio.wait_for(stop_entered.wait(), timeout=1.0)
+
+        drain_task = asyncio.create_task(
+            ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
+        )
+        await asyncio.sleep(0)
+        assert drain_task.done() is False
+        assert background_stop.cancelled() is False
+
+        allow_stop.set()
+        pending = await asyncio.wait_for(drain_task, timeout=1.0)
+        await asyncio.wait_for(asyncio.shield(background_stop), timeout=1.0)
+
+    assert pending == 0
+    assert pipeline.cancelled is False
+    assert pipeline.completed is True
+    assert background_stop.cancelled() is False
+    assert record.status == "completed"
+    save_mock.assert_awaited_once_with(record)
     ctl.shutdown()
 
 

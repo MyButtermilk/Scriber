@@ -266,6 +266,11 @@ def strip_runtime_docstrings(code: CodeType) -> tuple[CodeType, int]:
     return code.replace(co_consts=tuple(constants)), stripped_count
 
 
+# pycparser's PLY grammar is executable data stored in function docstrings.
+# Removing it makes CFFI provider initialization fail while building its parser.
+RUNTIME_DOCSTRING_REQUIRED_PREFIXES = ("pycparser",)
+
+
 def retain_punkt_tab_languages(datas, retained_languages):
     prefix = "nltk_data/tokenizers/punkt_tab/"
     retained = frozenset(str(language).casefold() for language in retained_languages)
@@ -600,6 +605,11 @@ if missing_cached_code:
 
 total_stripped_docstrings = 0
 for module_name in sorted(retained_pure_names):
+    if any(
+        module_name == prefix or module_name.startswith(prefix + ".")
+        for prefix in RUNTIME_DOCSTRING_REQUIRED_PREFIXES
+    ):
+        continue
     cached_code = code_cache.get(module_name)
     if not isinstance(cached_code, CodeType):
         continue

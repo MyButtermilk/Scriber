@@ -15,9 +15,17 @@ from ctypes import wintypes
 
 try:
     from .benchmark_lint import lint
+    from .evaluator.local_wux import (
+        canonical_provider_replay_evidence_valid,
+        canonical_provider_replay_metric_names,
+    )
     from .runtime_attestation import read_windows_file_version, verify_attestation
 except ImportError:
     from benchmark_lint import lint
+    from evaluator.local_wux import (
+        canonical_provider_replay_evidence_valid,
+        canonical_provider_replay_metric_names,
+    )
     from runtime_attestation import read_windows_file_version, verify_attestation
 
 
@@ -62,12 +70,10 @@ B7_REQUIRED_BASELINE_METRICS = tuple(
     for scenario in (
         "overlay_warm",
         "overlay_cold",
-        "microsoft_local_tail",
-        "soniox_local_tail",
         "app_ux",
     )
     for percentile in ("p50", "p95")
-)
+) + canonical_provider_replay_metric_names()
 
 
 def run_capture(args: list[str], cwd: Path, timeout: int = 120) -> subprocess.CompletedProcess[str]:
@@ -448,6 +454,8 @@ def check_autoresearch_state(repo_root: Path) -> list[dict[str, Any]]:
                 local_wux = metrics.get("local_wux")
                 if isinstance(local_wux, bool) or not isinstance(local_wux, (int, float)) or float(local_wux) != 1.0:
                     invalid_metrics.append("local_wux=1.0")
+                if not canonical_provider_replay_evidence_valid(metrics):
+                    invalid_metrics.append("canonical_provider_replay_evidence")
                 if invalid_metrics:
                     findings.append(
                         {

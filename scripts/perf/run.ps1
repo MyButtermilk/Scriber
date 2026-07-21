@@ -1,8 +1,12 @@
 param(
-    [ValidateSet("Smoke", "FastLocal", "FullLocal", "LiveMicrosoft", "LiveSoniox")]
+    [ValidateSet("Smoke", "FastLocal", "FullLocal", "ProviderReplay", "LiveMicrosoft", "LiveSoniox")]
     [string]$Suite = "FastLocal",
     [string]$InstallRoot = "",
-    [string]$OutputDir = ""
+    [string]$OutputDir = "",
+    [ValidateSet("Default", "Enabled", "Disabled")]
+    [string]$AzureMaiCaptureTimeMp3 = "Default",
+    [ValidateSet("Default", "Enabled", "Disabled")]
+    [string]$SpeechmaticsCaptureTimeWav = "Default"
 )
 
 $ErrorActionPreference = "Stop"
@@ -58,6 +62,20 @@ function Import-DotEnvIntoProcess {
 
 $repoEnvPath = Join-Path $RepoRoot ".env"
 $importedEnvNames = @(Import-DotEnvIntoProcess -Path $repoEnvPath)
+if ($AzureMaiCaptureTimeMp3 -ne "Default") {
+    [Environment]::SetEnvironmentVariable(
+        "SCRIBER_AZURE_MAI_CAPTURE_TIME_MP3",
+        $(if ($AzureMaiCaptureTimeMp3 -eq "Enabled") { "1" } else { "0" }),
+        "Process"
+    )
+}
+if ($SpeechmaticsCaptureTimeWav -ne "Default") {
+    [Environment]::SetEnvironmentVariable(
+        "SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV",
+        $(if ($SpeechmaticsCaptureTimeWav -eq "Enabled") { "1" } else { "0" }),
+        "Process"
+    )
+}
 
 $pythonCommand = if ($env:SCRIBER_PYTHON) {
     Get-Command $env:SCRIBER_PYTHON -ErrorAction SilentlyContinue
@@ -149,6 +167,7 @@ $rawProvenance = [ordered]@{
     desktopSha256 = [string]$profile.desktopSha256
     backendSha256 = [string]$profile.backendSha256
     audioSidecarSha256 = [string]$profile.audioSidecarSha256
+    providerCandidate = $profile.providerCandidate
 }
 
 function Add-RawProvenance {
@@ -192,18 +211,13 @@ function Set-RawAttestationPhase {
     }
 }
 
-function Write-UnknownMetrics {
-    param([string]$Reason)
+function Get-RequiredMetricNames {
     $required = @(
         "local_wux",
         "overlay_warm_p50_ms",
         "overlay_warm_p95_ms",
         "overlay_cold_p50_ms",
         "overlay_cold_p95_ms",
-        "microsoft_local_tail_p50_ms",
-        "microsoft_local_tail_p95_ms",
-        "soniox_local_tail_p50_ms",
-        "soniox_local_tail_p95_ms",
         "app_ux_p50_ms",
         "app_ux_p95_ms",
         "hotkey_mic_ready_p95_ms",
@@ -216,6 +230,24 @@ function Write-UnknownMetrics {
         "idle_cpu_pct",
         "working_set_mb"
     )
+    foreach ($provider in @("microsoft_local", "soniox_local", "speechmatics_local")) {
+        foreach ($duration in @(5, 15, 30, 60)) {
+            foreach ($kpi in @(
+                "activation_received_to_final_text_observed",
+                "stop_requested_to_final_text_observed"
+            )) {
+                foreach ($suffix in @("p50_ms", "p95_ms", "failure_rate", "sample_count", "capture_attested")) {
+                    $required += "${provider}_${duration}s_${kpi}_${suffix}"
+                }
+            }
+        }
+    }
+    return $required
+}
+
+function Write-UnknownMetrics {
+    param([string]$Reason)
+    $required = @(Get-RequiredMetricNames)
     Write-Output "STATUS blocked reason=$Reason"
     foreach ($metric in $required) {
         Write-Output "METRIC $metric=unknown"
@@ -227,28 +259,7 @@ function Write-MetricPackage {
         [hashtable]$Metrics,
         [string]$Reason
     )
-    $required = @(
-        "local_wux",
-        "overlay_warm_p50_ms",
-        "overlay_warm_p95_ms",
-        "overlay_cold_p50_ms",
-        "overlay_cold_p95_ms",
-        "microsoft_local_tail_p50_ms",
-        "microsoft_local_tail_p95_ms",
-        "soniox_local_tail_p50_ms",
-        "soniox_local_tail_p95_ms",
-        "app_ux_p50_ms",
-        "app_ux_p95_ms",
-        "hotkey_mic_ready_p95_ms",
-        "hotkey_first_audio_frame_p95_ms",
-        "text_errors",
-        "focus_errors",
-        "clipboard_errors",
-        "overlay_errors",
-        "ui_long_tasks_gt_200ms",
-        "idle_cpu_pct",
-        "working_set_mb"
-    )
+    $required = @(Get-RequiredMetricNames)
     $statusWord = if ($Reason -eq "measured" -or $Reason -like "*measured*") { "measured" } else { "blocked" }
     Write-Output "STATUS $statusWord reason=$Reason"
     foreach ($metric in $required) {
@@ -699,10 +710,15 @@ $payload = [pscustomobject]@{
     suite = $Suite
     status = "BLOCKED"
     reason = "user_endpoint_probe_failed"
+    scope = if ($Suite -eq "ProviderReplay") { "installed_provider_replay_only" } else { "general_local_wux" }
     generatedAtUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     profileId = $profile.profile_id
     importedEnvNames = @($importedEnvNames)
-    contract = "FastLocal requires external visible overlay, UI Automation text, and stable app frame evidence."
+    contract = if ($Suite -eq "ProviderReplay") {
+        "ProviderReplay measures only installed provider replay with five samples at exactly 5, 15, 30, and 60 seconds; it is not a UI or Local-WUX promotion gate."
+    } else {
+        "FastLocal requires external visible overlay, UI Automation text, and stable app frame evidence."
+    }
 }
 $endpointProbePath = Join-Path $OutputDir "endpoint-probe-$stamp.json"
 $endpointProbeWorkDir = Join-Path $RepoRoot "tmp\autoresearch-endpoint-probe-$stamp"
@@ -748,9 +764,11 @@ if (Test-Path -LiteralPath $endpointProbePath -PathType Leaf) {
 if ($endpointProbe) {
     $payload.status = $endpointProbe.status
     $payload.reason = $endpointProbe.reason
+    $payload.scope = if ($endpointProbe.scope) { [string]$endpointProbe.scope } else { [string]$payload.scope }
     $payload | Add-Member -NotePropertyName endpointProbePath -NotePropertyValue $endpointProbePath
     $payload | Add-Member -NotePropertyName endpointProbeExitCode -NotePropertyValue $endpointProbeExit
     $payload | Add-Member -NotePropertyName endpointProbe -NotePropertyValue $endpointProbe
+    $payload | Add-Member -NotePropertyName promotionEligible -NotePropertyValue ([bool]$endpointProbe.promotionEligible) -Force
 }
 Write-RawPayload -Payload $payload -Path $rawPath -Depth 8
 $metricMap = @{}
@@ -762,6 +780,17 @@ if ($endpointProbe -and $endpointProbe.metrics) {
 $reason = if ($endpointProbe -and $endpointProbe.reason) { [string]$endpointProbe.reason } else { "missing_real_user_endpoint_evidence" }
 Write-MetricPackage -Metrics $metricMap -Reason $reason
 $localWux = if ($metricMap.ContainsKey("local_wux")) { [string]$metricMap["local_wux"] } else { "unknown" }
+if ($Suite -eq "ProviderReplay") {
+    $providerReplaySucceeded = (
+        $endpointProbe -and
+        $endpointProbeExit -eq 0 -and
+        [string]$endpointProbe.status -eq "PROVIDER_REPLAY_MEASURED" -and
+        -not [bool]$endpointProbe.promotionEligible -and
+        $localWux -eq "unknown"
+    )
+    if ($providerReplaySucceeded) { exit 0 }
+    exit 2
+}
 if ($endpointProbe -and [string]$endpointProbe.status -eq "MEASURED" -and $localWux -ne "unknown") {
     exit 0
 }

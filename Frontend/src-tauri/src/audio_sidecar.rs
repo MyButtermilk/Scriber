@@ -1,11 +1,17 @@
+mod audio_codec;
 mod audio_frame_pipe;
+mod audio_prepare;
 mod meeting_aec;
 mod redaction;
 
-use audio_frame_pipe::{
-    encode_audio_frame, AudioFrameHeader, AUDIO_FRAME_FLAG_END_OF_STREAM,
-    AUDIO_FRAME_FLAG_PREBUFFER, AUDIO_FRAME_HEADER_LEN, AUDIO_FRAME_VERSION,
+use audio_codec::{
+    codec_attestation_payload, EncoderImplementation, EncoderPlan, SharedPcmSegment,
 };
+use audio_frame_pipe::{
+    AudioFrameHeader, AUDIO_FRAME_FLAG_END_OF_STREAM, AUDIO_FRAME_FLAG_PREBUFFER,
+    AUDIO_FRAME_HEADER_LEN, AUDIO_FRAME_VERSION,
+};
+use audio_prepare::{AudioPreparationSubmit, AudioPreparationWorker, CaptureArtifactTarget};
 use meeting_aec::{MeetingAec3, MEETING_AEC_FRAME_SAMPLES};
 use redaction::hash_sensitive_identifier;
 use serde_json::{json, Value};
@@ -14,6 +20,7 @@ use std::{
     env,
     ffi::c_void,
     io::{self, BufRead, Read, Write},
+    path::PathBuf,
     process::ExitCode,
     sync::{
         atomic::{AtomicBool, AtomicU8, Ordering},
@@ -38,6 +45,7 @@ use windows_sys::Win32::{
         CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING,
         PIPE_ACCESS_OUTBOUND,
     },
+    System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
     System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, SetNamedPipeHandleState,
         PIPE_NOWAIT, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
@@ -67,6 +75,9 @@ const SIDECAR_JSON_LINE_MAX_BYTES: usize = 1024 * 1024;
 const SYNTHETIC_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE";
 const SYNTHETIC_SIGNAL_ENV: &str = "SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL";
 const SYNTHETIC_MIC_PCM_ENV: &str = "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH";
+const PROVIDER_REPLAY_RUN_ID_ENV: &str = "SCRIBER_B7_PROVIDER_REPLAY_RUN_ID";
+const PROVIDER_REPLAY_FIXTURE_EXACT_END_INTERRUPTED: &str =
+    "providerReplayFixtureExactEndInterrupted";
 const SYNTHETIC_PCM_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const WASAPI_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_WASAPI_CAPTURE";
 const DISABLE_WASAPI_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE";
@@ -88,6 +99,30 @@ const PREWARM_HANDOFF_TAIL_MAX_BYTES: usize = 64 * 1024 * 1024;
 const IN_PLACE_PREWARM_HANDOFF_MODE: &str = "in-place-iaudio-client-promotion";
 const WAVE_FORMAT_IEEE_FLOAT_TAG: u16 = 3;
 const WAVE_FORMAT_EXTENSIBLE_TAG: u16 = 0xfffe;
+
+#[cfg(windows)]
+fn query_performance_timestamp_ns() -> Option<i64> {
+    let mut ticks = 0_i64;
+    let mut frequency = 0_i64;
+    unsafe {
+        if QueryPerformanceCounter(&mut ticks) == 0
+            || QueryPerformanceFrequency(&mut frequency) == 0
+        {
+            return None;
+        }
+    }
+    if ticks <= 0 || frequency <= 0 {
+        return None;
+    }
+    ((i128::from(ticks) * 1_000_000_000_i128) / i128::from(frequency))
+        .try_into()
+        .ok()
+}
+
+#[cfg(not(windows))]
+fn query_performance_timestamp_ns() -> Option<i64> {
+    None
+}
 
 #[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,7 +338,28 @@ impl AudioSidecarState {
         payload: &Value,
         started: Instant,
     ) -> Value {
-        let request = CaptureRequest::from_payload(payload);
+        let request = match CaptureRequest::from_capture_payload(payload) {
+            Ok(request) => request,
+            Err(reason) => {
+                let error_code = if reason == "providerReplayFixtureExactEndInvalid" {
+                    "invalidPayload"
+                } else {
+                    "unsupportedAudioPreparation"
+                };
+                return response_payload(
+                    request_id,
+                    false,
+                    error_code,
+                    reason,
+                    started,
+                    json!({
+                        "sidecar": SIDECAR_NAME,
+                        "captureAvailable": false,
+                        "audioPreparation": codec_attestation_payload(),
+                    }),
+                );
+            }
+        };
         if !wasapi_capture_enabled() && !synthetic_capture_enabled() {
             return response_payload(
                 request_id,
@@ -706,6 +762,7 @@ impl AudioSidecarState {
 
     fn start_capture(&mut self, request: CaptureRequest) -> Result<Value, String> {
         let use_wasapi_capture = wasapi_capture_enabled();
+        validate_provider_replay_fixture_exact_end_route(&request, !use_wasapi_capture, false)?;
         let result = if request.prewarm_id.trim().is_empty() {
             if use_wasapi_capture {
                 start_wasapi_capture_impl(request, None, None)
@@ -841,8 +898,11 @@ struct CaptureRequest {
     native_endpoint_id_hash: String,
     prebuffer_ms: u32,
     prewarm_id: String,
+    provider_replay_fixture_exact_end: bool,
     capture_kind: String,
     clock_origin: Option<Instant>,
+    audio_preparation: Option<EncoderPlan>,
+    artifact_target: Option<CaptureArtifactTarget>,
 }
 
 impl CaptureRequest {
@@ -860,9 +920,40 @@ impl CaptureRequest {
             // being lost without turning the microphone on before user intent.
             prebuffer_ms: optional_u64(payload, "prebufferMs", 0, 6_000) as u32,
             prewarm_id: bounded_string(payload, "prewarmId", "", 96),
+            provider_replay_fixture_exact_end: false,
             capture_kind: bounded_string(payload, "captureKind", "microphone", 24),
             clock_origin: None,
+            audio_preparation: None,
+            artifact_target: None,
         }
+    }
+
+    fn from_capture_payload(payload: &Value) -> Result<Self, &'static str> {
+        let mut request = Self::from_payload(payload);
+        request.provider_replay_fixture_exact_end =
+            strict_optional_bool(payload, "providerReplayFixtureExactEnd")
+                .ok_or("providerReplayFixtureExactEndInvalid")?;
+        request.audio_preparation =
+            EncoderPlan::parse_optional(payload, request.sample_rate, request.channels)
+                .map_err(|error| error.code())?;
+        request.artifact_target = parse_capture_artifact_target(payload)?;
+        match request
+            .audio_preparation
+            .as_ref()
+            .map(|plan| plan.implementation)
+        {
+            Some(EncoderImplementation::WavPcm16FileV1) if request.artifact_target.is_none() => {
+                return Err("audioPreparationArtifactLeaseMissing")
+            }
+            Some(EncoderImplementation::WavPcm16Virtual) if request.artifact_target.is_some() => {
+                return Err("audioPreparationArtifactLeaseUnexpected")
+            }
+            None if request.artifact_target.is_some() => {
+                return Err("audioPreparationArtifactLeaseUnexpected")
+            }
+            _ => {}
+        }
+        Ok(request)
     }
 
     fn to_payload(&self) -> Value {
@@ -875,10 +966,66 @@ impl CaptureRequest {
             "nativeEndpointIdHash": self.native_endpoint_id_hash,
             "prebufferMs": self.prebuffer_ms,
             "prewarmId": self.prewarm_id,
+            "providerReplayFixtureExactEnd": self.provider_replay_fixture_exact_end,
             "captureKind": self.capture_kind,
             "sharedClock": self.clock_origin.is_some(),
+            "audioPreparation": self
+                .audio_preparation
+                .as_ref()
+                .map(EncoderPlan::to_payload),
         })
     }
+
+    fn accepted_audio_preparation_payload(&self) -> Value {
+        self.audio_preparation
+            .as_ref()
+            .map(EncoderPlan::to_payload)
+            .unwrap_or(Value::Null)
+    }
+}
+
+fn parse_capture_artifact_target(
+    payload: &Value,
+) -> Result<Option<CaptureArtifactTarget>, &'static str> {
+    let Some(value) = payload.get("artifactLease") else {
+        return Ok(None);
+    };
+    let Some(object) = value.as_object() else {
+        return Err("audioPreparationArtifactLeaseInvalid");
+    };
+    const ALLOWED_FIELDS: [&str; 3] = ["schemaVersion", "leaseId", "path"];
+    if object
+        .keys()
+        .any(|key| !ALLOWED_FIELDS.contains(&key.as_str()))
+        || object.get("schemaVersion").and_then(Value::as_str) != Some("1")
+    {
+        return Err("audioPreparationArtifactLeaseInvalid");
+    }
+    let lease_id = object
+        .get("leaseId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if lease_id.len() != 32 || !lease_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("audioPreparationArtifactLeaseInvalid");
+    }
+    let path_text = object
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if path_text.is_empty() || path_text.len() > 1_024 || path_text.contains('\0') {
+        return Err("audioPreparationArtifactLeaseInvalid");
+    }
+    let path = PathBuf::from(path_text);
+    let expected_file_name = format!("{lease_id}.wav");
+    if !path.is_absolute()
+        || path.file_name().and_then(|value| value.to_str()) != Some(expected_file_name.as_str())
+    {
+        return Err("audioPreparationArtifactLeaseInvalid");
+    }
+    Ok(Some(CaptureArtifactTarget {
+        lease_id: lease_id.to_ascii_lowercase(),
+        path,
+    }))
 }
 
 #[derive(Debug, Default)]
@@ -890,6 +1037,84 @@ struct CaptureWriterStats {
     bytes_written: u64,
     deferred_prewarm_stop: Option<Value>,
     error: Option<String>,
+    eos_written: bool,
+    next_sequence: u64,
+    last_frame_timestamp_micros: Option<u64>,
+    last_audio_frame_captured_timestamp_ns: Option<i64>,
+    capture_stopped_timestamp_ns: Option<i64>,
+    encoder_tail_started_timestamp_ns: Option<i64>,
+    encoder_tail_completed_timestamp_ns: Option<i64>,
+    audio_preparation_worker: Option<AudioPreparationWorker>,
+    audio_preparation_result: Option<Value>,
+}
+
+impl CaptureWriterStats {
+    fn start_audio_preparation(&mut self, request: &CaptureRequest) {
+        let Some(plan) = request.audio_preparation.clone() else {
+            return;
+        };
+        let worker = match request.artifact_target.clone() {
+            Some(target) => AudioPreparationWorker::start_file(plan.clone(), target),
+            None => AudioPreparationWorker::start(plan.clone()),
+        };
+        match worker {
+            Ok(worker) => self.audio_preparation_worker = Some(worker),
+            Err(error) => {
+                // This path is an optional local candidate. Failure to create
+                // it must never abort or stall authoritative PCM capture.
+                self.audio_preparation_result = Some(json!({
+                    "state": "failed",
+                    "reason": error.code(),
+                    "plan": plan.to_payload(),
+                    "artifactExposed": false,
+                }));
+            }
+        }
+    }
+
+    fn submit_audio_preparation(&mut self, payload: SharedPcmSegment) {
+        let Some(worker) = self.audio_preparation_worker.as_mut() else {
+            return;
+        };
+        if worker.try_submit(payload) == AudioPreparationSubmit::CandidateInvalidated
+            && self.audio_preparation_result.is_none()
+        {
+            self.audio_preparation_result = Some(json!({
+                "state": "invalidated",
+                "reason": "encoderQueueFullOrDisconnected",
+                "plan": worker.plan().to_payload(),
+                "artifactExposed": false,
+            }));
+        }
+    }
+
+    fn finish_audio_preparation(&mut self, capture_succeeded: bool) {
+        let Some(mut worker) = self.audio_preparation_worker.take() else {
+            return;
+        };
+        if !capture_succeeded {
+            worker.invalidate("captureFailed");
+        }
+        self.encoder_tail_started_timestamp_ns = query_performance_timestamp_ns();
+        self.audio_preparation_result = Some(match worker.finish() {
+            Ok(result) => result.summary_payload(),
+            Err(error) => json!({
+                "state": "failed",
+                "reason": error.code(),
+                "artifactExposed": false,
+            }),
+        });
+        self.encoder_tail_completed_timestamp_ns = query_performance_timestamp_ns();
+    }
+
+    fn timing_markers_payload(&self) -> Value {
+        json!({
+            "last_audio_frame_captured": self.last_audio_frame_captured_timestamp_ns,
+            "capture_stopped": self.capture_stopped_timestamp_ns,
+            "encoder_tail_started": self.encoder_tail_started_timestamp_ns,
+            "encoder_tail_completed": self.encoder_tail_completed_timestamp_ns,
+        })
+    }
 }
 
 struct CaptureSession {
@@ -965,6 +1190,9 @@ impl CaptureSession {
             "prebufferFramesWritten": stats.prebuffer_frames_written,
             "liveFramesWritten": stats.live_frames_written,
             "bytesWritten": stats.bytes_written,
+            "eosWritten": stats.eos_written,
+            "audioPreparation": stats.audio_preparation_result,
+            "timingMarkers": stats.timing_markers_payload(),
             "deferredPrewarmStop": stats.deferred_prewarm_stop,
             "writerError": stats.error,
             "wasapiClientReused": false,
@@ -1591,6 +1819,7 @@ impl PrewarmSession {
             .lock()
             .map(|mut buffer| buffer.abort_handoff())
             .unwrap_or((0, 0));
+        let timing_markers = capture_stats.timing_markers_payload();
         let writer_error = capture_stats.error.or(prewarm_stats.error);
 
         json!({
@@ -1604,6 +1833,9 @@ impl PrewarmSession {
             "prebufferFramesWritten": capture_stats.prebuffer_frames_written,
             "liveFramesWritten": capture_stats.live_frames_written,
             "bytesWritten": capture_stats.bytes_written,
+            "eosWritten": capture_stats.eos_written,
+            "audioPreparation": capture_stats.audio_preparation_result,
+            "timingMarkers": timing_markers,
             "deferredPrewarmStop": capture_stats.deferred_prewarm_stop,
             "writerError": writer_error,
             "workerStopTimedOut": bounded_join.timed_out,
@@ -1867,7 +2099,7 @@ fn validate_synthetic_pcm_fixture_len(byte_len: u64) -> Result<(), String> {
             "{SYNTHETIC_MIC_PCM_ENV} exceeds the bounded synthetic PCM size"
         ));
     }
-    if byte_len % 2 != 0 {
+    if !byte_len.is_multiple_of(2) {
         return Err(format!(
             "{SYNTHETIC_MIC_PCM_ENV} must contain aligned signed 16-bit PCM"
         ));
@@ -1904,6 +2136,40 @@ fn load_synthetic_pcm_fixture(request: &CaptureRequest) -> Result<Option<Vec<u8>
         std::fs::read(&path).map_err(|_| format!("{SYNTHETIC_MIC_PCM_ENV} could not be read"))?;
     validate_synthetic_pcm_fixture_len(payload.len() as u64)?;
     Ok(Some(payload))
+}
+
+fn provider_replay_fixture_live_block_count(
+    request: &CaptureRequest,
+    pcm_fixture: Option<&[u8]>,
+) -> Result<Option<u64>, String> {
+    if !request.provider_replay_fixture_exact_end {
+        return Ok(None);
+    }
+    if !request.capture_kind.eq_ignore_ascii_case("microphone")
+        || request.sample_rate != 48_000
+        || request.channels != 1
+    {
+        return Err(
+            "provider replay fixture exact end requires a valid microphone PCM fixture".to_string(),
+        );
+    }
+    let fixture = pcm_fixture.ok_or_else(|| {
+        "provider replay fixture exact end requires a valid microphone PCM fixture".to_string()
+    })?;
+    if fixture.is_empty() {
+        return Err(
+            "provider replay fixture exact end requires a valid microphone PCM fixture".to_string(),
+        );
+    }
+    let bytes_per_block = usize::from(request.channels)
+        .checked_mul(request.block_size as usize)
+        .and_then(|sample_count| sample_count.checked_mul(2))
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "provider replay fixture exact end block size is invalid".to_string())?;
+    let block_count = fixture.len().div_ceil(bytes_per_block);
+    let block_count = u64::try_from(block_count)
+        .map_err(|_| "provider replay fixture exact end block count overflow".to_string())?;
+    Ok(Some(block_count))
 }
 
 fn synthetic_frame_payload(
@@ -1973,12 +2239,46 @@ fn env_flag_enabled(raw: Option<&str>) -> bool {
     )
 }
 
+fn valid_provider_replay_run_id() -> bool {
+    env::var(PROVIDER_REPLAY_RUN_ID_ENV)
+        .ok()
+        .and_then(|raw| Uuid::parse_str(raw.trim()).ok())
+        .is_some_and(|run_id| !run_id.is_nil())
+}
+
+fn validate_provider_replay_fixture_exact_end_route(
+    request: &CaptureRequest,
+    synthetic_route: bool,
+    has_adopted_prebuffer: bool,
+) -> Result<(), String> {
+    if !request.provider_replay_fixture_exact_end {
+        return Ok(());
+    }
+    if !synthetic_route || !synthetic_capture_enabled() {
+        return Err("provider replay fixture exact end requires synthetic capture".to_string());
+    }
+    if !valid_provider_replay_run_id() {
+        return Err(format!(
+            "provider replay fixture exact end requires a valid non-nil {PROVIDER_REPLAY_RUN_ID_ENV}"
+        ));
+    }
+    if !request.prewarm_id.trim().is_empty() || has_adopted_prebuffer {
+        return Err(
+            "provider replay fixture exact end forbids prewarm and adopted prebuffer".to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 fn start_synthetic_capture_impl(
     request: CaptureRequest,
     mut adopted_prewarm: Option<(AdoptedPrewarm, Value)>,
 ) -> Result<(CaptureSession, Value), String> {
+    validate_provider_replay_fixture_exact_end_route(&request, true, adopted_prewarm.is_some())?;
     let synthetic_pcm_fixture = load_synthetic_pcm_fixture(&request)?;
+    let exact_fixture_live_blocks =
+        provider_replay_fixture_live_block_count(&request, synthetic_pcm_fixture.as_deref())?;
     let synthetic_speech_fixture = synthetic_pcm_fixture.is_some();
     let synthetic_speech_fixture_bytes = synthetic_pcm_fixture
         .as_ref()
@@ -2005,6 +2305,7 @@ fn start_synthetic_capture_impl(
                 stop_rx,
                 adopted_blocks,
                 synthetic_pcm_fixture,
+                exact_fixture_live_blocks,
             )
         })
         .map_err(|err| {
@@ -2028,6 +2329,7 @@ fn start_synthetic_capture_impl(
         "syntheticFramePipe": true,
         "syntheticSpeechFixture": synthetic_speech_fixture,
         "syntheticSpeechFixtureBytes": synthetic_speech_fixture_bytes,
+        "providerReplayFixtureExactEndAccepted": request.provider_replay_fixture_exact_end,
         "source": "synthetic-frame-pipe",
         "streamId": stream_id,
         "framePipe": pipe_path,
@@ -2045,6 +2347,7 @@ fn start_synthetic_capture_impl(
             Value::String("syntheticCaptureHasNoNativeEndpoint".to_string()),
         ),
         "requestedFormat": request.to_payload(),
+        "acceptedAudioPreparation": request.accepted_audio_preparation_payload(),
         "audioFrameProtocol": audio_frame_protocol_payload(),
     });
     Ok((session, payload))
@@ -2164,6 +2467,7 @@ fn wasapi_promoted_capture_payload(
         "captureAvailable": true,
         "wasapiCapture": true,
         "syntheticFramePipe": false,
+        "providerReplayFixtureExactEndAccepted": false,
         "source": "wasapi-capture",
         "streamId": stream_id,
         "framePipe": pipe_path,
@@ -2175,6 +2479,7 @@ fn wasapi_promoted_capture_payload(
         "adoptedPrewarm": adopted_prewarm,
         "endpointSelection": prewarm_session.endpoint_selection.clone(),
         "requestedFormat": request.to_payload(),
+        "acceptedAudioPreparation": request.accepted_audio_preparation_payload(),
         "audioFrameProtocol": audio_frame_protocol_payload(),
         "mixFormat": prewarm_session.mix_format_payload.clone(),
         "resampler": prewarm_session.resampler_payload.clone(),
@@ -2583,6 +2888,7 @@ fn wasapi_capture_payload(
         "captureAvailable": true,
         "wasapiCapture": true,
         "syntheticFramePipe": false,
+        "providerReplayFixtureExactEndAccepted": false,
         "source": "wasapi-capture",
         "streamId": stream_id,
         "framePipe": pipe_path,
@@ -2594,6 +2900,7 @@ fn wasapi_capture_payload(
         "adoptedPrewarm": adopted_prewarm_payload(adopted_prewarm),
         "endpointSelection": endpoint_selection,
         "requestedFormat": request.to_payload(),
+        "acceptedAudioPreparation": request.accepted_audio_preparation_payload(),
         "audioFrameProtocol": audio_frame_protocol_payload(),
         "mixFormat": mix_format,
         "resampler": resampler,
@@ -2875,6 +3182,26 @@ impl WasapiPcmConverter {
             blocks.push(bytes);
         }
         blocks
+    }
+
+    fn drain_partial_block(&mut self) -> Option<Vec<u8>> {
+        if self.pending_samples.is_empty() {
+            return None;
+        }
+        let channel_count = usize::from(self.target_channels);
+        let aligned_samples =
+            self.pending_samples.len() - (self.pending_samples.len() % channel_count);
+        if aligned_samples == 0 {
+            self.pending_samples.clear();
+            return None;
+        }
+        let samples: Vec<i16> = self.pending_samples.drain(0..aligned_samples).collect();
+        self.pending_samples.clear();
+        let mut bytes = Vec::with_capacity(samples.len() * 2);
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        Some(bytes)
     }
 }
 
@@ -3387,7 +3714,51 @@ fn run_meeting_aec_relay(
             let mut microphone_payload = Vec::with_capacity(output_samples * 2);
             let mut system_payload = Vec::with_capacity(output_samples * 2);
             let mut clean_payload = Vec::with_capacity(output_samples * 2);
+            let mut relay_terminal_timestamp_micros = 0_u64;
             loop {
+                if microphone_frame.as_ref().is_some_and(|(header, payload)| {
+                    header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0
+                        && header.frame_count == 0
+                        && payload.is_empty()
+                }) {
+                    relay_terminal_timestamp_micros = relay_terminal_timestamp_micros.max(
+                        microphone_frame
+                            .as_ref()
+                            .map(|(header, _)| header.timestamp_micros)
+                            .unwrap_or_default(),
+                    );
+                    microphone_done = true;
+                    microphone_frame = None;
+                }
+                if system_frame.as_ref().is_some_and(|(header, payload)| {
+                    header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0
+                        && header.frame_count == 0
+                        && payload.is_empty()
+                }) {
+                    relay_terminal_timestamp_micros = relay_terminal_timestamp_micros.max(
+                        system_frame
+                            .as_ref()
+                            .map(|(header, _)| header.timestamp_micros)
+                            .unwrap_or_default(),
+                    );
+                    system_done = true;
+                    system_frame = None;
+                }
+                if microphone_done && system_done {
+                    let terminal = AudioFrameHeader::new(
+                        0,
+                        relay_sequence,
+                        relay_terminal_timestamp_micros,
+                        0,
+                        1,
+                        AUDIO_FRAME_FLAG_END_OF_STREAM,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    for handle in &outputs {
+                        stats.bytes_forwarded += write_meeting_frame(*handle, terminal, &[])?;
+                    }
+                    break;
+                }
                 let microphone_timestamp = microphone_frame
                     .as_ref()
                     .map(|(header, _)| header.timestamp_micros);
@@ -3469,14 +3840,14 @@ fn run_meeting_aec_relay(
                     }
                     MeetingAlignmentAction::SystemOnly => system_timestamp.unwrap_or_default(),
                 };
+                relay_terminal_timestamp_micros =
+                    relay_terminal_timestamp_micros.max(timestamp_micros);
                 let microphone_eos = microphone_item
                     .as_ref()
                     .is_some_and(|(header, _)| header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0);
                 let system_eos = system_item
                     .as_ref()
                     .is_some_and(|(header, _)| header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0);
-                let will_finish =
-                    (microphone_done || microphone_eos) && (system_done || system_eos);
                 let mut combined_flags = microphone_item
                     .as_ref()
                     .map(|(header, _)| header.flags)
@@ -3486,9 +3857,6 @@ fn run_meeting_aec_relay(
                         .map(|(header, _)| header.flags)
                         .unwrap_or_default();
                 combined_flags &= !AUDIO_FRAME_FLAG_END_OF_STREAM;
-                if will_finish {
-                    combined_flags |= AUDIO_FRAME_FLAG_END_OF_STREAM;
-                }
                 let common_header = AudioFrameHeader::new(
                     clean_payload.len() as u32,
                     relay_sequence,
@@ -3507,9 +3875,6 @@ fn run_meeting_aec_relay(
                     write_meeting_frame(outputs[2], clean_header, &clean_payload)?;
                 stats.frames_processed += 1;
                 relay_sequence = relay_sequence.saturating_add(1);
-                if will_finish {
-                    break;
-                }
                 if consume_microphone {
                     if microphone_eos {
                         microphone_done = true;
@@ -3554,10 +3919,12 @@ fn run_synthetic_frame_pipe_writer(
     _pipe_path: String,
     request: CaptureRequest,
     stop_rx: mpsc::Receiver<()>,
-    adopted_prebuffer_blocks: Vec<Vec<u8>>,
+    mut adopted_prebuffer_blocks: Vec<Vec<u8>>,
     synthetic_pcm_fixture: Option<Vec<u8>>,
+    exact_fixture_live_blocks: Option<u64>,
 ) -> CaptureWriterStats {
     let mut stats = CaptureWriterStats::default();
+    stats.start_audio_preparation(&request);
     let started = request.clock_origin.unwrap_or_else(Instant::now);
     let connect_result = wait_for_pipe_client(pipe_handle, &stop_rx);
     if let Err(err) = connect_result {
@@ -3570,17 +3937,19 @@ fn run_synthetic_frame_pipe_writer(
     stats.connected = true;
 
     let mut sequence = 0_u64;
+    let adopted_prebuffer_count = adopted_prebuffer_blocks.len() as u64;
+    let has_adopted_prebuffer = adopted_prebuffer_count > 0;
     if let Err(err) = write_adopted_prebuffer_blocks(
         pipe_handle,
         &request,
-        &adopted_prebuffer_blocks,
+        &mut adopted_prebuffer_blocks,
         started,
         &mut sequence,
         &mut stats,
     ) {
         stats.error = Some(err);
+        stats.finish_audio_preparation(false);
         unsafe {
-            FlushFileBuffers(pipe_handle);
             DisconnectNamedPipe(pipe_handle);
             CloseHandle(pipe_handle);
         }
@@ -3590,16 +3959,26 @@ fn run_synthetic_frame_pipe_writer(
     let frame_interval = Duration::from_secs_f64(
         (request.block_size as f64 / f64::from(request.sample_rate)).max(0.001),
     );
-    let prebuffer_frame_target = if adopted_prebuffer_blocks.is_empty() {
+    let prebuffer_frame_target = if !has_adopted_prebuffer {
         requested_prebuffer_frame_count(&request)
     } else {
         0
     };
     let mut prebuffer_frames_written = 0_u32;
+    let mut exact_fixture_blocks_written = 0_u64;
+    let mut exact_fixture_interrupted = false;
     let stream_started_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     loop {
         match stop_rx.try_recv() {
-            Ok(()) | Err(TryRecvError::Disconnected) => break,
+            Ok(()) | Err(TryRecvError::Disconnected) => {
+                if exact_fixture_live_blocks
+                    .is_some_and(|block_count| exact_fixture_blocks_written < block_count)
+                {
+                    exact_fixture_interrupted = true;
+                    stats.error = Some(PROVIDER_REPLAY_FIXTURE_EXACT_END_INTERRUPTED.to_string());
+                }
+                break;
+            }
             Err(TryRecvError::Empty) => {}
         }
 
@@ -3609,56 +3988,55 @@ fn run_synthetic_frame_pipe_writer(
         } else {
             0
         };
-        let payload_sequence = sequence.saturating_sub(adopted_prebuffer_blocks.len() as u64);
+        let payload_sequence = sequence.saturating_sub(adopted_prebuffer_count);
         let payload =
             synthetic_frame_payload(&request, payload_sequence, synthetic_pcm_fixture.as_deref());
-        let frame_duration_micros = u64::from(request.block_size).saturating_mul(1_000_000)
-            / u64::from(request.sample_rate.max(1));
-        let timestamp_micros =
-            stream_started_micros.saturating_add(sequence.saturating_mul(frame_duration_micros));
-        let header = match AudioFrameHeader::new(
-            payload.len() as u32,
-            sequence,
-            timestamp_micros,
-            request.block_size,
-            request.channels,
+        if let Err(error) = write_wasapi_capture_frame(
+            pipe_handle,
+            &request,
+            payload,
             flags,
+            stream_started_micros,
+            &mut sequence,
+            &mut stats,
         ) {
-            Ok(header) => header,
-            Err(err) => {
-                stats.error = Some(format!("synthetic frame header failed: {err}"));
-                break;
-            }
-        };
-        let frame = match encode_audio_frame(&header, &payload) {
-            Ok(frame) => frame,
-            Err(err) => {
-                stats.error = Some(format!("synthetic frame encode failed: {err}"));
-                break;
-            }
-        };
-        match write_all_to_pipe(pipe_handle, &frame) {
-            Ok(bytes) => {
-                stats.frames_written = stats.frames_written.saturating_add(1);
-                if flags & AUDIO_FRAME_FLAG_PREBUFFER != 0 {
-                    stats.prebuffer_frames_written =
-                        stats.prebuffer_frames_written.saturating_add(1);
-                } else {
-                    stats.live_frames_written = stats.live_frames_written.saturating_add(1);
-                }
-                stats.bytes_written = stats.bytes_written.saturating_add(u64::from(bytes));
-                sequence = sequence.saturating_add(1);
-            }
-            Err(err) => {
-                stats.error = Some(err);
-                break;
-            }
+            stats.error = Some(error);
+            break;
+        }
+        exact_fixture_blocks_written = exact_fixture_blocks_written.saturating_add(1);
+        if exact_fixture_live_blocks
+            .is_some_and(|block_count| exact_fixture_blocks_written >= block_count)
+        {
+            break;
         }
         thread::sleep(frame_interval);
     }
 
+    // An interrupted exact replay is a failed capture, but the connected
+    // reader still needs one terminal frame so it can drain and close without
+    // mistaking cleanup for a truncated named pipe. Preserve the interruption
+    // error after writing EOS so neither the capture nor a preparation artifact
+    // can be reported as successful.
+    if stats.error.is_none() || exact_fixture_interrupted {
+        stats.capture_stopped_timestamp_ns = query_performance_timestamp_ns();
+        let timestamp_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        if let Err(error) = write_capture_end_of_stream(
+            pipe_handle,
+            &request,
+            timestamp_micros,
+            &mut sequence,
+            &mut stats,
+        ) {
+            stats.error = Some(if exact_fixture_interrupted {
+                format!("{PROVIDER_REPLAY_FIXTURE_EXACT_END_INTERRUPTED}: {error}")
+            } else {
+                error
+            });
+        }
+    }
+    let capture_succeeded = stats.error.is_none() && stats.eos_written;
+    stats.finish_audio_preparation(capture_succeeded);
     unsafe {
-        FlushFileBuffers(pipe_handle);
         DisconnectNamedPipe(pipe_handle);
         CloseHandle(pipe_handle);
     }
@@ -3669,30 +4047,51 @@ fn run_synthetic_frame_pipe_writer(
 fn write_adopted_prebuffer_blocks(
     pipe_handle: HANDLE,
     request: &CaptureRequest,
-    blocks: &[Vec<u8>],
+    blocks: &mut Vec<Vec<u8>>,
     started: Instant,
     sequence: &mut u64,
     stats: &mut CaptureWriterStats,
 ) -> Result<(), String> {
     let write_deadline = Instant::now() + PREWARM_BURST_WRITE_TIMEOUT;
-    for payload in blocks {
+    for payload in blocks.drain(..) {
+        let bytes_per_frame = usize::from(request.channels).saturating_mul(2);
+        if bytes_per_frame == 0
+            || payload.is_empty()
+            || !payload.len().is_multiple_of(bytes_per_frame)
+        {
+            return Err("adopted prewarm PCM payload is not frame-aligned".to_string());
+        }
+        let frame_count: u32 = (payload.len() / bytes_per_frame)
+            .try_into()
+            .map_err(|_| "adopted prewarm frame count overflow".to_string())?;
         let timestamp_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         let header = AudioFrameHeader::new(
             payload.len() as u32,
             *sequence,
             timestamp_micros,
-            request.block_size,
+            frame_count,
             request.channels,
             AUDIO_FRAME_FLAG_PREBUFFER,
         )
         .map_err(|err| format!("adopted prewarm frame header failed: {err}"))?;
-        let frame = encode_audio_frame(&header, payload)
+        let encoded_header = header
+            .encode()
             .map_err(|err| format!("adopted prewarm frame encode failed: {err}"))?;
-        let bytes_written = write_all_to_pipe_until(pipe_handle, &frame, write_deadline)?;
+        // Move the capture-owned allocation into shared ownership. The frame
+        // pipe and optional WAV preparation then borrow the same PCM bytes.
+        let payload = Arc::new(payload);
+        let header_bytes = write_all_to_pipe_until(pipe_handle, &encoded_header, write_deadline)?;
+        let payload_bytes =
+            write_all_to_pipe_until(pipe_handle, payload.as_slice(), write_deadline)?;
+        let bytes_written = u64::from(header_bytes) + u64::from(payload_bytes);
         stats.frames_written = stats.frames_written.saturating_add(1);
         stats.prebuffer_frames_written = stats.prebuffer_frames_written.saturating_add(1);
-        stats.bytes_written = stats.bytes_written.saturating_add(u64::from(bytes_written));
+        stats.bytes_written = stats.bytes_written.saturating_add(bytes_written);
+        stats.last_frame_timestamp_micros = Some(timestamp_micros);
+        stats.last_audio_frame_captured_timestamp_ns = query_performance_timestamp_ns();
+        stats.submit_audio_preparation(payload);
         *sequence = (*sequence).saturating_add(1);
+        stats.next_sequence = *sequence;
     }
     Ok(())
 }
@@ -3729,6 +4128,7 @@ fn run_wasapi_capture_writer(
     let mut stats = CaptureWriterStats::default();
     let mut ready_sent = false;
     let started = request.clock_origin.unwrap_or_else(Instant::now);
+    stats.start_audio_preparation(&request);
     let result = run_wasapi_capture_writer_inner(
         pipe_handle,
         &request,
@@ -3755,6 +4155,21 @@ fn run_wasapi_capture_writer(
     ) {
         stats.deferred_prewarm_stop = Some(stop_payload);
     }
+    if stats.error.is_none() && stats.connected {
+        let mut sequence = stats.next_sequence;
+        let timestamp_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        if let Err(error) = write_capture_end_of_stream(
+            pipe_handle,
+            &request,
+            timestamp_micros,
+            &mut sequence,
+            &mut stats,
+        ) {
+            stats.error = Some(error);
+        }
+    }
+    let capture_succeeded = stats.error.is_none() && stats.eos_written;
+    stats.finish_audio_preparation(capture_succeeded);
     unsafe {
         DisconnectNamedPipe(pipe_handle);
         CloseHandle(pipe_handle);
@@ -3918,7 +4333,7 @@ fn run_wasapi_capture_writer_inner(
     ready_sent: &mut bool,
     stats: &mut CaptureWriterStats,
     started: Instant,
-    adopted_prebuffer_blocks: Vec<Vec<u8>>,
+    mut adopted_prebuffer_blocks: Vec<Vec<u8>>,
     adopted_native_endpoint_id_hash: &Value,
     defer_ready_until_after_pipe: bool,
     microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
@@ -3983,7 +4398,7 @@ fn run_wasapi_capture_writer_inner(
             write_adopted_prebuffer_blocks(
                 pipe_handle,
                 request,
-                &adopted_prebuffer_blocks,
+                &mut adopted_prebuffer_blocks,
                 started,
                 &mut sequence,
                 stats,
@@ -3996,13 +4411,14 @@ fn run_wasapi_capture_writer_inner(
 
         unsafe { client.Start() }.map_err(|err| format!("WASAPI Start failed: {err}"))?;
         let stream_started_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        let mut native_stopped = false;
         let capture_result = (|| -> Result<(), String> {
             if defer_ready_until_after_pipe {
                 if let Some((stop_payload, tail_blocks)) =
                     finish_deferred_prewarm_handoff(deferred_prewarm_session, "adoptedIntoCapture")
                 {
                     stats.deferred_prewarm_stop = Some(stop_payload);
-                    let tail_blocks = tail_blocks?;
+                    let mut tail_blocks = tail_blocks?;
                     // The initial rolling window was written before the
                     // replacement client started. Append every block produced
                     // after that snapshot exactly once, still marked as
@@ -4010,7 +4426,7 @@ fn run_wasapi_capture_writer_inner(
                     write_adopted_prebuffer_blocks(
                         pipe_handle,
                         request,
-                        &tail_blocks,
+                        &mut tail_blocks,
                         started,
                         &mut sequence,
                         stats,
@@ -4037,7 +4453,7 @@ fn run_wasapi_capture_writer_inner(
                 write_adopted_prebuffer_blocks(
                     pipe_handle,
                     request,
-                    &adopted_prebuffer_blocks,
+                    &mut adopted_prebuffer_blocks,
                     started,
                     &mut sequence,
                     stats,
@@ -4047,6 +4463,7 @@ fn run_wasapi_capture_writer_inner(
                 pipe_handle,
                 request,
                 stop_rx,
+                &client,
                 &capture_client,
                 mix_format,
                 stats,
@@ -4054,12 +4471,20 @@ fn run_wasapi_capture_writer_inner(
                 sequence,
                 !defer_ready_until_after_pipe,
                 microphone_channel_selection,
+                &mut native_stopped,
             )
         })();
-        let stop_result = unsafe { client.Stop() };
-        if let Err(err) = stop_result {
-            if capture_result.is_ok() {
-                return Err(format!("WASAPI Stop failed: {err}"));
+        if capture_result.is_ok() && native_stopped {
+            // The pump returns only after Stop and the final queued WASAPI
+            // packets/converter tail have been drained.
+            stats.capture_stopped_timestamp_ns = query_performance_timestamp_ns();
+        }
+        if !native_stopped {
+            let stop_result = unsafe { client.Stop() };
+            if let Err(err) = stop_result {
+                if capture_result.is_ok() {
+                    return Err(format!("WASAPI Stop failed: {err}"));
+                }
             }
         }
         capture_result
@@ -4117,6 +4542,7 @@ fn run_wasapi_prewarm_worker_inner(
             .map_err(|err| format!("IAudioCaptureClient service unavailable: {err}"))?;
 
         unsafe { client.Start() }.map_err(|err| format!("WASAPI Start failed: {err}"))?;
+        let mut native_stopped = false;
         let prewarm_result = (|| -> Result<(), String> {
             // Readiness means the replacement IAudioClient is already running,
             // not merely initialized. The Tauri owner may stop the previous
@@ -4135,17 +4561,21 @@ fn run_wasapi_prewarm_worker_inner(
                 request,
                 control_rx,
                 prewarm_endpoint_id_hash: &endpoint_id_hash,
+                audio_client: &client,
                 capture_client: &capture_client,
                 mix_format,
                 stats,
                 buffer,
                 microphone_channel_selection,
+                native_stopped: &mut native_stopped,
             })
         })();
-        let stop_result = unsafe { client.Stop() };
-        if let Err(err) = stop_result {
-            if prewarm_result.is_ok() {
-                return Err(format!("WASAPI Stop failed: {err}"));
+        if !native_stopped {
+            let stop_result = unsafe { client.Stop() };
+            if let Err(err) = stop_result {
+                if prewarm_result.is_ok() {
+                    return Err(format!("WASAPI Stop failed: {err}"));
+                }
             }
         }
         prewarm_result
@@ -4163,6 +4593,7 @@ fn pump_wasapi_capture(
     pipe_handle: HANDLE,
     request: &CaptureRequest,
     stop_rx: &mpsc::Receiver<()>,
+    audio_client: &IAudioClient,
     capture_client: &IAudioCaptureClient,
     mix_format: WasapiMixFormat,
     stats: &mut CaptureWriterStats,
@@ -4170,6 +4601,7 @@ fn pump_wasapi_capture(
     initial_sequence: u64,
     use_live_prebuffer: bool,
     microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
+    native_stopped: &mut bool,
 ) -> Result<(), String> {
     let mut converter = WasapiPcmConverter::with_channel_selection(
         mix_format,
@@ -4188,15 +4620,37 @@ fn pump_wasapi_capture(
     };
     let mut sequence = initial_sequence;
     let mut prebuffer_frames_written = 0_u32;
+    let mut stop_requested = false;
     loop {
-        match stop_rx.try_recv() {
-            Ok(()) | Err(TryRecvError::Disconnected) => return Ok(()),
-            Err(TryRecvError::Empty) => {}
+        if !stop_requested {
+            match stop_rx.try_recv() {
+                Ok(()) | Err(TryRecvError::Disconnected) => {
+                    unsafe { audio_client.Stop() }
+                        .map_err(|error| format!("WASAPI Stop failed: {error}"))?;
+                    *native_stopped = true;
+                    stop_requested = true;
+                }
+                Err(TryRecvError::Empty) => {}
+            }
         }
 
         let mut packet_frames = unsafe { capture_client.GetNextPacketSize() }
             .map_err(|err| format!("WASAPI GetNextPacketSize failed: {err}"))?;
         if packet_frames == 0 {
+            if stop_requested {
+                if let Some(payload) = converter.drain_partial_block() {
+                    write_wasapi_capture_frame(
+                        pipe_handle,
+                        request,
+                        payload,
+                        0,
+                        stream_started_micros,
+                        &mut sequence,
+                        stats,
+                    )?;
+                }
+                return Ok(());
+            }
             let now = Instant::now();
             if loopback && now >= next_loopback_frame_at {
                 let payload = vec![
@@ -4208,7 +4662,7 @@ fn pump_wasapi_capture(
                 write_wasapi_capture_frame(
                     pipe_handle,
                     request,
-                    &payload,
+                    payload,
                     0,
                     stream_started_micros,
                     &mut sequence,
@@ -4247,7 +4701,7 @@ fn pump_wasapi_capture(
                 write_wasapi_capture_frame(
                     pipe_handle,
                     request,
-                    &payload,
+                    payload,
                     flags,
                     stream_started_micros,
                     &mut sequence,
@@ -4267,12 +4721,20 @@ fn pump_wasapi_capture(
 fn write_wasapi_capture_frame(
     pipe_handle: HANDLE,
     request: &CaptureRequest,
-    payload: &[u8],
+    payload: Vec<u8>,
     flags: u16,
     stream_started_micros: u64,
     sequence: &mut u64,
     stats: &mut CaptureWriterStats,
 ) -> Result<(), String> {
+    let bytes_per_frame = usize::from(request.channels).saturating_mul(2);
+    if bytes_per_frame == 0 || payload.is_empty() || !payload.len().is_multiple_of(bytes_per_frame)
+    {
+        return Err("capture PCM payload is not frame-aligned".to_string());
+    }
+    let frame_count: u32 = (payload.len() / bytes_per_frame)
+        .try_into()
+        .map_err(|_| "capture PCM frame count overflow".to_string())?;
     let frame_duration_micros = u64::from(request.block_size).saturating_mul(1_000_000)
         / u64::from(request.sample_rate.max(1));
     let timestamp_micros =
@@ -4281,22 +4743,73 @@ fn write_wasapi_capture_frame(
         payload.len() as u32,
         *sequence,
         timestamp_micros,
-        request.block_size,
+        frame_count,
         request.channels,
         flags,
     )
     .map_err(|err| format!("WASAPI frame header failed: {err}"))?;
-    let frame = encode_audio_frame(&header, payload)
-        .map_err(|err| format!("WASAPI frame encode failed: {err}"))?;
-    let bytes_written = write_all_to_pipe(pipe_handle, &frame)?;
+    // Capture this boundary before potentially blocking on the pipe writer so
+    // consumer backpressure is not misattributed to device capture latency.
+    let captured_timestamp_ns = query_performance_timestamp_ns();
+    // Preserve the Vec allocation while sharing the same authoritative PCM
+    // segment with the bounded preparation worker.
+    let payload = Arc::new(payload);
+    let bytes_written = write_meeting_frame(pipe_handle, header, payload.as_slice())?;
     stats.frames_written = stats.frames_written.saturating_add(1);
     if flags & AUDIO_FRAME_FLAG_PREBUFFER != 0 {
         stats.prebuffer_frames_written = stats.prebuffer_frames_written.saturating_add(1);
     } else {
         stats.live_frames_written = stats.live_frames_written.saturating_add(1);
     }
-    stats.bytes_written = stats.bytes_written.saturating_add(u64::from(bytes_written));
+    stats.bytes_written = stats.bytes_written.saturating_add(bytes_written);
+    stats.last_frame_timestamp_micros = Some(timestamp_micros);
+    stats.last_audio_frame_captured_timestamp_ns = captured_timestamp_ns;
+    stats.submit_audio_preparation(payload);
     *sequence = sequence.saturating_add(1);
+    stats.next_sequence = *sequence;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn write_capture_end_of_stream(
+    pipe_handle: HANDLE,
+    request: &CaptureRequest,
+    timestamp_micros: u64,
+    sequence: &mut u64,
+    stats: &mut CaptureWriterStats,
+) -> Result<(), String> {
+    if stats.eos_written {
+        return Err("captureEndOfStreamAlreadyWritten".to_string());
+    }
+    let timestamp_micros = stats
+        .last_frame_timestamp_micros
+        .map_or(timestamp_micros, |last| timestamp_micros.max(last));
+    let header = AudioFrameHeader::new(
+        0,
+        *sequence,
+        timestamp_micros,
+        0,
+        request.channels,
+        AUDIO_FRAME_FLAG_END_OF_STREAM,
+    )
+    .map_err(|error| format!("capture EOS header failed: {error}"))?;
+    let bytes_written = write_meeting_frame(pipe_handle, header, &[])?;
+    // `DisconnectNamedPipe` discards unread pipe data.  Do not publish a
+    // successful terminal EOS until the Python frame-pipe reader has consumed
+    // the complete tail and EOS header.  If the reader disappeared, the flush
+    // fails (or the outer bounded sidecar-stop timeout terminates this worker)
+    // and capture remains fail-closed instead of silently losing audio.
+    if unsafe { FlushFileBuffers(pipe_handle) } == 0 {
+        return Err(format!(
+            "capture frame-pipe EOS delivery failed: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    stats.bytes_written = stats.bytes_written.saturating_add(bytes_written);
+    stats.last_frame_timestamp_micros = Some(timestamp_micros);
+    stats.eos_written = true;
+    *sequence = sequence.saturating_add(1);
+    stats.next_sequence = *sequence;
     Ok(())
 }
 
@@ -4370,11 +4883,13 @@ struct WasapiPrewarmPumpContext<'a> {
     request: &'a CaptureRequest,
     control_rx: &'a mpsc::Receiver<PrewarmWorkerCommand>,
     prewarm_endpoint_id_hash: &'a Value,
+    audio_client: &'a IAudioClient,
     capture_client: &'a IAudioCaptureClient,
     mix_format: WasapiMixFormat,
     stats: &'a mut PrewarmStats,
     buffer: Arc<Mutex<PrewarmBuffer>>,
     microphone_channel_selection: Arc<Mutex<MicrophoneChannelSelectionState>>,
+    native_stopped: &'a mut bool,
 }
 
 #[cfg(windows)]
@@ -4383,11 +4898,13 @@ fn pump_wasapi_prewarm(context: WasapiPrewarmPumpContext<'_>) -> Result<(), Stri
         request,
         control_rx,
         prewarm_endpoint_id_hash,
+        audio_client,
         capture_client,
         mix_format,
         stats,
         buffer,
         microphone_channel_selection,
+        native_stopped,
     } = context;
     let mut converter = WasapiPcmConverter::with_channel_selection(
         mix_format,
@@ -4396,12 +4913,17 @@ fn pump_wasapi_prewarm(context: WasapiPrewarmPumpContext<'_>) -> Result<(), Stri
     );
     let max_buffered_blocks = u64::from(requested_prebuffer_frame_count(request));
     let mut promotion_state: Option<PromotedCaptureState> = None;
+    let mut stop_requested = false;
     let result = (|| -> Result<(), String> {
         loop {
-            loop {
+            while !stop_requested {
                 match control_rx.try_recv() {
                     Ok(PrewarmWorkerCommand::Stop) | Err(TryRecvError::Disconnected) => {
-                        return Ok(())
+                        unsafe { audio_client.Stop() }
+                            .map_err(|error| format!("WASAPI Stop failed: {error}"))?;
+                        *native_stopped = true;
+                        stop_requested = true;
+                        break;
                     }
                     Ok(PrewarmWorkerCommand::Promote(promotion)) => {
                         let PrewarmPromotionRequest {
@@ -4437,6 +4959,15 @@ fn pump_wasapi_prewarm(context: WasapiPrewarmPumpContext<'_>) -> Result<(), Stri
                             )));
                             continue;
                         }
+                        let mut promoted_capture_stats = CaptureWriterStats {
+                            deferred_prewarm_stop: Some(json!({
+                                "stopped": false,
+                                "reason": "promotedInPlace",
+                                "physicalClientReused": true,
+                            })),
+                            ..CaptureWriterStats::default()
+                        };
+                        promoted_capture_stats.start_audio_preparation(&capture_request);
                         // This is the single ownership boundary. A caller that
                         // timed out and changed PENDING to CANCELLED wins before
                         // any rolling audio leaves the prewarm buffer. Once this
@@ -4477,14 +5008,6 @@ fn pump_wasapi_prewarm(context: WasapiPrewarmPumpContext<'_>) -> Result<(), Stri
                                 .iter()
                                 .map(|block| block.len() as u64)
                                 .sum(),
-                        };
-                        let promoted_capture_stats = CaptureWriterStats {
-                            deferred_prewarm_stop: Some(json!({
-                                "stopped": false,
-                                "reason": "promotedInPlace",
-                                "physicalClientReused": true,
-                            })),
-                            ..CaptureWriterStats::default()
                         };
                         let promoted_state = PromotedCaptureState {
                             pipe,
@@ -4544,12 +5067,11 @@ fn pump_wasapi_prewarm(context: WasapiPrewarmPumpContext<'_>) -> Result<(), Stri
                         write_adopted_prebuffer_blocks(
                             state.pipe.raw(),
                             &state.request,
-                            &state.adopted_blocks,
+                            &mut state.adopted_blocks,
                             state.started,
                             &mut state.sequence,
                             capture_stats,
                         )?;
-                        state.adopted_blocks.clear();
                     }
                 }
             }
@@ -4557,6 +5079,28 @@ fn pump_wasapi_prewarm(context: WasapiPrewarmPumpContext<'_>) -> Result<(), Stri
             let mut packet_frames = unsafe { capture_client.GetNextPacketSize() }
                 .map_err(|err| format!("WASAPI GetNextPacketSize failed: {err}"))?;
             if packet_frames == 0 {
+                if stop_requested {
+                    if let Some(payload) = converter.drain_partial_block() {
+                        if let Some(state) =
+                            promotion_state.as_mut().filter(|state| state.connected)
+                        {
+                            let capture_stats = stats
+                                .promoted_capture
+                                .as_mut()
+                                .ok_or_else(|| "promotedCaptureStatsMissing".to_string())?;
+                            write_wasapi_capture_frame(
+                                state.pipe.raw(),
+                                &state.request,
+                                payload,
+                                0,
+                                state.stream_started_micros,
+                                &mut state.sequence,
+                                capture_stats,
+                            )?;
+                        }
+                    }
+                    return Ok(());
+                }
                 thread::sleep(Duration::from_millis(5));
                 continue;
             }
@@ -4587,7 +5131,7 @@ fn pump_wasapi_prewarm(context: WasapiPrewarmPumpContext<'_>) -> Result<(), Stri
                         write_wasapi_capture_frame(
                             state.pipe.raw(),
                             &state.request,
-                            &payload,
+                            payload,
                             0,
                             state.stream_started_micros,
                             &mut state.sequence,
@@ -4614,16 +5158,42 @@ fn pump_wasapi_prewarm(context: WasapiPrewarmPumpContext<'_>) -> Result<(), Stri
         }
     })();
 
-    if let Some(state) = promotion_state.take() {
+    if let Some(mut state) = promotion_state.take() {
         if let Err(reason) = &result {
             if let Some(capture_stats) = stats.promoted_capture.as_mut() {
                 capture_stats.error = Some(reason.clone());
             }
         }
         if state.connected {
+            if result.is_ok() {
+                if let Some(capture_stats) = stats.promoted_capture.as_mut() {
+                    capture_stats.capture_stopped_timestamp_ns = query_performance_timestamp_ns();
+                }
+                let timestamp_micros = state
+                    .started
+                    .elapsed()
+                    .as_micros()
+                    .min(u128::from(u64::MAX)) as u64;
+                if let Some(capture_stats) = stats.promoted_capture.as_mut() {
+                    if let Err(error) = write_capture_end_of_stream(
+                        state.pipe.raw(),
+                        &state.request,
+                        timestamp_micros,
+                        &mut state.sequence,
+                        capture_stats,
+                    ) {
+                        capture_stats.error = Some(error);
+                    }
+                }
+            }
             unsafe {
                 DisconnectNamedPipe(state.pipe.raw());
             }
+        }
+        if let Some(capture_stats) = stats.promoted_capture.as_mut() {
+            let capture_succeeded =
+                result.is_ok() && capture_stats.error.is_none() && capture_stats.eos_written;
+            capture_stats.finish_audio_preparation(capture_succeeded);
         }
         // PromotionPipeHandle closes the OS handle here.  Do not flush: a
         // disconnected or stalled client must never make stop/rollback wait
@@ -4977,6 +5547,7 @@ fn capabilities_payload() -> Value {
         "syntheticPrewarmAvailable": synthetic_capture_enabled(),
         "wasapiPrewarmAvailable": wasapi_capture_enabled(),
         "audioFrameProtocol": audio_frame_protocol_payload(),
+        "audioPreparation": codec_attestation_payload(),
     })
 }
 
@@ -4986,6 +5557,7 @@ fn audio_frame_protocol_payload() -> Value {
         "version": AUDIO_FRAME_VERSION,
         "headerBytes": AUDIO_FRAME_HEADER_LEN,
         "sampleFormat": "pcm_i16_le",
+        "zeroLengthEndOfStream": true,
     })
 }
 
@@ -5017,6 +5589,14 @@ fn optional_u64(payload: &Value, key: &str, default: u64, max: u64) -> u64 {
         .and_then(Value::as_u64)
         .unwrap_or(default)
         .min(max)
+}
+
+fn strict_optional_bool(payload: &Value, key: &str) -> Option<bool> {
+    match payload.as_object().and_then(|object| object.get(key)) {
+        None => Some(false),
+        Some(Value::Bool(value)) => Some(*value),
+        Some(_) => None,
+    }
 }
 
 fn bounded_string(payload: &Value, key: &str, default: &str, max_chars: usize) -> String {
@@ -5084,8 +5664,11 @@ mod tests {
             native_endpoint_id_hash: String::new(),
             prebuffer_ms: 400,
             prewarm_id: "prewarm-test".to_string(),
+            provider_replay_fixture_exact_end: false,
             capture_kind: "microphone".to_string(),
             clock_origin: None,
+            audio_preparation: None,
+            artifact_target: None,
         }
     }
 
@@ -5671,6 +6254,273 @@ mod tests {
             payload["capabilities"]["audioFrameProtocol"]["sampleFormat"],
             "pcm_i16_le"
         );
+        assert_eq!(
+            payload["capabilities"]["audioPreparation"]["implementations"][0]["id"],
+            "wav_pcm16_virtual"
+        );
+        assert_eq!(
+            payload["capabilities"]["audioPreparation"]["implementations"][0]["artifactExposed"],
+            false
+        );
+    }
+
+    #[test]
+    fn capture_request_rejects_unknown_audio_preparation_before_capture_start() {
+        let payload = json!({
+            "sampleRate": 16_000,
+            "channels": 1,
+            "audioPreparation": {
+                "schemaVersion": "1",
+                "format": "wav_pcm16",
+                "implementation": "future-unmeasured-codec",
+                "sampleRate": 16_000,
+                "channels": 1,
+                "bitsPerSample": 16,
+                "queueCapacityFrames": 8,
+                "maxPcmBytes": 32_000,
+            }
+        });
+
+        assert_eq!(
+            CaptureRequest::from_capture_payload(&payload),
+            Err("audioPreparationUnsupportedImplementation")
+        );
+    }
+
+    #[test]
+    fn provider_replay_fixture_exact_end_requires_a_strict_boolean() {
+        let request = CaptureRequest::from_capture_payload(&json!({
+            "providerReplayFixtureExactEnd": true,
+        }))
+        .unwrap();
+
+        assert!(request.provider_replay_fixture_exact_end);
+        assert_eq!(request.to_payload()["providerReplayFixtureExactEnd"], true);
+
+        for invalid in [json!(null), json!(1), json!("true")] {
+            assert_eq!(
+                CaptureRequest::from_capture_payload(&json!({
+                    "providerReplayFixtureExactEnd": invalid,
+                })),
+                Err("providerReplayFixtureExactEndInvalid")
+            );
+        }
+    }
+
+    #[test]
+    fn provider_replay_fixture_exact_end_invalid_type_is_an_invalid_payload() {
+        let request = json!({
+            "protocolVersion": SIDECAR_PROTOCOL_VERSION,
+            "requestId": "r-exact-end-invalid",
+            "command": "captureStart",
+            "payload": {
+                "providerReplayFixtureExactEnd": "true",
+            },
+        });
+
+        let response = handle_sidecar_request(&request.to_string());
+
+        assert_eq!(response["success"], false);
+        assert_eq!(response["errorCode"], "invalidPayload");
+        assert_eq!(
+            response["fallbackReason"],
+            "providerReplayFixtureExactEndInvalid"
+        );
+    }
+
+    #[test]
+    fn provider_replay_fixture_exact_end_fails_closed_without_synthetic_capture() {
+        let _lock = audio_env_test_lock();
+        let _disable_synthetic = set_audio_test_env(SYNTHETIC_CAPTURE_ENV, "0");
+        let _enable_wasapi = set_audio_test_env(DISABLE_WASAPI_CAPTURE_ENV, "0");
+        let mut request = test_microphone_capture_request();
+        request.sample_rate = 48_000;
+        request.prewarm_id.clear();
+        request.provider_replay_fixture_exact_end = true;
+        let mut state = AudioSidecarState::new();
+
+        let error = state.start_capture(request).unwrap_err();
+
+        assert_eq!(
+            error,
+            "provider replay fixture exact end requires synthetic capture"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn provider_replay_fixture_exact_end_fails_closed_without_loaded_fixture() {
+        let _lock = audio_env_test_lock();
+        let _synthetic = set_audio_test_env(SYNTHETIC_CAPTURE_ENV, "1");
+        let _disable_wasapi = set_audio_test_env(DISABLE_WASAPI_CAPTURE_ENV, "1");
+        let run_id = Uuid::new_v4().to_string();
+        let _run_id = set_audio_test_env(PROVIDER_REPLAY_RUN_ID_ENV, &run_id);
+        let _missing_fixture = set_audio_test_env(SYNTHETIC_MIC_PCM_ENV, "");
+        let mut request = test_microphone_capture_request();
+        request.sample_rate = 48_000;
+        request.prewarm_id.clear();
+        request.provider_replay_fixture_exact_end = true;
+        let mut state = AudioSidecarState::new();
+
+        let error = state.start_capture(request).unwrap_err();
+
+        assert_eq!(
+            error,
+            "provider replay fixture exact end requires a valid microphone PCM fixture"
+        );
+    }
+
+    #[test]
+    fn provider_replay_fixture_exact_end_requires_non_nil_run_id() {
+        let _lock = audio_env_test_lock();
+        let _synthetic = set_audio_test_env(SYNTHETIC_CAPTURE_ENV, "1");
+        let _disable_wasapi = set_audio_test_env(DISABLE_WASAPI_CAPTURE_ENV, "1");
+        let mut request = test_microphone_capture_request();
+        request.sample_rate = 48_000;
+        request.prewarm_id.clear();
+        request.provider_replay_fixture_exact_end = true;
+
+        for invalid_run_id in ["", "not-a-uuid", "00000000-0000-0000-0000-000000000000"] {
+            let _run_id = set_audio_test_env(PROVIDER_REPLAY_RUN_ID_ENV, invalid_run_id);
+            let mut state = AudioSidecarState::new();
+            let error = state.start_capture(request.clone()).unwrap_err();
+            assert_eq!(
+                error,
+                format!(
+                    "provider replay fixture exact end requires a valid non-nil {PROVIDER_REPLAY_RUN_ID_ENV}"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn provider_replay_fixture_exact_end_forbids_prewarm_and_adopted_prebuffer() {
+        let _lock = audio_env_test_lock();
+        let _synthetic = set_audio_test_env(SYNTHETIC_CAPTURE_ENV, "1");
+        let _disable_wasapi = set_audio_test_env(DISABLE_WASAPI_CAPTURE_ENV, "1");
+        let run_id = Uuid::new_v4().to_string();
+        let _run_id = set_audio_test_env(PROVIDER_REPLAY_RUN_ID_ENV, &run_id);
+        let mut request = test_microphone_capture_request();
+        request.sample_rate = 48_000;
+        request.provider_replay_fixture_exact_end = true;
+        let mut state = AudioSidecarState::new();
+
+        let error = state.start_capture(request.clone()).unwrap_err();
+        assert_eq!(
+            error,
+            "provider replay fixture exact end forbids prewarm and adopted prebuffer"
+        );
+
+        request.prewarm_id.clear();
+        let error =
+            validate_provider_replay_fixture_exact_end_route(&request, true, true).unwrap_err();
+        assert_eq!(
+            error,
+            "provider replay fixture exact end forbids prewarm and adopted prebuffer"
+        );
+    }
+
+    #[test]
+    fn provider_replay_fixture_exact_end_requires_loaded_fixture_and_rounds_blocks_up() {
+        let mut request = test_microphone_capture_request();
+        request.sample_rate = 48_000;
+        request.channels = 1;
+        request.block_size = 16;
+        request.provider_replay_fixture_exact_end = true;
+
+        assert!(provider_replay_fixture_live_block_count(&request, None)
+            .unwrap_err()
+            .contains("valid microphone PCM fixture"));
+        assert_eq!(
+            provider_replay_fixture_live_block_count(&request, Some(&vec![0_u8; 40])).unwrap(),
+            Some(2)
+        );
+
+        request.provider_replay_fixture_exact_end = false;
+        assert_eq!(
+            provider_replay_fixture_live_block_count(&request, None).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn capture_request_requires_shell_artifact_lease_for_production_wav() {
+        let lease_id = Uuid::new_v4().simple().to_string();
+        let path = env::temp_dir().join(format!("{lease_id}.wav"));
+        let mut payload = json!({
+            "sampleRate": 16_000,
+            "channels": 1,
+            "audioPreparation": {
+                "schemaVersion": "1",
+                "format": "wav_pcm16",
+                "implementation": "wav_pcm16_file_v1",
+                "sampleRate": 16_000,
+                "channels": 1,
+                "bitsPerSample": 16,
+                "queueCapacityFrames": 8,
+                "maxPcmBytes": 32_000,
+            },
+        });
+        assert_eq!(
+            CaptureRequest::from_capture_payload(&payload),
+            Err("audioPreparationArtifactLeaseMissing")
+        );
+
+        payload["artifactLease"] = json!({
+            "schemaVersion": "1",
+            "leaseId": lease_id,
+            "path": path,
+        });
+        let request = CaptureRequest::from_capture_payload(&payload).unwrap();
+        assert_eq!(
+            request
+                .audio_preparation
+                .as_ref()
+                .map(|plan| plan.implementation),
+            Some(EncoderImplementation::WavPcm16FileV1)
+        );
+        assert_eq!(
+            request.artifact_target.as_ref().map(|target| &target.path),
+            Some(&path)
+        );
+    }
+
+    #[test]
+    fn capture_writer_produces_real_wav_artifact_summary() {
+        let lease_id = Uuid::new_v4().simple().to_string();
+        let path = env::temp_dir().join(format!("{lease_id}.wav"));
+        let payload = json!({
+            "sampleRate": 16_000,
+            "channels": 1,
+            "audioPreparation": {
+                "schemaVersion": "1",
+                "format": "wav_pcm16",
+                "implementation": "wav_pcm16_file_v1",
+                "sampleRate": 16_000,
+                "channels": 1,
+                "bitsPerSample": 16,
+                "queueCapacityFrames": 8,
+                "maxPcmBytes": 32_000,
+            },
+            "artifactLease": {
+                "schemaVersion": "1",
+                "leaseId": lease_id,
+                "path": path,
+            },
+        });
+        let request = CaptureRequest::from_capture_payload(&payload).unwrap();
+        let mut stats = CaptureWriterStats::default();
+        stats.start_audio_preparation(&request);
+        stats.submit_audio_preparation(Arc::new(vec![1_u8, 2, 3, 4]));
+        stats.finish_audio_preparation(true);
+
+        let summary = stats.audio_preparation_result.unwrap();
+        assert_eq!(summary["state"], "ready");
+        assert_eq!(summary["artifactExposed"], true);
+        assert_eq!(summary["artifact"]["leaseId"], lease_id);
+        assert_eq!(summary["artifact"]["byteLength"], 48);
+        assert_eq!(std::fs::read(&path).unwrap()[44..], [1, 2, 3, 4]);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -5975,7 +6825,10 @@ mod tests {
         );
         assert_eq!(response["payload"]["requestedFormat"]["channels"], 16);
         assert_eq!(response["payload"]["requestedFormat"]["prebufferMs"], 6_000);
-        assert_eq!(response["payload"]["audioFrameProtocol"]["version"], 1);
+        assert_eq!(
+            response["payload"]["audioFrameProtocol"]["version"],
+            AUDIO_FRAME_VERSION
+        );
         assert_eq!(
             response["payload"]["requestedFormat"]["nativeEndpointIdHash"],
             ""
@@ -6045,8 +6898,11 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 4,
             prewarm_id: "".to_string(),
+            provider_replay_fixture_exact_end: false,
             capture_kind: "microphone".to_string(),
             clock_origin: None,
+            audio_preparation: None,
+            artifact_target: None,
         };
 
         let (mut session, payload) = start_synthetic_prewarm_impl(request).unwrap();
@@ -6076,8 +6932,11 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 4,
             prewarm_id: "".to_string(),
+            provider_replay_fixture_exact_end: false,
             capture_kind: "microphone".to_string(),
             clock_origin: None,
+            audio_preparation: None,
+            artifact_target: None,
         };
 
         let (session, _) = start_synthetic_prewarm_impl(request).unwrap();
@@ -6159,8 +7018,11 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 400,
             prewarm_id: "".to_string(),
+            provider_replay_fixture_exact_end: false,
             capture_kind: "microphone".to_string(),
             clock_origin: None,
+            audio_preparation: None,
+            artifact_target: None,
         };
 
         assert_eq!(requested_prebuffer_frame_count(&request), 13);
@@ -6189,8 +7051,11 @@ mod tests {
             native_endpoint_id_hash: "endpoint-hash".to_string(),
             prebuffer_ms: 0,
             prewarm_id: "".to_string(),
+            provider_replay_fixture_exact_end: false,
             capture_kind: "microphone".to_string(),
             clock_origin: None,
+            audio_preparation: None,
+            artifact_target: None,
         };
 
         let payload = endpoint_selection_payload(
@@ -6253,8 +7118,11 @@ mod tests {
             native_endpoint_id_hash: String::new(),
             prebuffer_ms: 0,
             prewarm_id: String::new(),
+            provider_replay_fixture_exact_end: false,
             capture_kind: "microphone".to_string(),
             clock_origin: None,
+            audio_preparation: None,
+            artifact_target: None,
         };
         let fixture: Vec<u8> = (1_u8..=12).collect();
 
@@ -6366,8 +7234,11 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 0,
             prewarm_id: "".to_string(),
+            provider_replay_fixture_exact_end: false,
             capture_kind: "microphone".to_string(),
             clock_origin: None,
+            audio_preparation: None,
+            artifact_target: None,
         };
         let samples = [
             0.0_f32, 0.1, 0.2, 0.3, 0.4, 0.5, -0.5, -0.4, -0.3, -0.2, -0.1, 0.0,
@@ -6411,8 +7282,11 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 0,
             prewarm_id: "".to_string(),
+            provider_replay_fixture_exact_end: false,
             capture_kind: capture_kind.to_string(),
             clock_origin: None,
+            audio_preparation: None,
+            artifact_target: None,
         }
     }
 
@@ -6532,6 +7406,22 @@ mod tests {
     fn synthetic_capture_writes_prebuffer_then_live_frames() {
         use std::fs::OpenOptions;
 
+        let _lock = audio_env_test_lock();
+        let preparation_plan = EncoderPlan::parse(
+            &json!({
+                "schemaVersion": "1",
+                "format": "wav_pcm16",
+                "implementation": "wav_pcm16_virtual",
+                "sampleRate": 16_000,
+                "channels": 1,
+                "bitsPerSample": 16,
+                "queueCapacityFrames": 64,
+                "maxPcmBytes": 1_048_576,
+            }),
+            16_000,
+            1,
+        )
+        .unwrap();
         let request = CaptureRequest {
             sample_rate: 16_000,
             channels: 1,
@@ -6541,16 +7431,50 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 2,
             prewarm_id: "".to_string(),
+            provider_replay_fixture_exact_end: false,
             capture_kind: "microphone".to_string(),
             clock_origin: None,
+            audio_preparation: Some(preparation_plan),
+            artifact_target: None,
         };
         let (mut session, payload) = start_synthetic_capture_impl(request, None).unwrap();
         let pipe_path = payload["framePipe"].as_str().unwrap();
+        assert_eq!(
+            payload["acceptedAudioPreparation"]["implementation"],
+            "wav_pcm16_virtual"
+        );
+        assert_eq!(payload["providerReplayFixtureExactEndAccepted"], false);
 
         let mut reader = OpenOptions::new().read(true).open(pipe_path).unwrap();
         let (first_header, first_payload) = read_test_audio_frame(&mut reader);
         let (second_header, second_payload) = read_test_audio_frame(&mut reader);
-        let stop_payload = session.stop("test");
+        let stop_thread = thread::spawn(move || session.stop("test"));
+        let mut eos_count = 0_u32;
+        let mut eos_timestamp_micros = None;
+        for _ in 0..64 {
+            let (header, payload) = read_test_audio_frame(&mut reader);
+            if header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0 {
+                eos_count += 1;
+                assert_eq!(header.frame_count, 0);
+                assert!(payload.is_empty());
+                eos_timestamp_micros = Some(header.timestamp_micros);
+                break;
+            }
+        }
+        let stop_payload = stop_thread.join().unwrap();
+        let mut trailing = [0_u8; 1];
+        match reader.read(&mut trailing) {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(code)
+                        if code == ERROR_NO_DATA as i32
+                            || code
+                                == windows_sys::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED as i32
+                ) => {}
+            other => panic!("frame bytes appeared after EOS: {other:?}"),
+        }
 
         assert_eq!(first_header.sequence, 0);
         assert_eq!(first_header.frame_count, 32);
@@ -6564,6 +7488,24 @@ mod tests {
         assert_eq!(second_header.flags & AUDIO_FRAME_FLAG_PREBUFFER, 0);
         assert_eq!(second_payload.len(), 64);
         assert_eq!(stop_payload["stopped"], true);
+        assert_eq!(stop_payload["eosWritten"], true);
+        assert_eq!(eos_count, 1);
+        assert!(eos_timestamp_micros.is_some_and(|value| value >= second_header.timestamp_micros));
+        assert_eq!(stop_payload["audioPreparation"]["state"], "ready");
+        assert_eq!(
+            stop_payload["audioPreparation"]["virtualWavBytes"].as_u64(),
+            stop_payload["audioPreparation"]["submittedPcmBytes"]
+                .as_u64()
+                .map(|bytes| bytes + 44)
+        );
+        let timing = &stop_payload["timingMarkers"];
+        let last_frame = timing["last_audio_frame_captured"].as_i64().unwrap();
+        let capture_stopped = timing["capture_stopped"].as_i64().unwrap();
+        let tail_started = timing["encoder_tail_started"].as_i64().unwrap();
+        let tail_completed = timing["encoder_tail_completed"].as_i64().unwrap();
+        assert!(last_frame <= capture_stopped);
+        assert!(capture_stopped <= tail_started);
+        assert!(tail_started <= tail_completed);
         assert!(
             stop_payload["prebufferFramesWritten"]
                 .as_u64()
@@ -6580,9 +7522,167 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn provider_replay_fixture_exact_end_writes_padded_final_block_then_eos() {
+        use std::fs::OpenOptions;
+
+        let _lock = audio_env_test_lock();
+        let fixture_path = env::temp_dir().join(format!(
+            "scriber-provider-replay-exact-end-{}.s16le",
+            Uuid::new_v4().simple()
+        ));
+        let fixture = (1_u8..=40).collect::<Vec<_>>();
+        std::fs::write(&fixture_path, &fixture).unwrap();
+        let fixture_path_text = fixture_path.to_string_lossy().to_string();
+        let _fixture = set_audio_test_env(SYNTHETIC_MIC_PCM_ENV, &fixture_path_text);
+        let _synthetic = set_audio_test_env(SYNTHETIC_CAPTURE_ENV, "1");
+        let _disable_wasapi = set_audio_test_env(DISABLE_WASAPI_CAPTURE_ENV, "1");
+        let run_id = Uuid::new_v4().to_string();
+        let _run_id = set_audio_test_env(PROVIDER_REPLAY_RUN_ID_ENV, &run_id);
+        let request = CaptureRequest {
+            sample_rate: 48_000,
+            channels: 1,
+            block_size: 16,
+            device_preference: "default".to_string(),
+            port_audio_label: String::new(),
+            native_endpoint_id_hash: String::new(),
+            prebuffer_ms: 0,
+            prewarm_id: String::new(),
+            provider_replay_fixture_exact_end: true,
+            capture_kind: "microphone".to_string(),
+            clock_origin: None,
+            audio_preparation: None,
+            artifact_target: None,
+        };
+        let mut state = AudioSidecarState::new();
+        let payload = state.start_capture(request).unwrap();
+        let stream_id = payload["streamId"].as_str().unwrap().to_string();
+        let pipe_path = payload["framePipe"].as_str().unwrap();
+
+        assert_eq!(payload["providerReplayFixtureExactEndAccepted"], true);
+        assert_eq!(
+            payload["requestedFormat"]["providerReplayFixtureExactEnd"],
+            true
+        );
+
+        let mut reader = OpenOptions::new().read(true).open(pipe_path).unwrap();
+        let (first_header, first_payload) = read_test_audio_frame(&mut reader);
+        let (second_header, second_payload) = read_test_audio_frame(&mut reader);
+        let (eos_header, eos_payload) = read_test_audio_frame(&mut reader);
+        let mut session = state.capture_sessions.remove(&stream_id).unwrap();
+        let stopped = session.stop("test");
+
+        assert_eq!(first_header.sequence, 0);
+        assert_eq!(first_header.flags, 0);
+        assert_eq!(first_payload, fixture[..32]);
+        assert_eq!(second_header.sequence, 1);
+        assert_eq!(second_header.flags, 0);
+        assert_eq!(second_payload[..8], fixture[32..]);
+        assert_eq!(second_payload[8..], [0_u8; 24]);
+        assert_eq!(eos_header.sequence, 2);
+        assert_eq!(
+            eos_header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM,
+            AUDIO_FRAME_FLAG_END_OF_STREAM
+        );
+        assert_eq!(eos_header.frame_count, 0);
+        assert!(eos_payload.is_empty());
+        assert_eq!(stopped["liveFramesWritten"], 2);
+        assert_eq!(stopped["framesWritten"], 2);
+        assert_eq!(stopped["eosWritten"], true);
+        assert!(stopped["writerError"].is_null());
+
+        std::fs::remove_file(fixture_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn provider_replay_fixture_exact_end_marks_early_stop_as_interrupted_and_emits_eos() {
+        use std::fs::OpenOptions;
+
+        let _lock = audio_env_test_lock();
+        let fixture_path = env::temp_dir().join(format!(
+            "scriber-provider-replay-exact-end-interrupted-{}.s16le",
+            Uuid::new_v4().simple()
+        ));
+        let block_size = 16_000_u32;
+        let bytes_per_block = block_size as usize * 2;
+        let fixture = vec![7_u8; bytes_per_block * 2];
+        std::fs::write(&fixture_path, &fixture).unwrap();
+        let fixture_path_text = fixture_path.to_string_lossy().to_string();
+        let _fixture = set_audio_test_env(SYNTHETIC_MIC_PCM_ENV, &fixture_path_text);
+        let _synthetic = set_audio_test_env(SYNTHETIC_CAPTURE_ENV, "1");
+        let _disable_wasapi = set_audio_test_env(DISABLE_WASAPI_CAPTURE_ENV, "1");
+        let run_id = Uuid::new_v4().to_string();
+        let _run_id = set_audio_test_env(PROVIDER_REPLAY_RUN_ID_ENV, &run_id);
+        let lease_id = Uuid::new_v4().simple().to_string();
+        let artifact_path = env::temp_dir().join(format!("{lease_id}.wav"));
+        let request = CaptureRequest::from_capture_payload(&json!({
+            "sampleRate": 48_000,
+            "channels": 1,
+            "blockSize": block_size,
+            "prebufferMs": 0,
+            "prewarmId": "",
+            "providerReplayFixtureExactEnd": true,
+            "captureKind": "microphone",
+            "audioPreparation": {
+                "schemaVersion": "1",
+                "format": "wav_pcm16",
+                "implementation": "wav_pcm16_file_v1",
+                "sampleRate": 48_000,
+                "channels": 1,
+                "bitsPerSample": 16,
+                "queueCapacityFrames": 8,
+                "maxPcmBytes": bytes_per_block * 2,
+            },
+            "artifactLease": {
+                "schemaVersion": "1",
+                "leaseId": lease_id,
+                "path": artifact_path,
+            },
+        }))
+        .unwrap();
+        let mut state = AudioSidecarState::new();
+        let payload = state.start_capture(request).unwrap();
+        let stream_id = payload["streamId"].as_str().unwrap().to_string();
+        let pipe_path = payload["framePipe"].as_str().unwrap();
+        let mut reader = OpenOptions::new().read(true).open(pipe_path).unwrap();
+
+        let (first_header, first_payload) = read_test_audio_frame(&mut reader);
+        let mut session = state.capture_sessions.remove(&stream_id).unwrap();
+        let stop_thread = thread::spawn(move || session.stop("testEarlyStop"));
+        let (eos_header, eos_payload) = read_test_audio_frame(&mut reader);
+        let stopped = stop_thread.join().unwrap();
+
+        assert_eq!(first_header.sequence, 0);
+        assert_eq!(first_header.frame_count, block_size);
+        assert_eq!(first_payload, fixture[..bytes_per_block]);
+        assert_eq!(eos_header.sequence, 1);
+        assert_eq!(
+            eos_header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM,
+            AUDIO_FRAME_FLAG_END_OF_STREAM
+        );
+        assert_eq!(eos_header.frame_count, 0);
+        assert!(eos_payload.is_empty());
+        assert_eq!(stopped["framesWritten"], 1);
+        assert_eq!(stopped["liveFramesWritten"], 1);
+        assert_eq!(stopped["eosWritten"], true);
+        assert_eq!(
+            stopped["writerError"],
+            PROVIDER_REPLAY_FIXTURE_EXACT_END_INTERRUPTED
+        );
+        assert_eq!(stopped["audioPreparation"]["state"], "invalidated");
+        assert_eq!(stopped["audioPreparation"]["reason"], "captureFailed");
+        assert_eq!(stopped["audioPreparation"]["artifactExposed"], false);
+        assert!(!artifact_path.exists());
+
+        std::fs::remove_file(fixture_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn synthetic_capture_adopts_prewarm_buffer_before_live_frames() {
         use std::fs::OpenOptions;
 
+        let _lock = audio_env_test_lock();
         let prewarm_request = CaptureRequest {
             sample_rate: 16_000,
             channels: 1,
@@ -6592,8 +7692,11 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 1,
             prewarm_id: "".to_string(),
+            provider_replay_fixture_exact_end: false,
             capture_kind: "microphone".to_string(),
             clock_origin: None,
+            audio_preparation: None,
+            artifact_target: None,
         };
         let (mut prewarm_session, _) = start_synthetic_prewarm_impl(prewarm_request).unwrap();
         let adopted = prewarm_session.begin_handoff().unwrap();
@@ -6609,8 +7712,11 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 1,
             prewarm_id: adopted.prewarm_id.clone(),
+            provider_replay_fixture_exact_end: false,
             capture_kind: "microphone".to_string(),
             clock_origin: None,
+            audio_preparation: None,
+            artifact_target: None,
         };
         let (mut capture_session, payload) =
             start_synthetic_capture_impl(capture_request, Some((adopted, prewarm_stop))).unwrap();
@@ -6619,7 +7725,18 @@ mod tests {
         let mut reader = OpenOptions::new().read(true).open(pipe_path).unwrap();
         let (first_header, first_payload) = read_test_audio_frame(&mut reader);
         let (second_header, second_payload) = read_test_audio_frame(&mut reader);
-        let stop_payload = capture_session.stop("test");
+        let stop_thread = thread::spawn(move || capture_session.stop("test"));
+        let mut eos_seen = false;
+        for _ in 0..64 {
+            let (header, payload) = read_test_audio_frame(&mut reader);
+            if header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0 {
+                assert_eq!(header.frame_count, 0);
+                assert!(payload.is_empty());
+                eos_seen = true;
+                break;
+            }
+        }
+        let stop_payload = stop_thread.join().unwrap();
 
         assert_eq!(payload["adoptedPrewarm"]["adopted"], true);
         assert_eq!(payload["adoptedPrewarm"]["blocks"], 1);
@@ -6636,6 +7753,8 @@ mod tests {
         assert_eq!(second_header.sequence, 1);
         assert_eq!(second_header.flags & AUDIO_FRAME_FLAG_PREBUFFER, 0);
         assert_eq!(second_payload.len(), 32);
+        assert!(eos_seen);
+        assert_eq!(stop_payload["eosWritten"], true);
         assert_eq!(stop_payload["prebufferFramesWritten"], 1);
         assert!(
             stop_payload["liveFramesWritten"]
@@ -6657,8 +7776,11 @@ mod tests {
             native_endpoint_id_hash: "".to_string(),
             prebuffer_ms: 400,
             prewarm_id: "prewarm-1".to_string(),
+            provider_replay_fixture_exact_end: false,
             capture_kind: "microphone".to_string(),
             clock_origin: None,
+            audio_preparation: None,
+            artifact_target: None,
         };
         let adopted = AdoptedPrewarm {
             prewarm_id: "prewarm-1".to_string(),
@@ -6704,6 +7826,7 @@ mod tests {
 
         assert_eq!(payload["captureAvailable"], true);
         assert_eq!(payload["wasapiCapture"], true);
+        assert_eq!(payload["providerReplayFixtureExactEndAccepted"], false);
         assert_eq!(payload["wasapiReadyDeferred"], true);
         assert_eq!(payload["firstFramesFromAdoptedPrewarm"], true);
         assert_eq!(payload["wasapiClientReused"], false);

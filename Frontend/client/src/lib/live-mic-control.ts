@@ -1,4 +1,8 @@
-import { apiUrl } from "@/lib/backend";
+import {
+  apiUrl,
+  isBenchmarkActivationEnabled,
+  isTauriRuntime,
+} from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
 import { friendlyError, friendlyRequestMessage } from "@/lib/request-errors";
@@ -11,6 +15,18 @@ export const LIVE_MIC_STOP_REQUEST_PATH = "/api/live-mic/stop-request";
 type LiveMicControlFailureKind = "backend" | "network";
 
 type LiveMicErrorPayload = Partial<LiveMicRuntimeErrorResponse> & Record<string, unknown>;
+
+export interface BenchmarkActivationMarker {
+  schemaVersion: 1;
+  marker: "button_received";
+  source: "tauri_ui_command";
+  runId: string;
+  sampleId: string;
+  processId: number;
+  qpcTicks: number;
+  qpcFrequency: number;
+  timestampNs: number;
+}
 
 type DestructiveToast = (args: {
   title: string;
@@ -69,12 +85,25 @@ async function responseFailure(response: Response): Promise<LiveMicControlError>
   });
 }
 
-async function requestLiveMicControl(path: string, timeoutMs: number): Promise<Response> {
+async function requestLiveMicControl(
+  path: string,
+  timeoutMs: number,
+  body?: Record<string, unknown>,
+): Promise<Response> {
   let response: Response;
   try {
     response = await fetchWithTimeout(
       apiUrl(path),
-      { method: "POST", credentials: "include" },
+      {
+        method: "POST",
+        credentials: "include",
+        ...(body
+          ? {
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            }
+          : {}),
+      },
       timeoutMs,
     );
   } catch (error) {
@@ -91,8 +120,38 @@ async function requestLiveMicControl(path: string, timeoutMs: number): Promise<R
 }
 
 /** Start a normal Live Mic session. This function never retries a failed start. */
-export function requestLiveMicStart(): Promise<Response> {
-  return requestLiveMicControl(LIVE_MIC_START_PATH, 15_000);
+export function requestLiveMicStart(
+  benchmarkActivationMarker?: BenchmarkActivationMarker | null,
+): Promise<Response> {
+  return requestLiveMicControl(
+    LIVE_MIC_START_PATH,
+    15_000,
+    benchmarkActivationMarker ? { benchmarkActivationMarker } : undefined,
+  );
+}
+
+/** Capture the benchmark-only native boundary at the primary button handler. */
+export async function captureBenchmarkButtonActivationMarker(): Promise<
+  BenchmarkActivationMarker | null
+> {
+  if (!isTauriRuntime() || !isBenchmarkActivationEnabled()) {
+    return null;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const marker = await invoke<BenchmarkActivationMarker | null>(
+      "capture_benchmark_button_marker",
+    );
+    if (!marker) {
+      throw new Error("native benchmark activation is not armed");
+    }
+    return marker;
+  } catch (error) {
+    throw new LiveMicControlError(
+      friendlyError(error, "Benchmark button activation could not be captured."),
+      { kind: "backend" },
+    );
+  }
 }
 
 /**

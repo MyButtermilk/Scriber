@@ -312,7 +312,12 @@ def test_inject_method_tauri_uses_shell_ipc_and_forwards_markers(monkeypatch):
     assert payload["preDelayMs"] == Config.PASTE_PRE_DELAY_MS
     assert payload["expectedForegroundTitle"] == "Scriber Hot Path Text Target"
     assert payload["deadlineMs"] < 2500
-    assert markers == ["clipboard_set", "paste"]
+    assert markers == [
+        "injection_target_validated",
+        "clipboard_set",
+        "paste_requested",
+        "paste",
+    ]
     assert injected == ["hello "]
     snapshot = shell_ipc.diagnostic_snapshot()
     assert snapshot["lastCommand"] == "injectText"
@@ -356,7 +361,9 @@ def test_inject_method_tauri_forwards_estimated_marker_timestamps(monkeypatch):
         injector._inject_text("hello ")
 
     assert markers == [
+        ("injection_target_validated", 1_060_000_000),
         ("clipboard_set", 1_060_000_000),
+        ("paste_requested", 1_095_000_000),
         ("paste", 1_095_000_000),
     ]
 

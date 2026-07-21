@@ -30,6 +30,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
 from src.config import Config
+from src.core.provider_audio_formats import SPEECHMATICS_BATCH_DEFAULT_BASE_URL
 from src.gladia_stt import (
     gladia_transcript_payload_to_text,
     transcribe_with_gladia_pre_recorded,
@@ -659,8 +660,18 @@ async def transcribe_with_speechmatics_batch(
     on_progress: Callable[[str], None] | None = None,
     timeout_secs: float = 900.0,
     poll_interval_secs: float = 1.0,
+    base_url: str | None = None,
+    raw_transport: Callable[..., Any] | None = None,
+    on_response_complete: Callable[[], None] | None = None,
+    audio_preparation_implementation: str | None = None,
 ) -> dict[str, Any]:
-    base_url = os.getenv("SCRIBER_SPEECHMATICS_BATCH_BASE_URL", "https://asr.api.speechmatics.com/v2").rstrip("/")
+    base_url = str(
+        base_url
+        or os.getenv(
+            "SCRIBER_SPEECHMATICS_BATCH_BASE_URL",
+            SPEECHMATICS_BATCH_DEFAULT_BASE_URL,
+        )
+    ).rstrip("/")
     language_code = provider_language_code(language) or os.getenv("SCRIBER_SPEECHMATICS_DEFAULT_LANGUAGE", "en")
     transcription_config: dict[str, Any] = {
         "language": language_code,
@@ -672,6 +683,30 @@ async def transcribe_with_speechmatics_batch(
     if diarize:
         transcription_config["diarization"] = "speaker"
     config = {"type": "transcription", "transcription_config": transcription_config}
+
+    if raw_transport is not None:
+        _report_progress(on_progress, "Uploading audio...")
+        _report_progress(on_progress, "Processing transcription...")
+        payload = await raw_transport(
+            session=session,
+            base_url=base_url,
+            api_key=api_key,
+            audio_source=audio_source,
+            filename=filename,
+            content_type=content_type,
+            config=config,
+            timeout_secs=timeout_secs,
+            poll_interval_secs=poll_interval_secs,
+            audio_preparation_implementation=(
+                audio_preparation_implementation
+            ),
+        )
+        if not isinstance(payload, dict):
+            raise RuntimeError("Speechmatics batch transport returned invalid JSON-v2")
+        _report_progress(on_progress, "Retrieving transcript...")
+        if on_response_complete is not None:
+            on_response_complete()
+        return payload
 
     form = aiohttp.FormData()
     form.add_field("config", json.dumps(config), content_type="application/json")
@@ -731,7 +766,10 @@ async def transcribe_with_speechmatics_batch(
             if response.status >= 400:
                 raise RuntimeError(f"Speechmatics batch transcript failed ({response.status}): {raw[:500]}")
             parsed = json.loads(raw) if raw else {}
-            return parsed if isinstance(parsed, dict) else {}
+            payload = parsed if isinstance(parsed, dict) else {}
+            if on_response_complete is not None:
+                on_response_complete()
+            return payload
     finally:
         await _delete_speechmatics_job(
             session=session,
@@ -759,9 +797,12 @@ class _BufferedAsyncProcessor(FrameProcessor):
         self._buffer_size = 0
         self._sample_rate = 16000
         self._channels = 1
+        self._capture_wav_artifact = None
+        self._capture_wav_adoption_open = True
+        self._audio_preparation_implementation: str | None = None
 
     def _create_buffer(self):
-        return create_pcm_spool()
+        return create_pcm_spool(reserve_wav_header=True)
 
     def _reset_buffer(self) -> None:
         close_pcm_spool(getattr(self, "_buffer", None))
@@ -770,6 +811,30 @@ class _BufferedAsyncProcessor(FrameProcessor):
 
     def __del__(self) -> None:
         close_pcm_spool(getattr(self, "_buffer", None))
+        artifact = getattr(self, "_capture_wav_artifact", None)
+        if artifact is not None:
+            try:
+                artifact.release()
+            except Exception:
+                pass
+
+    def adopt_capture_wav_artifact(self, artifact: Any) -> bool:
+        """Accept the single Tauri lease before the terminal provider upload."""
+
+        if (
+            artifact is None
+            or not self._capture_wav_adoption_open
+            or self._capture_wav_artifact is not None
+        ):
+            return False
+        if (
+            not callable(getattr(artifact, "matches_pcm", None))
+            or not callable(getattr(artifact, "open_async", None))
+            or not callable(getattr(artifact, "release_async", None))
+        ):
+            return False
+        self._capture_wav_artifact = artifact
+        return True
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
         raise NotImplementedError
@@ -792,6 +857,10 @@ class _BufferedAsyncProcessor(FrameProcessor):
             return
 
         if isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
+            self._capture_wav_adoption_open = False
+            artifact, self._capture_wav_artifact = self._capture_wav_artifact, None
+            wav_source = None
+            audio_preparation_implementation = "python_reserved_wav_header_v1"
             try:
                 if getattr(self, "_skip_terminal_transcription", False):
                     logger.info(f"{self.provider_name} async: skipping terminal transcription for silent recording")
@@ -800,16 +869,32 @@ class _BufferedAsyncProcessor(FrameProcessor):
                     return
                 if self._buffer_size:
                     _report_progress(self._on_progress, "Transcribing...")
-                    wav_source = await asyncio.to_thread(
-                        _pcm_stream_to_wav,
-                        self._buffer,
-                        self._sample_rate,
-                        self._channels,
+                    if artifact is not None and artifact.matches_pcm(
+                        sample_rate=self._sample_rate,
+                        channels=self._channels,
+                        pcm_bytes=self._buffer_size,
+                    ):
+                        try:
+                            wav_source = await artifact.open_async()
+                            audio_preparation_implementation = "wav_pcm16_file_v1"
+                        except (OSError, RuntimeError) as exc:
+                            logger.warning(
+                                f"{self.provider_name} Rust WAV artifact rejected; "
+                                f"using PCM spool fallback ({type(exc).__name__})"
+                            )
+                    if wav_source is None:
+                        wav_source = await asyncio.to_thread(
+                            _pcm_stream_to_wav,
+                            self._buffer,
+                            self._sample_rate,
+                            self._channels,
+                            reserved_wav_header=True,
+                            pcm_size=self._buffer_size,
+                        )
+                    self._audio_preparation_implementation = (
+                        audio_preparation_implementation
                     )
-                    try:
-                        text = (await self._transcribe_wav(wav_source)).strip()
-                    finally:
-                        wav_source.close()
+                    text = (await self._transcribe_wav(wav_source)).strip()
                     if text:
                         await self.push_frame(
                             TranscriptionFrame(
@@ -824,6 +909,16 @@ class _BufferedAsyncProcessor(FrameProcessor):
                 logger.error(f"{self.provider_name} async transcription failed: {exc}")
                 await self.push_frame(ErrorFrame(error=f"{self.provider_name} async error: {exc}"), direction)
             finally:
+                if wav_source is not None:
+                    wav_source.close()
+                if artifact is not None:
+                    try:
+                        await artifact.release_async()
+                    except Exception as exc:
+                        logger.debug(
+                            f"{self.provider_name} Rust WAV lease release failed: {exc}"
+                        )
+                self._audio_preparation_implementation = None
                 self._reset_buffer()
             await self.push_frame(frame, direction)
             return
@@ -1008,11 +1103,17 @@ class SpeechmaticsAsyncProcessor(_BufferedAsyncProcessor):
         session: aiohttp.ClientSession | None = None,
         on_progress: Callable[[str], None] | None = None,
         diarize: bool = False,
+        base_url: str | None = None,
+        raw_transport: Callable[..., Any] | None = None,
+        on_response_complete: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(session=session, on_progress=on_progress, diarize=diarize)
         self._api_key = api_key
         self._language = language
         self._custom_vocab = custom_vocab
+        self._base_url = base_url
+        self._raw_transport = raw_transport
+        self._on_response_complete = on_response_complete
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
         async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
@@ -1026,6 +1127,12 @@ class SpeechmaticsAsyncProcessor(_BufferedAsyncProcessor):
                 custom_vocab=self._custom_vocab,
                 diarize=self._diarize,
                 on_progress=self._on_progress,
+                base_url=self._base_url,
+                raw_transport=self._raw_transport,
+                on_response_complete=self._on_response_complete,
+                audio_preparation_implementation=(
+                    self._audio_preparation_implementation
+                ),
             )
 
         payload = await _call(self._session) if self._session else None

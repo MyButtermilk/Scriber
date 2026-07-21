@@ -11,7 +11,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.perf.evaluator.local_wux import compute_local_wux, load_baseline_metrics
+from scripts.perf.evaluator.local_wux import (
+    PROVIDER_REPLAY_DURATION_SECONDS,
+    PROVIDER_REPLAY_KPIS,
+    PROVIDER_REPLAY_WEIGHTS,
+    compute_local_wux,
+    load_baseline_metrics,
+    provider_replay_scenario_name,
+)
 from benchmarks.windows.endpoint_probe import (
     APP_UX_EVIDENCE_CONTRACT,
     APP_UX_SCENARIOS,
@@ -21,16 +28,20 @@ from benchmarks.windows.endpoint_probe import (
 SCENARIOS = {
     "overlay_warm": ("overlay_warm", "hotkey_received", "overlay_first_visible_frame"),
     "overlay_cold": ("overlay_cold", "hotkey_received", "overlay_first_visible_frame"),
-    "microsoft_local_tail": (
-        "microsoft_local",
-        "provider_response_complete",
-        "target_text_observed",
-    ),
-    "soniox_local_tail": (
-        "soniox_local",
-        "last_final_token_received",
-        "target_text_observed",
-    ),
+    **{
+        provider_replay_scenario_name(provider, duration, kpi): (
+            f"{provider}_{duration}s",
+            (
+                "activation_received"
+                if kpi == "activation_received_to_final_text_observed"
+                else "stop_requested"
+            ),
+            "final_text_observed",
+        )
+        for provider in PROVIDER_REPLAY_WEIGHTS
+        for duration in PROVIDER_REPLAY_DURATION_SECONDS
+        for kpi in PROVIDER_REPLAY_KPIS
+    },
 }
 
 READINESS = {
@@ -178,6 +189,8 @@ def group_events(paths: list[Path]) -> dict[tuple[str, str], dict[str, int]]:
             session_id = str(event.get("session_id") or "")
             scenario = str(event.get("scenario") or "")
             marker = str(event.get("marker") or event.get("name") or "")
+            if marker == "target_text_observed":
+                marker = "final_text_observed"
             ticks = event.get("qpc_ticks")
             if not session_id or not scenario or not marker or ticks is None:
                 continue
@@ -187,14 +200,21 @@ def group_events(paths: list[Path]) -> dict[tuple[str, str], dict[str, int]]:
 
 def collect_segment_ms(
     sessions: dict[tuple[str, str], dict[str, int]],
-    scenario_prefix: str,
+    scenario_selector: str,
     start: str,
     end: str,
     qpc_frequency: float,
+    *,
+    prefix_match: bool = False,
 ) -> list[float]:
     values: list[float] = []
     for (scenario, _session_id), marks in sessions.items():
-        if not scenario.startswith(scenario_prefix):
+        matches = (
+            scenario.startswith(scenario_selector)
+            if prefix_match
+            else scenario == scenario_selector
+        )
+        if not matches:
             continue
         if start in marks and end in marks and marks[end] >= marks[start]:
             values.append(((marks[end] - marks[start]) / qpc_frequency) * 1000.0)
@@ -229,7 +249,14 @@ def main() -> int:
     metrics["app_ux_p95_ms"] = app_ux.get("app_ux_p95_ms", "unknown")
 
     for metric, (start, end) in READINESS.items():
-        samples = collect_segment_ms(sessions, "overlay_", start, end, args.qpc_frequency)
+        samples = collect_segment_ms(
+            sessions,
+            "overlay_",
+            start,
+            end,
+            args.qpc_frequency,
+            prefix_match=True,
+        )
         metrics[metric] = percentile(samples, 95.0) if samples else "unknown"
 
     for guard in (

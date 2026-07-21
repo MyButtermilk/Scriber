@@ -138,6 +138,7 @@ function Get-ElementText {
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 $last = ""
 $observed = $false
+$observedQpcTicks = 0
 $windowFound = $false
 $targetFound = $false
 $targetAutomationId = ""
@@ -190,6 +191,9 @@ do {
             $prefixOk = (-not $PrefixSentinel) -or $last.Contains($PrefixSentinel)
             $suffixOk = (-not $SuffixSentinel) -or $last.Contains($SuffixSentinel)
             if (($hash -eq $ExpectedSha256.ToLowerInvariant()) -and $prefixOk -and $suffixOk) {
+                # Capture the system-wide clock at the exact successful match,
+                # before loop exit, JSON construction, or filesystem I/O.
+                $observedQpcTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
                 $observed = $true
                 break
             }
@@ -201,7 +205,7 @@ do {
 $result = [pscustomobject]@{
     schemaVersion = 1
     ok = $observed
-    endpoint = "target_text_observed"
+    endpoint = "final_text_observed"
     expectedSha256 = $ExpectedSha256.ToLowerInvariant()
     observedSha256 = if ($last) { Get-Sha256Text -Text $last } else { "" }
     prefixSentinel = $PrefixSentinel
@@ -214,7 +218,7 @@ $result = [pscustomobject]@{
     targetHwnd = $targetHwnd
     descendantCount = $descendantCount
     descendantSample = @($descendantSample)
-    qpcTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
+    qpcTicks = $observedQpcTicks
     qpcFrequency = [System.Diagnostics.Stopwatch]::Frequency
 }
 $json = $result | ConvertTo-Json -Depth 6

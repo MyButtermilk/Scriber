@@ -557,6 +557,9 @@ def test_checked_in_uia_driver_is_process_generation_bound_and_real() -> None:
     )
 
     assert "[long]$ProcessCreationTime100ns" in action
+    assert "[string]$ControlAutomationId" in action
+    assert "AutomationElement]::AutomationIdProperty" in action
+    assert "ControlName or ControlAutomationId is required." in action
     assert "$matchingControlCount -eq 1" in action
     assert '[ValidateSet("Exact", "Prefix")]' in action
     assert ".StartsWith($ControlName" in action
@@ -565,6 +568,7 @@ def test_checked_in_uia_driver_is_process_generation_bound_and_real() -> None:
     assert "LegacyIAccessiblePattern" in action
     assert "$inputQpcTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()" in action
     assert "qpcTicks = $inputQpcTicks" in action
+    assert 'source = "uia_invoke"' in action
     assert action.index("$inputQpcTicks =") < action.index(").Invoke()")
     assert "SendInput" not in action
     assert "Set-Content" in action  # evidence artifact/observer gate only

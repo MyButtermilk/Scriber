@@ -1,4 +1,7 @@
-from src.core.hot_path_tracer import HotPathTracer
+from src.core.hot_path_tracer import (
+    CANONICAL_HOT_PATH_MARKERS,
+    HotPathTracer,
+)
 
 
 def test_hot_path_tracer_reports_segments_in_order():
@@ -63,10 +66,12 @@ def test_hot_path_tracer_binds_privacy_safe_tauri_callback_marker():
 
     assert snapshot["tauriHotkeyReceived"] == marker
     assert snapshot["markerNames"] == [
+        "activation_received",
         "hotkey_received",
         "tauri_hotkey_received",
         "mic_ready",
     ]
+    assert snapshot["referenceMarker"] == "activation_received"
     assert snapshot["segments"]["hotkey_received_to_mic_ready_ms"] == 125.0
     assert "token" not in str(snapshot).lower()
     assert "transcript" not in str(snapshot).lower()
@@ -76,3 +81,47 @@ def test_hot_path_tracer_without_enough_marks_is_empty():
     tracer = HotPathTracer("s3", clock_ns=lambda: 123)
     tracer.mark("only_one")
     assert tracer.report() == {}
+
+
+def test_hot_path_tracer_exposes_canonical_kpis_without_removing_legacy_pairs():
+    tracer = HotPathTracer("stage-zero", clock_ns=lambda: 0)
+    tracer.mark("activation_received", timestamp_ns=1_000_000_000)
+    tracer.mark("button_received", timestamp_ns=1_000_000_000)
+    tracer.mark("stop_requested", timestamp_ns=1_400_000_000)
+    tracer.mark("provider_final_received", timestamp_ns=1_600_000_000)
+    tracer.mark("legacy_marker", timestamp_ns=1_650_000_000)
+    tracer.mark("final_text_observed", timestamp_ns=1_700_000_000)
+
+    kpis = tracer.canonical_kpis(authoritative_fixture_duration_ms=350.0)
+
+    assert kpis == {
+        "activation_received_to_final_text_observed_ms": 700.0,
+        "button_received_to_final_text_observed_ms": 700.0,
+        "stop_requested_to_final_text_observed_ms": 300.0,
+        "stop_requested_to_provider_final_received_ms": 200.0,
+        "provider_final_received_to_final_text_observed_ms": 100.0,
+        "non_speech_overhead_ms": 350.0,
+    }
+    assert tracer.report()["legacy_marker_to_final_text_observed_ms"] == 50.0
+    assert "non_speech_overhead_ms" not in tracer.canonical_kpis(
+        authoritative_fixture_duration_ms=float("inf")
+    )
+    assert "hotkey_received" in tracer.missing_canonical_markers()
+    assert set(CANONICAL_HOT_PATH_MARKERS) >= {
+        "activation_received",
+        "paste_requested",
+        "final_text_observed",
+    }
+
+
+def test_hot_path_snapshot_uses_activation_reference_for_button_path():
+    tracer = HotPathTracer("button", clock_ns=lambda: 0)
+    tracer.mark("activation_received", timestamp_ns=100)
+    tracer.mark("button_received", timestamp_ns=100)
+    tracer.mark("mic_ready", timestamp_ns=1_000_100)
+
+    snapshot = tracer.snapshot()
+
+    assert snapshot["referenceMarker"] == "activation_received"
+    assert snapshot["markers"][-1]["sinceActivationMs"] == 1.0
+    assert "sinceHotkeyMs" not in snapshot["markers"][-1]

@@ -1,4 +1,5 @@
 import asyncio
+import wave
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -26,7 +27,7 @@ class _FallbackPipeline:
         self.on_transcription = on_transcription
         type(self).created_services.append(service_name)
 
-    async def transcribe_file_direct(self, _path: str):
+    async def transcribe_file_direct(self, _path: str, *, prepared_audio=None):
         if self.on_transcription:
             self.on_transcription("fallback ok", True)
 
@@ -52,7 +53,7 @@ class _RetryPipeline:
         self.service_name = service_name
         self.on_transcription = on_transcription
 
-    async def transcribe_file_direct(self, _path: str):
+    async def transcribe_file_direct(self, _path: str, *, prepared_audio=None):
         type(self).attempts += 1
         if type(self).attempts == 1:
             raise RuntimeError("service unavailable")
@@ -61,6 +62,14 @@ class _RetryPipeline:
 
     async def transcribe_file(self, _path: str):
         await self.transcribe_file_direct(_path)
+
+
+def _write_valid_wav(path) -> None:
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(16_000)
+        writer.writeframes(b"\0\0" * 160)
 
 
 @pytest.mark.asyncio
@@ -80,7 +89,7 @@ async def test_file_transcription_uses_fallback_provider_when_primary_circuit_op
     files_dir = tmp_path / "files"
     files_dir.mkdir(parents=True, exist_ok=True)
     sample_file = files_dir / "sample.wav"
-    sample_file.write_bytes(b"RIFF....WAVEfmt ")
+    _write_valid_wav(sample_file)
     _FallbackPipeline.created_services = []
 
     with (
@@ -110,7 +119,7 @@ async def test_retry_ladder_retries_transient_file_failure(monkeypatch, tmp_path
     files_dir = tmp_path / "files"
     files_dir.mkdir(parents=True, exist_ok=True)
     sample_file = files_dir / "sample.wav"
-    sample_file.write_bytes(b"RIFF....WAVEfmt ")
+    _write_valid_wav(sample_file)
     _RetryPipeline.attempts = 0
 
     with (

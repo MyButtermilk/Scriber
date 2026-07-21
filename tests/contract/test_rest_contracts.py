@@ -17,6 +17,7 @@ from src.core.rest_contracts import (
     validate_health_payload,
     validate_live_mic_stop_request_payload,
     validate_runtime_payload,
+    validate_tauri_activation_marker_request_payload,
     validate_tauri_hotkey_marker_request_payload,
 )
 from src.web_api import ScriberWebController
@@ -261,6 +262,57 @@ def test_tauri_hotkey_marker_contract_binds_run_sample_parent_and_qpc() -> None:
             expected_parent_pid=4321,
             now_ns=timestamp_ns + 1_000_000,
         )
+
+
+def test_tauri_activation_marker_contract_accepts_only_authoritative_lane_pair() -> None:
+    run_id = "7de1a48651d44f859042b7cbcb30da52"
+    qpc_ticks = 123_456_789
+    qpc_frequency = 10_000_000
+    timestamp_ns = (qpc_ticks * 1_000_000_000) // qpc_frequency
+    payload = {
+        "benchmarkActivationMarker": {
+            "schemaVersion": 1,
+            "marker": "button_received",
+            "source": "tauri_ui_command",
+            "runId": run_id,
+            "sampleId": "2b3022ee3f404333a1156da089a24962",
+            "processId": 4321,
+            "qpcTicks": qpc_ticks,
+            "qpcFrequency": qpc_frequency,
+            "timestampNs": timestamp_ns,
+        }
+    }
+
+    normalized = validate_tauri_activation_marker_request_payload(
+        payload,
+        configured_run_id=run_id,
+        expected_parent_pid=4321,
+        now_ns=timestamp_ns + 1_000_000,
+    )
+    assert normalized["activationKind"] == "button"
+    assert normalized["marker"] == "button_received"
+    assert normalized["source"] == "tauri_ui_command"
+
+    mismatched = copy.deepcopy(payload)
+    mismatched["benchmarkActivationMarker"]["source"] = "tauri_global_shortcut"
+    with pytest.raises(RESTContractError, match="authoritative activation"):
+        validate_tauri_activation_marker_request_payload(
+            mismatched,
+            configured_run_id=run_id,
+            expected_parent_pid=4321,
+            now_ns=timestamp_ns + 1_000_000,
+        )
+
+    expanded = copy.deepcopy(payload)
+    expanded["benchmarkHotkeyMarker"] = expanded["benchmarkActivationMarker"]
+    with pytest.raises(RESTContractError, match="permits only"):
+        validate_tauri_activation_marker_request_payload(
+            expanded,
+            configured_run_id=run_id,
+            expected_parent_pid=4321,
+            now_ns=timestamp_ns + 1_000_000,
+        )
+
 
 def test_frontend_performance_contract_records_bounded_long_tasks(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))

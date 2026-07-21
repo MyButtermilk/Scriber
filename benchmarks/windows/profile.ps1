@@ -221,6 +221,20 @@ $providerIdentity = [pscustomobject]@{
     azureMaiModel = $env:SCRIBER_AZURE_MAI_MODEL
     locale = $env:SCRIBER_LANGUAGE
 }
+$azureCaptureTimeRaw = [string]$env:SCRIBER_AZURE_MAI_CAPTURE_TIME_MP3
+$azureCaptureTimeEnabled = (
+    $azureCaptureTimeRaw -and
+    $azureCaptureTimeRaw.Trim().ToLowerInvariant() -notin @("0", "false", "no", "off")
+)
+$speechmaticsCaptureTimeRaw = [string]$env:SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV
+$speechmaticsCaptureTimeEnabled = (
+    $speechmaticsCaptureTimeRaw -and
+    $speechmaticsCaptureTimeRaw.Trim().ToLowerInvariant() -notin @("0", "false", "no", "off")
+)
+$providerCandidate = [pscustomobject]@{
+    azureMaiCaptureTimeMp3 = if ($azureCaptureTimeEnabled) { "enabled" } else { "disabled" }
+    speechmaticsCaptureTimeWav = if ($speechmaticsCaptureTimeEnabled) { "enabled" } else { "disabled" }
+}
 $networkAdapters = @(Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled } | Sort-Object Description, SettingID | ForEach-Object {
     [pscustomobject]@{
         description = $_.Description
@@ -291,6 +305,7 @@ $payloadNoId = [ordered]@{
     baselineId = $baselineId
     baselineSha256 = $baselineSha256
     provider = $providerIdentity
+    providerCandidate = $providerCandidate
     textInjectionMethod = $env:SCRIBER_INJECT_METHOD
     networkAdapters = $networkAdapters
     evaluatorVersion = 1

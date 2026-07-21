@@ -1,7 +1,8 @@
+use crate::audio_codec::{EncoderImplementation, EncoderPlan};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::{
-    env,
+    env, fs,
     io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, ExitStatus, Stdio},
@@ -40,6 +41,8 @@ const SIDECAR_STATUS_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_500);
 const SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1_500);
 const SIDECAR_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const SIDECAR_JSON_LINE_MAX_BYTES: usize = 1024 * 1024;
+const CAPTURE_STOP_RESULT_CACHE_TTL: Duration = Duration::from_secs(30);
+const CAPTURE_STOP_RESULT_CACHE_MAX_ENTRIES: usize = 8;
 static AUDIO_LIFECYCLE_EPOCH: AtomicU64 = AtomicU64::new(0);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -51,6 +54,20 @@ struct ActiveAudioSidecar {
     path_hash: Option<String>,
     pid: u32,
     started_at: Instant,
+    capture_artifact_lease: Option<CaptureArtifactLease>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CaptureArtifactLease {
+    lease_id: String,
+    path: PathBuf,
+    plan: EncoderPlan,
+}
+
+#[derive(Debug, Clone)]
+struct CachedCaptureStopResult {
+    completed_at: Instant,
+    result: AudioSidecarCallResult,
 }
 
 enum SidecarOutput {
@@ -179,6 +196,7 @@ fn call_audio_sidecar_command_unlocked(command: &str, payload: Value) -> AudioSi
         "captureStart" => return start_audio_sidecar_capture(payload),
         "captureStatus" => return status_audio_sidecar_capture(payload),
         "captureStop" => return stop_audio_sidecar_capture(payload),
+        "captureArtifactRelease" => return release_capture_artifact(payload),
         "meetingCaptureStart" => return start_audio_sidecar_meeting_capture(payload),
         "meetingCaptureStatus" => return status_audio_sidecar_meeting_capture(payload),
         "meetingCaptureStop" => return stop_audio_sidecar_meeting_capture(payload),
@@ -232,6 +250,7 @@ pub fn shutdown_all_audio_sidecars(reason: &str) -> usize {
         stop_meeting_sidecar_process(&meeting_capture_id, &mut sidecar, reason);
         stopped = stopped.saturating_add(1);
     }
+    cleanup_all_capture_artifacts();
     stopped
 }
 
@@ -243,6 +262,58 @@ fn active_audio_sidecars() -> &'static Mutex<HashMap<String, ActiveAudioSidecar>
     static ACTIVE_AUDIO_SIDECARS: OnceLock<Mutex<HashMap<String, ActiveAudioSidecar>>> =
         OnceLock::new();
     ACTIVE_AUDIO_SIDECARS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn capture_stop_result_cache() -> &'static Mutex<HashMap<String, CachedCaptureStopResult>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedCaptureStopResult>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn capture_artifact_leases() -> &'static Mutex<HashMap<String, CaptureArtifactLease>> {
+    static LEASES: OnceLock<Mutex<HashMap<String, CaptureArtifactLease>>> = OnceLock::new();
+    LEASES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn capture_artifact_root() -> &'static PathBuf {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        env::temp_dir().join(format!(
+            "scriber-audio-artifacts-{}-{}",
+            std::process::id(),
+            Uuid::new_v4().simple()
+        ))
+    })
+}
+
+fn cached_capture_stop_result(stream_id: &str) -> Option<AudioSidecarCallResult> {
+    let mut cache = capture_stop_result_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.retain(|_, entry| entry.completed_at.elapsed() <= CAPTURE_STOP_RESULT_CACHE_TTL);
+    cache.get(stream_id).map(|entry| entry.result.clone())
+}
+
+fn cache_capture_stop_result(stream_id: &str, result: &AudioSidecarCallResult) {
+    let mut cache = capture_stop_result_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.retain(|_, entry| entry.completed_at.elapsed() <= CAPTURE_STOP_RESULT_CACHE_TTL);
+    if cache.len() >= CAPTURE_STOP_RESULT_CACHE_MAX_ENTRIES {
+        if let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.completed_at)
+            .map(|(stream_id, _)| stream_id.clone())
+        {
+            cache.remove(&oldest);
+        }
+    }
+    cache.insert(
+        stream_id.to_string(),
+        CachedCaptureStopResult {
+            completed_at: Instant::now(),
+            result: result.clone(),
+        },
+    );
 }
 
 fn active_audio_prewarm_sidecars() -> &'static Mutex<HashMap<String, ActiveAudioSidecar>> {
@@ -300,6 +371,132 @@ fn drain_active_capture_sidecars(reason: &str) -> usize {
     stopped
 }
 
+fn prepare_capture_artifact_lease(
+    payload: &mut Value,
+) -> Result<Option<CaptureArtifactLease>, String> {
+    let capture_sample_rate: u32 = payload
+        .get("sampleRate")
+        .and_then(Value::as_u64)
+        .and_then(|value| value.try_into().ok())
+        .unwrap_or(16_000);
+    let capture_channels: u16 = payload
+        .get("channels")
+        .and_then(Value::as_u64)
+        .and_then(|value| value.try_into().ok())
+        .unwrap_or(1);
+    {
+        let Some(object) = payload.as_object_mut() else {
+            return Err("capture payload must be an object".to_string());
+        };
+        // The lease is an internal shell-to-sidecar capability. Never trust or
+        // forward a caller-supplied path across this boundary.
+        object.remove("artifactLease");
+    }
+    let plan = EncoderPlan::parse_optional(payload, capture_sample_rate, capture_channels)
+        .map_err(|error| error.code().to_string())?;
+    let Some(plan) = plan else {
+        return Ok(None);
+    };
+    if plan.implementation != EncoderImplementation::WavPcm16FileV1 {
+        return Ok(None);
+    }
+
+    let root = capture_artifact_root();
+    fs::create_dir_all(root)
+        .map_err(|error| format!("capture artifact directory creation failed: {error}"))?;
+    let lease_id = Uuid::new_v4().simple().to_string();
+    let path = root.join(format!("{lease_id}.wav"));
+    if path.exists() {
+        return Err("capture artifact lease path already exists".to_string());
+    }
+    payload
+        .as_object_mut()
+        .expect("capture payload was validated as an object")
+        .insert(
+            "artifactLease".to_string(),
+            json!({
+                "schemaVersion": "1",
+                "leaseId": lease_id,
+                "path": path,
+            }),
+        );
+    Ok(Some(CaptureArtifactLease {
+        lease_id,
+        path,
+        plan,
+    }))
+}
+
+fn capture_artifact_path_is_owned(path: &Path) -> bool {
+    path.parent() == Some(capture_artifact_root().as_path())
+        && path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| {
+                name.len() == 36
+                    && name.ends_with(".wav")
+                    && name[..32].bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+}
+
+fn cleanup_capture_artifact_lease(lease: CaptureArtifactLease) -> bool {
+    if !capture_artifact_path_is_owned(&lease.path) {
+        return false;
+    }
+    for attempt in 0..3 {
+        match fs::remove_file(&lease.path) {
+            Ok(()) => return true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return true,
+            Err(_) if attempt < 2 => thread::sleep(Duration::from_millis(10)),
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+fn cleanup_or_retain_capture_artifact_lease(lease: CaptureArtifactLease) -> bool {
+    if cleanup_capture_artifact_lease(lease.clone()) {
+        return true;
+    }
+    capture_artifact_leases()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(lease.lease_id.clone(), lease);
+    false
+}
+
+fn cleanup_all_capture_artifacts() {
+    let leases: Vec<CaptureArtifactLease> = capture_artifact_leases()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .drain()
+        .map(|(_, lease)| lease)
+        .collect();
+    let mut cleanup_failed = Vec::new();
+    for lease in leases {
+        if !cleanup_capture_artifact_lease(lease.clone()) {
+            cleanup_failed.push(lease);
+        }
+    }
+    if !cleanup_failed.is_empty() {
+        let mut registry = capture_artifact_leases()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for lease in cleanup_failed {
+            registry.insert(lease.lease_id.clone(), lease);
+        }
+    }
+    let root = capture_artifact_root();
+    if capture_artifact_leases()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .is_empty()
+        && root.parent() == Some(env::temp_dir().as_path())
+    {
+        let _ = fs::remove_dir(root);
+    }
+}
+
 fn start_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
     // Microphone capture has exactly one owner. Reconcile any capture whose
     // previous Python stop timed out before starting or adopting a replacement.
@@ -353,8 +550,24 @@ fn start_audio_sidecar_capture_at(program: &Path, payload: Value) -> AudioSideca
 
 fn start_audio_sidecar_capture_with_sidecar(
     mut sidecar: ActiveAudioSidecar,
-    payload: Value,
+    mut payload: Value,
 ) -> AudioSidecarCallResult {
+    match prepare_capture_artifact_lease(&mut payload) {
+        Ok(lease) => sidecar.capture_artifact_lease = lease,
+        Err(error) => {
+            stop_sidecar_process("", &mut sidecar, "captureArtifactLeaseCreateFailed");
+            return unavailable_result(
+                "audioCaptureArtifactLeaseCreateFailed",
+                error,
+                json!({
+                    "sidecar": AUDIO_SIDECAR_NAME,
+                    "captureAvailable": false,
+                }),
+                sidecar.path_hash.clone(),
+                Some(sidecar.pid),
+            );
+        }
+    }
     let request_id = Uuid::new_v4().simple().to_string();
     let request = sidecar_request(&request_id, "captureStart", payload);
     let path_hash = sidecar.path_hash.clone();
@@ -362,6 +575,9 @@ fn start_audio_sidecar_capture_with_sidecar(
     if let Err(err) = write_sidecar_json_line(&mut sidecar.stdin, &request) {
         let _ = sidecar.child.kill();
         let _ = sidecar.child.wait();
+        if let Some(lease) = sidecar.capture_artifact_lease.take() {
+            let _ = cleanup_or_retain_capture_artifact_lease(lease);
+        }
         return unavailable_result(
             "audioSidecarWriteFailed",
             err,
@@ -381,6 +597,9 @@ fn start_audio_sidecar_capture_with_sidecar(
         Err(result) => {
             let _ = sidecar.child.kill();
             let _ = sidecar.child.wait();
+            if let Some(lease) = sidecar.capture_artifact_lease.take() {
+                let _ = cleanup_or_retain_capture_artifact_lease(lease);
+            }
             return with_process_identity(result, path_hash, Some(sidecar.pid));
         }
     };
@@ -696,6 +915,10 @@ fn start_audio_sidecar_prewarm_at(program: &Path, payload: Value) -> AudioSideca
 }
 
 fn stop_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
+    let artifact_handoff_requested = payload
+        .get("artifactHandoff")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let stream_id = payload
         .get("streamId")
         .and_then(Value::as_str)
@@ -723,6 +946,9 @@ fn stop_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
 
     let mut sessions = lock_active_audio_sidecars();
     let Some(mut sidecar) = sessions.remove(&stream_id) else {
+        if let Some(result) = cached_capture_stop_result(&stream_id) {
+            return result;
+        }
         let executable_available = audio_sidecar_executable_available();
         let reason = if executable_available {
             "noActiveCapture"
@@ -756,10 +982,11 @@ fn stop_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
     );
     let path_hash = sidecar.path_hash.clone();
     let pid = Some(sidecar.pid);
+    let artifact_lease = sidecar.capture_artifact_lease.take();
     if let Err(err) = write_sidecar_json_line(&mut sidecar.stdin, &request) {
         let _ = sidecar.child.kill();
         let _ = sidecar.child.wait();
-        return unavailable_result(
+        let result = unavailable_result(
             "audioSidecarWriteFailed",
             err,
             json!({
@@ -771,6 +998,11 @@ fn stop_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
             path_hash,
             pid,
         );
+        if let Some(lease) = artifact_lease {
+            let _ = cleanup_or_retain_capture_artifact_lease(lease);
+        }
+        cache_capture_stop_result(&stream_id, &result);
+        return result;
     }
 
     let mut result = match read_sidecar_response_line(&sidecar.response_rx) {
@@ -796,7 +1028,216 @@ fn stop_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
         object.insert("sidecarPid".to_string(), json!(sidecar.pid));
         object.insert("sidecarPathHash".to_string(), json!(path_hash));
     }
+    finalize_capture_artifact_handoff(&mut result, artifact_lease, artifact_handoff_requested);
+    cache_capture_stop_result(&stream_id, &result);
     result
+}
+
+fn validate_capture_artifact(
+    result: &AudioSidecarCallResult,
+    lease: &CaptureArtifactLease,
+) -> Option<Value> {
+    if !result.success || !capture_artifact_path_is_owned(&lease.path) {
+        return None;
+    }
+    let preparation = result.payload.get("audioPreparation")?.as_object()?;
+    if preparation.get("state").and_then(Value::as_str) != Some("ready")
+        || preparation.get("artifactExposed").and_then(Value::as_bool) != Some(true)
+    {
+        return None;
+    }
+    let plan = preparation.get("plan")?;
+    if plan != &lease.plan.to_payload() {
+        return None;
+    }
+    let artifact = preparation.get("artifact")?.as_object()?;
+    if artifact.get("schemaVersion").and_then(Value::as_str) != Some("1")
+        || artifact.get("leaseId").and_then(Value::as_str) != Some(lease.lease_id.as_str())
+        || artifact.get("path").and_then(Value::as_str)
+            != Some(lease.path.to_string_lossy().as_ref())
+        || artifact.get("format").and_then(Value::as_str) != Some("wav_pcm16")
+        || artifact.get("contentType").and_then(Value::as_str) != Some("audio/wav")
+        || artifact.get("owner").and_then(Value::as_str) != Some("tauriShellPendingHandoff")
+        || artifact.get("cleanupCommand").and_then(Value::as_str)
+            != Some("audioCaptureArtifactRelease")
+    {
+        return None;
+    }
+    let byte_length = artifact.get("byteLength")?.as_u64()?;
+    let pcm_bytes = artifact.get("pcmBytes")?.as_u64()?;
+    let sample_rate = artifact.get("sampleRate")?.as_u64()?;
+    let channels = artifact.get("channels")?.as_u64()?;
+    let bits_per_sample = artifact.get("bitsPerSample")?.as_u64()?;
+    if byte_length != pcm_bytes.saturating_add(44) || byte_length > 64 * 1024 * 1024 + 44 {
+        return None;
+    }
+    if !(8_000..=192_000).contains(&sample_rate)
+        || !(1..=16).contains(&channels)
+        || bits_per_sample != 16
+    {
+        return None;
+    }
+    if sample_rate != u64::from(lease.plan.sample_rate)
+        || channels != u64::from(lease.plan.channels)
+        || bits_per_sample != u64::from(lease.plan.bits_per_sample)
+        || pcm_bytes > lease.plan.max_pcm_bytes
+    {
+        return None;
+    }
+    let block_align = channels.checked_mul(2)?;
+    let byte_rate = sample_rate.checked_mul(block_align)?;
+    if !pcm_bytes.is_multiple_of(block_align) {
+        return None;
+    }
+    let mut file = fs::File::open(&lease.path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if metadata.len() != byte_length {
+        return None;
+    }
+    let mut header = [0_u8; 44];
+    file.read_exact(&mut header).ok()?;
+    if &header[0..4] != b"RIFF"
+        || &header[8..12] != b"WAVE"
+        || &header[12..16] != b"fmt "
+        || u32::from_le_bytes(header[16..20].try_into().ok()?) != 16
+        || u16::from_le_bytes(header[20..22].try_into().ok()?) != 1
+        || u16::from_le_bytes(header[22..24].try_into().ok()?) as u64 != channels
+        || u32::from_le_bytes(header[24..28].try_into().ok()?) as u64 != sample_rate
+        || u32::from_le_bytes(header[28..32].try_into().ok()?) as u64 != byte_rate
+        || u16::from_le_bytes(header[32..34].try_into().ok()?) as u64 != block_align
+        || u16::from_le_bytes(header[34..36].try_into().ok()?) as u64 != bits_per_sample
+        || &header[36..40] != b"data"
+        || u32::from_le_bytes(header[4..8].try_into().ok()?) as u64 != pcm_bytes + 36
+        || u32::from_le_bytes(header[40..44].try_into().ok()?) as u64 != pcm_bytes
+    {
+        return None;
+    }
+    Some(json!({
+        "schemaVersion": "1",
+        "leaseId": lease.lease_id,
+        "path": lease.path,
+        "format": "wav_pcm16",
+        "contentType": "audio/wav",
+        "byteLength": byte_length,
+        "pcmBytes": pcm_bytes,
+        "sampleRate": sample_rate,
+        "channels": channels,
+        "bitsPerSample": bits_per_sample,
+        "owner": "pythonBackendLease",
+        "cleanupCommand": "audioCaptureArtifactRelease",
+    }))
+}
+
+fn finalize_capture_artifact_handoff(
+    result: &mut AudioSidecarCallResult,
+    lease: Option<CaptureArtifactLease>,
+    handoff_requested: bool,
+) {
+    let Some(lease) = lease else {
+        return;
+    };
+    let artifact = validate_capture_artifact(result, &lease);
+    if handoff_requested {
+        if let Some(artifact) = artifact {
+            capture_artifact_leases()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(lease.lease_id.clone(), lease);
+            if let Some(object) = result.payload.as_object_mut() {
+                object.insert("captureArtifact".to_string(), artifact.clone());
+                if let Some(preparation) = object
+                    .get_mut("audioPreparation")
+                    .and_then(Value::as_object_mut)
+                {
+                    preparation.insert("artifactExposed".to_string(), json!(true));
+                    preparation.insert("artifact".to_string(), artifact);
+                }
+            }
+            return;
+        }
+    }
+
+    let _ = cleanup_or_retain_capture_artifact_lease(lease);
+    if let Some(object) = result.payload.as_object_mut() {
+        object.remove("captureArtifact");
+        if let Some(preparation) = object
+            .get_mut("audioPreparation")
+            .and_then(Value::as_object_mut)
+        {
+            preparation.insert("artifactExposed".to_string(), json!(false));
+            preparation.insert("artifact".to_string(), Value::Null);
+            if handoff_requested {
+                preparation.insert("state".to_string(), json!("invalidated"));
+                preparation.insert(
+                    "reason".to_string(),
+                    json!("audioPreparationArtifactValidationFailed"),
+                );
+            }
+        }
+    }
+}
+
+fn release_capture_artifact(payload: Value) -> AudioSidecarCallResult {
+    let lease_id = payload
+        .get("leaseId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(96)
+        .collect::<String>();
+    if lease_id.len() != 32 || !lease_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return unavailable_result(
+            "audioCaptureArtifactLeaseInvalid",
+            "capture artifact release requires a valid lease identifier",
+            json!({"released": false}),
+            None,
+            None,
+        );
+    }
+    let lease = capture_artifact_leases()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&lease_id);
+    let (released, reason) = match lease {
+        Some(lease) if cleanup_capture_artifact_lease(lease.clone()) => {
+            (true, "audioCaptureArtifactReleased")
+        }
+        Some(lease) => {
+            capture_artifact_leases()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(lease_id.clone(), lease);
+            (false, "audioCaptureArtifactCleanupFailed")
+        }
+        None => (false, "audioCaptureArtifactAlreadyReleased"),
+    };
+    if released || reason == "audioCaptureArtifactAlreadyReleased" {
+        capture_stop_result_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|_, cached| {
+                cached
+                    .result
+                    .payload
+                    .get("captureArtifact")
+                    .and_then(|value| value.get("leaseId"))
+                    .and_then(Value::as_str)
+                    != Some(lease_id.as_str())
+            });
+    }
+    AudioSidecarCallResult {
+        success: true,
+        error_code: None,
+        fallback_reason: None,
+        payload: json!({
+            "released": released,
+            "reason": reason,
+        }),
+        executable_available: audio_sidecar_executable_available(),
+        executable_path_hash: None,
+        pid: None,
+    }
 }
 
 fn status_audio_sidecar_capture(payload: Value) -> AudioSidecarCallResult {
@@ -1302,6 +1743,7 @@ fn spawn_audio_sidecar_process(
         path_hash,
         pid,
         started_at: Instant::now(),
+        capture_artifact_lease: None,
     })
 }
 
@@ -1429,6 +1871,9 @@ fn stop_sidecar_process_with_command(
     }
     let _ = write_sidecar_json_line(&mut sidecar.stdin, &shutdown_request());
     let _ = wait_for_sidecar_exit_or_kill(&mut sidecar.child, SIDECAR_SHUTDOWN_TIMEOUT);
+    if let Some(lease) = sidecar.capture_artifact_lease.take() {
+        let _ = cleanup_or_retain_capture_artifact_lease(lease);
+    }
 }
 
 fn with_process_identity(
@@ -1970,6 +2415,157 @@ mod tests {
     }
 
     #[test]
+    fn production_wav_lease_is_shell_owned_handed_off_and_released() {
+        let mut payload = json!({
+            "sampleRate": 16000,
+            "channels": 1,
+            "audioPreparation": {
+                "schemaVersion": "1",
+                "format": "wav_pcm16",
+                "implementation": "wav_pcm16_file_v1",
+                "sampleRate": 16000,
+                "channels": 1,
+                "bitsPerSample": 16,
+                "queueCapacityFrames": 64,
+                "maxPcmBytes": 67108864,
+            },
+            "artifactLease": {
+                "schemaVersion": "1",
+                "leaseId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "path": r"C:\caller-controlled.wav",
+            },
+        });
+        let lease = prepare_capture_artifact_lease(&mut payload)
+            .unwrap()
+            .expect("production implementation should allocate a lease");
+        assert_ne!(lease.lease_id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(
+            payload["artifactLease"]["leaseId"].as_str(),
+            Some(lease.lease_id.as_str())
+        );
+        assert!(capture_artifact_path_is_owned(&lease.path));
+
+        let mut wav = vec![0_u8; 48];
+        wav[0..4].copy_from_slice(b"RIFF");
+        wav[4..8].copy_from_slice(&40_u32.to_le_bytes());
+        wav[8..12].copy_from_slice(b"WAVE");
+        wav[12..16].copy_from_slice(b"fmt ");
+        wav[16..20].copy_from_slice(&16_u32.to_le_bytes());
+        wav[20..22].copy_from_slice(&1_u16.to_le_bytes());
+        wav[22..24].copy_from_slice(&1_u16.to_le_bytes());
+        wav[24..28].copy_from_slice(&16_000_u32.to_le_bytes());
+        wav[28..32].copy_from_slice(&32_000_u32.to_le_bytes());
+        wav[32..34].copy_from_slice(&2_u16.to_le_bytes());
+        wav[34..36].copy_from_slice(&16_u16.to_le_bytes());
+        wav[36..40].copy_from_slice(b"data");
+        wav[40..44].copy_from_slice(&4_u32.to_le_bytes());
+        wav[44..48].copy_from_slice(&[1, 2, 3, 4]);
+        fs::write(&lease.path, wav).unwrap();
+
+        let mut result = AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({
+                "audioPreparation": {
+                    "state": "ready",
+                    "artifactExposed": true,
+                    "plan": {
+                        "schemaVersion": "1",
+                        "format": "wav_pcm16",
+                        "implementation": "wav_pcm16_file_v1",
+                        "sampleRate": 16000,
+                        "channels": 1,
+                        "bitsPerSample": 16,
+                        "queueCapacityFrames": 64,
+                        "maxPcmBytes": 67108864,
+                    },
+                    "artifact": {
+                        "schemaVersion": "1",
+                        "leaseId": lease.lease_id,
+                        "path": lease.path,
+                        "format": "wav_pcm16",
+                        "contentType": "audio/wav",
+                        "byteLength": 48,
+                        "pcmBytes": 4,
+                        "sampleRate": 16000,
+                        "channels": 1,
+                        "bitsPerSample": 16,
+                        "owner": "tauriShellPendingHandoff",
+                        "cleanupCommand": "audioCaptureArtifactRelease",
+                    },
+                },
+            }),
+            executable_available: true,
+            executable_path_hash: None,
+            pid: None,
+        };
+        finalize_capture_artifact_handoff(&mut result, Some(lease.clone()), true);
+        assert_eq!(
+            result.payload["captureArtifact"]["owner"],
+            "pythonBackendLease"
+        );
+        assert!(lease.path.exists());
+
+        let released = release_capture_artifact(json!({"leaseId": lease.lease_id}));
+        assert!(released.success);
+        assert_eq!(released.payload["released"], true);
+        assert!(!lease.path.exists());
+    }
+
+    #[test]
+    fn capture_artifact_validation_failure_deletes_untrusted_candidate() {
+        let mut payload = json!({
+            "sampleRate": 16000,
+            "channels": 1,
+            "audioPreparation": {
+                "schemaVersion": "1",
+                "format": "wav_pcm16",
+                "implementation": "wav_pcm16_file_v1",
+                "sampleRate": 16000,
+                "channels": 1,
+                "bitsPerSample": 16,
+                "queueCapacityFrames": 64,
+                "maxPcmBytes": 67108864,
+            },
+        });
+        let lease = prepare_capture_artifact_lease(&mut payload)
+            .unwrap()
+            .unwrap();
+        fs::write(&lease.path, b"not-a-wave").unwrap();
+        let mut result = AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({
+                "audioPreparation": {
+                    "state": "ready",
+                    "artifact": {
+                        "leaseId": lease.lease_id,
+                        "path": lease.path,
+                        "format": "wav_pcm16",
+                        "contentType": "audio/wav",
+                        "byteLength": 10,
+                        "pcmBytes": 0,
+                        "sampleRate": 16000,
+                        "channels": 1,
+                        "bitsPerSample": 16,
+                    },
+                },
+            }),
+            executable_available: true,
+            executable_path_hash: None,
+            pid: None,
+        };
+
+        finalize_capture_artifact_handoff(&mut result, Some(lease.clone()), true);
+
+        assert_eq!(result.payload["audioPreparation"]["state"], "invalidated");
+        assert!(result.payload.get("captureArtifact").is_none());
+        assert!(!lease.path.exists());
+    }
+
+    #[test]
     fn successful_prewarm_becomes_ready_before_active_capture_is_stopped() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let start_events = Arc::clone(&events);
@@ -2046,6 +2642,40 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.payload["stopped"], false);
         assert_eq!(result.payload["reason"], "missingStreamId");
+    }
+
+    #[test]
+    fn capture_stop_result_cache_preserves_terminal_eos_and_timing_markers() {
+        let stream_id = format!("cache-test-{}", Uuid::new_v4().simple());
+        let result = AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({
+                "stopped": true,
+                "streamId": stream_id,
+                "eosWritten": true,
+                "timingMarkers": {
+                    "last_audio_frame_captured": 10,
+                    "capture_stopped": 20,
+                    "encoder_tail_started": 30,
+                    "encoder_tail_completed": 40,
+                },
+            }),
+            executable_available: true,
+            executable_path_hash: Some("path-hash".to_string()),
+            pid: Some(42),
+        };
+
+        cache_capture_stop_result(&stream_id, &result);
+        let cached = cached_capture_stop_result(&stream_id).unwrap();
+
+        assert!(cached.success);
+        assert_eq!(cached.payload["eosWritten"], true);
+        assert_eq!(
+            cached.payload["timingMarkers"]["encoder_tail_completed"],
+            40
+        );
     }
 
     #[test]

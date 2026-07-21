@@ -227,6 +227,24 @@ def test_sidecar_spec_prunes_exact_build_and_test_pyz_prefixes():
         assert f'"{retained_prefix}"' not in filter_call
 
 
+def test_sidecar_spec_preserves_pycparser_runtime_grammar_docstrings():
+    spec = (
+        Path(__file__).resolve().parents[1]
+        / "packaging"
+        / "scriber-backend.spec"
+    ).read_text(encoding="utf-8")
+    prune_loop = spec.split("total_stripped_docstrings = 0", 1)[1].split(
+        "pyz = PYZ(a.pure)", 1
+    )[0]
+
+    assert 'RUNTIME_DOCSTRING_REQUIRED_PREFIXES = ("pycparser",)' in spec
+    assert "for prefix in RUNTIME_DOCSTRING_REQUIRED_PREFIXES" in prune_loop
+    assert 'module_name == prefix or module_name.startswith(prefix + ".")' in prune_loop
+    assert prune_loop.index("RUNTIME_DOCSTRING_REQUIRED_PREFIXES") < prune_loop.index(
+        "strip_runtime_docstrings(cached_code)"
+    )
+
+
 def test_frozen_build_tool_gate_requires_runtime_dependencies_and_absence():
     required = {module for module, _reason in REQUIRED_FROZEN_BUILD_PRUNE_IMPORTS}
     imported: list[str] = []

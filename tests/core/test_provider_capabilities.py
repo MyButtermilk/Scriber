@@ -21,6 +21,7 @@ def test_provider_capabilities_known_providers():
     assert supports_direct_file_upload("deepgram_async") is True
     assert supports_direct_file_upload("openai_async") is True
     assert supports_direct_file_upload("speechmatics_async") is True
+    assert supports_direct_file_upload("gemini_stt") is True
     assert supports_direct_file_upload("openai") is False
 
 

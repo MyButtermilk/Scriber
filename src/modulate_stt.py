@@ -218,7 +218,7 @@ class ModulateAsyncProcessor(FrameProcessor):
         self._language = language
         self._session = session
         self._on_progress = on_progress
-        self._buffer = create_pcm_spool()
+        self._buffer = create_pcm_spool(reserve_wav_header=True)
         self._buffer_size = 0
         self._sample_rate = 16_000
         self._channels = 1
@@ -226,7 +226,7 @@ class ModulateAsyncProcessor(FrameProcessor):
 
     def _reset_buffer(self) -> None:
         close_pcm_spool(getattr(self, "_buffer", None))
-        self._buffer = create_pcm_spool()
+        self._buffer = create_pcm_spool(reserve_wav_header=True)
         self._buffer_size = 0
         self._oversized = False
 
@@ -295,6 +295,8 @@ class ModulateAsyncProcessor(FrameProcessor):
                         self._buffer,
                         self._sample_rate,
                         self._channels,
+                        reserved_wav_header=True,
+                        pcm_size=self._buffer_size,
                     )
                     try:
                         text = (await self._transcribe_wav(wav_source)).strip()
