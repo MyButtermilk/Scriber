@@ -385,7 +385,10 @@ bytes.
    exports use the same native Save As dialog and atomic replacement;
    the resulting Open file/Open folder actions accept only a bounded,
    process-local opaque registry token, never a path supplied by the WebView.
-   Browser builds retain the ordinary download behavior.
+   Browser builds retain the ordinary download behavior. Transcript-detail
+   PDF/DOCX exports use the same authenticated fetch plus native Save As
+   boundary in Tauri; they never depend on a WebView popup or browser
+   navigation. Browser-only runs still download the returned blob.
 6. Optional speaker recognition is local and opt-in. The pinned WeSpeaker ONNX
    model is downloaded after installation, hash-verified before first use, and
    never included in transcript/export payloads. Settings can enroll a named

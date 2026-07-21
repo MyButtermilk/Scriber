@@ -1862,6 +1862,9 @@ def test_html_summary_uses_app_owned_editorial_theme_in_both_modes() -> None:
     assert 'className="summary-accent-icon w-4 h-4"' in detail
     assert 'data-summary-format="html"' in renderer
     assert 'className="summary-toc__path"' in renderer
+    assert "lineTo(currentX, height);" not in renderer
+    assert 'aria-label={title}' in renderer
+    assert '<p className="summary-toc__eyebrow">{title}</p>' in renderer
     assert "new IntersectionObserver(resolveActiveHeading" in renderer
     assert "new ResizeObserver(connectObserver)" in renderer
     assert 'root.addEventListener("scroll", scheduleResolve, { passive: true });' in renderer
@@ -1908,6 +1911,11 @@ def test_responsive_ui_polish_contracts_are_preserved() -> None:
     assert 'hostname.endsWith(".youtube.com")' in transcript_detail
     assert 'if (!isTauriRuntime()) return;' in transcript_detail
     assert 'import("@tauri-apps/plugin-opener")' in transcript_detail
+    assert 'saveTranscriptExport(' in transcript_detail
+    assert 'onSelect={() => void handleExport("pdf")}' in transcript_detail
+    assert 'onSelect={() => void handleExport("docx")}' in transcript_detail
+    assert 'window.open(apiUrl(`/api/transcripts/${id}/export/' not in transcript_detail
+    assert 'summaryTableOfContentsTitle(preparedSummaryHtml.plainText, transcript.language)' in transcript_detail
 
     assert meetings.count('className="w-32"') == 3
 

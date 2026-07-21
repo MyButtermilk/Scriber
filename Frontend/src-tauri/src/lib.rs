@@ -1702,6 +1702,7 @@ pub fn run() {
             hide_tray_panel,
             tray_action,
             export_dialog::save_meeting_export,
+            export_dialog::save_transcript_export,
             export_dialog::save_meeting_audio_export,
             export_dialog::open_meeting_export,
             export_dialog::reveal_meeting_export

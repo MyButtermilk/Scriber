@@ -84,6 +84,12 @@ struct ExportLocale {
     locale: UiLocale,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BufferedExportSubject {
+    Meeting,
+    Transcript,
+}
+
 impl ExportLocale {
     fn new(locale: UiLocale) -> Self {
         Self { locale }
@@ -93,6 +99,13 @@ impl ExportLocale {
         match self.locale {
             UiLocale::De => "Meeting-Export speichern",
             UiLocale::En => "Save meeting export",
+        }
+    }
+
+    fn save_transcript_dialog_title(self) -> &'static str {
+        match self.locale {
+            UiLocale::De => "Transkript exportieren",
+            UiLocale::En => "Export transcript",
         }
     }
 
@@ -255,6 +268,47 @@ impl ExportLocale {
             (UiLocale::En, ExportError::RevealFailed) => {
                 "Scriber could not open the folder."
             }
+        };
+        MeetingExportCommandError {
+            code: error.code(),
+            message: message.to_string(),
+        }
+    }
+
+    fn buffered_error(
+        self,
+        error: ExportError,
+        subject: BufferedExportSubject,
+    ) -> MeetingExportCommandError {
+        if subject == BufferedExportSubject::Meeting {
+            return self.error(error);
+        }
+        let message = match (self.locale, error) {
+            (UiLocale::De, ExportError::UnsupportedFormat) => {
+                "Dieses Transkript-Exportformat wird nicht unterstützt."
+            }
+            (UiLocale::En, ExportError::UnsupportedFormat) => {
+                "That transcript export format is not supported."
+            }
+            (UiLocale::De, ExportError::EmptyExport) => {
+                "Der Transkript-Export war leer. Versuche es erneut."
+            }
+            (UiLocale::En, ExportError::EmptyExport) => {
+                "The transcript export was empty. Please try again."
+            }
+            (UiLocale::De, ExportError::ExportTooLarge) => {
+                "Der Transkript-Export ist zu groß, um ihn von dieser Ansicht aus zu speichern."
+            }
+            (UiLocale::En, ExportError::ExportTooLarge) => {
+                "The transcript export is too large to save from this screen."
+            }
+            (UiLocale::De, ExportError::SaveFailed) => {
+                "Scriber konnte den Transkript-Export nicht speichern. Versuche es erneut."
+            }
+            (UiLocale::En, ExportError::SaveFailed) => {
+                "Scriber could not save the transcript export. Please try again."
+            }
+            _ => return self.error(error),
         };
         MeetingExportCommandError {
             code: error.code(),
@@ -541,28 +595,33 @@ fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
     std::fs::rename(source, destination)
 }
 
-#[tauri::command]
-pub async fn save_meeting_export(
+fn save_buffered_export(
     window: WebviewWindow,
-    registry: State<'_, MeetingExportRegistry>,
+    registry: &MeetingExportRegistry,
     filename: String,
     extension: String,
     bytes: Vec<u8>,
+    subject: BufferedExportSubject,
 ) -> Result<Option<SavedMeetingExport>, MeetingExportCommandError> {
     let text = ExportLocale::new(ui_locale_for_app(window.app_handle()));
     if bytes.is_empty() {
-        return Err(text.error(ExportError::EmptyExport));
+        return Err(text.buffered_error(ExportError::EmptyExport, subject));
     }
     if bytes.len() > MAX_EXPORT_BYTES {
-        return Err(text.error(ExportError::ExportTooLarge));
+        return Err(text.buffered_error(ExportError::ExportTooLarge, subject));
     }
-    let extension = normalize_extension(&extension).map_err(|error| text.error(error))?;
+    let extension =
+        normalize_extension(&extension).map_err(|error| text.buffered_error(error, subject))?;
     let filename = sanitize_filename(&filename, &extension, text);
+    let dialog_title = match subject {
+        BufferedExportSubject::Meeting => text.save_dialog_title(),
+        BufferedExportSubject::Transcript => text.save_transcript_dialog_title(),
+    };
     let selected = window
         .dialog()
         .file()
         .set_parent(&window)
-        .set_title(text.save_dialog_title())
+        .set_title(dialog_title)
         .set_file_name(&filename)
         .add_filter(text.filter_label(&extension), &[extension.as_str()])
         .blocking_save_file();
@@ -572,14 +631,14 @@ pub async fn save_meeting_export(
     let destination = ensure_extension(
         selected
             .into_path()
-            .map_err(|_| text.error(ExportError::InvalidSaveLocation))?,
+            .map_err(|_| text.buffered_error(ExportError::InvalidSaveLocation, subject))?,
         &extension,
     );
     write_export_atomically(&destination, &bytes)
-        .map_err(|_| text.error(ExportError::SaveFailed))?;
+        .map_err(|_| text.buffered_error(ExportError::SaveFailed, subject))?;
     let token = registry
         .remember(destination.clone())
-        .map_err(|error| text.error(error))?;
+        .map_err(|error| text.buffered_error(error, subject))?;
     let filename = destination
         .file_name()
         .and_then(|value| value.to_str())
@@ -595,6 +654,42 @@ pub async fn save_meeting_export(
         directory,
         filename,
     }))
+}
+
+#[tauri::command]
+pub async fn save_meeting_export(
+    window: WebviewWindow,
+    registry: State<'_, MeetingExportRegistry>,
+    filename: String,
+    extension: String,
+    bytes: Vec<u8>,
+) -> Result<Option<SavedMeetingExport>, MeetingExportCommandError> {
+    save_buffered_export(
+        window,
+        &registry,
+        filename,
+        extension,
+        bytes,
+        BufferedExportSubject::Meeting,
+    )
+}
+
+#[tauri::command]
+pub async fn save_transcript_export(
+    window: WebviewWindow,
+    registry: State<'_, MeetingExportRegistry>,
+    filename: String,
+    extension: String,
+    bytes: Vec<u8>,
+) -> Result<Option<SavedMeetingExport>, MeetingExportCommandError> {
+    save_buffered_export(
+        window,
+        &registry,
+        filename,
+        extension,
+        bytes,
+        BufferedExportSubject::Transcript,
+    )
 }
 
 fn valid_meeting_export_id(meeting_id: &str) -> bool {
@@ -808,6 +903,11 @@ mod tests {
         assert_eq!(german.save_dialog_title(), "Meeting-Export speichern");
         assert_eq!(english.save_dialog_title(), "Save meeting export");
         assert_eq!(
+            german.save_transcript_dialog_title(),
+            "Transkript exportieren"
+        );
+        assert_eq!(english.save_transcript_dialog_title(), "Export transcript");
+        assert_eq!(
             german.save_audio_dialog_title(),
             "Komprimiertes Meeting-Audio speichern"
         );
@@ -821,6 +921,24 @@ mod tests {
         assert_eq!(
             sanitize_filename("", "opus", english),
             "Compressed meeting audio.opus"
+        );
+    }
+
+    #[test]
+    fn transcript_export_errors_do_not_claim_to_be_meeting_exports() {
+        let german = ExportLocale::new(UiLocale::De);
+        let english = ExportLocale::new(UiLocale::En);
+        assert_eq!(
+            german
+                .buffered_error(ExportError::SaveFailed, BufferedExportSubject::Transcript)
+                .message,
+            "Scriber konnte den Transkript-Export nicht speichern. Versuche es erneut."
+        );
+        assert_eq!(
+            english
+                .buffered_error(ExportError::EmptyExport, BufferedExportSubject::Transcript)
+                .message,
+            "The transcript export was empty. Please try again."
         );
     }
 

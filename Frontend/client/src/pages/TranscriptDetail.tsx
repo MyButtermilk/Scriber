@@ -23,6 +23,8 @@ import { DesktopTitleBar } from "@/components/DesktopTitleBar";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { extractFailureMessage, friendlyError, friendlyRequestMessage, responseErrorMessage } from "@/lib/request-errors";
 import { prepareSummaryHtml } from "@/lib/summary-html";
+import { summaryTableOfContentsTitle } from "@/lib/summary-document-language";
+import { saveTranscriptExport } from "@/lib/transcript-export";
 import type { SettingsResponse, TranscriptDetailResponse, TranscriptHistoryItem } from "@/lib/api-types";
 import { useI18n } from "@/i18n";
 
@@ -408,6 +410,7 @@ export default function TranscriptDetail() {
   const summaryCopyResetTimerRef = useRef<number | null>(null);
   const mainScrollRef = useRef<HTMLElement | null>(null);
   const [isRetryingYoutube, setIsRetryingYoutube] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const queryClient = useQueryClient();
   const { isWsConnected } = useTranscriptAutoRefresh({
     transcriptId: id,
@@ -669,6 +672,33 @@ export default function TranscriptDetail() {
     }
   }, [summaryCopyText, t, toast]);
 
+  const handleExport = useCallback(async (format: "pdf" | "docx") => {
+    if (!id || isExporting) return;
+    setIsExporting(true);
+    try {
+      const result = await saveTranscriptExport(
+        `/api/transcripts/${id}/export/${format}`,
+        `${transcript?.title || t("Transcript")}.${format}`,
+      );
+      if (result.status === "saved") {
+        toast({
+          title: result.desktop ? t("Export saved") : t("Download started"),
+          description: t("{{filename}} is ready.", { filename: result.filename }),
+          duration: 3000,
+        });
+      }
+    } catch (error) {
+      toast({
+        title: t("Export failed"),
+        description: friendlyError(error, t("Scriber could not save the transcript export. Please try again.")),
+        variant: "destructive",
+        duration: 5000,
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  }, [id, isExporting, t, toast, transcript?.title]);
+
   const getBackLink = () => {
     switch (transcript?.type) {
       case "youtube":
@@ -694,6 +724,10 @@ export default function TranscriptDetail() {
   const showSummaryToc = summaryFormat === "html"
     && preparedSummaryHtml.outline.length >= 2
     && accordionValue.includes("summary");
+  const summaryTocTitle = useMemo(
+    () => summaryTableOfContentsTitle(preparedSummaryHtml.plainText, transcript.language),
+    [preparedSummaryHtml.plainText, transcript.language],
+  );
 
   return (
     <div className="h-screen bg-background flex flex-col overflow-hidden">
@@ -749,18 +783,16 @@ export default function TranscriptDetail() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem
-                onClick={() => {
-                  window.open(apiUrl(`/api/transcripts/${id}/export/pdf`), '_blank');
-                }}
+                disabled={isExporting}
+                onSelect={() => void handleExport("pdf")}
               >
-                <FileText className="w-4 h-4 mr-2" /> {t("Export as PDF")}
+                {isExporting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <FileText className="w-4 h-4 mr-2" />} {t("Export as PDF")}
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => {
-                  window.open(apiUrl(`/api/transcripts/${id}/export/docx`), '_blank');
-                }}
+                disabled={isExporting}
+                onSelect={() => void handleExport("docx")}
               >
-                <FileText className="w-4 h-4 mr-2" /> {t("Export as DOCX")}
+                {isExporting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <FileText className="w-4 h-4 mr-2" />} {t("Export as DOCX")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -783,18 +815,16 @@ export default function TranscriptDetail() {
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem
-                onClick={() => {
-                  window.open(apiUrl(`/api/transcripts/${id}/export/pdf`), "_blank");
-                }}
+                disabled={isExporting}
+                onSelect={() => void handleExport("pdf")}
               >
-                <FileText className="w-4 h-4 mr-2" /> {t("Export as PDF")}
+                {isExporting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <FileText className="w-4 h-4 mr-2" />} {t("Export as PDF")}
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => {
-                  window.open(apiUrl(`/api/transcripts/${id}/export/docx`), "_blank");
-                }}
+                disabled={isExporting}
+                onSelect={() => void handleExport("docx")}
               >
-                <FileText className="w-4 h-4 mr-2" /> {t("Export as DOCX")}
+                {isExporting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <FileText className="w-4 h-4 mr-2" />} {t("Export as DOCX")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -897,7 +927,7 @@ export default function TranscriptDetail() {
 
           <div className="transcript-summary-layout">
             {showSummaryToc && (
-              <SummaryTableOfContents outline={preparedSummaryHtml.outline} scrollContainerRef={mainScrollRef} />
+              <SummaryTableOfContents outline={preparedSummaryHtml.outline} scrollContainerRef={mainScrollRef} title={summaryTocTitle} />
             )}
             {/* Accordion with Summary and Transcript */}
             <Accordion type="multiple" value={accordionValue} onValueChange={setAccordionValue} className="transcript-detail-accordion space-y-4">

@@ -123,7 +123,7 @@ Every source lands in the same local transcript library. From there, Scriber hel
 
 - Search across live recordings, YouTube videos, and imported files
 - Automatic or manual summaries
-- Follow structured File and YouTube summaries with a scroll-synchronized table of contents
+- Follow structured File and YouTube summaries with a scroll-synchronized table of contents whose label follows the summary language
 - Separate models and prompts for summaries and live post-processing
 - Copy transcript or summary independently
 - Export polished results to PDF or DOCX

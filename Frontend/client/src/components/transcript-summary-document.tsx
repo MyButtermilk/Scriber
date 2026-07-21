@@ -19,6 +19,7 @@ interface TranscriptSummaryDocumentProps {
 interface SummaryTableOfContentsProps {
   outline: SummaryOutlineItem[];
   scrollContainerRef: RefObject<HTMLElement | null>;
+  title: string;
 }
 
 interface SummaryTocPathGeometry {
@@ -84,7 +85,6 @@ function measureTocPath(
   });
 
   const height = Math.max(Math.ceil(list.scrollHeight), Math.ceil(currentY));
-  lineTo(currentX, height);
   return {
     activeLengths,
     d: commands.join(" "),
@@ -112,8 +112,7 @@ export function TranscriptSummaryDocument({ prepared }: TranscriptSummaryDocumen
   );
 }
 
-export function SummaryTableOfContents({ outline, scrollContainerRef }: SummaryTableOfContentsProps) {
-  const { t } = useI18n();
+export function SummaryTableOfContents({ outline, scrollContainerRef, title }: SummaryTableOfContentsProps) {
   const outlineKey = useMemo(() => outline.map(({ id }) => id).join("|"), [outline]);
   const [activeId, setActiveId] = useState(() => outline[0]?.id || "");
   const [pathGeometry, setPathGeometry] = useState<SummaryTocPathGeometry>(EMPTY_TOC_PATH);
@@ -337,8 +336,8 @@ export function SummaryTableOfContents({ outline, scrollContainerRef }: SummaryT
     ?? 0;
 
   return (
-    <nav ref={navRef} className="summary-toc" aria-label={t("Table of contents")}>
-      <p className="summary-toc__eyebrow">{t("Contents")}</p>
+    <nav ref={navRef} className="summary-toc" aria-label={title}>
+      <p className="summary-toc__eyebrow">{title}</p>
       <ol ref={listRef} className="summary-toc__list">
         {pathGeometry.d && (
           <svg
