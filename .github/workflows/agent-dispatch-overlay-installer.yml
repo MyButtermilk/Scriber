@@ -31,25 +31,29 @@ jobs:
           path = Path('.github/workflows/release-windows.yml')
           text = path.read_text(encoding='utf-8')
 
-          input_anchor = '''      refresh_release_cache_artifacts:
-                description: "Refresh large reusable release-cache artifacts"
-                required: false
-                type: boolean
-                default: false
-          '''
-          input_replacement = input_anchor + '''      upload_full_non_tag_installer:
-                description: "Upload the complete installer for a non-tag workflow run"
-                required: false
-                type: boolean
-                default: false
-          '''
+          input_anchor = (
+              "      refresh_release_cache_artifacts:\n"
+              "        description: \"Refresh large reusable release-cache artifacts\"\n"
+              "        required: false\n"
+              "        type: boolean\n"
+              "        default: false\n"
+          )
+          input_replacement = input_anchor + (
+              "      upload_full_non_tag_installer:\n"
+              "        description: \"Upload the complete installer for a non-tag workflow run\"\n"
+              "        required: false\n"
+              "        type: boolean\n"
+              "        default: false\n"
+          )
           env_anchor = "      SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}"
           env_replacement = "      SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_full_non_tag_installer == 'true') && '1' || vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}"
 
-          if text.count(input_anchor) != 1:
-              raise SystemExit(f'Expected one workflow_dispatch input anchor, found {text.count(input_anchor)}')
-          if text.count(env_anchor) != 1:
-              raise SystemExit(f'Expected one installer upload environment anchor, found {text.count(env_anchor)}')
+          input_count = text.count(input_anchor)
+          env_count = text.count(env_anchor)
+          if input_count != 1:
+              raise SystemExit(f'Expected one workflow_dispatch input anchor, found {input_count}')
+          if env_count != 1:
+              raise SystemExit(f'Expected one installer upload environment anchor, found {env_count}')
 
           text = text.replace(input_anchor, input_replacement, 1)
           text = text.replace(env_anchor, env_replacement, 1)
