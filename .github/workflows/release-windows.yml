@@ -8,6 +8,11 @@ on:
         required: false
         type: boolean
         default: false
+      upload_full_non_tag_installer:
+        description: "Upload the complete installer for a non-tag workflow run"
+        required: false
+        type: boolean
+        default: false
   push:
     tags:
       - "v*"
@@ -532,7 +537,7 @@ jobs:
       # for an explicit main-branch maintenance dispatch.
       SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
-      SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}
+      SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_full_non_tag_installer == 'true') && '1' || vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}
       SCRIBER_OUTLOOK_CLIENT_ID: ${{ vars.SCRIBER_OUTLOOK_CLIENT_ID }}
       CARGO_HOME: ${{ github.workspace }}/.cargo
       CARGO_INCREMENTAL: "1"
