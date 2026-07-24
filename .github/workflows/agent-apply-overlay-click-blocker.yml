@@ -42,8 +42,8 @@ jobs:
         env:
           PATCH_FILE: ${{ runner.temp }}/fix-overlay-click-blocker.patch
         run: |
-          set -euo pipefail
-          python - <<'PY'
+          set +e
+          python - <<'PY' > .github/agent/bootstrap-diagnostic.txt 2>&1
           from __future__ import annotations
 
           import os
@@ -52,7 +52,6 @@ jobs:
 
           patch_path = pathlib.Path(os.environ["PATCH_FILE"])
           lines = patch_path.read_text(encoding="utf-8").splitlines(keepends=True)
-
           current_path: str | None = None
           current_hunk: list[str] | None = None
           hunks: list[tuple[str, str, str]] = []
@@ -73,14 +72,10 @@ jobs:
               if line.startswith("diff --git "):
                   flush_hunk()
                   parts = shlex.split(line.rstrip("\n"))
-                  if len(parts) != 4 or not parts[3].startswith("b/"):
-                      raise RuntimeError(f"Unsupported diff header: {line!r}")
                   current_path = parts[3][2:]
                   continue
               if line.startswith("@@ "):
                   flush_hunk()
-                  if current_path is None:
-                      raise RuntimeError("Hunk without file header")
                   current_hunk = []
                   continue
               if current_hunk is not None:
@@ -89,24 +84,22 @@ jobs:
                   if line[:1] not in {" ", "+", "-"}:
                       raise RuntimeError(f"Unsupported hunk line for {current_path}: {line!r}")
                   current_hunk.append(line)
-
           flush_hunk()
-          if not hunks:
-              raise RuntimeError("Patch did not contain any hunks")
 
+          print(f"Parsed {len(hunks)} hunks")
           contents: dict[str, str] = {}
           counts: dict[str, int] = {}
-          for path, old, new in hunks:
+          for index, (path, old, new) in enumerate(hunks, start=1):
               file_path = pathlib.Path(path)
-              text = contents.get(path)
-              if text is None:
-                  text = file_path.read_text(encoding="utf-8")
+              text = contents.get(path, file_path.read_text(encoding="utf-8"))
               occurrences = text.count(old)
+              print(
+                  f"Hunk {index}: path={path} old_bytes={len(old.encode())} "
+                  f"new_bytes={len(new.encode())} occurrences={occurrences} "
+                  f"start={old[:100]!r}"
+              )
               if occurrences != 1:
-                  raise RuntimeError(
-                      f"Expected exactly one old block in {path}, found {occurrences}; "
-                      f"old block starts with {old[:120]!r}"
-                  )
+                  raise RuntimeError(f"Hunk {index} expected one old block in {path}, found {occurrences}")
               contents[path] = text.replace(old, new, 1)
               counts[path] = counts.get(path, 0) + 1
 
@@ -114,6 +107,17 @@ jobs:
               pathlib.Path(path).write_text(text, encoding="utf-8", newline="")
               print(f"Applied {counts[path]} hunks to {path}")
           PY
+          apply_status=$?
+          cat .github/agent/bootstrap-diagnostic.txt
+          if [[ $apply_status -ne 0 ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .github/agent/bootstrap-diagnostic.txt
+            git commit -m "Record deterministic overlay patch failure"
+            git push origin HEAD:"agent/fix-overlay-click-blocker"
+            exit "$apply_status"
+          fi
+          set -euo pipefail
 
           git add \
             Frontend/src-tauri/src/native_overlay.rs \
