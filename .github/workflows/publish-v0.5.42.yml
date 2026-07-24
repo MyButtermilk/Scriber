@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   publish-tag:
-    if: github.event.head_commit.message == 'Publish Scriber v0.5.42'
+    if: github.event.head_commit.message == 'Publish Scriber v0.5.42 retry'
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: v0.5.42
@@ -45,7 +45,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          existing_sha="$(gh api "repos/$REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha' 2>/dev/null || true)"
+          existing_sha="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')"
           if [[ -n "$existing_sha" ]]; then
             if [[ "$existing_sha" != "$TARGET_SHA" ]]; then
               echo "Tag $RELEASE_TAG already points to $existing_sha instead of $TARGET_SHA" >&2
@@ -53,8 +53,8 @@ jobs:
             fi
             echo "Tag $RELEASE_TAG already exists on the intended commit."
           else
-            jq -n --arg ref "refs/tags/$RELEASE_TAG" --arg sha "$TARGET_SHA" '{ref: $ref, sha: $sha}' |
-              gh api --method POST "repos/$REPOSITORY/git/refs" --input - >/dev/null
+            git tag "$RELEASE_TAG" "$TARGET_SHA"
+            git push origin "refs/tags/$RELEASE_TAG"
             echo "Created $RELEASE_TAG on $TARGET_SHA."
           fi
 
