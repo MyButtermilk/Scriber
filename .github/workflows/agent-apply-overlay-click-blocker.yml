@@ -89,10 +89,29 @@ jobs:
           print(f"Parsed {len(hunks)} hunks")
           contents: dict[str, str] = {}
           counts: dict[str, int] = {}
+          missing_closures_anchor = (
+              '            .map_err(|err| format!("overlay show failed: {err}"))\n\n'
+              '#[cfg(not(test))]\n'
+              'fn position_overlay_window'
+          )
+          repaired_closures_anchor = (
+              '            .map_err(|err| format!("overlay show failed: {err}"))\n'
+              '    }\n'
+              '}\n\n'
+              '#[cfg(not(test))]\n'
+              'fn position_overlay_window'
+          )
+
           for index, (path, old, new) in enumerate(hunks, start=1):
               file_path = pathlib.Path(path)
               text = contents.get(path, file_path.read_text(encoding="utf-8"))
               occurrences = text.count(old)
+              if occurrences == 0 and path == "Frontend/src-tauri/src/native_overlay.rs":
+                  repaired_old = old.replace(missing_closures_anchor, repaired_closures_anchor, 1)
+                  if repaired_old != old and text.count(repaired_old) == 1:
+                      print(f"Hunk {index}: restored two omitted old-side Rust closure lines")
+                      old = repaired_old
+                      occurrences = 1
               print(
                   f"Hunk {index}: path={path} old_bytes={len(old.encode())} "
                   f"new_bytes={len(new.encode())} occurrences={occurrences} "
