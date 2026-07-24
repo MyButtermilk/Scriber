@@ -1,0 +1,88 @@
+name: Add explicit full installer dispatch input
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+
+permissions:
+  contents: write
+
+jobs:
+  update-release-workflow:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'agent/explicit-full-installer-dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v7
+        with:
+          ref: agent/explicit-full-installer-dispatch
+          fetch-depth: 0
+
+      - name: Add workflow dispatch input
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/release-windows.yml')
+          text = path.read_text(encoding='utf-8')
+
+          input_anchor = (
+              "      refresh_release_cache_artifacts:\n"
+              "        description: \"Refresh large reusable release-cache artifacts\"\n"
+              "        required: false\n"
+              "        type: boolean\n"
+              "        default: false\n"
+          )
+          input_replacement = input_anchor + (
+              "      upload_full_non_tag_installer:\n"
+              "        description: \"Upload the complete installer for a non-tag workflow run\"\n"
+              "        required: false\n"
+              "        type: boolean\n"
+              "        default: false\n"
+          )
+          expression_start = '$' + '{{'
+          expression_end = '}}'
+          env_anchor = (
+              "      SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: "
+              + expression_start
+              + " vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER "
+              + expression_end
+          )
+          env_replacement = (
+              "      SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: "
+              + expression_start
+              + " (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_full_non_tag_installer == 'true') && '1' || vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER "
+              + expression_end
+          )
+
+          if text.count(input_anchor) != 1:
+              raise SystemExit(f'Expected exactly one workflow_dispatch input anchor, found {text.count(input_anchor)}')
+          if text.count(env_anchor) != 1:
+              raise SystemExit(f'Expected exactly one installer upload environment anchor, found {text.count(env_anchor)}')
+
+          text = text.replace(input_anchor, input_replacement, 1)
+          text = text.replace(env_anchor, env_replacement, 1)
+          path.write_text(text, encoding='utf-8', newline='')
+          PY
+
+          git add .github/workflows/release-windows.yml
+          git rm .github/workflows/agent-add-full-installer-input.yml
+          git diff --cached --check
+
+      - name: Commit release workflow update
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Allow explicit full non-tag installer builds"
+          git push origin HEAD:agent/explicit-full-installer-dispatch
