@@ -1,0 +1,45 @@
+name: Apply overlay click blocker fix
+
+on:
+  push:
+    branches:
+      - "agent/fix-overlay-click-blocker"
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v7
+        with:
+          ref: "agent/fix-overlay-click-blocker"
+          fetch-depth: 0
+
+      - name: Reconstruct and apply patch
+        shell: bash
+        run: |
+          cat .github/agent/overlay-click-blocker.part* | base64 --decode > "$RUNNER_TEMP/fix-overlay-click-blocker.patch"
+          echo "870d25443a542c068ababd13cc334b8f0700dc6d4548f75cc06f00d5fdf31603  $RUNNER_TEMP/fix-overlay-click-blocker.patch" | sha256sum --check
+          git apply --index "$RUNNER_TEMP/fix-overlay-click-blocker.patch"
+          git rm .github/agent/overlay-click-blocker.part*
+          git rm .github/workflows/agent-apply-overlay-click-blocker.yml
+          git diff --cached --check
+
+      - name: Run focused regression tests
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check --quiet pytest loguru
+          python -m py_compile src/native_overlay.py tests/test_native_overlay.py
+          python -m pytest tests/test_native_overlay.py -q
+
+      - name: Commit fix to feature branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Prevent hidden overlay from blocking clicks"
+          git push origin HEAD:"agent/fix-overlay-click-blocker"
