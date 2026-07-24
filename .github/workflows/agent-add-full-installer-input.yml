@@ -13,8 +13,9 @@ permissions:
   contents: write
 
 jobs:
-  update-release-workflow:
+  stage-release-workflow:
     if: >-
+      github.actor != 'github-actions[bot]' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.ref == 'agent/explicit-full-installer-dispatch'
     runs-on: ubuntu-latest
@@ -25,15 +26,15 @@ jobs:
           ref: agent/explicit-full-installer-dispatch
           fetch-depth: 0
 
-      - name: Add workflow dispatch input
+      - name: Generate modified release workflow as a normal staging blob
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
 
-          path = Path('.github/workflows/release-windows.yml')
-          text = path.read_text(encoding='utf-8')
+          source = Path('.github/workflows/release-windows.yml')
+          text = source.read_text(encoding='utf-8')
 
           input_anchor = (
               "      refresh_release_cache_artifacts:\n"
@@ -71,18 +72,21 @@ jobs:
 
           text = text.replace(input_anchor, input_replacement, 1)
           text = text.replace(env_anchor, env_replacement, 1)
-          path.write_text(text, encoding='utf-8', newline='')
+
+          staged = Path('.github/agent/release-windows.modified.txt')
+          staged.parent.mkdir(parents=True, exist_ok=True)
+          staged.write_text(text, encoding='utf-8', newline='')
+          print(f'Staged {staged} with {len(text.encode("utf-8"))} bytes')
           PY
 
-          git add .github/workflows/release-windows.yml
-          git rm .github/workflows/agent-add-full-installer-input.yml
+          git add .github/agent/release-windows.modified.txt
           git diff --cached --check
 
-      - name: Commit release workflow update
+      - name: Commit staging blob
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Allow explicit full non-tag installer builds"
+          git commit -m "Stage explicit full-installer workflow content"
           git push origin HEAD:agent/explicit-full-installer-dispatch
