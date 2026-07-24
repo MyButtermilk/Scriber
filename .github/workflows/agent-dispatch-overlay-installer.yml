@@ -45,8 +45,20 @@ jobs:
               "        type: boolean\n"
               "        default: false\n"
           )
-          env_anchor = "      SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}"
-          env_replacement = "      SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_full_non_tag_installer == 'true') && '1' || vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}"
+          expression_start = '$' + '{{'
+          expression_end = '}}'
+          env_anchor = (
+              "      SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: "
+              + expression_start
+              + " vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER "
+              + expression_end
+          )
+          env_replacement = (
+              "      SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: "
+              + expression_start
+              + " (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_full_non_tag_installer == 'true') && '1' || vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER "
+              + expression_end
+          )
 
           input_count = text.count(input_anchor)
           env_count = text.count(env_anchor)
