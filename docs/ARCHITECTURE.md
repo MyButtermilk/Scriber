@@ -995,8 +995,13 @@ configuration.
   Windows it is shown without activation so hotkey recordings do not flash the
   main taskbar icon while the user is working in another app. Prepare, show,
   and hide mutations are dispatched to Tauri's UI thread through a bounded
-  result channel; high-frequency audio-level updates remain off that blocking
-  path. Private shell IPC acknowledges every complete response before pipe
+  result channel. Hidden is a physical native-window postcondition: the shell
+  disables cursor hit testing before hide, verifies the OS-visible state before
+  publishing the hidden renderer event, and exposes both requested and native
+  visibility through `overlayStatus`. Terminal backend WebSocket messages must
+  not independently blank the Tauri renderer before that native transition
+  completes. High-frequency audio-level updates remain off the blocking path.
+  Private shell IPC acknowledges every complete response before pipe
   reclamation, contains worker panics, and retains rollback semantics only for
   successful audio lifecycle starts.
 - Initialize the Tauri updater plugin. Release builds provide updater endpoint,
