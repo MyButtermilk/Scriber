@@ -1,0 +1,77 @@
+name: Prepare release 0.5.42
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+
+permissions:
+  contents: write
+
+jobs:
+  bump-version:
+    if: >-
+      github.actor != 'github-actions[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'release/0.5.42'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release branch
+        uses: actions/checkout@v7
+        with:
+          ref: release/0.5.42
+          fetch-depth: 0
+
+      - name: Bump all product version sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          old = "0.5.41"
+          new = "0.5.42"
+
+          package = Path("Frontend/package.json")
+          package_text = package.read_text(encoding="utf-8")
+          package_old = f'"version": "{old}"'
+          if package_text.count(package_old) != 1:
+              raise SystemExit(f"Expected one package.json version {old}")
+          package.write_text(package_text.replace(package_old, f'"version": "{new}"', 1), encoding="utf-8", newline="")
+
+          lock = Path("Frontend/package-lock.json")
+          lock_text = lock.read_text(encoding="utf-8")
+          lock_old = f'"version": "{old}"'
+          if lock_text.count(lock_old) != 2:
+              raise SystemExit(f"Expected two package-lock.json versions {old}, found {lock_text.count(lock_old)}")
+          lock.write_text(lock_text.replace(lock_old, f'"version": "{new}"', 2), encoding="utf-8", newline="")
+
+          backend = Path("src/version.py")
+          backend_text = backend.read_text(encoding="utf-8")
+          backend_old = f'__version__ = "{old}"'
+          if backend_text.count(backend_old) != 1:
+              raise SystemExit(f"Expected one src/version.py version {old}")
+          backend.write_text(backend_text.replace(backend_old, f'__version__ = "{new}"', 1), encoding="utf-8", newline="")
+          PY
+
+          python -m json.tool Frontend/package.json >/dev/null
+          python -m json.tool Frontend/package-lock.json >/dev/null
+          grep -F '"version": "0.5.42"' Frontend/package.json
+          grep -F '__version__ = "0.5.42"' src/version.py
+
+          git add Frontend/package.json Frontend/package-lock.json src/version.py
+          git rm .github/workflows/release-bump-0.5.42.yml
+          git diff --cached --check
+
+      - name: Commit release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Release 0.5.42"
+          git push origin HEAD:release/0.5.42
