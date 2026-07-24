@@ -7,62 +7,86 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
   issues: write
 
 jobs:
   dispatch-installer:
-    if: startsWith(github.event.head_commit.message, 'Prevent hidden recording overlay from blocking clicks (#22)')
+    if: startsWith(github.event.head_commit.message, 'Retry full Windows installer for overlay fix')
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch full Windows installer build
+      - name: Check out main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Add an explicit full-installer dispatch input
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/release-windows.yml')
+          text = path.read_text(encoding='utf-8')
+
+          input_anchor = '''      refresh_release_cache_artifacts:
+                description: "Refresh large reusable release-cache artifacts"
+                required: false
+                type: boolean
+                default: false
+          '''
+          input_replacement = input_anchor + '''      upload_full_non_tag_installer:
+                description: "Upload the complete installer for a non-tag workflow run"
+                required: false
+                type: boolean
+                default: false
+          '''
+          env_anchor = "      SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}"
+          env_replacement = "      SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_full_non_tag_installer == 'true') && '1' || vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}"
+
+          if text.count(input_anchor) != 1:
+              raise SystemExit(f'Expected one workflow_dispatch input anchor, found {text.count(input_anchor)}')
+          if text.count(env_anchor) != 1:
+              raise SystemExit(f'Expected one installer upload environment anchor, found {text.count(env_anchor)}')
+
+          text = text.replace(input_anchor, input_replacement, 1)
+          text = text.replace(env_anchor, env_replacement, 1)
+          path.write_text(text, encoding='utf-8', newline='')
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/release-windows.yml
+          git diff --cached --check
+          git commit -m "Allow explicit full non-tag installer builds"
+          git push origin HEAD:main
+          echo "DISPATCH_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Dispatch the full Windows installer build
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          jq -n '{
+            ref: "main",
+            inputs: {
+              refresh_release_cache_artifacts: "false",
+              upload_full_non_tag_installer: "true"
+            }
+          }' | gh api --method POST \
+            "repos/$REPOSITORY/actions/workflows/release-windows.yml/dispatches" \
+            --input - >/dev/null
 
-          variable_name="SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER"
-          original_exists=false
-          original_value=""
           release_run_id=""
           release_run_url=""
-          build_job_status="not-found"
-
-          if variable_json="$(gh api "repos/$REPOSITORY/actions/variables/$variable_name" 2>/dev/null)"; then
-            original_exists=true
-            original_value="$(jq -r '.value' <<<"$variable_json")"
-            gh api --method PATCH "repos/$REPOSITORY/actions/variables/$variable_name" \
-              -f name="$variable_name" \
-              -f value="1" >/dev/null
-          else
-            gh api --method POST "repos/$REPOSITORY/actions/variables" \
-              -f name="$variable_name" \
-              -f value="1" >/dev/null
-          fi
-
-          restore_variable() {
-            if [[ "$original_exists" == "true" ]]; then
-              gh api --method PATCH "repos/$REPOSITORY/actions/variables/$variable_name" \
-                -f name="$variable_name" \
-                -f value="$original_value" >/dev/null || true
-            else
-              gh api --method DELETE "repos/$REPOSITORY/actions/variables/$variable_name" >/dev/null || true
-            fi
-          }
-          trap restore_variable EXIT
-
-          gh api --method POST \
-            "repos/$REPOSITORY/actions/workflows/release-windows.yml/dispatches" \
-            -f ref="main" \
-            -F 'inputs[refresh_release_cache_artifacts]=false' >/dev/null
-
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 90); do
             runs_json="$(gh api "repos/$REPOSITORY/actions/workflows/release-windows.yml/runs?event=workflow_dispatch&branch=main&per_page=30")"
-            release_run_id="$(jq -r --arg sha "$SOURCE_SHA" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.created_at) | last | .id // empty' <<<"$runs_json")"
-            release_run_url="$(jq -r --arg sha "$SOURCE_SHA" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.created_at) | last | .html_url // empty' <<<"$runs_json")"
+            release_run_id="$(jq -r --arg sha "$DISPATCH_SHA" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.created_at) | last | .id // empty' <<<"$runs_json")"
+            release_run_url="$(jq -r --arg sha "$DISPATCH_SHA" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.created_at) | last | .html_url // empty' <<<"$runs_json")"
             if [[ -n "$release_run_id" ]]; then
               break
             fi
@@ -71,15 +95,25 @@ jobs:
 
           if [[ -z "$release_run_id" ]]; then
             gh issue comment 21 --repo "$REPOSITORY" --body \
-              "The full Windows installer workflow dispatch was accepted for commit \`$SOURCE_SHA\`, but its run ID could not be resolved within five minutes."
+              "The full Windows installer dispatch was submitted for commit \`$DISPATCH_SHA\`, but its run ID could not be resolved within the bounded wait."
             exit 1
           fi
 
           gh issue comment 21 --repo "$REPOSITORY" --body \
             "Full Windows installer build started for the merged overlay fix: $release_run_url"
+          echo "RELEASE_RUN_ID=$release_run_id" >> "$GITHUB_ENV"
+          echo "RELEASE_RUN_URL=$release_run_url" >> "$GITHUB_ENV"
 
+      - name: Wait for the installer job to start
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          build_job_status="not-found"
           for _ in $(seq 1 240); do
-            jobs_json="$(gh api "repos/$REPOSITORY/actions/runs/$release_run_id/jobs?per_page=100")"
+            jobs_json="$(gh api "repos/$REPOSITORY/actions/runs/$RELEASE_RUN_ID/jobs?per_page=100")"
             build_job_status="$(jq -r '[.jobs[] | select(.name == "Build and sign Windows installer")] | last | .status // "not-found"' <<<"$jobs_json")"
             if [[ "$build_job_status" == "in_progress" || "$build_job_status" == "completed" ]]; then
               break
@@ -89,9 +123,19 @@ jobs:
 
           if [[ "$build_job_status" != "in_progress" && "$build_job_status" != "completed" ]]; then
             gh issue comment 21 --repo "$REPOSITORY" --body \
-              "The Windows release run was created, but the installer job did not start before the bounded wait expired: $release_run_url"
+              "The Windows release run was created, but its installer job did not start before the bounded wait expired: $RELEASE_RUN_URL"
             exit 1
           fi
 
           echo "Windows installer job status: $build_job_status"
-          echo "Release run: $release_run_url"
+
+      - name: Remove the one-shot dispatcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          git pull --ff-only origin main
+          git rm .github/workflows/agent-dispatch-overlay-installer.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Remove one-shot overlay installer dispatcher"
+          git push origin HEAD:main
