@@ -1,16 +1,15 @@
 name: Apply overlay click blocker fix
 
 on:
-  push:
-    branches:
-      - "agent/fix-overlay-click-blocker"
   pull_request:
     branches:
       - main
     types:
-      - opened
-      - reopened
       - synchronize
+
+concurrency:
+  group: apply-overlay-click-blocker-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -19,9 +18,8 @@ jobs:
   apply-fix:
     if: >-
       github.actor != 'github-actions[bot]' &&
-      (github.event_name == 'push' ||
-       (github.event.pull_request.head.repo.full_name == github.repository &&
-        github.event.pull_request.head.ref == 'agent/fix-overlay-click-blocker'))
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'agent/fix-overlay-click-blocker'
     runs-on: ubuntu-latest
     steps:
       - name: Check out feature branch
@@ -33,9 +31,18 @@ jobs:
       - name: Reconstruct and apply patch
         shell: bash
         run: |
-          cat .github/agent/overlay-click-blocker.part* | base64 --decode > "$RUNNER_TEMP/fix-overlay-click-blocker.patch"
+          set -euo pipefail
+          cat .github/agent/overlay-click-blocker.part* > "$RUNNER_TEMP/fix-overlay-click-blocker.patch.b64"
+          base64 --decode "$RUNNER_TEMP/fix-overlay-click-blocker.patch.b64" > "$RUNNER_TEMP/fix-overlay-click-blocker.patch"
           echo "870d25443a542c068ababd13cc334b8f0700dc6d4548f75cc06f00d5fdf31603  $RUNNER_TEMP/fix-overlay-click-blocker.patch" | sha256sum --check
-          git apply --index "$RUNNER_TEMP/fix-overlay-click-blocker.patch"
+          git apply --check "$RUNNER_TEMP/fix-overlay-click-blocker.patch"
+          git apply "$RUNNER_TEMP/fix-overlay-click-blocker.patch"
+          git add \
+            Frontend/src-tauri/src/native_overlay.rs \
+            Frontend/client/src/components/NativeRecordingOverlay.tsx \
+            docs/ARCHITECTURE.md \
+            src/native_overlay.py \
+            tests/test_native_overlay.py
           git rm .github/agent/overlay-click-blocker.part*
           git rm .github/workflows/agent-apply-overlay-click-blocker.yml
           git diff --cached --check
