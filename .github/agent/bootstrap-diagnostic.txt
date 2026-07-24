@@ -1,0 +1,29 @@
+Reconstructing patch
+Expected SHA256: 870d25443a542c068ababd13cc334b8f0700dc6d4548f75cc06f00d5fdf31603
+Actual SHA256:   870d25443a542c068ababd13cc334b8f0700dc6d4548f75cc06f00d5fdf31603
+Patch bytes:     14033
+Checking patch
+checking file Frontend/src-tauri/src/native_overlay.rs
+Hunk #1 succeeded at 7 (offset -1 lines).
+Hunk #2 succeeded at 31 (offset -1 lines).
+Hunk #3 succeeded at 43 (offset -2 lines).
+Hunk #4 succeeded at 97 (offset -2 lines).
+Hunk #5 succeeded at 205 (offset -2 lines).
+Hunk #6 succeeded at 221 (offset -2 lines).
+Hunk #7 succeeded at 258 (offset -2 lines).
+Hunk #8 succeeded at 277 (offset -1 lines).
+Hunk #9 succeeded at 371 (offset -1 lines).
+Hunk #10 FAILED at 384.
+Hunk #11 succeeded at 501 (offset 5 lines).
+Not deleting file Frontend/src-tauri/src/native_overlay.rs as content differs from patch
+1 out of 11 hunks FAILED
+checking file Frontend/client/src/components/NativeRecordingOverlay.tsx
+Hunk #1 succeeded at 327 (offset -1 lines).
+Not deleting file Frontend/client/src/components/NativeRecordingOverlay.tsx as content differs from patch
+checking file docs/ARCHITECTURE.md
+Hunk #1 succeeded at 997 (offset -3 lines).
+Not deleting file docs/ARCHITECTURE.md as content differs from patch
+checking file src/native_overlay.py
+Not deleting file src/native_overlay.py as content differs from patch
+checking file tests/test_native_overlay.py
+Not deleting file tests/test_native_overlay.py as content differs from patch
