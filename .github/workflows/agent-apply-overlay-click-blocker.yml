@@ -13,6 +13,7 @@ concurrency:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   apply-fix:
@@ -29,14 +30,36 @@ jobs:
           fetch-depth: 0
 
       - name: Reconstruct and apply patch
+        id: apply
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          cat .github/agent/overlay-click-blocker.part* > "$RUNNER_TEMP/fix-overlay-click-blocker.patch.b64"
-          base64 --decode "$RUNNER_TEMP/fix-overlay-click-blocker.patch.b64" > "$RUNNER_TEMP/fix-overlay-click-blocker.patch"
-          echo "870d25443a542c068ababd13cc334b8f0700dc6d4548f75cc06f00d5fdf31603  $RUNNER_TEMP/fix-overlay-click-blocker.patch" | sha256sum --check
-          git apply --check "$RUNNER_TEMP/fix-overlay-click-blocker.patch"
-          git apply "$RUNNER_TEMP/fix-overlay-click-blocker.patch"
+          set -uo pipefail
+          diagnostic="$RUNNER_TEMP/overlay-patch-diagnostic.txt"
+          patch_file="$RUNNER_TEMP/fix-overlay-click-blocker.patch"
+          {
+            cat .github/agent/overlay-click-blocker.part* > "$patch_file.b64"
+            base64 --decode "$patch_file.b64" > "$patch_file"
+            echo "Expected SHA256: 870d25443a542c068ababd13cc334b8f0700dc6d4548f75cc06f00d5fdf31603"
+            echo "Actual SHA256:   $(sha256sum "$patch_file" | cut -d' ' -f1)"
+            echo "Patch bytes:     $(wc -c < "$patch_file")"
+            patch --dry-run --batch --forward --fuzz=0 -p1 < "$patch_file"
+          } > >(tee "$diagnostic") 2>&1
+          apply_status=${PIPESTATUS[0]}
+          if [[ $apply_status -ne 0 ]]; then
+            {
+              echo "## Overlay patch bootstrap failed"
+              echo
+              echo '```text'
+              cat "$diagnostic"
+              echo '```'
+            } > "$RUNNER_TEMP/overlay-patch-comment.md"
+            gh issue comment 21 --body-file "$RUNNER_TEMP/overlay-patch-comment.md"
+            exit "$apply_status"
+          fi
+
+          patch --batch --forward --fuzz=0 -p1 < "$patch_file"
           git add \
             Frontend/src-tauri/src/native_overlay.rs \
             Frontend/client/src/components/NativeRecordingOverlay.tsx \
