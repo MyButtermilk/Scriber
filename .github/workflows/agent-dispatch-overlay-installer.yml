@@ -1,0 +1,97 @@
+name: Dispatch overlay fix Windows installer
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+jobs:
+  dispatch-installer:
+    if: startsWith(github.event.head_commit.message, 'Prevent hidden recording overlay from blocking clicks (#22)')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch full Windows installer build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          variable_name="SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER"
+          original_exists=false
+          original_value=""
+          release_run_id=""
+          release_run_url=""
+          build_job_status="not-found"
+
+          if variable_json="$(gh api "repos/$REPOSITORY/actions/variables/$variable_name" 2>/dev/null)"; then
+            original_exists=true
+            original_value="$(jq -r '.value' <<<"$variable_json")"
+            gh api --method PATCH "repos/$REPOSITORY/actions/variables/$variable_name" \
+              -f name="$variable_name" \
+              -f value="1" >/dev/null
+          else
+            gh api --method POST "repos/$REPOSITORY/actions/variables" \
+              -f name="$variable_name" \
+              -f value="1" >/dev/null
+          fi
+
+          restore_variable() {
+            if [[ "$original_exists" == "true" ]]; then
+              gh api --method PATCH "repos/$REPOSITORY/actions/variables/$variable_name" \
+                -f name="$variable_name" \
+                -f value="$original_value" >/dev/null || true
+            else
+              gh api --method DELETE "repos/$REPOSITORY/actions/variables/$variable_name" >/dev/null || true
+            fi
+          }
+          trap restore_variable EXIT
+
+          gh api --method POST \
+            "repos/$REPOSITORY/actions/workflows/release-windows.yml/dispatches" \
+            -f ref="main" \
+            -F 'inputs[refresh_release_cache_artifacts]=false' >/dev/null
+
+          for _ in $(seq 1 60); do
+            runs_json="$(gh api "repos/$REPOSITORY/actions/workflows/release-windows.yml/runs?event=workflow_dispatch&branch=main&per_page=30")"
+            release_run_id="$(jq -r --arg sha "$SOURCE_SHA" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.created_at) | last | .id // empty' <<<"$runs_json")"
+            release_run_url="$(jq -r --arg sha "$SOURCE_SHA" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.created_at) | last | .html_url // empty' <<<"$runs_json")"
+            if [[ -n "$release_run_id" ]]; then
+              break
+            fi
+            sleep 5
+          done
+
+          if [[ -z "$release_run_id" ]]; then
+            gh issue comment 21 --repo "$REPOSITORY" --body \
+              "The full Windows installer workflow dispatch was accepted for commit \`$SOURCE_SHA\`, but its run ID could not be resolved within five minutes."
+            exit 1
+          fi
+
+          gh issue comment 21 --repo "$REPOSITORY" --body \
+            "Full Windows installer build started for the merged overlay fix: $release_run_url"
+
+          for _ in $(seq 1 240); do
+            jobs_json="$(gh api "repos/$REPOSITORY/actions/runs/$release_run_id/jobs?per_page=100")"
+            build_job_status="$(jq -r '[.jobs[] | select(.name == "Build and sign Windows installer")] | last | .status // "not-found"' <<<"$jobs_json")"
+            if [[ "$build_job_status" == "in_progress" || "$build_job_status" == "completed" ]]; then
+              break
+            fi
+            sleep 10
+          done
+
+          if [[ "$build_job_status" != "in_progress" && "$build_job_status" != "completed" ]]; then
+            gh issue comment 21 --repo "$REPOSITORY" --body \
+              "The Windows release run was created, but the installer job did not start before the bounded wait expired: $release_run_url"
+            exit 1
+          fi
+
+          echo "Windows installer job status: $build_job_status"
+          echo "Release run: $release_run_url"
