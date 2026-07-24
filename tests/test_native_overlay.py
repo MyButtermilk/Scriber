@@ -1,11 +1,27 @@
 from src import native_overlay
 
 
-def _response(*, success: bool, mode: str = "hidden", visible: bool = False):
+def _response(
+    *,
+    success: bool,
+    mode: str = "hidden",
+    visible: bool = False,
+    native_visible: bool | None = None,
+    cursor_events_ignored: bool | None = None,
+):
+    if native_visible is None:
+        native_visible = visible
+    if cursor_events_ignored is None:
+        cursor_events_ignored = not visible
     return {
         "success": success,
         "errorCode": None if success else "transportError",
-        "payload": {"mode": mode, "visible": visible},
+        "payload": {
+            "mode": mode,
+            "visible": visible,
+            "nativeVisible": native_visible,
+            "cursorEventsIgnored": cursor_events_ignored,
+        },
     }
 
 
@@ -103,6 +119,79 @@ def test_hide_overlay_retries_when_native_state_is_still_visible(monkeypatch):
         "overlayHide",
         "overlayStatus",
         "overlayHide",
+    ]
+
+
+def test_hide_overlay_retries_when_logical_state_is_hidden_but_native_window_is_visible(
+    monkeypatch,
+):
+    responses = iter(
+        [
+            _response(
+                success=False,
+                mode="hidden",
+                visible=False,
+                native_visible=True,
+                cursor_events_ignored=True,
+            ),
+            _response(
+                success=True,
+                mode="hidden",
+                visible=False,
+                native_visible=True,
+                cursor_events_ignored=True,
+            ),
+            _response(success=True, mode="hidden", visible=False),
+        ]
+    )
+    calls = []
+
+    def fake_call(command, payload=None, **kwargs):
+        calls.append((command, payload, kwargs))
+        return next(responses)
+
+    monkeypatch.setattr(native_overlay, "_call_overlay_response", fake_call)
+
+    response = native_overlay._hide_overlay()
+
+    assert response["success"] is True
+    assert response["payload"]["nativeVisible"] is False
+    assert [call[0] for call in calls] == [
+        "overlayHide",
+        "overlayStatus",
+        "overlayHide",
+    ]
+
+
+def test_show_overlay_retries_until_cursor_events_are_enabled(monkeypatch):
+    responses = iter(
+        [
+            _response(success=False),
+            _response(
+                success=True,
+                mode="recording",
+                visible=True,
+                native_visible=True,
+                cursor_events_ignored=True,
+            ),
+            _response(success=True, mode="recording", visible=True),
+        ]
+    )
+    calls = []
+
+    def fake_call(command, payload=None, **_kwargs):
+        calls.append((command, payload))
+        return next(responses)
+
+    monkeypatch.setattr(native_overlay, "_call_overlay_response", fake_call)
+
+    response = native_overlay._show_overlay_mode("recording")
+
+    assert response["success"] is True
+    assert calls == [
+        ("overlayShow", {"mode": "recording"}),
+        ("overlayStatus", None),
+        ("overlayShow", {"mode": "recording"}),
     ]
 
 

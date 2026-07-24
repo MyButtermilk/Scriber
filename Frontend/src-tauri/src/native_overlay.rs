@@ -7,7 +7,9 @@ use std::{sync::mpsc, time::Duration};
 #[cfg(not(test))]
 use tauri::{Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 #[cfg(all(not(test), windows))]
-use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE,
+};
 
 pub const OVERLAY_WINDOW_LABEL: &str = "recording-overlay";
 #[cfg(not(test))]
@@ -28,6 +30,7 @@ static OVERLAY_MUTATION_LANE: OnceLock<Mutex<()>> = OnceLock::new();
 struct OverlayState {
     mode: String,
     visible: bool,
+    cursor_events_ignored: bool,
     last_rms: f64,
     window_created: bool,
     renderer_ready: bool,
@@ -40,6 +43,7 @@ impl Default for OverlayState {
         Self {
             mode: "hidden".to_string(),
             visible: false,
+            cursor_events_ignored: true,
             last_rms: 0.0,
             window_created: false,
             renderer_ready: false,
@@ -93,6 +97,8 @@ pub fn create_overlay_window(app: &tauri::App) -> tauri::Result<()> {
     .focusable(false)
     .visible(false)
     .build()?;
+    window.set_ignore_cursor_events(true)?;
+    mark_overlay_cursor_events_ignored(true);
     mark_overlay_window_created();
     mark_overlay_renderer_unready();
     position_overlay_window(&window)?;
@@ -199,6 +205,8 @@ fn show_overlay_mode(mode: String) -> Result<Value, String> {
     let app = overlay_app_handle()?;
     let window = ensure_overlay_window(&app, &mode)?;
     ensure_overlay_positioned(&window).map_err(|err| format!("overlay position failed: {err}"))?;
+    set_overlay_cursor_events_ignored(&window, true)?;
+    show_overlay_window(&window)?;
     let event_payload = update_state(|state| {
         state.mode = mode.clone();
         state.visible = true;
@@ -213,9 +221,9 @@ fn show_overlay_mode(mode: String) -> Result<Value, String> {
             rms: None,
         }
     });
-    show_overlay_window(&window)?;
     app.emit_to(OVERLAY_WINDOW_LABEL, OVERLAY_EVENT, event_payload)
         .map_err(|err| format!("overlay event emit failed: {err}"))?;
+    set_overlay_cursor_events_ignored(&window, false)?;
     Ok(status_payload())
 }
 
@@ -250,7 +258,14 @@ fn show_overlay_mode(mode: String) -> Result<Value, String> {
 #[cfg(not(test))]
 fn hide_overlay() -> Result<Value, String> {
     let app = overlay_app_handle()?;
-    let window = overlay_window(&app);
+    if let Some(window) = overlay_window(&app) {
+        // Make the stale window harmless before asking the OS to hide it. If this
+        // best-effort guard fails, the physical hide remains the required postcondition.
+        let _ = set_overlay_cursor_events_ignored(&window, true);
+        hide_overlay_window(&window)?;
+    } else {
+        mark_overlay_cursor_events_ignored(true);
+    }
     let event_payload = update_state(|state| {
         state.mode = "hidden".to_string();
         state.visible = false;
@@ -262,12 +277,8 @@ fn hide_overlay() -> Result<Value, String> {
             rms: None,
         }
     });
+    // Physical visibility is already false, so renderer delivery is best effort.
     let _ = app.emit_to(OVERLAY_WINDOW_LABEL, OVERLAY_EVENT, event_payload);
-    if let Some(window) = window {
-        window
-            .hide()
-            .map_err(|err| format!("overlay hide failed: {err}"))?;
-    }
     Ok(status_payload())
 }
 
@@ -360,6 +371,7 @@ fn ensure_overlay_window(
     .visible(false)
     .build()
     .map_err(|err| format!("overlay window create failed: {err}"))?;
+    set_overlay_cursor_events_ignored(&window, true)?;
     mark_overlay_window_created();
     mark_overlay_renderer_unready();
     position_overlay_window(&window).map_err(|err| format!("overlay position failed: {err}"))?;
@@ -377,15 +389,93 @@ fn show_overlay_window(window: &WebviewWindow) -> Result<(), String> {
         unsafe {
             ShowWindow(hwnd.0, SW_SHOWNOACTIVATE);
         }
-        Ok(())
     }
     #[cfg(not(windows))]
     {
         window
             .show()
-            .map_err(|err| format!("overlay show failed: {err}"))
+            .map_err(|err| format!("overlay show failed: {err}"))?;
+    }
+    if !overlay_window_is_visible(window)? {
+        return Err("overlay show failed: native window remained hidden".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn hide_overlay_window(window: &WebviewWindow) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let hwnd = window
+            .hwnd()
+            .map_err(|err| format!("overlay window handle lookup failed: {err}"))?;
+        unsafe {
+            ShowWindow(hwnd.0, SW_HIDE);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        window
+            .hide()
+            .map_err(|err| format!("overlay hide failed: {err}"))?;
+    }
+    if overlay_window_is_visible(window)? {
+        return Err("overlay hide failed: native window remained visible".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn overlay_window_is_visible(window: &WebviewWindow) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        let hwnd = window
+            .hwnd()
+            .map_err(|err| format!("overlay window handle lookup failed: {err}"))?;
+        Ok(unsafe { IsWindowVisible(hwnd.0) != 0 })
+    }
+    #[cfg(not(windows))]
+    {
+        window
+            .is_visible()
+            .map_err(|err| format!("overlay visibility lookup failed: {err}"))
     }
 }
+
+#[cfg(not(test))]
+fn set_overlay_cursor_events_ignored(
+    window: &WebviewWindow,
+    ignored: bool,
+) -> Result<(), String> {
+    window
+        .set_ignore_cursor_events(ignored)
+        .map_err(|err| format!("overlay cursor-event update failed: {err}"))?;
+    mark_overlay_cursor_events_ignored(ignored);
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn native_overlay_visibility() -> Option<bool> {
+    let Some(app) = OVERLAY_APP_HANDLE.get() else {
+        return Some(false);
+    };
+    let Some(window) = overlay_window(app) else {
+        return Some(false);
+    };
+    overlay_window_is_visible(&window).ok()
+}
+
+#[cfg(test)]
+fn native_overlay_visibility() -> Option<bool> {
+    Some(false)
+}
+
+fn mark_overlay_cursor_events_ignored(ignored: bool) {
+    update_state(|state| {
+        state.cursor_events_ignored = ignored;
+    });
+}
+
 
 #[cfg(not(test))]
 fn position_overlay_window(window: &WebviewWindow) -> tauri::Result<()> {
@@ -489,7 +579,10 @@ fn status_payload() -> Value {
         "windowLabel": OVERLAY_WINDOW_LABEL,
         "available": overlay_runtime_available(),
         "mode": state.mode,
+        "requestedVisible": state.visible,
         "visible": state.visible,
+        "nativeVisible": native_overlay_visibility(),
+        "cursorEventsIgnored": state.cursor_events_ignored,
         "lastRms": state.last_rms,
         "windowCreated": state.window_created,
         "rendererReady": state.renderer_ready,

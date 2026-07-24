@@ -69,11 +69,18 @@ def _overlay_state_matches(
     if response.get("success") is not True:
         return False
     payload = response.get("payload")
-    return bool(
-        isinstance(payload, dict)
-        and str(payload.get("mode") or "") == mode
-        and payload.get("visible") is visible
-    )
+    if not isinstance(payload, dict):
+        return False
+    if str(payload.get("mode") or "") != mode or payload.get("visible") is not visible:
+        return False
+
+    # Logical renderer state is not proof that the native always-on-top window
+    # completed its transition. A transparent HWND can remain hit-testable after
+    # React has already removed every visible overlay element.
+    native_visible = payload.get("nativeVisible")
+    if visible:
+        return native_visible is True and payload.get("cursorEventsIgnored") is False
+    return native_visible is False
 
 
 def _show_overlay_mode(mode: str) -> dict[str, Any]:

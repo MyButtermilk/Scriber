@@ -327,7 +327,12 @@ export default function NativeRecordingOverlay() {
       case "session_finished":
       case "error":
         activeSessionIdRef.current = null;
-        setMode("hidden");
+        // In the desktop runtime, only the native overlay event may hide the
+        // renderer. A terminal WebSocket message does not prove that the
+        // always-on-top native window has completed its physical hide.
+        if (!isTauriRuntime()) {
+          setMode("hidden");
+        }
         break;
       case "settings_updated":
         void refreshVisualizerBarCount();
@@ -449,7 +454,7 @@ export default function NativeRecordingOverlay() {
     try {
       await requestLiveMicStop();
     } catch {
-      // The backend state stream will hide the overlay if stop already won.
+      // The authoritative native transition will hide the overlay if stop already won.
     }
   }, []);
 
