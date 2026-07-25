@@ -62,6 +62,24 @@ jobs:
           gh issue comment 25 --repo "$GITHUB_REPOSITORY" --body "Corrected Celeris implementation run started. Workflow: ${run_url}" >/dev/null
 
           base64 --decode scripts/.implement_celeris_v0_5_43.py.gz.b64 | gzip --decompress > scripts/implement_celeris_v0_5_43.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("scripts/implement_celeris_v0_5_43.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''replace_once(
+              "src/meeting_analysis.py",
+              '            max_output_tokens=4096,\\n',
+              '            max_output_tokens=single_output_tokens,\\n',
+          )'''
+          new = '''replace_once(
+              "src/meeting_analysis.py",
+              '            stage="single",\\n            model=model,\\n            generate=generate,\\n            max_output_tokens=4096,\\n',
+              '            stage="single",\\n            model=model,\\n            generate=generate,\\n            max_output_tokens=single_output_tokens,\\n',
+          )'''
+          if old not in text:
+              raise SystemExit("Expected Meeting single-pass patch block was not found")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
           python scripts/implement_celeris_v0_5_43.py
 
           python -m pip install --upgrade pip
