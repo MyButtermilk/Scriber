@@ -56,8 +56,22 @@ jobs:
             local exit_code=$?
             local failed_line="${1:-unknown}"
             local failed_command="${2:-unknown}"
+            local diagnostic=""
+            local body=""
             failed_command="${failed_command:0:400}"
-            gh issue comment 25 --repo "$GITHUB_REPOSITORY" --body "Celeris integration workflow failed at shell line ${failed_line} while running: \`${failed_command}\`. Workflow: ${run_url}" >/dev/null 2>&1 || true
+            if [[ -s /tmp/patch.log ]]; then
+              diagnostic="$(tail -c 5000 /tmp/patch.log)"
+            fi
+            body="Celeris integration workflow failed at shell line ${failed_line} while running: \`${failed_command}\`. Workflow: ${run_url}"
+            if [[ -n "$diagnostic" ]]; then
+              body="${body}
+
+Diagnostic output:
+\`\`\`
+${diagnostic}
+\`\`\`"
+            fi
+            gh issue comment 25 --repo "$GITHUB_REPOSITORY" --body "$body" >/dev/null 2>&1 || true
             exit "$exit_code"
           }
           trap 'failure_comment "$LINENO" "$BASH_COMMAND"' ERR
@@ -65,7 +79,8 @@ jobs:
           gh issue comment 25 --repo "$GITHUB_REPOSITORY" --body "Implementation and validation started in GitHub Actions. Workflow: ${run_url}" >/dev/null
 
           base64 --decode scripts/.implement_celeris_v0_5_43.py.gz.b64 | gzip --decompress > /tmp/implement_celeris_v0_5_43.py
-          python /tmp/implement_celeris_v0_5_43.py
+          python /tmp/implement_celeris_v0_5_43.py 2>&1 | tee /tmp/patch.log
+          rm -f /tmp/patch.log
 
           python -m pip install --upgrade pip
           python -m pip install pytest pytest-asyncio aiohttp loguru python-dotenv
