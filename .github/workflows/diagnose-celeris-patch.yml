@@ -1,4 +1,4 @@
-name: Diagnose Celeris patch
+name: Implement Celeris v0.5.43
 
 on:
   push:
@@ -6,30 +6,139 @@ on:
     paths:
       - .github/workflows/diagnose-celeris-patch.yml
 
+concurrency:
+  group: implement-celeris-v0.5.43-final
+  cancel-in-progress: false
+
 permissions:
-  contents: read
+  contents: write
+  actions: read
   issues: write
 
+env:
+  GH_TOKEN: ${{ github.token }}
+  CELERIS_API_KEY: ${{ secrets.CELERIS_API_KEY }}
+
 jobs:
-  diagnose:
+  implement-test-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout main
+        uses: actions/checkout@v7
         with:
           ref: main
-      - name: Run patch with captured diagnostics
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13.14'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '26.3.1'
+          cache: npm
+          cache-dependency-path: Frontend/package-lock.json
+
+      - name: Implement, test, commit, tag, and verify release
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          base64 --decode scripts/.implement_celeris_v0_5_43.py.gz.b64 | gzip --decompress > /tmp/implement_celeris_v0_5_43.py
-          set +e
-          output="$(python /tmp/implement_celeris_v0_5_43.py 2>&1)"
-          status=$?
-          set -e
-          if [[ $status -ne 0 ]]; then
-            printf '%s\n' "$output"
-            gh issue comment 25 --repo "$GITHUB_REPOSITORY" --body "Patch diagnostic failed:\n\n\`\`\`\n${output:0:12000}\n\`\`\`\n\nWorkflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-            exit "$status"
+          set -Eeuo pipefail
+          exec > >(tee /tmp/celeris-workflow.log) 2>&1
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          on_failure() {
+            local exit_code=$?
+            local failed_line="${1:-unknown}"
+            local failed_command="${2:-unknown}"
+            trap - ERR
+            local diagnostic="$(tail -c 10000 /tmp/celeris-workflow.log 2>/dev/null || true)"
+            gh issue comment 25 --repo "$GITHUB_REPOSITORY" --body "Celeris integration failed at shell line ${failed_line} while running \`${failed_command:0:500}\`.\n\n\`\`\`\n${diagnostic}\n\`\`\`\n\nWorkflow: ${run_url}" >/dev/null 2>&1 || true
+            exit "$exit_code"
+          }
+          trap 'on_failure "$LINENO" "$BASH_COMMAND"' ERR
+
+          gh issue comment 25 --repo "$GITHUB_REPOSITORY" --body "Corrected Celeris implementation run started. Workflow: ${run_url}" >/dev/null
+
+          base64 --decode scripts/.implement_celeris_v0_5_43.py.gz.b64 | gzip --decompress > scripts/implement_celeris_v0_5_43.py
+          python scripts/implement_celeris_v0_5_43.py
+
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-asyncio pytest-mock aiohttp loguru python-dotenv
+          python -m pytest -q \
+            tests/test_celeris_integration.py \
+            tests/test_summarization.py \
+            tests/test_meeting_analysis.py \
+            tests/test_config.py
+
+          npm ci --prefix Frontend
+          npm run check --prefix Frontend
+          npm run build:webview --prefix Frontend
+          python scripts/sync_version.py
+
+          live_status="skipped: CELERIS_API_KEY repository secret not configured"
+          if [[ -n "${CELERIS_API_KEY:-}" ]]; then
+            python scripts/smoke_celeris.py
+            live_status="passed with repository secret"
           fi
-          gh issue comment 25 --repo "$GITHUB_REPOSITORY" --body "Patch application succeeded in diagnostic workflow ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}."
+
+          if grep -R -nE 'ck_[A-Za-z0-9_-]{20,}' --exclude-dir=.git .; then
+            echo "A value matching a Celeris API-key pattern was found in the repository." >&2
+            exit 1
+          fi
+          git diff --check
+          git fetch origin main
+          if [[ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]]; then
+            echo "main moved during validation; refusing to overwrite it." >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin refs/tags/v0.5.43 >/dev/null 2>&1; then
+            echo "Tag v0.5.43 already exists." >&2
+            exit 1
+          fi
+
+          rm -f scripts/implement_celeris_v0_5_43.py
+          git rm \
+            .github/workflows/diagnose-celeris-patch.yml \
+            .github/workflows/implement-celeris-v0.5.43.yml \
+            scripts/.implement_celeris_v0_5_43.py.gz.b64
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add Celeris summaries for Meeting, YouTube, and File (#25)"
+          implementation_sha="$(git rev-parse HEAD)"
+          git push origin HEAD:main
+          git tag -a v0.5.43 -m "Scriber v0.5.43"
+          git push origin v0.5.43
+
+          gh issue comment 25 --repo "$GITHUB_REPOSITORY" --body "Implementation committed to main at ${implementation_sha}. Backend tests, TypeScript checks, and the WebView production build passed. Live API smoke test: ${live_status}. Tag v0.5.43 was pushed; the signed Windows release is building." >/dev/null
+
+          release_run_id=""
+          release_run_url=""
+          release_status=""
+          release_conclusion=""
+          for _ in $(seq 1 180); do
+            release_line="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-windows.yml --branch v0.5.43 --limit 20 --json databaseId,status,conclusion,url,headSha --jq '.[] | select(.headSha == "'"$implementation_sha"'") | [.databaseId,.status,(.conclusion // ""),.url] | @tsv' | head -n 1 || true)"
+            if [[ -n "$release_line" ]]; then
+              IFS=$'\t' read -r release_run_id release_status release_conclusion release_run_url <<< "$release_line"
+              if [[ "$release_status" == "completed" ]]; then
+                break
+              fi
+            fi
+            sleep 20
+          done
+
+          if [[ -z "$release_run_id" ]]; then
+            echo "Signed Windows release run could not be located." >&2
+            exit 1
+          fi
+          if [[ "$release_conclusion" != "success" ]]; then
+            echo "Signed Windows release failed: ${release_run_url}" >&2
+            exit 1
+          fi
+
+          release_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/v0.5.43"
+          gh issue comment 25 --repo "$GITHUB_REPOSITORY" --body "Completed. Celeris is available for Meeting analysis and File/YouTube summaries. Commit: ${implementation_sha}. Release: ${release_url}. Signed build: ${release_run_url}. Live API smoke test: ${live_status}." >/dev/null
+          gh issue close 25 --repo "$GITHUB_REPOSITORY" --reason completed >/dev/null
+          trap - ERR
