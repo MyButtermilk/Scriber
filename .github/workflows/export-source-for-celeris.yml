@@ -1,0 +1,30 @@
+name: Export source for Celeris
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/export-source-for-celeris.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Archive repository
+        shell: bash
+        run: |
+          git archive --format=zip --output=scriber-main-source.zip HEAD
+      - name: Upload source archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: scriber-main-source
+          path: scriber-main-source.zip
+          if-no-files-found: error
+          retention-days: 1
