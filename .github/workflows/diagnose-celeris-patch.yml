@@ -64,21 +64,39 @@ jobs:
           base64 --decode scripts/.implement_celeris_v0_5_43.py.gz.b64 | gzip --decompress > scripts/implement_celeris_v0_5_43.py
           python - <<'PY'
           from pathlib import Path
+
           path = Path("scripts/implement_celeris_v0_5_43.py")
           text = path.read_text(encoding="utf-8")
-          old = '''replace_once(
+
+          meeting_old = '''replace_once(
               "src/meeting_analysis.py",
               '            max_output_tokens=4096,\\n',
               '            max_output_tokens=single_output_tokens,\\n',
           )'''
-          new = '''replace_once(
+          meeting_new = '''replace_once(
               "src/meeting_analysis.py",
               '            stage="single",\\n            model=model,\\n            generate=generate,\\n            max_output_tokens=4096,\\n',
               '            stage="single",\\n            model=model,\\n            generate=generate,\\n            max_output_tokens=single_output_tokens,\\n',
           )'''
-          if old not in text:
+          if meeting_old not in text:
               raise SystemExit("Expected Meeting single-pass patch block was not found")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          text = text.replace(meeting_old, meeting_new, 1)
+
+          settings_old = '''replace_once(
+              "src/web_api.py",
+              '                "cerebras": Config.CEREBRAS_API_KEY or "",\\n',
+              '                "cerebras": Config.CEREBRAS_API_KEY or "",\\n                "celeris": Config.CELERIS_API_KEY or "",\\n',
+          )'''
+          settings_new = '''replace_once(
+              "src/web_api.py",
+              '                "cerebras": getattr(Config, "CEREBRAS_API_KEY", "") or "",\\n',
+              '                "cerebras": getattr(Config, "CEREBRAS_API_KEY", "") or "",\\n                "celeris": getattr(Config, "CELERIS_API_KEY", "") or "",\\n',
+          )'''
+          if settings_old not in text:
+              raise SystemExit("Expected Settings API-key patch block was not found")
+          text = text.replace(settings_old, settings_new, 1)
+
+          path.write_text(text, encoding="utf-8")
           PY
           python scripts/implement_celeris_v0_5_43.py
 
