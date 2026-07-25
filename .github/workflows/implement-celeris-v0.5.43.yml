@@ -54,10 +54,13 @@ jobs:
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           failure_comment() {
             local exit_code=$?
-            gh issue comment 25 --repo "$GITHUB_REPOSITORY" --body "Celeris integration workflow failed before completion. Workflow: ${run_url}" >/dev/null 2>&1 || true
+            local failed_line="${1:-unknown}"
+            local failed_command="${2:-unknown}"
+            failed_command="${failed_command:0:400}"
+            gh issue comment 25 --repo "$GITHUB_REPOSITORY" --body "Celeris integration workflow failed at shell line ${failed_line} while running: \`${failed_command}\`. Workflow: ${run_url}" >/dev/null 2>&1 || true
             exit "$exit_code"
           }
-          trap failure_comment ERR
+          trap 'failure_comment "$LINENO" "$BASH_COMMAND"' ERR
 
           gh issue comment 25 --repo "$GITHUB_REPOSITORY" --body "Implementation and validation started in GitHub Actions. Workflow: ${run_url}" >/dev/null
 
