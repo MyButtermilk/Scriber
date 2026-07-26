@@ -32,6 +32,7 @@ _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _TOKEN_AUTH_RE = re.compile(r"(?i)\bToken\s+[A-Za-z0-9._~+/=-]+")
 _OPENAI_STYLE_SECRET_RE = re.compile(r"\b(sk-[A-Za-z0-9_-]{8,})")
 _GROQ_STYLE_SECRET_RE = re.compile(r"\b(gsk_[A-Za-z0-9_-]{20,})")
+_CELERIS_STYLE_SECRET_RE = re.compile(r"\b(ck_[A-Za-z0-9_-]{8,})")
 _GOOGLE_STYLE_SECRET_RE = re.compile(r"\b(AIza[A-Za-z0-9_-]{20,})")
 _URL_SECRET_PARAM_RE = re.compile(
     r"(?i)([?&](?:api[_-]?key|key|token|access[_-]?token|refresh[_-]?token|"
@@ -88,6 +89,7 @@ def redact_text(text: str) -> str:
     redacted = _TOKEN_AUTH_RE.sub("Token [REDACTED]", redacted)
     redacted = _OPENAI_STYLE_SECRET_RE.sub("[REDACTED]", redacted)
     redacted = _GROQ_STYLE_SECRET_RE.sub("[REDACTED]", redacted)
+    redacted = _CELERIS_STYLE_SECRET_RE.sub("[REDACTED]", redacted)
     redacted = _GOOGLE_STYLE_SECRET_RE.sub("[REDACTED]", redacted)
     redacted = _URL_SECRET_PARAM_RE.sub(r"\1[REDACTED]", redacted)
     redacted = _SHELL_IPC_PIPE_RE.sub("[REDACTED_PIPE]", redacted)

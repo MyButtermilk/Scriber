@@ -995,7 +995,9 @@ configuration.
   Windows it is shown without activation so hotkey recordings do not flash the
   main taskbar icon while the user is working in another app. Prepare, show,
   and hide mutations are dispatched to Tauri's UI thread through a bounded
-  result channel. Hidden is a physical native-window postcondition: the shell
+  result channel. Show and hide always go through Tauri's window API so its
+  deferred WebView state cannot race a raw Win32 `ShowWindow` call; Windows
+  `IsWindowVisible` remains the independent physical postcondition. The shell
   disables cursor hit testing before hide, verifies the OS-visible state before
   publishing the hidden renderer event, and exposes both requested and native
   visibility through `overlayStatus`. Terminal backend WebSocket messages must
@@ -1437,9 +1439,13 @@ credentials for a Speech-to-Text project. Gemini STT is a separate direct Gemini
 API audio-transcription adapter in `src/cloud_async_stt.py`; it reuses the
 stored `GOOGLE_API_KEY` used by Gemini summaries and post-processing so users
 can configure the simple Google path with one Gemini API key. Gemini, Cerebras,
-and OpenRouter summarization/post-processing use direct HTTP and do not require
-`google-generativeai`. Direct Cerebras calls use `cerebras/gemma-4-31b`, which
-is the live post-processing default. Most OpenRouter summary fallback models are
+Celeris, and OpenRouter summarization/post-processing use direct HTTP and do not
+require `google-generativeai`. Direct Celeris calls use the fixed
+`https://inference.celeris.ai/celeris-1/v1` route, quantize every output budget
+to 256-token steps, and conservatively partition File, YouTube, and Meeting
+inputs below the 8,192-token context ceiling. Direct Cerebras calls use
+`cerebras/gemma-4-31b`, which is the live post-processing default. Most
+OpenRouter summary fallback models are
 sent with `:nitro` variants; `openai/gpt-oss-120b` keeps explicit OpenRouter
 provider ordering through `baseten,cerebras` when selected. OpenRouter remains
 the automatic cross-provider summary fallback when an OpenRouter key is

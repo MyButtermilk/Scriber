@@ -1520,11 +1520,14 @@ def test_validate_summarization_model_accepts_known_prefixes():
         == "openai/gpt-oss-120b:cerebras"
     )
     assert web_api._validate_summarization_model("cerebras/gemma-4-31b") == "cerebras/gemma-4-31b"
+    assert web_api._validate_summarization_model("celeris-1") == "celeris-1"
 
 
 def test_validate_summarization_model_rejects_invalid_prefix():
     with pytest.raises(ValueError):
         web_api._validate_summarization_model("claude-3-opus")
+    with pytest.raises(ValueError):
+        web_api._validate_summarization_model("celeris-future")
 
 
 def test_validate_summarization_model_rejects_invalid_chars():

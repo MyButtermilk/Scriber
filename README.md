@@ -169,7 +169,7 @@ a US project key does not provide EU data residency.
 
 Download supported ONNX models from Settings and transcribe locally without an STT API key. Scriber uses prepared model artifacts rather than asking end users to install or run NeMo and Torch.
 
-Current provider coverage includes Soniox, Modulate.AI, AssemblyAI, Microsoft Azure MAI, OpenAI, OpenRouter, Deepgram, Mistral, Gladia, Groq, Speechmatics, Smallest AI, ElevenLabs, Gemini, Google Cloud, and ONNX.
+Current provider coverage includes Soniox, Modulate.AI, AssemblyAI, Microsoft Azure MAI, OpenAI, OpenRouter, Celeris, Deepgram, Mistral, Gladia, Groq, Speechmatics, Smallest AI, ElevenLabs, Gemini, Google Cloud, and ONNX.
 
 ## 🔑 Credentials and AI behavior stay understandable
 
@@ -182,7 +182,7 @@ Provider credentials, transcription models, summary models, prompts, language be
 - Practical price and error estimates where benchmark data is available
 - Custom vocabulary for names, brands, and domain language
 - Automatic summarization and caption-first controls
-- Gemini, OpenRouter, OpenAI, and Cerebras summary paths
+- Gemini, OpenRouter, OpenAI, Cerebras, and Celeris summary paths
 - Light, dark, and system theme support
 - Complete German and English interface with a persistent language switch in
   the app shell and Settings; transcription-language choices remain separate

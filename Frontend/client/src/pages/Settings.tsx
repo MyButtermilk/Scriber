@@ -323,7 +323,7 @@ type SummarizationModelOption = {
   value: string;
   label: string;
   detail: string;
-  group: "gemini" | "openrouter" | "openai" | "cerebras";
+  group: "gemini" | "openrouter" | "openai" | "cerebras" | "celeris";
   icon: ProviderIconKey;
 };
 
@@ -369,6 +369,7 @@ function createSummarizationModelOptions(localeTag: string, t: Translate): reado
     { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash", detail: aaLanguageBenchmarkDetail(1.31, 50, localeTag, t), group: "gemini", icon: "gemini" },
     { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", detail: aaLanguageBenchmarkDetail(1.74, 46, localeTag, t), group: "gemini", icon: "gemini" },
     { value: "cerebras/gemma-4-31b", label: "Gemma 4 31B", detail: aaLanguageBenchmarkDetail(1.04, 29, localeTag, t), group: "cerebras", icon: "cerebras" },
+    { value: "celeris-1", label: "Celeris 1", detail: t("Short structured summaries with an 8K context window"), group: "celeris", icon: "celeris" },
     { value: "minimax/minimax-m3:nitro", label: "MiniMax M3 Nitro", detail: aaLanguageBenchmarkDetail(0.22, 44, localeTag, t), group: "openrouter", icon: "openrouter" },
     { value: "z-ai/glm-5.2:nitro", label: "GLM 5.2 Nitro", detail: aaLanguageBenchmarkDetail(0.90, 51, localeTag, t), group: "openrouter", icon: "openrouter" },
     { value: "gpt-5.5", label: "OpenAI GPT 5.5", detail: aaLanguageBenchmarkDetail(4.35, 53, localeTag, t), group: "openai", icon: "openai" },
@@ -402,6 +403,7 @@ const API_KEY_HELP_LINKS = {
   gemini: { href: "https://aistudio.google.com/app/apikey", label: "Google AI Studio" },
   openrouter: { href: "https://openrouter.ai/settings/keys", label: "OpenRouter keys" },
   cerebras: { href: "https://cloud.cerebras.ai/", label: "Cerebras Cloud" },
+  celeris: { href: "https://console.celeris.ai/", label: "Celeris Console" },
   youtube: { href: "https://console.cloud.google.com/apis/credentials", label: "Google Cloud credentials" },
   soniox: { href: "https://console.soniox.com/", label: "Soniox console" },
   smallest: { href: "https://app.smallest.ai/", label: "Smallest AI console" },
@@ -558,6 +560,7 @@ const PROVIDER_ICON_PATHS = {
   azure: "/provider-icons/azure.svg",
   baseten: "/provider-icons/baseten.svg",
   cerebras: "/provider-icons/cerebras.svg",
+  celeris: "/provider-icons/celeris.svg",
   deepgram: "/provider-icons/deepgram.svg",
   elevenlabs: "/provider-icons/elevenlabs.svg",
   fal: "/provider-icons/fal.svg",
@@ -1313,6 +1316,7 @@ export default function Settings() {
   const [geminiKey, setGeminiKey] = useState("");
   const [openRouterKey, setOpenRouterKey] = useState("");
   const [cerebrasKey, setCerebrasKey] = useState("");
+  const [celerisKey, setCelerisKey] = useState("");
   const [youtubeKey, setYoutubeKey] = useState("");
   const [sonioxKey, setSonioxKey] = useState("");
   const [sonioxRegion, setSonioxRegion] = useState<"us" | "eu">("us");
@@ -1342,6 +1346,7 @@ export default function Settings() {
   const [showGeminiKey, setShowGeminiKey] = useState(false);
   const [showOpenRouterKey, setShowOpenRouterKey] = useState(false);
   const [showCerebrasKey, setShowCerebrasKey] = useState(false);
+  const [showCelerisKey, setShowCelerisKey] = useState(false);
   const [showYoutubeKey, setShowYoutubeKey] = useState(false);
   const [showSonioxKey, setShowSonioxKey] = useState(false);
   const [showModulateKey, setShowModulateKey] = useState(false);
@@ -1751,6 +1756,8 @@ export default function Settings() {
         return savedCredentialAvailable("OpenRouter", openRouterKey);
       case "Cerebras":
         return savedCredentialAvailable("Cerebras", cerebrasKey);
+      case "Celeris":
+        return savedCredentialAvailable("Celeris", celerisKey);
       case "Soniox":
         return savedCredentialAvailable("Soniox", sonioxKey);
       case "Modulate.AI":
@@ -1836,6 +1843,9 @@ export default function Settings() {
     }
     if (model.startsWith("cerebras/")) {
       return { provider: "Cerebras", label: "Cerebras API key", helpKey: "cerebras" };
+    }
+    if (model === "celeris-1") {
+      return { provider: "Celeris", label: "Celeris API key", helpKey: "celeris" };
     }
     if (model.includes("/")) {
       return { provider: "OpenRouter", label: "OpenRouter API key", helpKey: "openrouter" };
@@ -2020,6 +2030,7 @@ export default function Settings() {
         setGeminiKey(keys.googleApiKey || "");
         setOpenRouterKey(keys.openrouter || "");
         setCerebrasKey(keys.cerebras || "");
+        setCelerisKey(keys.celeris || "");
         setYoutubeKey(keys.youtubeApiKey || "");
         setElevenLabsKey(keys.elevenlabs || "");
         setAzureMaiKey(keys.azureMaiSpeechKey || "");
@@ -2034,6 +2045,7 @@ export default function Settings() {
           Gemini: hasValue(keys.googleApiKey),
           OpenRouter: hasValue(keys.openrouter),
           Cerebras: hasValue(keys.cerebras),
+          Celeris: hasValue(keys.celeris),
           YouTube: hasValue(keys.youtubeApiKey),
           Soniox: hasValue(keys.soniox),
           "Modulate.AI": hasValue(keys.modulate),
@@ -2196,6 +2208,7 @@ export default function Settings() {
       if (provider === "Gemini") apiKeys.googleApiKey = geminiKey;
       if (provider === "OpenRouter") apiKeys.openrouter = openRouterKey;
       if (provider === "Cerebras") apiKeys.cerebras = cerebrasKey;
+      if (provider === "Celeris") apiKeys.celeris = celerisKey;
       if (provider === "YouTube") apiKeys.youtubeApiKey = youtubeKey;
       if (provider === "Soniox") apiKeys.soniox = sonioxKey;
       if (provider === "Modulate.AI") apiKeys.modulate = modulateKey;
@@ -2231,6 +2244,8 @@ export default function Settings() {
             return hasValue(openRouterKey);
           case "Cerebras":
             return hasValue(cerebrasKey);
+          case "Celeris":
+            return hasValue(celerisKey);
           case "YouTube":
             return hasValue(youtubeKey);
           case "Soniox":
@@ -3388,6 +3403,11 @@ export default function Settings() {
       key: "cerebras",
       label: "Cerebras",
       items: summarizationModelOptions.filter((option) => option.group === "cerebras"),
+    },
+    {
+      key: "celeris",
+      label: "Celeris",
+      items: summarizationModelOptions.filter((option) => option.group === "celeris"),
     },
     {
       key: "openrouter",
@@ -4653,6 +4673,7 @@ export default function Settings() {
               <ApiCredentialRow provider="Gemini" icon="gemini" value={geminiKey} onValueChange={markCredentialChanged("Gemini", setGeminiKey)} show={showGeminiKey} onShowChange={setShowGeminiKey} helpKey="gemini" saved={savedKeys.Gemini === true} onSave={() => handleSaveApiKey("Gemini")} note={t("One key unlocks Gemini STT, summaries, and cleanup.")} {...credentialDialogProps("Gemini")} />
               <ApiCredentialRow provider="OpenRouter" icon="openrouter" value={openRouterKey} onValueChange={markCredentialChanged("OpenRouter", setOpenRouterKey)} show={showOpenRouterKey} onShowChange={setShowOpenRouterKey} helpKey="openrouter" saved={savedKeys.OpenRouter === true} onSave={() => handleSaveApiKey("OpenRouter")} {...credentialDialogProps("OpenRouter")} />
               <ApiCredentialRow provider="Cerebras" icon="cerebras" value={cerebrasKey} onValueChange={markCredentialChanged("Cerebras", setCerebrasKey)} show={showCerebrasKey} onShowChange={setShowCerebrasKey} helpKey="cerebras" saved={savedKeys.Cerebras === true} onSave={() => handleSaveApiKey("Cerebras")} note={t("Used for direct Cerebras summary and cleanup models.")} {...credentialDialogProps("Cerebras")} />
+              <ApiCredentialRow provider="Celeris" icon="celeris" value={celerisKey} onValueChange={markCredentialChanged("Celeris", setCelerisKey)} show={showCelerisKey} onShowChange={setShowCelerisKey} helpKey="celeris" saved={savedKeys.Celeris === true} onSave={() => handleSaveApiKey("Celeris")} note={t("Used for Celeris summaries in Meetings, YouTube, and File.")} {...credentialDialogProps("Celeris")} />
               <ApiCredentialRow provider="YouTube" icon="youtube" value={youtubeKey} onValueChange={markCredentialChanged("YouTube", setYoutubeKey)} show={showYoutubeKey} onShowChange={setShowYoutubeKey} helpKey="youtube" saved={savedKeys.YouTube === true} onSave={() => handleSaveApiKey("YouTube")} note={t("Used for search and metadata in the YouTube tab.")} {...credentialDialogProps("YouTube")} />
               <ApiCredentialRow provider="Soniox" icon="soniox" value={sonioxKey} onValueChange={markCredentialChanged("Soniox", setSonioxKey)} show={showSonioxKey} onShowChange={setShowSonioxKey} helpKey="soniox" saved={savedKeys.Soniox === true} onSave={() => handleSaveApiKey("Soniox")} note={t("Use one Soniox API key and choose where Soniox processes your audio.")} {...credentialDialogProps("Soniox")}>
                 <SonioxRegionPicker

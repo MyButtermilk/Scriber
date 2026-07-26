@@ -14,11 +14,12 @@ def test_redaction_helpers_hide_sensitive_values():
     endpoint_id = r"SWD\MMDEVAPI\{0.0.1.00000000}.{secret-capture-device}"
     escaped_endpoint_id = endpoint_id.replace("\\", "\\\\")
     groq_key = "gsk_" + "a" * 32
+    celeris_key = "ck_" + "c" * 32
     google_key = "AIza" + "b" * 32
     backend_token = "local-backend-session-secret"
     redacted = redact_text(
         f"OPENAI_API_KEY=sk-abcdefghijklmnop Authorization: Bearer token-value "
-        f"rawGroq={groq_key} "
+        f"rawGroq={groq_key} rawCeleris={celeris_key} "
         f"url=https://example.test/v1?key={google_key}&access_token=query-token "
         f"backend=http://127.0.0.1:8765/api/runtime?scriberToken={backend_token} "
         f"pipe={pipe_name} escaped={escaped_pipe_name} "
@@ -27,6 +28,7 @@ def test_redaction_helpers_hide_sensitive_values():
 
     assert "sk-abcdefghijklmnop" not in redacted
     assert groq_key not in redacted
+    assert celeris_key not in redacted
     assert google_key not in redacted
     assert backend_token not in redacted
     assert "query-token" not in redacted

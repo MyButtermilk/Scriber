@@ -230,6 +230,7 @@ class Config:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
+    CELERIS_API_KEY = os.getenv("CELERIS_API_KEY")
     AZURE_MAI_SPEECH_KEY = os.getenv("AZURE_MAI_SPEECH_KEY")
     AZURE_MAI_REGION = os.getenv("SCRIBER_AZURE_MAI_REGION", "northeurope")
     AZURE_MAI_MODEL = os.getenv("SCRIBER_AZURE_MAI_MODEL", "mai-transcribe-1.5")
@@ -310,6 +311,7 @@ class Config:
         "openai_async": "OPENAI_API_KEY",
         "openrouter": "OPENROUTER_API_KEY",
         "cerebras": "CEREBRAS_API_KEY",
+        "celeris": "CELERIS_API_KEY",
         "azure_mai": "AZURE_MAI_SPEECH_KEY",
         "gladia": "GLADIA_API_KEY",
         "gladia_async": "GLADIA_API_KEY",
@@ -846,6 +848,7 @@ ${output}"""
         add("OPENAI_API_KEY", cls.OPENAI_API_KEY or "")
         add("OPENROUTER_API_KEY", cls.OPENROUTER_API_KEY or "")
         add("CEREBRAS_API_KEY", cls.CEREBRAS_API_KEY or "")
+        add("CELERIS_API_KEY", cls.CELERIS_API_KEY or "")
         add("AZURE_MAI_SPEECH_KEY", cls.AZURE_MAI_SPEECH_KEY or "")
         add("SCRIBER_AZURE_MAI_REGION", cls.AZURE_MAI_REGION or "northeurope")
         add("SCRIBER_AZURE_MAI_MODEL", cls.AZURE_MAI_MODEL or "mai-transcribe-1.5")

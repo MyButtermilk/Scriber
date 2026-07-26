@@ -1511,6 +1511,32 @@ async def test_settings_round_trips_openrouter_summary_model_and_key(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_settings_round_trips_celeris_models_and_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
+    monkeypatch.setattr(web_api.Config, "CELERIS_API_KEY", "", raising=False)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    settings = await ctl.update_settings(
+        {
+            "summarizationModel": "celeris-1",
+            "meetingAnalysisModel": "celeris-1",
+            "apiKeys": {"celeris": "celeris-secret"},
+        }
+    )
+
+    assert web_api.Config.SUMMARIZATION_MODEL == "celeris-1"
+    assert web_api.Config.MEETING_ANALYSIS_MODEL == "celeris-1"
+    assert web_api.Config.CELERIS_API_KEY == "celeris-secret"
+    assert settings["summarizationModel"] == "celeris-1"
+    assert settings["meetingAnalysisModel"] == "celeris-1"
+    assert settings["apiKeys"]["celeris"] == "celeris-secret"
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_settings_round_trips_and_persists_modulate_key_and_meeting_provider(
     monkeypatch, tmp_path
 ):

@@ -7,9 +7,7 @@ use std::{sync::mpsc, time::Duration};
 #[cfg(not(test))]
 use tauri::{Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 #[cfg(all(not(test), windows))]
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE,
-};
+use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
 
 pub const OVERLAY_WINDOW_LABEL: &str = "recording-overlay";
 #[cfg(not(test))]
@@ -381,21 +379,12 @@ fn ensure_overlay_window(
 
 #[cfg(not(test))]
 fn show_overlay_window(window: &WebviewWindow) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        let hwnd = window
-            .hwnd()
-            .map_err(|err| format!("overlay window handle lookup failed: {err}"))?;
-        unsafe {
-            ShowWindow(hwnd.0, SW_SHOWNOACTIVATE);
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        window
-            .show()
-            .map_err(|err| format!("overlay show failed: {err}"))?;
-    }
+    // Keep Tauri's window state synchronized with the HWND. Bypassing Tauri
+    // can race the WebView builder's deferred hidden state and make the overlay
+    // flash briefly before the builder hides it again.
+    window
+        .show()
+        .map_err(|err| format!("overlay show failed: {err}"))?;
     if !overlay_window_is_visible(window)? {
         return Err("overlay show failed: native window remained hidden".to_string());
     }
@@ -404,21 +393,9 @@ fn show_overlay_window(window: &WebviewWindow) -> Result<(), String> {
 
 #[cfg(not(test))]
 fn hide_overlay_window(window: &WebviewWindow) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        let hwnd = window
-            .hwnd()
-            .map_err(|err| format!("overlay window handle lookup failed: {err}"))?;
-        unsafe {
-            ShowWindow(hwnd.0, SW_HIDE);
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        window
-            .hide()
-            .map_err(|err| format!("overlay hide failed: {err}"))?;
-    }
+    window
+        .hide()
+        .map_err(|err| format!("overlay hide failed: {err}"))?;
     if overlay_window_is_visible(window)? {
         return Err("overlay hide failed: native window remained visible".to_string());
     }
@@ -443,10 +420,7 @@ fn overlay_window_is_visible(window: &WebviewWindow) -> Result<bool, String> {
 }
 
 #[cfg(not(test))]
-fn set_overlay_cursor_events_ignored(
-    window: &WebviewWindow,
-    ignored: bool,
-) -> Result<(), String> {
+fn set_overlay_cursor_events_ignored(window: &WebviewWindow, ignored: bool) -> Result<(), String> {
     window
         .set_ignore_cursor_events(ignored)
         .map_err(|err| format!("overlay cursor-event update failed: {err}"))?;
@@ -475,7 +449,6 @@ fn mark_overlay_cursor_events_ignored(ignored: bool) {
         state.cursor_events_ignored = ignored;
     });
 }
-
 
 #[cfg(not(test))]
 fn position_overlay_window(window: &WebviewWindow) -> tauri::Result<()> {

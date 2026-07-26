@@ -9,6 +9,8 @@ from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
+from src.celeris import celeris_prompt_fits, is_celeris_model
+
 
 MEETING_ANALYSIS_SCHEMA_VERSION = "1"
 _EVIDENCE_FIELDS = ("topics", "decisions", "actionItems", "openQuestions", "risks", "chapters")
@@ -19,6 +21,16 @@ ANALYSIS_MAP_MAX_CHARS = 30_000
 ANALYSIS_MAP_MAX_DURATION_MS = 30 * 60 * 1000
 ANALYSIS_REDUCE_FAN_IN = 3
 ANALYSIS_MAX_CONCURRENCY = 2
+# The generic partitioner budgets Unicode code points while the Celeris
+# boundary deliberately budgets UTF-8 bytes. Keep this low enough that a map
+# chunk dominated by three-byte characters still fits beside the fixed schema
+# prompt and a 1,024-token response.
+CELERIS_ANALYSIS_MAP_MAX_CHARS = 2_800
+CELERIS_ANALYSIS_REDUCE_FAN_IN = 2
+CELERIS_ANALYSIS_SINGLE_OUTPUT_TOKENS = 2_048
+CELERIS_ANALYSIS_MAP_OUTPUT_TOKENS = 1_024
+CELERIS_ANALYSIS_REDUCE_OUTPUT_TOKENS = 1_024
+CELERIS_ANALYSIS_NOTES_MAX_BYTES = 512
 ANALYSIS_ALGORITHM_VERSION = "map-reduce-v3-bounded-output-fallback"
 ANALYSIS_NOTES_MAX_CHARS = 4_000
 ANALYSIS_MAP_PROMPT_RESERVE_CHARS = 8_000
@@ -499,6 +511,28 @@ def _ordered_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+def _bounded_utf8_text(value: Any, maximum_bytes: int) -> str:
+    text = str(value or "")
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= maximum_bytes:
+        return text
+    return encoded[:maximum_bytes].decode("utf-8", errors="ignore")
+
+
+def _bounded_celeris_notes(notes: list[dict[str, Any]]) -> list[dict[str, str]]:
+    remaining = CELERIS_ANALYSIS_NOTES_MAX_BYTES
+    bounded: list[dict[str, str]] = []
+    for note in notes:
+        if remaining <= 0:
+            break
+        raw = str(note.get("body", "")).strip()
+        body = _bounded_utf8_text(raw, remaining).strip()
+        if body:
+            bounded.append({"body": body})
+            remaining -= len(body.encode("utf-8", errors="replace"))
+    return bounded
+
+
 def _segment_prompt_size(segment: dict[str, Any]) -> int:
     return len(json.dumps({
         "segmentId": str(segment.get("id", "")),
@@ -696,11 +730,21 @@ async def _generate_validated_analysis(
     try:
         result = parse_and_validate_analysis(raw, valid_segment_ids)
     except MeetingAnalysisValidationError as first_error:
-        repair_prompt = (
-            "Repair the response below to the exact JSON schema in the original request. "
-            f"Return JSON only. Validation error: {first_error}\n\n"
-            f"Original request:\n{prompt}\n\nInvalid response:\n{raw[:20_000]}"
-        )
+        if is_celeris_model(model):
+            repair_prompt = (
+                "Repair the invalid meeting-analysis response below. Return JSON only, "
+                "preserve only supported facts and valid segment IDs, and include exactly "
+                "these top-level fields: schemaVersion, outputLanguage, title, "
+                "executiveSummary, topics, decisions, actionItems, openQuestions, risks, "
+                f"chapters, keywords. Validation error: {first_error}\n\n"
+                f"Invalid response:\n{_bounded_utf8_text(raw, 4_000)}"
+            )
+        else:
+            repair_prompt = (
+                "Repair the response below to the exact JSON schema in the original request. "
+                f"Return JSON only. Validation error: {first_error}\n\n"
+                f"Original request:\n{prompt}\n\nInvalid response:\n{raw[:20_000]}"
+            )
         repaired = await generate(
             repair_prompt, model or None, max_output_tokens=max_output_tokens
         )
@@ -880,13 +924,23 @@ async def analyze_meeting(
         raise ValueError("A canonical transcript is required before meeting analysis.")
     ordered = _ordered_segments(segments)
     valid_ids = {str(segment["id"]) for segment in ordered}
+    celeris = is_celeris_model(model)
+    analysis_notes = _bounded_celeris_notes(notes) if celeris else notes
     prompt = build_analysis_prompt(
-        title, ordered, notes, fallback_language=fallback_language
+        title, ordered, analysis_notes, fallback_language=fallback_language
     )
     duration_ms = max(
         max(0, int(segment.get("endMs", segment.get("startMs", 0))))
         for segment in ordered
     ) - min(max(0, int(segment.get("startMs", 0))) for segment in ordered)
+    single_output_tokens = (
+        CELERIS_ANALYSIS_SINGLE_OUTPUT_TOKENS if celeris else 4_096
+    )
+    map_output_tokens = CELERIS_ANALYSIS_MAP_OUTPUT_TOKENS if celeris else 3_072
+    reduce_output_tokens = (
+        CELERIS_ANALYSIS_REDUCE_OUTPUT_TOKENS if celeris else 4_096
+    )
+    reduce_fan_in = CELERIS_ANALYSIS_REDUCE_FAN_IN if celeris else ANALYSIS_REDUCE_FAN_IN
 
     async def report(status: str, progress: float) -> None:
         if on_progress is None:
@@ -897,7 +951,11 @@ async def analyze_meeting(
             logger.warning("Meeting analysis progress callback failed: {}", type(exc).__name__)
 
     if (
-        len(prompt) <= ANALYSIS_SINGLE_PASS_MAX_CHARS
+        (
+            celeris_prompt_fits(prompt, single_output_tokens)
+            if celeris
+            else len(prompt) <= ANALYSIS_SINGLE_PASS_MAX_CHARS
+        )
         and duration_ms <= ANALYSIS_SINGLE_PASS_MAX_DURATION_MS
     ):
         await report("Generating cited meeting brief", 0.1)
@@ -907,14 +965,36 @@ async def analyze_meeting(
             stage="single",
             model=model,
             generate=generate,
-            max_output_tokens=4096,
+            max_output_tokens=single_output_tokens,
             cache_get=cache_get,
             cache_put=cache_put,
         )
         await report("Meeting brief ready", 1.0)
         return _finalize_analysis(result, title=title, segments=ordered)
 
-    chunks = partition_analysis_segments(ordered)
+    map_max_chars = CELERIS_ANALYSIS_MAP_MAX_CHARS if celeris else ANALYSIS_MAP_MAX_CHARS
+    while True:
+        chunks = partition_analysis_segments(ordered, max_chars=map_max_chars)
+        if not celeris:
+            break
+        prompts_fit = all(
+            celeris_prompt_fits(
+                build_analysis_prompt(
+                    title,
+                    chunk,
+                    analysis_notes,
+                    scope=f"Part {index + 1} of {len(chunks)}.",
+                    fallback_language=fallback_language,
+                ),
+                map_output_tokens,
+            )
+            for index, chunk in enumerate(chunks)
+        )
+        if prompts_fit:
+            break
+        if map_max_chars <= 1_024:
+            raise ValueError("Meeting content exceeds the bounded Celeris map request.")
+        map_max_chars = max(1_024, map_max_chars // 2)
     semaphore = asyncio.Semaphore(ANALYSIS_MAX_CONCURRENCY)
     progress_lock = asyncio.Lock()
     completed_maps = 0
@@ -924,10 +1004,12 @@ async def analyze_meeting(
         chunk_prompt = build_analysis_prompt(
             title,
             chunk,
-            notes,
+            analysis_notes,
             scope=f"Part {index + 1} of {len(chunks)}.",
             fallback_language=fallback_language,
         )
+        if celeris and not celeris_prompt_fits(chunk_prompt, map_output_tokens):
+            raise ValueError("Meeting content exceeds the bounded Celeris map request.")
         async with semaphore:
             result = await _generate_validated_analysis(
                 chunk_prompt,
@@ -935,7 +1017,7 @@ async def analyze_meeting(
                 stage="map",
                 model=model,
                 generate=generate,
-                max_output_tokens=3072,
+                max_output_tokens=map_output_tokens,
                 cache_get=cache_get,
                 cache_put=cache_put,
             )
@@ -954,15 +1036,15 @@ async def analyze_meeting(
     reduce_levels = 0
     remaining = len(partials)
     while remaining > 1:
-        remaining = (remaining + ANALYSIS_REDUCE_FAN_IN - 1) // ANALYSIS_REDUCE_FAN_IN
+        remaining = (remaining + reduce_fan_in - 1) // reduce_fan_in
         reduce_levels += 1
     reduce_level = 0
     reducer_degraded = asyncio.Event()
 
     while len(partials) > 1:
         groups = [
-            partials[index:index + ANALYSIS_REDUCE_FAN_IN]
-            for index in range(0, len(partials), ANALYSIS_REDUCE_FAN_IN)
+            partials[index : index + reduce_fan_in]
+            for index in range(0, len(partials), reduce_fan_in)
         ]
 
         async def reduce_group(group: list[dict[str, Any]]) -> dict[str, Any]:
@@ -971,8 +1053,13 @@ async def analyze_meeting(
             if reducer_degraded.is_set():
                 return _merge_validated_analyses(group, title=title)
             reduce_prompt = build_analysis_reduce_prompt(
-                title, group, notes, fallback_language=fallback_language
+                title, group, analysis_notes, fallback_language=fallback_language
             )
+            if celeris and not celeris_prompt_fits(
+                reduce_prompt,
+                reduce_output_tokens,
+            ):
+                return _merge_validated_analyses(group, title=title)
             cited_ids = _cited_segment_ids(group)
             try:
                 async with semaphore:
@@ -984,7 +1071,7 @@ async def analyze_meeting(
                         stage="reduce",
                         model=model,
                         generate=generate,
-                        max_output_tokens=4096,
+                        max_output_tokens=reduce_output_tokens,
                         cache_get=cache_get,
                         cache_put=cache_put,
                     )

@@ -608,7 +608,16 @@ _ALLOWED_UPLOAD_EXTENSIONS = _AUDIO_EXTENSIONS | _VIDEO_EXTENSIONS
 _VALID_STT_SERVICES = frozenset(Config.SERVICE_LABELS.keys())
 _VALID_MODES = {"toggle", "push_to_talk"}
 _VALID_SONIOX_MODES = {"realtime", "async"}
-_VALID_SUMMARIZATION_MODEL_PREFIXES = ("gemini-", "gpt-", "google/", "minimax/", "openai/", "z-ai/", "cerebras/")
+_VALID_SUMMARIZATION_MODEL_PREFIXES = (
+    "gemini-",
+    "gpt-",
+    "google/",
+    "minimax/",
+    "openai/",
+    "z-ai/",
+    "cerebras/",
+)
+_VALID_SUMMARIZATION_MODELS = frozenset({"celeris-1"})
 _INPUT_WARNING_CODE_LOW_LEVEL = "mic_level_very_low"
 _SETTINGS_URI_SOUND = "ms-settings:sound"
 _SETTINGS_URI_SOUND_INPUT_PROPERTIES = "ms-settings:sound-defaultinputproperties"
@@ -1408,6 +1417,8 @@ def _meeting_llm_model_ready(model: str) -> bool:
         return bool(Config.GOOGLE_API_KEY)
     if normalized.startswith("cerebras/"):
         return bool(Config.CEREBRAS_API_KEY)
+    if normalized == "celeris-1":
+        return bool(Config.CELERIS_API_KEY)
     return "/" in normalized and bool(Config.OPENROUTER_API_KEY)
 
 
@@ -1430,9 +1441,15 @@ def _validate_summarization_model(raw_model: str) -> str:
     model = (raw_model or "").strip()
     if not model:
         raise ValueError("summarizationModel must not be empty")
-    if not model.startswith(_VALID_SUMMARIZATION_MODEL_PREFIXES):
+    if (
+        model not in _VALID_SUMMARIZATION_MODELS
+        and not model.startswith(_VALID_SUMMARIZATION_MODEL_PREFIXES)
+    ):
         allowed = ", ".join(_VALID_SUMMARIZATION_MODEL_PREFIXES)
-        raise ValueError(f"Invalid summarizationModel '{raw_model}'. Must start with: {allowed}")
+        exact = ", ".join(sorted(_VALID_SUMMARIZATION_MODELS))
+        raise ValueError(
+            f"Invalid summarizationModel '{raw_model}'. Must be {exact} or start with: {allowed}"
+        )
     if not re.fullmatch(r"[A-Za-z0-9._:/-]+", model):
         raise ValueError(
             "Invalid summarizationModel format. Allowed characters: letters, numbers, dot, underscore, slash, colon, hyphen."
@@ -14198,6 +14215,7 @@ class ScriberWebController:
                 "openai": Config.OPENAI_API_KEY or "",
                 "openrouter": getattr(Config, "OPENROUTER_API_KEY", "") or "",
                 "cerebras": getattr(Config, "CEREBRAS_API_KEY", "") or "",
+                "celeris": getattr(Config, "CELERIS_API_KEY", "") or "",
                 "azureMaiSpeechKey": getattr(Config, "AZURE_MAI_SPEECH_KEY", "") or "",
                 "azureMaiRegion": getattr(Config, "AZURE_MAI_REGION", "") or "northeurope",
                 "azureMaiModel": getattr(Config, "AZURE_MAI_MODEL", "") or "mai-transcribe-1.5",
@@ -14478,6 +14496,7 @@ class ScriberWebController:
                 "openai": ("openai", lambda v: Config.set_api_key("openai", v)),
                 "openrouter": ("openrouter", lambda v: Config.set_api_key("openrouter", v)),
                 "cerebras": ("cerebras", lambda v: Config.set_api_key("cerebras", v)),
+                "celeris": ("celeris", lambda v: Config.set_api_key("celeris", v)),
                 "gladia": ("gladia", lambda v: Config.set_api_key("gladia", v)),
                 "groq": ("groq", lambda v: Config.set_api_key("groq", v)),
                 "speechmatics": ("speechmatics", lambda v: Config.set_api_key("speechmatics", v)),

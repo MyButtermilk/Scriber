@@ -990,6 +990,7 @@ export interface SettingsApiKeys {
   openai?: string;
   openrouter?: string;
   cerebras?: string;
+  celeris?: string;
   azureMaiSpeechKey?: string;
   azureMaiRegion?: string;
   azureMaiModel?: string;

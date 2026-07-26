@@ -1207,6 +1207,10 @@ def test_native_recording_overlay_is_tauri_owned() -> None:
     assert 'index.html?overlay=1&overlayMode=initializing' in native_overlay_rs
     assert '"rendererReady"' in native_overlay_rs
     assert "pub fn mark_renderer_ready()" in native_overlay_rs
+    assert 'window\n        .show()\n        .map_err(|err| format!("overlay show failed: {err}"))?' in native_overlay_rs
+    assert 'window\n        .hide()\n        .map_err(|err| format!("overlay hide failed: {err}"))?' in native_overlay_rs
+    assert "ShowWindow" not in native_overlay_rs
+    assert "IsWindowVisible" in native_overlay_rs
     assert "create_overlay_window(app)" in lib_rs
     assert "fn native_overlay_renderer_ready()" in lib_rs
     assert "native_overlay::mark_renderer_ready()" in lib_rs
