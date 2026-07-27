@@ -182,8 +182,9 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
         in restore_ffmpeg["run"]
     )
     assert "validate_ffmpeg_profile.py" in restore_ffmpeg["run"]
-    assert "SCRIBER_FFMPEG_PATH=" in restore_ffmpeg["run"]
-    assert "SCRIBER_FFPROBE_PATH=" in restore_ffmpeg["run"]
+    assert "SCRIBER_MEDIA_TOOLS_DIR=" in restore_ffmpeg["run"]
+    assert "SCRIBER_FFMPEG_PATH=" not in restore_ffmpeg["run"]
+    assert "SCRIBER_FFPROBE_PATH=" not in restore_ffmpeg["run"]
     assert _pwsh_logical_commands(run) == [
         "New-Item -ItemType Directory -Force build\\test-results | Out-Null",
         (

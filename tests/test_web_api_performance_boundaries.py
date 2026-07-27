@@ -136,9 +136,11 @@ async def test_shutdown_audio_release_does_not_stall_event_loop():
     release_task = controller._shutdown_audio_release_task
     assert release_task is not None
     assert begin_shutdown_ms < 50.0
-    assert await asyncio.wait_for(
-        asyncio.to_thread(release_started.wait, 1.0), timeout=1.5
-    )
+    for _ in range(150):
+        if release_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert release_started.is_set()
 
     heartbeat = asyncio.Event()
     asyncio.get_running_loop().call_soon(heartbeat.set)
@@ -170,9 +172,16 @@ async def test_cancelled_shutdown_audio_release_observes_cleanup_boundary():
     controller.begin_shutdown()
     release_task = controller._shutdown_audio_release_task
     assert release_task is not None
-    assert await asyncio.wait_for(
-        asyncio.to_thread(release_started.wait, 1.0), timeout=1.5
-    )
+    for _ in range(150):
+        if release_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert release_started.is_set()
+    # The executor starts immediately, while the observing task is scheduled
+    # on the next loop turn. Ensure the observer reached its shielded await
+    # before exercising cancellation.
+    await asyncio.sleep(0)
+    assert not release_task.done()
 
     release_task.cancel()
     await asyncio.sleep(0)

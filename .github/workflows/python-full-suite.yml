@@ -60,9 +60,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Locked FFmpeg test runtime validation failed."
           }
-          "SCRIBER_FFMPEG_PATH=$(Join-Path $mediaTools 'ffmpeg.exe')" |
-            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "SCRIBER_FFPROBE_PATH=$(Join-Path $mediaTools 'ffprobe.exe')" |
+          "SCRIBER_MEDIA_TOOLS_DIR=$mediaTools" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Run complete Python test suite
