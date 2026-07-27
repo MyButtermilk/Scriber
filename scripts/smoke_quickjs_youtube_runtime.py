@@ -36,6 +36,8 @@ MAX_JSON_INPUT_BYTES = 256 * 1024
 MAX_REQUEST_BYTES = 16 * 1024
 MAX_STDOUT_BYTES = 32 * 1024
 MAX_STDERR_BYTES = 64 * 1024
+PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS = 4
+PROCESS_EXIT_TIMEOUT_SECONDS = 4
 REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 CASE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 VIDEO_ID_RE = re.compile(r"^[0-9A-Za-z_-]{6,32}$")
@@ -483,7 +485,7 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
-                timeout=10,
+                timeout=PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS,
             )
             if completed.returncode != 0 and process.poll() is None:
                 process.kill()
@@ -496,7 +498,7 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
         except ProcessLookupError:
             pass
     try:
-        process.wait(timeout=10)
+        process.wait(timeout=PROCESS_EXIT_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
         raise SmokeError("process-cleanup-failed") from exc
 

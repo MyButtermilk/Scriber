@@ -1,0 +1,6 @@
+-r requirements-dev.txt
+
+PyYAML==6.0.3
+PyInstaller==6.20.0
+pytest-xdist==3.8.0
+tzdata==2025.3

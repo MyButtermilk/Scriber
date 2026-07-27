@@ -331,12 +331,13 @@ Frontend\src-tauri\target\release\bundle\nsis\
 ### Test
 
 ```powershell
-scripts\project-python.cmd -m pytest
+scripts\project-python.cmd -m pytest -n 4 --dist loadfile -ra
 ```
 
 ```powershell
 cd Frontend
 npm run check
+npm test
 npm run build
 ```
 

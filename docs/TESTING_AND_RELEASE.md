@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-07-21
+Last verified: 2026-07-27
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -12,14 +12,21 @@ Run from repository root unless specified.
 Python (always through Scriber's project environment, never bare `python`):
 
 ```powershell
-scripts\project-python.cmd -m pytest
+scripts\project-python.cmd -m pytest -n 4 --dist loadfile -ra
 ```
+
+Install the CI test tools from `requirements-test.txt` and resolve the complete
+Windows CPython 3.13 graph through `requirements-test-constraints.txt`. The
+constraints file closes all direct and transitive versions used by the full
+suite without changing the broader application dependency policy. CI also pins
+the pip resolver version and validates the result with `pip check`.
 
 Frontend:
 
 ```powershell
 cd Frontend
 npm run check
+npm test
 npm run build
 ```
 
@@ -906,19 +913,37 @@ Other available installed smokes include:
 
 ## CI
 
-`.github/workflows/hybrid-pr-checks.yml` is the fast PR gate.
+`.github/workflows/hybrid-pr-checks.yml` is the PR and `main` gate.
 
-It runs focused hybrid Python gates, frontend typecheck/build, and Tauri Rust
-tests. It intentionally does not build the full NSIS installer on every PR.
+It keeps the focused hybrid Python gates as a fast independent signal and also
+calls `.github/workflows/python-full-suite.yml` for all Python tests. Frontend
+tests are typechecked with their own TypeScript project and executed in
+addition to the application typecheck/build. Tauri Rust tests and a
+commit-pinned `actionlint` workflow check run independently. It intentionally
+does not build the full NSIS installer on every PR.
 Node setup uses the repository `.node-version` file so CI stays aligned with
 `Frontend/package.json` engines. Keep GitHub-owned actions on current majors
 (`checkout`, `setup-python`, `setup-node`, `cache`, and `upload-artifact`) so
-the workflows do not fall back to deprecated Node action runtimes.
+the workflows do not fall back to deprecated Node action runtimes. The pinned
+actionlint v1.7.12 invocation ignores only its known pre-`concurrency.queue`
+schema error; GitHub documents `queue: max`, and every other actionlint check
+remains active.
 
 `.github/workflows/release-windows.yml` is the Windows release build.
 
 It:
 
+- runs the same reusable full Python suite before either cold producer or the
+  final installer job may proceed. Release planning can run in parallel, and a
+  skipped or failed cold producer still preserves the established single-runner
+  fallback; a failed full suite cannot produce an installer,
+- never cancels an in-progress `v*` tag release because a second run starts;
+  diagnostic branch dispatches remain cancelable. The complete Windows
+  build/sign/publish job for every `v*` tag shares one `queue: max` concurrency
+  lane, and GitHub publication uses `make_latest: legacy` so a slower older tag
+  cannot replace a higher semantic version as the updater's latest release,
+- pins every third-party action in the CI/release graph to a reviewed full
+  commit SHA; adjacent comments retain the human-readable upstream version,
 - sets up Python, Node, Rust, and MSYS2/UCRT64,
 - runs automatically only on `v*` tags as the signed updater release path;
   `workflow_dispatch` remains available for explicit diagnostics and cache

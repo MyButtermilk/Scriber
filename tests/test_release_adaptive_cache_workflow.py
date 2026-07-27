@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+import yaml
 
 from backend_runtime.contract import RUNTIME_CONTRACT_REVISION
 
@@ -43,14 +44,116 @@ def test_release_workflow_uses_adaptive_parallel_cold_producers_and_safe_warm_fa
     assert "actions: read\n      contents: read" in workflow
     assert "prepare-tauri-cold:" in workflow
     assert "prepare-backend-cold:" in workflow
-    assert "needs: release-plan" in workflow
-    assert workflow.count("if: needs.release-plan.outputs.use-cold-path == 'true'") == 2
     assert "Build and attest exact Tauri binary" in workflow
     assert "Build and attest backend product" in workflow
     assert "always() &&" in workflow
     assert "Cold products were not requested or did not both validate; using the established single-runner path." in workflow
     assert "pattern: scriber-cold-*-product" in workflow
     assert "merge-multiple: true" in workflow
+
+
+def test_release_python_suite_is_a_direct_gate_without_breaking_warm_fallback() -> None:
+    raw = _read(".github/workflows/release-windows.yml")
+    workflow = yaml.safe_load(raw)
+    jobs = workflow["jobs"]
+
+    assert jobs["python-full-suite"] == {
+        "name": "Python full suite",
+        "uses": "./.github/workflows/python-full-suite.yml",
+        "permissions": {"contents": "read"},
+    }
+
+    for producer_name in ("prepare-tauri-cold", "prepare-backend-cold"):
+        producer = jobs[producer_name]
+        condition = " ".join(producer["if"].split())
+        assert set(producer["needs"]) == {"release-plan", "python-full-suite"}
+        assert condition == (
+            "needs.release-plan.result == 'success' && "
+            "needs.python-full-suite.result == 'success' && "
+            "needs.release-plan.outputs.use-cold-path == 'true'"
+        )
+
+    build = jobs["build-windows"]
+    build_condition = " ".join(build["if"].split())
+    assert set(build["needs"]) == {
+        "release-plan",
+        "python-full-suite",
+        "prepare-backend-cold",
+        "prepare-tauri-cold",
+    }
+    assert build_condition == (
+        "always() && !cancelled() && "
+        "needs.release-plan.result == 'success' && "
+        "needs.python-full-suite.result == 'success'"
+    )
+    assert "cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}" in raw
+    assert build["concurrency"] == {
+        "group": (
+            "${{ startsWith(github.ref, 'refs/tags/v') && "
+            "'release-windows-tags' || "
+            "format('release-windows-build-{0}', github.ref) }}"
+        ),
+        "queue": "max",
+    }
+
+    publish = next(
+        step
+        for step in build["steps"]
+        if step["name"] == "Publish GitHub release"
+    )
+    assert publish["uses"] == (
+        "softprops/action-gh-release@"
+        "3d0d9888cb7fd7b750713d6e236d1fcb99157228"
+    )
+    assert publish["with"]["make_latest"] == "legacy"
+
+
+@pytest.mark.parametrize(
+    (
+        "plan_result",
+        "suite_result",
+        "backend_cold_result",
+        "tauri_cold_result",
+        "cancelled",
+        "expected",
+    ),
+    [
+        ("success", "success", "skipped", "skipped", False, True),
+        ("success", "success", "failure", "success", False, True),
+        ("success", "success", "success", "failure", False, True),
+        ("success", "failure", "skipped", "skipped", False, False),
+        ("failure", "success", "skipped", "skipped", False, False),
+        ("success", "success", "success", "success", True, False),
+    ],
+)
+def test_release_build_gate_truth_table(
+    plan_result: str,
+    suite_result: str,
+    backend_cold_result: str,
+    tauri_cold_result: str,
+    cancelled: bool,
+    expected: bool,
+) -> None:
+    # Cold producer results are intentionally absent: any failure or skip must
+    # enter the established single-runner fallback instead of blocking build.
+    assert backend_cold_result in {"success", "failure", "skipped"}
+    assert tauri_cold_result in {"success", "failure", "skipped"}
+    actual = (
+        not cancelled
+        and plan_result == "success"
+        and suite_result == "success"
+    )
+    assert actual is expected
+
+
+def test_distinct_release_tags_share_one_fifo_build_and_publish_queue() -> None:
+    def build_queue(ref: str) -> str:
+        if ref.startswith("refs/tags/v"):
+            return "release-windows-tags"
+        return f"release-windows-build-{ref}"
+
+    assert build_queue("refs/tags/v0.5.44") == build_queue("refs/tags/v0.5.45")
+    assert build_queue("refs/heads/main") != build_queue("refs/tags/v0.5.45")
 
 
 def test_runtime_tree_identity_is_compatible_with_windows_powershell() -> None:

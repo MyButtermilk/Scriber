@@ -648,7 +648,8 @@ Packaging/build:
   `cargo::core::compiler::fingerprint=info` only for investigation runs where
   the main Tauri crate recompiles unexpectedly, because the log is noisy.
 - The release workflow intentionally pins
-  `dtolnay/rust-toolchain@1.97.0`, matching the current hot Cargo cache.
+  `dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83`
+  (the immutable commit for 1.97.0), matching the current hot Cargo cache.
   Replacing it with the GitHub Windows runner's preinstalled Rust looked like a
   potential `21s` setup win, but run `29003544425` invalidated Cargo
   fingerprints despite exact cache restore and spent `397.6s` in the Tauri

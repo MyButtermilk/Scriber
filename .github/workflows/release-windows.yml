@@ -19,7 +19,7 @@ on:
 
 concurrency:
   group: release-windows-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 
 permissions:
   contents: write
@@ -38,6 +38,12 @@ env:
   SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG: release-cache-rust-diarization-sidecar-v1
 
 jobs:
+  python-full-suite:
+    name: Python full suite
+    uses: ./.github/workflows/python-full-suite.yml
+    permissions:
+      contents: read
+
   release-plan:
     name: Plan Windows release path
     runs-on: ubuntu-latest
@@ -125,8 +131,13 @@ jobs:
 
   prepare-tauri-cold:
     name: Prepare Tauri binary (cold path)
-    needs: release-plan
-    if: needs.release-plan.outputs.use-cold-path == 'true'
+    needs:
+      - release-plan
+      - python-full-suite
+    if: >-
+      needs.release-plan.result == 'success' &&
+      needs.python-full-suite.result == 'success' &&
+      needs.release-plan.outputs.use-cold-path == 'true'
     runs-on: windows-latest
     permissions:
       actions: read
@@ -150,7 +161,7 @@ jobs:
           node-version-file: .node-version
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.97.0
+        uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
 
       - name: Compute deterministic release cache keys
         shell: pwsh
@@ -229,8 +240,13 @@ jobs:
 
   prepare-backend-cold:
     name: Prepare backend product (cold path)
-    needs: release-plan
-    if: needs.release-plan.outputs.use-cold-path == 'true'
+    needs:
+      - release-plan
+      - python-full-suite
+    if: >-
+      needs.release-plan.result == 'success' &&
+      needs.python-full-suite.result == 'success' &&
+      needs.release-plan.outputs.use-cold-path == 'true'
     runs-on: windows-latest
     permissions:
       actions: read
@@ -249,7 +265,7 @@ jobs:
           python-version: ${{ env.SCRIBER_RELEASE_PYTHON_VERSION }}
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.97.0
+        uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
 
       - name: Compute deterministic release cache keys
         shell: pwsh
@@ -445,7 +461,7 @@ jobs:
 
       - name: Set up MSYS2
         if: steps.cold-ffmpeg.outputs.usable != 'true'
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
           msystem: UCRT64
           update: true
@@ -511,12 +527,17 @@ jobs:
     name: Build and sign Windows installer
     needs:
       - release-plan
+      - python-full-suite
       - prepare-backend-cold
       - prepare-tauri-cold
     if: >-
       always() &&
       !cancelled() &&
-      needs.release-plan.result == 'success'
+      needs.release-plan.result == 'success' &&
+      needs.python-full-suite.result == 'success'
+    concurrency:
+      group: ${{ startsWith(github.ref, 'refs/tags/v') && 'release-windows-tags' || format('release-windows-build-{0}', github.ref) }}
+      queue: max
     runs-on: windows-latest
     env:
       SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG: ffmpeg-profile-b-n7.0-v4
@@ -738,7 +759,7 @@ jobs:
 
       - name: Set up Rust
         if: steps.cold-products.outputs.usable != 'true'
-        uses: dtolnay/rust-toolchain@1.97.0
+        uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
 
       - name: Restore Rust build cache
         id: rust-build-cache
@@ -1502,7 +1523,7 @@ jobs:
 
       - name: Set up MSYS2
         if: steps.ffmpeg-profile-b-resolve.outputs.usable != 'true'
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
           msystem: UCRT64
           update: true
@@ -1940,10 +1961,11 @@ jobs:
 
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           files: release-artifacts/*
           generate_release_notes: true
+          make_latest: legacy
 
       - name: Verify published updater metadata
         if: startsWith(github.ref, 'refs/tags/')

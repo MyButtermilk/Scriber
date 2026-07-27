@@ -568,7 +568,12 @@ def test_release_workflow_builds_profile_b_media_tools_for_standard_build() -> N
 
     assert "PrunePySide6" not in workflow
     assert "Set up MSYS2" in workflow
-    assert "msys2/setup-msys2@v2" in workflow
+    assert (
+        workflow.count(
+            "msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2"
+        )
+        == 2
+    )
     assert "Build FFmpeg Profile B media tools" in workflow
     assert "scripts\\ffmpeg\\build_profile_b_msys2.ps1" in workflow
     assert "profile-b-msys2-build-report.json" in workflow

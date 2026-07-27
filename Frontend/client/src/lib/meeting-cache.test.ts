@@ -32,6 +32,7 @@ function meeting(id: string, state: MeetingState = "ready"): MeetingSummary {
     title: `Meeting ${id}`,
     state,
     language: "auto",
+    transcriptionMode: "live_final",
     liveProvider: "soniox",
     finalProvider: "soniox_async",
     analysisModel: "test-model",

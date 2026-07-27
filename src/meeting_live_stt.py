@@ -297,8 +297,11 @@ class SonioxMeetingStream:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._stop_timeout_s
         # Keep part of the one total stop budget for forced task cancellation
-        # and WebSocket closure if graceful provider finalization stalls.
-        cleanup_reserve_s = min(1.0, max(0.01, self._stop_timeout_s * 0.2))
+        # and WebSocket closure if graceful provider finalization stalls. Very
+        # small diagnostic/test budgets still need enough scheduler time for a
+        # cancelled supervisor to run its child-task cleanup before stop()
+        # clears the authoritative task references.
+        cleanup_reserve_s = min(1.0, max(0.05, self._stop_timeout_s * 0.5))
         graceful_deadline = deadline - cleanup_reserve_s
         task = self.supervisor_task
         if task is None:
