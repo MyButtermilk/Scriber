@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-07-21
+Last verified: 2026-07-27
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -11,7 +11,9 @@ Scriber is a hybrid desktop app:
 
 - Tauri 2 shell for installed Windows desktop runtime.
 - React 19/Vite 8 frontend rendered inside the Tauri WebView or browser dev
-  server.
+  server. Its build is Vite-only and uses the repository-pinned Node.js 26.5.0;
+  no Express server, database scaffold, or server-side bundle participates in
+  the desktop runtime.
 - Python `aiohttp` backend for local REST, WebSocket, mic recording, provider
   work, media preparation, persistence, logs, and support bundles.
 - SQLite database for transcripts and metadata.

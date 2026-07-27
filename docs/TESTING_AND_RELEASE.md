@@ -39,10 +39,16 @@ Frontend:
 
 ```powershell
 cd Frontend
+npm ci
 npm run check
 npm test
 npm run build
 ```
+
+Use the exact Node.js 26.5.0 version from `.node-version`; CI and release builds
+consume that pin, while `Frontend/package.json` declares the supported
+`>=26.5.0 <27` range for local tooling. The frontend is a Vite-only WebView
+build, so these commands do not start or produce a legacy Express server bundle.
 
 For the desktop development path, use `npm run tauri:dev` from `Frontend`.
 Tauri's `beforeDevCommand` runs `npm run dev:tauri`, which builds the current

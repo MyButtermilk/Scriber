@@ -1724,7 +1724,7 @@ def test_toolchain_doctor_rehashes_and_executes_every_pinned_tool(
     state.initialize_run(context, resume=False, now=FIXED_NOW)
     paths = state.paths_for(context)
     toolchain_root = paths.toolchain_manifest.parent
-    node_version = "26.3.1"
+    node_version = "26.5.0"
     (repo_root / ".node-version").write_text(node_version + "\n", encoding="utf-8")
     files = {
         "node": toolchain_root / "node" / "node.exe",

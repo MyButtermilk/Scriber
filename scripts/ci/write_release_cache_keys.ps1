@@ -278,7 +278,6 @@ foreach ($path in @(
     Add-RawFileEntry -Entries $tauriAppEntries -Path $path
 }
 Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/client" -Filter "*"
-Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/shared" -Filter "*"
 Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/src-tauri/capabilities" -Filter "*.json"
 Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/src-tauri/icons" -Filter "*"
 Add-FileGlobEntries -Entries $tauriAppEntries -Root "Frontend/src-tauri/src" -Filter "*.rs"

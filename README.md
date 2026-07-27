@@ -285,7 +285,7 @@ For a simple cloud setup, configure a Gemini API key for Gemini STT and summarie
 
 - Windows 10 or newer for the primary desktop runtime
 - Python 3.13
-- Node.js 26.3.1 and npm
+- Node.js 26.5.0 and npm
 - Stable Rust toolchain
 - Git
 

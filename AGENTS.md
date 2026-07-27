@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-07-21
+Last verified: 2026-07-27
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -33,7 +33,10 @@ the user explicitly asks for a temporary investigation note.
 - Backend default: `127.0.0.1:8765`, implemented with `aiohttp`, WebSocket
   events, SQLite, Pipecat pipeline code, and provider adapters.
 - Frontend default in dev: `localhost:5000`, implemented with Vite 8, React 19,
-  TypeScript, Tailwind v4, Wouter, and TanStack Query.
+  TypeScript, Tailwind v4, Wouter, and TanStack Query. The Vite-only frontend
+  toolchain is pinned to Node.js 26.5.0 through `.node-version` and
+  `Frontend/package.json`; the removed Express/Replit scaffold is not part of
+  the desktop runtime or build.
 - Runtime is Windows-first. Linux/macOS support is mostly fallback/dev support.
 - Legacy Python tray/UI code was removed. The Tauri shell owns desktop UI,
   tray/menu actions, global hotkeys, and the recording overlay.
