@@ -67,7 +67,8 @@ def install_smart_turn_mel_acceleration(*, force: bool = False) -> bool:
         return False
 
     with _INSTALL_LOCK:
-        current = _whisper_features._MEL_FILTERS
+        module_state = vars(_whisper_features)
+        current = module_state["_MEL_FILTERS"]
         if isinstance(current, _MelFiltersProxy):
             return False
 
@@ -96,5 +97,5 @@ def install_smart_turn_mel_acceleration(*, force: bool = False) -> bool:
         if not np.allclose(actual, expected, rtol=1e-12, atol=1e-12):
             raise RuntimeError("SmartTurn mel model failed its numerical self-check")
 
-        _whisper_features._MEL_FILTERS = _MelFiltersProxy(current, session)
+        module_state["_MEL_FILTERS"] = _MelFiltersProxy(current, session)
         return True

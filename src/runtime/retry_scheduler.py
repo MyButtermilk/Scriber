@@ -32,7 +32,14 @@ class RetryScheduler:
         def _run() -> None:
             self._handle = None
             self._due_monotonic = None
-            task = self._loop.create_task(self._trigger(), name="retry_scheduler_trigger")
+
+            async def invoke_trigger() -> None:
+                await self._trigger()
+
+            task: asyncio.Task[None] = self._loop.create_task(
+                invoke_trigger(),
+                name="retry_scheduler_trigger",
+            )
             self._task = task
             task.add_done_callback(self._on_trigger_done)
 

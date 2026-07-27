@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from src.core.rest_contracts import REST_API_VERSION
 from src.runtime.log_clear_state import clear_offset_for_path, load_clear_offsets, record_clear_state
@@ -174,11 +174,11 @@ def _candidate_log_files() -> list[Path]:
         for pattern in _LOG_PATTERNS:
             for candidate in directory.glob(pattern):
                 try:
-                    resolved = candidate.resolve()
+                    candidate_path = candidate.resolve()
                 except OSError:
                     continue
-                if resolved.is_file() and resolved.is_relative_to(directory_root):
-                    candidates.append(resolved)
+                if candidate_path.is_file() and candidate_path.is_relative_to(directory_root):
+                    candidates.append(candidate_path)
 
     resolved: list[Path] = []
     seen: set[Path] = set()
@@ -396,7 +396,7 @@ def _is_public_meta_key(key: str, value: Any) -> bool:
     return bool(_PUBLIC_NUMERIC_META_KEY_RE.search(key)) and _is_finite_number(value)
 
 
-def _is_finite_number(value: Any) -> bool:
+def _is_finite_number(value: Any) -> TypeGuard[int | float]:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 

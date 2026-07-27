@@ -52,10 +52,11 @@ def _require_number(payload: dict[str, Any], field: str, contract: str) -> float
     return float(value)
 
 
-def _require_optional_number(payload: dict[str, Any], field: str, contract: str) -> None:
+def _require_optional_number(payload: dict[str, Any], field: str, contract: str) -> float | None:
     value = payload.get(field)
     if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool)):
         raise RESTContractError(f"{contract} requires numeric-or-null '{field}'")
+    return None if value is None else float(value)
 
 
 def _require_int(payload: dict[str, Any], field: str, contract: str) -> int:
@@ -822,9 +823,8 @@ def validate_frontend_performance_payload(payload: dict[str, Any]) -> None:
         "heartbeatObservedAtFrontendUptimeMs",
         "heartbeatReceivedAtUptimeSeconds",
     ):
-        _require_optional_number(window, field, contract)
-        value = window.get(field)
-        if value is not None and (not math.isfinite(float(value)) or float(value) < 0):
+        heartbeat_value = _require_optional_number(window, field, contract)
+        if heartbeat_value is not None and (not math.isfinite(heartbeat_value) or heartbeat_value < 0):
             raise RESTContractError(f"{contract} requires finite non-negative '{field}' when present")
     if query_after_sequence is not None and query_after_sequence < 0:
         raise RESTContractError(f"{contract} requires non-negative 'queryAfterSequence'")

@@ -649,6 +649,9 @@ def _send_request_over_pipe_windows(
         if remaining_ms() <= 0:
             raise OSError(create_error, "CreateFileW remained busy until timeout")
 
+    if handle is None:
+        raise OSError(0, "CreateFileW returned a null pipe handle")
+    pipe_handle = int(handle)
     event = kernel32.CreateEventW(None, wintypes.BOOL(True), wintypes.BOOL(False), None)
     if not event:
         kernel32.CloseHandle(wintypes.HANDLE(handle))
@@ -672,7 +675,7 @@ def _send_request_over_pipe_windows(
             if error != error_io_pending:
                 raise OSError(error, "WriteFile failed")
             pending_overlapped = write_overlapped
-            written_count = wait_for_io(handle, write_overlapped, "write")
+            written_count = wait_for_io(pipe_handle, write_overlapped, "write")
             pending_overlapped = None
         else:
             written_count = int(written.value)
@@ -698,7 +701,7 @@ def _send_request_over_pipe_windows(
             if error != error_io_pending:
                 raise OSError(error, "ReadFile failed")
             pending_overlapped = read_overlapped
-            response_size = wait_for_io(handle, read_overlapped, "response")
+            response_size = wait_for_io(pipe_handle, read_overlapped, "response")
             pending_overlapped = None
         else:
             response_size = int(bytes_read.value)
@@ -734,7 +737,7 @@ def _send_request_over_pipe_windows(
                     raise OSError(error, "WriteFile failed for shell IPC acknowledgement")
                 pending_overlapped = acknowledgement_overlapped
                 acknowledgement_written_count = wait_for_io(
-                    handle,
+                    pipe_handle,
                     acknowledgement_overlapped,
                     "acknowledgement",
                 )
@@ -750,7 +753,7 @@ def _send_request_over_pipe_windows(
     finally:
         try:
             if pending_overlapped is not None:
-                cancel_and_drain_io(handle, pending_overlapped)
+                cancel_and_drain_io(pipe_handle, pending_overlapped)
         finally:
             kernel32.CloseHandle(wintypes.HANDLE(event))
             kernel32.CloseHandle(wintypes.HANDLE(handle))

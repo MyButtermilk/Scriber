@@ -15,3 +15,9 @@ show_error_codes = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 files = ["src/core", "src/runtime", "src/data"]
+
+[[tool.mypy.overrides]]
+# onnxruntime does not publish a py.typed marker; SmartTurn still validates its
+# runtime surface and attested model before installing the acceleration proxy.
+module = ["onnxruntime", "onnxruntime.*"]
+ignore_missing_imports = true

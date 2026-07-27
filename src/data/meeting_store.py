@@ -8,6 +8,7 @@ interrupted desktop process can recover the last durable state.
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import json
 import math
@@ -1230,7 +1231,7 @@ class MeetingStore:
         )
         return self._meeting(row) if row is not None else None
 
-    def discarded_meeting_ids(self, *, limit: int = 1000) -> list[str]:
+    def discarded_meeting_ids(self, *, limit: int = 1000) -> builtins.list[str]:
         rows = (
             db._get_connection()
             .execute(
@@ -1758,7 +1759,7 @@ class MeetingStore:
         # Delta checkpoints point directly at checksum-valid compact bases.
         # The second base/tail is recovery redundancy for a single corrupt row;
         # neither path forms an unbounded chain.
-        base_rows: list[sqlite3.Row] = []
+        base_rows: builtins.list[sqlite3.Row] = []
         if int(sequence) % TRANSCRIPT_CHECKPOINT_BASE_INTERVAL != 0:
             candidates = conn.execute(
                 """SELECT sequence,segment_count,frontiers_json,snapshot_json,snapshot_sha256
@@ -1791,7 +1792,7 @@ class MeetingStore:
             raw = base_frontiers.get("segments", {}) if isinstance(base_frontiers, dict) else {}
             return {source: int(raw.get(source, -1)) for source in ("microphone", "system", "mixed")}
 
-        def rows_since(base: sqlite3.Row | None) -> list[sqlite3.Row]:
+        def rows_since(base: sqlite3.Row | None) -> builtins.list[sqlite3.Row]:
             if base is None:
                 return list(
                     conn.execute(
@@ -1804,7 +1805,7 @@ class MeetingStore:
                     ).fetchall()
                 )
             watermarks = segment_watermarks(base)
-            selected: list[sqlite3.Row] = []
+            selected: builtins.list[sqlite3.Row] = []
             for source in ("microphone", "system", "mixed"):
                 frontier = logical.get(source, 0) if source != "mixed" else cutoff_ms
                 if frontier <= 0:
@@ -1824,10 +1825,10 @@ class MeetingStore:
             return selected
 
         def serialize_tail(
-            rows: list[sqlite3.Row], base: sqlite3.Row | None
-        ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+            rows: builtins.list[sqlite3.Row], base: sqlite3.Row | None
+        ) -> tuple[builtins.list[dict[str, Any]], dict[str, int]]:
             watermarks = segment_watermarks(base)
-            items: list[dict[str, Any]] = []
+            items: builtins.list[dict[str, Any]] = []
             for row in rows:
                 source = str(row["source"])
                 end_ms = max(0, int(row["end_ms"]))
@@ -1859,7 +1860,7 @@ class MeetingStore:
         total_segment_count = len(snapshot) if primary_base is None else base_segment_count + len(snapshot)
 
         fallback_base = base_rows[1] if len(base_rows) > 1 else None
-        fallback_snapshot: list[dict[str, Any]] = []
+        fallback_snapshot: builtins.list[dict[str, Any]] = []
         fallback_base_sequence: int | None = None
         if fallback_base is not None:
             fallback_snapshot, _fallback_frontiers = serialize_tail(rows_since(fallback_base), fallback_base)
@@ -1925,7 +1926,7 @@ class MeetingStore:
                ORDER BY commit_ordinal DESC""",
             (meeting_id,),
         ).fetchall()
-        valid_fulls: list[sqlite3.Row] = []
+        valid_fulls: builtins.list[sqlite3.Row] = []
         for checkpoint_row in checkpoint_rows:
             raw = str(checkpoint_row["snapshot_json"])
             if hashlib.sha256(raw.encode("utf-8")).hexdigest() != checkpoint_row["snapshot_sha256"]:
@@ -2028,7 +2029,7 @@ class MeetingStore:
             "createdAt": row["created_at"],
         }
 
-    def _transcript_checkpoints_conn(self, conn: sqlite3.Connection, meeting_id: str) -> list[dict[str, Any]]:
+    def _transcript_checkpoints_conn(self, conn: sqlite3.Connection, meeting_id: str) -> builtins.list[dict[str, Any]]:
         rows = conn.execute(
             """SELECT id,meeting_id,sequence,cutoff_ms,segment_count,sources_json,frontiers_json,
                       commit_ordinal,
@@ -2039,7 +2040,7 @@ class MeetingStore:
         ).fetchall()
         return [self._checkpoint_dict(row) for row in rows]
 
-    def transcript_checkpoints(self, meeting_id: str) -> list[dict[str, Any]]:
+    def transcript_checkpoints(self, meeting_id: str) -> builtins.list[dict[str, Any]]:
         """Return redacted checkpoint metadata; transcript snapshot text stays internal."""
         self.get(meeting_id)
         return self._transcript_checkpoints_conn(db._get_connection(), meeting_id)
@@ -2394,7 +2395,7 @@ class MeetingStore:
         asset_codec: str,
         asset_sample_rate: int,
         asset_channels: int,
-    ) -> list[dict[str, Any]]:
+    ) -> builtins.list[dict[str, Any]]:
         if isinstance(version, bool) or version != AUDIO_ASSET_TRACK_MANIFEST_VERSION:
             raise ValueError("Unsupported meeting audio track manifest version.")
         if isinstance(track_manifest, (str, bytes, dict)):
@@ -2414,7 +2415,7 @@ class MeetingStore:
             "pcmSha256",
             "equalityVerified",
         }
-        normalized: list[dict[str, Any]] = []
+        normalized: builtins.list[dict[str, Any]] = []
         for item in tracks:
             if not isinstance(item, dict) or set(item) != required:
                 raise ValueError("Meeting audio track manifest fields are invalid.")
@@ -2497,17 +2498,17 @@ class MeetingStore:
             "createdAt": row["created_at"],
         }
 
-    def _audio_assets_conn(self, conn: sqlite3.Connection, meeting_id: str) -> list[dict[str, Any]]:
+    def _audio_assets_conn(self, conn: sqlite3.Connection, meeting_id: str) -> builtins.list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM meeting_audio_assets WHERE meeting_id=? ORDER BY created_at,kind", (meeting_id,)
         ).fetchall()
         return [self._audio_asset_from_row(row) for row in rows]
 
-    def audio_assets(self, meeting_id: str) -> list[dict[str, Any]]:
+    def audio_assets(self, meeting_id: str) -> builtins.list[dict[str, Any]]:
         self.get(meeting_id)
         return self._audio_assets_conn(db._get_connection(), meeting_id)
 
-    def expired_audio_meetings(self, *, now: datetime | None = None) -> list[str]:
+    def expired_audio_meetings(self, *, now: datetime | None = None) -> builtins.list[str]:
         current = (now or datetime.now(UTC)).astimezone(UTC)
         rows = (
             db._get_connection()
@@ -2602,7 +2603,7 @@ class MeetingStore:
             "createdAt": now,
         }
 
-    def _audio_gaps_conn(self, conn: sqlite3.Connection, meeting_id: str) -> list[dict[str, Any]]:
+    def _audio_gaps_conn(self, conn: sqlite3.Connection, meeting_id: str) -> builtins.list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM meeting_audio_gaps WHERE meeting_id = ? ORDER BY started_at_ms, id", (meeting_id,)
         ).fetchall()
@@ -2619,11 +2620,11 @@ class MeetingStore:
             for row in rows
         ]
 
-    def audio_gaps(self, meeting_id: str) -> list[dict[str, Any]]:
+    def audio_gaps(self, meeting_id: str) -> builtins.list[dict[str, Any]]:
         self.get(meeting_id)
         return self._audio_gaps_conn(db._get_connection(), meeting_id)
 
-    def audio_chunks(self, meeting_id: str, source: str | None = None) -> list[dict[str, Any]]:
+    def audio_chunks(self, meeting_id: str, source: str | None = None) -> builtins.list[dict[str, Any]]:
         self.get(meeting_id)
         params: tuple[Any, ...] = (meeting_id,)
         where = "meeting_id = ? AND state = 'complete'"
@@ -2708,7 +2709,7 @@ class MeetingStore:
             conn.commit()
             return int(cursor.rowcount or 0)
 
-    def pending_audio_chunk_purges(self, meeting_id: str) -> list[dict[str, Any]]:
+    def pending_audio_chunk_purges(self, meeting_id: str) -> builtins.list[dict[str, Any]]:
         self.get(meeting_id)
         rows = (
             db._get_connection()
@@ -2735,7 +2736,7 @@ class MeetingStore:
             for row in rows
         ]
 
-    def meetings_with_pending_audio_chunk_purges(self) -> list[str]:
+    def meetings_with_pending_audio_chunk_purges(self) -> builtins.list[str]:
         rows = (
             db._get_connection()
             .execute(
@@ -2950,7 +2951,7 @@ class MeetingStore:
     ) -> None:
         if not isinstance(items, list):
             items = []
-        normalized: list[dict[str, Any]] = []
+        normalized: builtins.list[dict[str, Any]] = []
         seen_payloads: dict[tuple[str, str, str], dict[str, Any]] = {}
         for raw in items:
             if not isinstance(raw, dict):
@@ -2997,7 +2998,7 @@ class MeetingStore:
         ]
         user_ids = {str(item["id"]) for item in existing_user_items}
         matched_user_ids: set[str] = set()
-        automatic_items: list[dict[str, Any]] = []
+        automatic_items: builtins.list[dict[str, Any]] = []
         automatic_ids: set[str] = set()
 
         # A user-edited row is intentionally carried across generations even if
@@ -3128,7 +3129,7 @@ class MeetingStore:
         meeting_id: str,
         *,
         item_id: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> builtins.list[dict[str, Any]]:
         where = "meeting_id = ?" + (" AND id = ?" if item_id else "")
         params = (meeting_id, item_id) if item_id else (meeting_id,)
         rows = conn.execute(
@@ -3151,7 +3152,7 @@ class MeetingStore:
             for row in rows
         ]
 
-    def action_items(self, meeting_id: str, *, item_id: str | None = None) -> list[dict[str, Any]]:
+    def action_items(self, meeting_id: str, *, item_id: str | None = None) -> builtins.list[dict[str, Any]]:
         self.get(meeting_id)
         return self._action_items_conn(db._get_connection(), meeting_id, item_id=item_id)
 
@@ -3356,7 +3357,7 @@ class MeetingStore:
         *,
         role: str,
         content: str,
-        citations: list[str] | None = None,
+        citations: builtins.list[str] | None = None,
     ) -> dict[str, Any]:
         if role not in {"user", "assistant", "system"}:
             raise ValueError("Invalid meeting chat role.")
@@ -3385,7 +3386,7 @@ class MeetingStore:
             "createdAt": now,
         }
 
-    def chat_threads(self, meeting_id: str) -> list[dict[str, Any]]:
+    def chat_threads(self, meeting_id: str) -> builtins.list[dict[str, Any]]:
         self.get(meeting_id)
         conn = db._get_connection()
         rows = conn.execute(
@@ -3439,7 +3440,7 @@ class MeetingStore:
             )
             conn.commit()
 
-    def speaker_profiles(self) -> list[dict[str, Any]]:
+    def speaker_profiles(self) -> builtins.list[dict[str, Any]]:
         rows = (
             db._get_connection()
             .execute(
@@ -3520,21 +3521,21 @@ class MeetingStore:
         return selected
 
     @staticmethod
-    def _embedding_blob(values: list[float]) -> bytes:
+    def _embedding_blob(values: builtins.list[float]) -> bytes:
         if len(values) != 256 or not all(math.isfinite(float(value)) for value in values):
             raise ValueError("Speaker embedding must contain 256 finite values.")
         return struct.pack("<256f", *(float(value) for value in values))
 
     @staticmethod
-    def _embedding_values(blob: bytes | None) -> list[float] | None:
+    def _embedding_values(blob: bytes | None) -> builtins.list[float] | None:
         if blob is None or len(blob) != 1024:
             return None
         return list(struct.unpack("<256f", blob))
 
     @staticmethod
     def _weighted_embedding_centroid(
-        vectors: list[tuple[list[float], float]],
-    ) -> list[float]:
+        vectors: builtins.list[tuple[builtins.list[float], float]],
+    ) -> builtins.list[float]:
         valid = [
             (vector, max(0.01, float(weight)))
             for vector, weight in vectors
@@ -3552,7 +3553,7 @@ class MeetingStore:
             raise ValueError("Speaker embedding centroid is invalid.")
         return [value / norm for value in centroid]
 
-    def _enrollment_sum_values(self, profile: sqlite3.Row) -> tuple[list[float] | None, int, float]:
+    def _enrollment_sum_values(self, profile: sqlite3.Row) -> tuple[builtins.list[float] | None, int, float]:
         """Return the privacy-minimal weighted enrollment sum.
 
         Early development databases stored a normalized seed without an
@@ -3589,7 +3590,7 @@ class MeetingStore:
         *,
         exclude_segment_ids: set[str] | None = None,
         exclude_meeting_id: str = "",
-    ) -> tuple[list[tuple[list[float], float]], int]:
+    ) -> tuple[builtins.list[tuple[builtins.list[float], float]], int]:
         profile = conn.execute(
             """SELECT enrollment_embedding_blob,enrollment_sample_count,
                       enrollment_weight_sum,enrollment_resultant_norm
@@ -3598,7 +3599,7 @@ class MeetingStore:
         ).fetchone()
         if profile is None:
             return [], 0
-        vectors: list[tuple[list[float], float]] = []
+        vectors: builtins.list[tuple[builtins.list[float], float]] = []
         enrollment_sum, enrollment_count, _weight_sum = self._enrollment_sum_values(profile)
         if enrollment_sum is not None:
             enrollment_norm = math.sqrt(sum(value * value for value in enrollment_sum))
@@ -3642,7 +3643,7 @@ class MeetingStore:
     def enroll_speaker_profile(
         self,
         display_name: str,
-        embedding: list[float],
+        embedding: builtins.list[float],
         *,
         quality: float = 1.0,
         profile_id: str = "",
@@ -3744,7 +3745,7 @@ class MeetingStore:
         meeting_id: str,
         speaker_id: str,
         segment_id: str,
-        embedding: list[float],
+        embedding: builtins.list[float],
         *,
         quality: float = 1.0,
     ) -> dict[str, Any]:
@@ -3770,7 +3771,7 @@ class MeetingStore:
             profiles = conn.execute(
                 "SELECT id,display_name,is_named,embedding_blob,sample_count FROM speaker_profiles"
             ).fetchall()
-            scores: list[tuple[float, sqlite3.Row]] = []
+            scores: builtins.list[tuple[float, sqlite3.Row]] = []
             for candidate in profiles:
                 centroid = self._embedding_values(candidate["embedding_blob"])
                 if centroid is not None:
@@ -3878,7 +3879,7 @@ class MeetingStore:
         previous identity state.
         """
 
-        prepared: list[dict[str, Any]] = []
+        prepared: builtins.list[dict[str, Any]] = []
         seen_segments: set[str] = set()
         for raw in observations:
             speaker_id = str(raw.get("speakerId") or "").strip()
@@ -3903,7 +3904,7 @@ class MeetingStore:
         if not prepared:
             raise ValueError("No eligible speaker audio is available to reprocess.")
 
-        grouped: dict[str, list[dict[str, Any]]] = {}
+        grouped: dict[str, builtins.list[dict[str, Any]]] = {}
         for item in prepared:
             grouped.setdefault(item["speakerId"], []).append(item)
         now = _utc_now()
@@ -3992,7 +3993,7 @@ class MeetingStore:
                 replaced_segment_ids = set(segment_rows)
 
                 profiles = conn.execute("SELECT id FROM speaker_profiles").fetchall()
-                candidate_centroids: dict[str, list[float]] = {}
+                candidate_centroids: dict[str, builtins.list[float]] = {}
                 for profile in profiles:
                     profile_id = str(profile["id"])
                     vectors, _sample_count = self._speaker_profile_vectors_conn(
@@ -4513,7 +4514,7 @@ class MeetingStore:
             raise MeetingNotFound("Meeting delivery not found")
         return self._delivery(row)
 
-    def deliveries(self, meeting_id: str) -> list[dict[str, Any]]:
+    def deliveries(self, meeting_id: str) -> builtins.list[dict[str, Any]]:
         self.get(meeting_id)
         rows = (
             db._get_connection()
@@ -4541,7 +4542,7 @@ class MeetingStore:
             "nextAttemptAt": row["next_attempt_at"],
         }
 
-    def _notes_conn(self, conn: sqlite3.Connection, meeting_id: str) -> list[dict[str, Any]]:
+    def _notes_conn(self, conn: sqlite3.Connection, meeting_id: str) -> builtins.list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM meeting_notes WHERE meeting_id = ? ORDER BY created_at, id", (meeting_id,)
         ).fetchall()
@@ -4557,7 +4558,7 @@ class MeetingStore:
             for row in rows
         ]
 
-    def notes(self, meeting_id: str) -> list[dict[str, Any]]:
+    def notes(self, meeting_id: str) -> builtins.list[dict[str, Any]]:
         self.get(meeting_id)
         return self._notes_conn(db._get_connection(), meeting_id)
 
@@ -4569,7 +4570,7 @@ class MeetingStore:
         replace_revision: str | None = None,
         advance_transcript_version_on_change: bool = False,
         reset_speaker_identity_on_change: bool = False,
-    ) -> list[dict[str, Any]]:
+    ) -> builtins.list[dict[str, Any]]:
         self.get(meeting_id)
         items = [dict(item) for item in segments]
         if replace_revision not in {None, "live", "canonical"}:
@@ -4587,13 +4588,13 @@ class MeetingStore:
             # projection cannot disagree when callers supplied numeric strings.
             item["startMs"] = start_ms
             item["endMs"] = end_ms
-        created: list[dict[str, Any]] = []
+        created: builtins.list[dict[str, Any]] = []
         now = _utc_now()
         with db._get_connection() as conn:
             # Canonical finalization is a complete snapshot, not a sparse
             # upsert. Delete and insert stay in this one SQLite transaction so
             # retries with fewer turns cannot leave a stale canonical tail.
-            prior_snapshot: list[tuple[Any, ...]] = []
+            prior_snapshot: builtins.list[tuple[Any, ...]] = []
             if replace_revision is not None:
                 if advance_transcript_version_on_change:
                     if replace_revision != "canonical":
@@ -4735,7 +4736,7 @@ class MeetingStore:
             conn.commit()
         return created
 
-    def add_segments(self, meeting_id: str, segments: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    def add_segments(self, meeting_id: str, segments: Iterable[dict[str, Any]]) -> builtins.list[dict[str, Any]]:
         """Upsert incremental live/provider segments without removing peers."""
         return self._write_segments(meeting_id, segments)
 
@@ -4831,7 +4832,7 @@ class MeetingStore:
         *,
         advance_transcript_version_on_change: bool = False,
         reset_speaker_identity_on_change: bool = False,
-    ) -> list[dict[str, Any]]:
+    ) -> builtins.list[dict[str, Any]]:
         """Atomically replace one complete transcript revision."""
         return self._write_segments(
             meeting_id,
@@ -4969,7 +4970,7 @@ class MeetingStore:
             operation="undo",
         )
 
-    def segment_edit_history(self, meeting_id: str, segment_id: str) -> list[dict[str, Any]]:
+    def segment_edit_history(self, meeting_id: str, segment_id: str) -> builtins.list[dict[str, Any]]:
         self.get(meeting_id)
         rows = (
             db._get_connection()
@@ -5019,7 +5020,7 @@ class MeetingStore:
         )
         return int(row[0])
 
-    def search_segments(self, meeting_id: str, query: str, *, limit: int = 40) -> list[dict[str, Any]]:
+    def search_segments(self, meeting_id: str, query: str, *, limit: int = 40) -> builtins.list[dict[str, Any]]:
         self.get(meeting_id)
         terms = [term for term in re.findall(r"[\w-]+", query, flags=re.UNICODE) if len(term) > 1]
         if not terms:
@@ -5046,8 +5047,8 @@ class MeetingStore:
         ).fetchall()
         if not hits:
             return []
-        clauses: list[str] = []
-        params: list[Any] = [meeting_id]
+        clauses: builtins.list[str] = []
+        params: builtins.list[Any] = [meeting_id]
         for hit in hits:
             clauses.append("(start_ms <= ? AND end_ms >= ?)")
             params.extend([int(hit["end_ms"]) + 30_000, max(0, int(hit["start_ms"]) - 30_000)])

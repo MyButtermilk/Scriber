@@ -286,35 +286,35 @@ class ProviderHttpTransport:
         }
 
     def _build_trace_config(self) -> aiohttp.TraceConfig:
-        def context_factory(*, trace_request_ctx: Any = None) -> SimpleNamespace:
-            request_ctx = trace_request_ctx if isinstance(trace_request_ctx, Mapping) else {}
-            flow_id = uuid4().hex
-            return SimpleNamespace(
-                flow_id=flow_id,
-                provider=_bounded_label(request_ctx.get("provider"), limit=_PROVIDER_LIMIT),
-                marker=request_ctx.get("marker") if callable(request_ctx.get("marker")) else None,
-                started_ns=0,
-                origin_hash="unknown",
-                dns="not_observed",
-                dns_started_ns=0,
-                dns_duration_ms=None,
-                connection="not_observed",
-                connection_started_ns=0,
-                connection_duration_ms=None,
-                queue_started_ns=0,
-                queue_duration_ms=None,
-                first_request_chunk_ns=0,
-                last_request_chunk_ns=0,
-                request_chunk_count=0,
-                response_headers_ns=0,
-                first_response_chunk_ns=0,
-                last_response_chunk_ns=0,
-                response_chunk_count=0,
-                completed_item=None,
-                outcome="active",
-            )
+        class TraceContext(SimpleNamespace):
+            def __init__(self, *, trace_request_ctx: Any = None) -> None:
+                request_ctx = trace_request_ctx if isinstance(trace_request_ctx, Mapping) else {}
+                super().__init__(
+                    flow_id=uuid4().hex,
+                    provider=_bounded_label(request_ctx.get("provider"), limit=_PROVIDER_LIMIT),
+                    marker=request_ctx.get("marker") if callable(request_ctx.get("marker")) else None,
+                    started_ns=0,
+                    origin_hash="unknown",
+                    dns="not_observed",
+                    dns_started_ns=0,
+                    dns_duration_ms=None,
+                    connection="not_observed",
+                    connection_started_ns=0,
+                    connection_duration_ms=None,
+                    queue_started_ns=0,
+                    queue_duration_ms=None,
+                    first_request_chunk_ns=0,
+                    last_request_chunk_ns=0,
+                    request_chunk_count=0,
+                    response_headers_ns=0,
+                    first_response_chunk_ns=0,
+                    last_response_chunk_ns=0,
+                    response_chunk_count=0,
+                    completed_item=None,
+                    outcome="active",
+                )
 
-        trace = aiohttp.TraceConfig(trace_config_ctx_factory=context_factory)
+        trace = aiohttp.TraceConfig(trace_config_ctx_factory=TraceContext)
 
         async def request_start(_session: Any, ctx: SimpleNamespace, params: Any) -> None:
             now = time.perf_counter_ns()

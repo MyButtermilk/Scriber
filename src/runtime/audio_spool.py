@@ -7,14 +7,14 @@ import struct
 import tempfile
 import wave
 from contextlib import suppress
-from typing import BinaryIO
+from typing import IO, BinaryIO
 
 _COPY_CHUNK_BYTES = 1024 * 1024
 SPOOL_MEMORY_LIMIT_BYTES = 10 * 1024 * 1024
 WAV_PCM16_HEADER_BYTES = 44
 
 
-def create_pcm_spool(*, reserve_wav_header: bool = False) -> BinaryIO:
+def create_pcm_spool(*, reserve_wav_header: bool = False) -> tempfile.SpooledTemporaryFile[bytes]:
     """Create Scriber's bounded-memory PCM spool."""
     # The caller owns this long-lived spool and closes it after upload/finalization.
     spool = tempfile.SpooledTemporaryFile(  # noqa: SIM115
@@ -63,7 +63,7 @@ def pcm_stream_to_wav(
     *,
     reserved_wav_header: bool = False,
     pcm_size: int | None = None,
-) -> BinaryIO:
+) -> IO[bytes]:
     """Build a seekable PCM16 WAV while keeping long recordings off heap."""
     resolved_sample_rate = max(1, int(sample_rate or 16000))
     resolved_channels = max(1, int(channels or 1))

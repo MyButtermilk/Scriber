@@ -1755,7 +1755,12 @@ class ProviderReplayRegistry:
                 raise ProviderReplayConflict("provider replay marker already recorded")
             if (qpc_ticks is None) != (qpc_frequency is None):
                 raise ProviderReplayDisabled("windows_qpc_invalid")
-            ticks, frequency = self._qpc_clock() if qpc_ticks is None else (int(qpc_ticks), int(qpc_frequency))
+            if qpc_ticks is None:
+                ticks, frequency = self._qpc_clock()
+            else:
+                if qpc_frequency is None:
+                    raise ProviderReplayDisabled("windows_qpc_invalid")
+                ticks, frequency = int(qpc_ticks), int(qpc_frequency)
             if ticks <= 0 or frequency <= 0:
                 raise ProviderReplayDisabled("windows_qpc_invalid")
             artifact = {

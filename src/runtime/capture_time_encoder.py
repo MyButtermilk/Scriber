@@ -12,7 +12,6 @@ import asyncio
 import contextlib
 import tempfile
 from collections.abc import Sequence
-from typing import BinaryIO
 
 from src.runtime.subprocess_utils import hidden_subprocess_kwargs, read_stream_limited
 
@@ -57,10 +56,11 @@ class CaptureTimeFfmpegEncoder:
             max(1.0, float(finish_timeout_seconds)),
         )
         # The encoder owns this spool until finish() transfers or abort() closes it.
-        self._output: BinaryIO | None = tempfile.SpooledTemporaryFile(  # noqa: SIM115
+        output = tempfile.SpooledTemporaryFile(  # noqa: SIM115
             max_size=max(1, int(output_memory_limit)),
             mode="w+b",
         )
+        self._output: tempfile.SpooledTemporaryFile[bytes] | None = output
         self._process: asyncio.subprocess.Process | None = None
         self._runner_task: asyncio.Task[None] | None = None
         self._accepting = True
@@ -109,7 +109,7 @@ class CaptureTimeFfmpegEncoder:
         self._queued_pcm_bytes += len(pcm)
         return True
 
-    async def finish(self) -> BinaryIO:
+    async def finish(self) -> tempfile.SpooledTemporaryFile[bytes]:
         """Flush the small encoder tail and transfer the encoded spool."""
 
         self._accepting = False
@@ -119,13 +119,14 @@ class CaptureTimeFfmpegEncoder:
             raise CaptureTimeEncoderError(error_code)
         if self._finished:
             raise CaptureTimeEncoderError("capture-time encoder already finalized")
-        if self._runner_task is None:
+        runner_task = self._runner_task
+        if runner_task is None:
             await self.abort()
             raise CaptureTimeEncoderError("capture-time encoder received no PCM")
 
         async def finish_runner() -> None:
             await self._queue.put(self._SENTINEL)
-            await asyncio.shield(self._runner_task)
+            await asyncio.shield(runner_task)
 
         try:
             await asyncio.wait_for(
