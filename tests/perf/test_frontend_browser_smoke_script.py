@@ -352,6 +352,11 @@ def test_frontend_browser_smoke_exercises_transcript_detail_actions() -> None:
     assert "Copy transcript" in script
     assert "Export as PDF" in script
     assert "Export as DOCX" in script
+    assert '"/api/transcripts/{transcript_id}/export/{format}"' in script
+    assert "async def transcript_export" in script
+    assert "__scriberSmokeDetailDownloads" in script
+    assert "__scriberSmokeOpenedUrls" not in script
+    assert 'backend.transcript_exports != expected_exports' in script
     assert "Retry Summary" in script
     assert "\"transcript-detail-actions\"" in script
 

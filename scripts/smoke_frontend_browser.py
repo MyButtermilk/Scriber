@@ -115,6 +115,7 @@ class FrontendSmokeBackend:
         self.session_token_required = False
         self.session_token = "smoke-session-token"
         self.transcript_detail_counts: dict[str, int] = {}
+        self.transcript_exports: list[dict[str, str]] = []
         self.summarized_transcripts: set[str] = set()
         self.summarize_counts: dict[str, int] = {}
         self.canceled_transcripts: set[str] = set()
@@ -246,6 +247,7 @@ class FrontendSmokeBackend:
         app.router.add_delete("/api/runtime/logs", self.delete_runtime_logs)
         app.router.add_post("/api/runtime/support-bundle", self.support_bundle)
         app.router.add_get("/api/transcripts", self.transcripts)
+        app.router.add_get("/api/transcripts/{transcript_id}/export/{format}", self.transcript_export)
         app.router.add_get("/api/transcripts/{transcript_id}", self.transcript_detail)
         app.router.add_delete("/api/transcripts/{transcript_id}", self.delete_transcript)
         app.router.add_post("/api/transcripts/{transcript_id}/cancel", self.ok_response)
@@ -1442,6 +1444,26 @@ class FrontendSmokeBackend:
             }
         )
         return web.json_response(item)
+
+    async def transcript_export(self, request: web.Request) -> web.Response:
+        transcript_id = request.match_info["transcript_id"]
+        export_format = request.match_info["format"].lower()
+        if export_format not in {"pdf", "docx"}:
+            return web.json_response({"message": "Unsupported export format"}, status=400)
+        self.transcript_exports.append({"id": transcript_id, "format": export_format})
+        content_types = {
+            "pdf": "application/pdf",
+            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+        return web.Response(
+            body=f"synthetic {export_format} export".encode(),
+            content_type=content_types[export_format],
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="Synthetic transcript.{export_format}"'
+                )
+            },
+        )
 
     async def delete_transcript(self, request: web.Request) -> web.Response:
         transcript_id = request.match_info["transcript_id"]
@@ -5574,14 +5596,17 @@ async def exercise_transcript_detail_actions(
         r"""
 (() => {
   const writes = [];
-  const opened = [];
+  const downloads = [];
   const clipboard = { writeText: async (value) => { writes.push(String(value)); } };
   window.__scriberSmokeDetailClipboardWrites = writes;
-  window.__scriberSmokeOpenedUrls = opened;
-  window.__scriberSmokeOriginalOpen = window.open;
-  window.open = (url, target) => {
-    opened.push({ url: String(url), target: String(target || '') });
-    return null;
+  window.__scriberSmokeDetailDownloads = downloads;
+  window.__scriberSmokeDetailOriginalAnchorClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () {
+    if (this.download) {
+      downloads.push({ name: String(this.download), href: String(this.href) });
+      return;
+    }
+    return window.__scriberSmokeDetailOriginalAnchorClick.call(this);
   };
   let clipboardStubbed = false;
   try {
@@ -5698,7 +5723,7 @@ async def exercise_transcript_detail_actions(
     node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
     node.click();
   };
-  const opened = window.__scriberSmokeOpenedUrls || [];
+  const downloads = window.__scriberSmokeDetailDownloads || [];
   if (!window.__scriberSmokePdfExportClicked) {
     const exportButton = Array.from(document.querySelectorAll('button'))
       .find((node) => (node.textContent || '').includes('Export'));
@@ -5713,11 +5738,11 @@ async def exercise_transcript_detail_actions(
     if (!pdfItem) return { ok: false, reason: 'missing pdf export menu item' };
     window.__scriberSmokePdfMenuClicked = true;
     activate(pdfItem);
-    return { ok: false, waitingForPdfOpen: true };
+    return { ok: false, waitingForPdfDownload: true };
   }
   return {
-    ok: opened.some((item) => String(item.url).includes('/api/transcripts/mic-00001/export/pdf')),
-    opened
+    ok: downloads.some((item) => String(item.name).toLowerCase().endsWith('.pdf')),
+    downloads
   };
 })()
 """,
@@ -5736,7 +5761,7 @@ async def exercise_transcript_detail_actions(
     node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
     node.click();
   };
-  const opened = window.__scriberSmokeOpenedUrls || [];
+  const downloads = window.__scriberSmokeDetailDownloads || [];
   if (!window.__scriberSmokeDocxExportClicked) {
     const exportButton = Array.from(document.querySelectorAll('button'))
       .find((node) => (node.textContent || '').includes('Export'));
@@ -5751,15 +5776,47 @@ async def exercise_transcript_detail_actions(
     if (!docxItem) return { ok: false, reason: 'missing docx export menu item' };
     window.__scriberSmokeDocxMenuClicked = true;
     activate(docxItem);
-    return { ok: false, waitingForDocxOpen: true };
+    return { ok: false, waitingForDocxDownload: true };
   }
   return {
-    ok: opened.some((item) => String(item.url).includes('/api/transcripts/mic-00001/export/docx')),
-    opened
+    ok: downloads.some((item) => String(item.name).toLowerCase().endsWith('.docx')),
+    downloads
   };
 })()
 """,
     )
+
+    export_spy_state = await cdp.evaluate(
+        r"""
+(() => {
+  const downloads = Array.from(window.__scriberSmokeDetailDownloads || []);
+  if (window.__scriberSmokeDetailOriginalAnchorClick) {
+    HTMLAnchorElement.prototype.click = window.__scriberSmokeDetailOriginalAnchorClick;
+    delete window.__scriberSmokeDetailOriginalAnchorClick;
+  }
+  delete window.__scriberSmokeDetailDownloads;
+  return {
+    ok: downloads.some((item) => String(item.name).toLowerCase().endsWith('.pdf'))
+      && downloads.some((item) => String(item.name).toLowerCase().endsWith('.docx')),
+    downloads
+  };
+})()
+""",
+        timeout=5,
+    )
+    expected_exports = [
+        {"id": "mic-00001", "format": "pdf"},
+        {"id": "mic-00001", "format": "docx"},
+    ]
+    if (
+        not export_spy_state
+        or not export_spy_state.get("ok")
+        or backend.transcript_exports != expected_exports
+    ):
+        raise RuntimeError(
+            "Transcript exports did not traverse the fetch/download path: "
+            f"downloads={export_spy_state}, backend={backend.transcript_exports}"
+        )
 
     await cdp.call("Page.navigate", {"url": f"{frontend_base_url}/transcript/mic-no-summary-smoke"}, timeout=10)
     await wait_for_route_ready(
@@ -5853,6 +5910,8 @@ async def exercise_transcript_detail_actions(
         "copyFailure": copy_failure_state,
         "exportPdf": export_pdf_state,
         "exportDocx": export_docx_state,
+        "exportDownloads": export_spy_state,
+        "exports": list(backend.transcript_exports),
         "summarize": summarize_state,
         "retrySummary": retry_state,
     }
