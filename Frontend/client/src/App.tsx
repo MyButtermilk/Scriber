@@ -118,7 +118,7 @@ function RecordingErrorToastBridge() {
         showRecordingErrorToast(toast, recordingError);
       }
     }
-  }, [toast]);
+  }, [t, toast]);
 
   useSharedWebSocket(handleWsMessage);
   return null;

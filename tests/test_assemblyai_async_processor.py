@@ -261,6 +261,30 @@ async def test_transcribe_with_assemblyai_pre_recorded_raises_on_error_status():
 
 
 @pytest.mark.asyncio
+async def test_assemblyai_invalid_json_does_not_escape_in_decoder_exception():
+    private_marker = "PRIVATE_TRANSCRIPT_assembly_761"
+    session = _FakeSession(
+        post_responses=[
+            _FakeResponse(status=200, text="{invalid " + private_marker),
+        ],
+        get_responses=[],
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        await transcribe_with_assemblyai_pre_recorded(
+            session=session,  # type: ignore[arg-type]
+            api_key="test-key",
+            audio_source=b"audio",
+            language="en",
+        )
+
+    assert type(caught.value).__name__ == "ProviderTransportError"
+    assert caught.value.__context__ is None
+    assert not hasattr(caught.value, "doc")
+    assert private_marker not in str(caught.value)
+
+
+@pytest.mark.asyncio
 async def test_pipeline_direct_upload_assemblyai_uses_diarized_speaker_output(
     monkeypatch,
     tmp_path,
@@ -286,7 +310,10 @@ async def test_pipeline_direct_upload_assemblyai_uses_diarized_speaker_output(
             "text": "fallback",
         }
 
-    monkeypatch.setattr("src.pipeline.transcribe_with_assemblyai_pre_recorded", _fake_transcribe)
+    monkeypatch.setattr(
+        "src.assemblyai_async_stt.transcribe_with_assemblyai_pre_recorded",
+        _fake_transcribe,
+    )
     monkeypatch.setattr(Config, "ASSEMBLYAI_API_KEY", "test-key")
     monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber,Pipecat")
     monkeypatch.setattr(Config, "LANGUAGE", "de")
@@ -321,7 +348,10 @@ async def test_pipeline_direct_upload_uses_frozen_execution_route_after_settings
         assert kwargs["upload_timeout_secs"] == 1_620.0
         return {"status": "completed", "text": "Ergebnis"}
 
-    monkeypatch.setattr("src.pipeline.transcribe_with_assemblyai_pre_recorded", _fake_transcribe)
+    monkeypatch.setattr(
+        "src.assemblyai_async_stt.transcribe_with_assemblyai_pre_recorded",
+        _fake_transcribe,
+    )
     monkeypatch.setattr(Config, "ASSEMBLYAI_API_KEY", "test-key")
     pipeline = ScriberPipeline(
         service_name="assemblyai",

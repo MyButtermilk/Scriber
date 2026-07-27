@@ -191,6 +191,13 @@ class FakeDeviceProbe:
 class FakeWebhookResponse:
     def __init__(self, status):
         self.status = status
+        self.connection = SimpleNamespace(
+            transport=SimpleNamespace(
+                get_extra_info=lambda name: (
+                    ("93.184.216.34", 443) if name == "peername" else None
+                )
+            )
+        )
 
     async def __aenter__(self):
         return self
@@ -2138,7 +2145,22 @@ async def test_meeting_pcm_without_live_preview_still_emits_local_audio_level():
     assert len(events) == 1
     assert events[0]["type"] == "meeting_audio_level"
     assert events[0]["source"] == "microphone"
-    assert events[0]["rms"] > 0
+    assert events[0]["rms"] == pytest.approx(2_000 / 32_768)
+
+
+def test_meeting_audio_level_throttle_state_is_cleared_per_meeting():
+    controller = object.__new__(web_api.ScriberWebController)
+    controller._meeting_last_level_broadcast = {
+        ("meeting-a", "microphone"): 1.0,
+        ("meeting-a", "system"): 2.0,
+        ("meeting-b", "microphone"): 3.0,
+    }
+
+    controller.clear_meeting_audio_level_state("meeting-a")
+
+    assert controller._meeting_last_level_broadcast == {
+        ("meeting-b", "microphone"): 3.0
+    }
 
 
 @pytest.mark.asyncio
@@ -4300,6 +4322,45 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
 
         note = await client.post(f"/api/meetings/{meeting['id']}/notes", json={"body": "Ship Friday"})
         assert note.status == 201
+        note_payload = await note.json()
+        events_before_ordered_note = len(controller.events)
+        newer_note = await client.put(
+            f"/api/meetings/{meeting['id']}/notes",
+            json={
+                "id": "workspace",
+                "body": "New view draft",
+                "writerId": "writer_new_view_123",
+                "writeGeneration": 20,
+            },
+        )
+        newer_note_payload = await newer_note.json()
+        assert newer_note.status == 200
+        assert newer_note_payload["writeApplied"] is True
+        stale_note = await client.put(
+            f"/api/meetings/{meeting['id']}/notes",
+            json={
+                "id": "workspace",
+                "body": "Late old keepalive",
+                "writerId": "writer_old_view_123",
+                "writeGeneration": 19,
+            },
+        )
+        stale_note_payload = await stale_note.json()
+        assert stale_note.status == 200
+        assert stale_note_payload["writeApplied"] is False
+        assert stale_note_payload["writeGeneration"] == 20
+        assert stale_note_payload["body"] == "New view draft"
+        assert len(controller.events) == events_before_ordered_note + 1
+        oversized_note = await client.put(
+            f"/api/meetings/{meeting['id']}/notes",
+            json={
+                "id": "workspace",
+                "body": "ü" * ((48 * 1024 // 2) + 1),
+                "writerId": "writer_new_view_123",
+                "writeGeneration": 21,
+            },
+        )
+        assert oversized_note.status == 400
         paused = await client.post(f"/api/meetings/{meeting['id']}/pause")
         assert (await paused.json())["state"] == "paused"
         assert controller._audio_admission_store.active().owner_id == meeting["id"]
@@ -4321,7 +4382,9 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
         assert payload["total"] == 1
         detail = await client.get(f"/api/meetings/{meeting['id']}")
         detail_payload = await detail.json()
-        assert detail_payload["notes"][0]["body"] == "Ship Friday"
+        notes_by_id = {item["id"]: item for item in detail_payload["notes"]}
+        assert notes_by_id[note_payload["id"]]["body"] == "Ship Friday"
+        assert notes_by_id["workspace"]["body"] == "New view draft"
         assert len(detail_payload["audioGaps"]) == 1
         assert detail_payload["audioGaps"][0]["reason"] == "pause"
         assert detail_payload["captureMetadata"]["timelineOffsetMs"] == detail_payload["audioGaps"][0]["endedAtMs"]
@@ -4375,8 +4438,18 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
         )
         assert preview.status == 200
         preview_payload = await preview.json()
-        assert preview_payload["target"] == "https://webhook.example/hook"
+        assert preview_payload["target"] == "https://webhook.example/hook?token=not-stored"
         assert "embedding" not in str(preview_payload).lower()
+
+        changed_target = await client.post(
+            f"/api/meetings/{meeting['id']}/deliveries",
+            json={
+                "url": "https://webhook.example/other?token=not-stored",
+                "confirmed": True,
+                "previewHash": preview_payload["previewHash"],
+            },
+        )
+        assert changed_target.status == 409
 
         fake_session = FakeWebhookSession([500, 429, 204])
         monkeypatch.setattr(
@@ -4407,7 +4480,22 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
             assert kwargs["allow_redirects"] is False
             assert kwargs["headers"]["X-Scriber-Signature"].startswith("sha256=")
             delivery_ids.add(kwargs["headers"]["Idempotency-Key"])
-        assert delivery_ids == {delivery["id"]}
+        assert delivery_ids == {preview_payload["previewHash"]}
+        assert delivery["idempotencyKey"] == preview_payload["previewHash"]
+
+        replayed = await client.post(
+            f"/api/meetings/{meeting['id']}/deliveries",
+            json={
+                "url": "https://webhook.example/hook?token=not-stored",
+                "confirmed": True,
+                "previewHash": preview_payload["previewHash"],
+                "secret": "different-secret-must-not-resend",
+            },
+        )
+        assert replayed.status == 200
+        replayed_delivery = (await replayed.json())["delivery"]
+        assert replayed_delivery["id"] == delivery["id"]
+        assert len(fake_session.calls) == 3
 
         deleted = await client.delete(f"/api/meetings/{meeting['id']}")
         assert deleted.status == 200

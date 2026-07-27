@@ -546,6 +546,7 @@ pub struct BackendStatus {
     ready: bool,
     starting: bool,
     managed: bool,
+    #[serde(skip_serializing)]
     pid: Option<u32>,
     message: String,
     runtime_mode: String,
@@ -2481,10 +2482,16 @@ fn restart_backend_from_shell<R: Runtime>(app: &AppHandle<R>) {
     }
     let manager = app.state::<BackendManager>();
     match manager.restart() {
-        Ok(status) => write_shell_log(&format!(
-            "backend restart requested from shell menu; pid={:?} ready={} launch_kind={}",
-            status.pid, status.ready, status.launch_kind
-        )),
+        Ok(status) => {
+            let pid_hash = status
+                .pid
+                .map(diagnostic_process_id_hash)
+                .unwrap_or_else(|| "none".to_string());
+            write_shell_log(&format!(
+                "backend restart requested from shell menu; pid_hash={} ready={} launch_kind={}",
+                pid_hash, status.ready, status.launch_kind
+            ));
+        }
         Err(err) => write_shell_log(&format!("backend restart from shell menu failed: {err}")),
     }
     refresh_tray_menu_for_app(app, "backend restart");
@@ -3351,13 +3358,14 @@ fn refresh_child_state(state: &mut BackendState) {
         match child.try_wait() {
             Ok(Some(status)) => {
                 let pid = child.id();
+                let pid_hash = diagnostic_process_id_hash(pid);
                 let launch_kind = state.launch_kind.clone();
                 write_backend_exit_metadata(pid, &launch_kind, &status.to_string());
                 let stopped = audio_sidecar_client::shutdown_all_audio_sidecars(
                     "managedBackendExitedUnexpectedly",
                 );
                 write_shell_log(&format!(
-                    "stopped {stopped} audio sidecar(s) after unexpected backend exit pid={pid}"
+                    "stopped {stopped} audio sidecar(s) after unexpected backend exit pid_hash={pid_hash}"
                 ));
                 state.message = format!("Managed backend exited with {status}");
                 state.child = None;
@@ -3369,13 +3377,14 @@ fn refresh_child_state(state: &mut BackendState) {
             Ok(None) => {}
             Err(err) => {
                 let pid = child.id();
+                let pid_hash = diagnostic_process_id_hash(pid);
                 let launch_kind = state.launch_kind.clone();
                 write_backend_exit_metadata(pid, &launch_kind, &format!("inspect failed: {err}"));
                 let stopped = audio_sidecar_client::shutdown_all_audio_sidecars(
                     "managedBackendInspectionFailed",
                 );
                 write_shell_log(&format!(
-                    "stopped {stopped} audio sidecar(s) after backend inspection failure pid={pid}"
+                    "stopped {stopped} audio sidecar(s) after backend inspection failure pid_hash={pid_hash}"
                 ));
                 state.message = format!("Failed to inspect backend process: {err}");
                 state.child = None;
@@ -3397,6 +3406,7 @@ fn terminate_managed_child(state: &mut BackendState) {
     }
     if let Some(mut child) = state.child.take() {
         let pid = child.id();
+        let pid_hash = diagnostic_process_id_hash(pid);
         let access = BackendAccess {
             base_url: state.base_url.clone(),
             session_token: state.session_token.clone(),
@@ -3405,13 +3415,13 @@ fn terminate_managed_child(state: &mut BackendState) {
         let graceful_requested = match request_backend_shutdown(&access) {
             Ok(()) => {
                 write_shell_log(&format!(
-                    "graceful managed backend shutdown requested pid={pid}"
+                    "graceful managed backend shutdown requested pid_hash={pid_hash}"
                 ));
                 true
             }
             Err(err) => {
                 write_shell_log(&format!(
-                    "graceful managed backend shutdown unavailable pid={pid} error={err}"
+                    "graceful managed backend shutdown unavailable pid_hash={pid_hash} error={err}"
                 ));
                 false
             }
@@ -3419,12 +3429,14 @@ fn terminate_managed_child(state: &mut BackendState) {
         let exited_gracefully = graceful_requested
             && wait_for_child_exit(&mut child, BACKEND_GRACEFUL_SHUTDOWN_TIMEOUT);
         if exited_gracefully {
-            write_shell_log(&format!("managed backend exited gracefully pid={pid}"));
+            write_shell_log(&format!(
+                "managed backend exited gracefully pid_hash={pid_hash}"
+            ));
         } else {
-            write_shell_log(&format!("terminating managed backend pid={pid}"));
+            write_shell_log(&format!("terminating managed backend pid_hash={pid_hash}"));
             if let Err(err) = child.kill() {
                 write_shell_log(&format!(
-                    "managed backend primary kill failed pid={pid} error={err}"
+                    "managed backend primary kill failed pid_hash={pid_hash} error={err}"
                 ));
                 // Closing the Windows job handle is a second kill mechanism.
                 state.job = None;
@@ -3434,8 +3446,7 @@ fn terminate_managed_child(state: &mut BackendState) {
                 let _ = child.kill();
                 if !wait_for_child_exit(&mut child, Duration::from_millis(500)) {
                     write_shell_log(&format!(
-                        "managed backend did not exit before termination deadline pid={}",
-                        child.id()
+                        "managed backend did not exit before termination deadline pid_hash={pid_hash}"
                     ));
                 }
             }
@@ -4163,10 +4174,7 @@ fn start_backend_supervisor(app: AppHandle) {
         let mut hotkey_refreshed_after_ready = false;
         let mut last_hotkey_refresh_error: Option<String> = None;
         let mut tray_refreshed_after_ready = false;
-        loop {
-            let Some(manager) = app.try_state::<BackendManager>() else {
-                break;
-            };
+        while let Some(manager) = app.try_state::<BackendManager>() {
             let status = manager.ensure_started();
             if should_refresh_hotkey_after_backend_ready(status.ready, hotkey_refreshed_after_ready)
             {
@@ -4597,13 +4605,7 @@ fn spawn_backend(
         .map_err(|err| format!("Could not create Scriber data directory: {err}"))?;
     write_shell_log_to_dir(
         &data_dir,
-        &format!(
-            "starting backend launch_kind={} program={} port={} data_dir={}",
-            spec.launch_kind,
-            spec.program.display(),
-            port,
-            data_dir.display()
-        ),
+        &backend_starting_log_message(&spec.launch_kind, &spec.program, port, &data_dir),
     );
     let log_path = data_dir.join("logs").join("tauri-backend.log");
     if let Some(parent) = log_path.parent() {
@@ -4661,24 +4663,14 @@ fn spawn_backend(
         Ok(child) => {
             write_shell_log_to_dir(
                 &data_dir,
-                &format!(
-                    "backend started pid={} launch_kind={} backend_log={}",
-                    child.id(),
-                    spec.launch_kind,
-                    log_path.display()
-                ),
+                &backend_started_log_message(child.id(), &spec.launch_kind),
             );
             Ok((child, spec.launch_kind))
         }
         Err(err) => {
-            write_shell_log_to_dir(
-                &data_dir,
-                &format!(
-                    "backend spawn failed program={} error={err}",
-                    spec.program.display()
-                ),
-            );
-            Err(format!("Could not spawn {:?}: {err}", spec.program))
+            let message = backend_spawn_failed_message(&spec.program, &err);
+            write_shell_log_to_dir(&data_dir, &message);
+            Err(message)
         }
     }
 }
@@ -4722,8 +4714,8 @@ fn find_backend_executable(resource_dir: Option<&Path>) -> Result<Option<PathBuf
                 return Ok(Some(path));
             }
             return Err(format!(
-                "SCRIBER_BACKEND_EXE does not exist: {}",
-                path.display()
+                "SCRIBER_BACKEND_EXE does not exist (path_hash={})",
+                diagnostic_path_hash(&path)
             ));
         }
     }
@@ -4867,6 +4859,55 @@ fn timestamp_millis() -> u128 {
         .unwrap_or(0)
 }
 
+fn diagnostic_path_hash(path: &Path) -> String {
+    redaction::hash_sensitive_identifier(&path.to_string_lossy())
+}
+
+fn diagnostic_process_id_hash(pid: u32) -> String {
+    redaction::hash_sensitive_identifier(&pid.to_string())
+}
+
+fn diagnostic_program_label(program: &Path) -> String {
+    program
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("backend")
+        .to_string()
+}
+
+fn backend_starting_log_message(
+    launch_kind: &str,
+    program: &Path,
+    port: u16,
+    data_dir: &Path,
+) -> String {
+    format!(
+        "starting backend launch_kind={} program_label={} program_path_hash={} port={} data_dir_hash={}",
+        launch_kind,
+        diagnostic_program_label(program),
+        diagnostic_path_hash(program),
+        port,
+        diagnostic_path_hash(data_dir),
+    )
+}
+
+fn backend_started_log_message(pid: u32, launch_kind: &str) -> String {
+    format!(
+        "backend started pid_hash={} launch_kind={} backend_log_label=tauri-backend.log",
+        diagnostic_process_id_hash(pid),
+        launch_kind,
+    )
+}
+
+fn backend_spawn_failed_message(program: &Path, error: &std::io::Error) -> String {
+    format!(
+        "backend spawn failed program_label={} program_path_hash={} error={error}",
+        diagnostic_program_label(program),
+        diagnostic_path_hash(program),
+    )
+}
+
 fn write_shell_log(message: &str) {
     let data_dir = scriber_data_dir();
     write_shell_log_to_dir(&data_dir, message);
@@ -4889,13 +4930,7 @@ fn write_backend_exit_metadata(pid: u32, launch_kind: &str, status: &str) {
     if fs::create_dir_all(&log_dir).is_err() {
         return;
     }
-    let payload = json!({
-        "timestampMs": timestamp_millis(),
-        "event": "managed_backend_exit",
-        "pid": pid,
-        "launchKind": launch_kind,
-        "status": status,
-    });
+    let payload = backend_exit_metadata_payload(pid, launch_kind, status);
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
@@ -4905,8 +4940,21 @@ fn write_backend_exit_metadata(pid: u32, launch_kind: &str, status: &str) {
     }
     write_shell_log_to_dir(
         &data_dir,
-        &format!("managed backend exited pid={pid} launch_kind={launch_kind} status={status}"),
+        &format!(
+            "managed backend exited pid_hash={} launch_kind={launch_kind} status={status}",
+            diagnostic_process_id_hash(pid),
+        ),
     );
+}
+
+fn backend_exit_metadata_payload(pid: u32, launch_kind: &str, status: &str) -> Value {
+    json!({
+        "timestampMs": timestamp_millis(),
+        "event": "managed_backend_exit",
+        "pidHash": diagnostic_process_id_hash(pid),
+        "launchKind": launch_kind,
+        "status": status,
+    })
 }
 
 fn absolute_path(raw: &str) -> PathBuf {
@@ -5136,12 +5184,14 @@ fn health_response_ready(response: &str) -> bool {
 mod tests {
     use super::{
         acquire_single_instance_guard, autostart_command_for_exe, autostart_commands_match,
-        backend_executable_names, backend_start_timeout, build_backend_http_request,
-        desktop_autostart_default_enabled, desktop_window_icon_image, env_duration_ms,
-        env_flag_enabled, find_backend_executable, find_backend_executable_in_dirs,
-        health_response_ready, is_safe_transcript_id, is_shell_menu_item,
-        managed_backend_start_timed_out, normalize_benchmark_uuid, normalize_global_shortcut,
-        normalize_hotkey_mode, parse_loopback_backend_url, parse_shell_menu_smoke_actions,
+        backend_executable_names, backend_exit_metadata_payload, backend_spawn_failed_message,
+        backend_start_timeout, backend_started_log_message, backend_starting_log_message,
+        build_backend_http_request, desktop_autostart_default_enabled, desktop_window_icon_image,
+        diagnostic_path_hash, diagnostic_process_id_hash, env_duration_ms, env_flag_enabled,
+        find_backend_executable, find_backend_executable_in_dirs, health_response_ready,
+        is_safe_transcript_id, is_shell_menu_item, managed_backend_start_timed_out,
+        normalize_benchmark_uuid, normalize_global_shortcut, normalize_hotkey_mode,
+        parse_loopback_backend_url, parse_shell_menu_smoke_actions,
         provider_replay_run_id_for_child, read_backend_response_limited, recent_transcript_label,
         recent_transcripts_from_value, request_backend_shutdown, resolve_session_token,
         sanitize_menu_label, shell_ipc, shell_ipc_env_pairs, shortcut_id_for_hotkey,
@@ -5149,11 +5199,12 @@ mod tests {
         should_refresh_hotkey_after_backend_ready, should_show_initializing_overlay_for_hotkey,
         should_show_window_for_tray_click, should_wait_for_hotkey_backend, split_http_response,
         tray_icon_image, tray_icon_kind, tray_icon_size_for_scale_factor, tray_tooltip,
-        wait_for_child_exit, BackendAccess, DesktopHotkeyState, NativeDeviceObserveOnlyLogState,
-        RecentTranscriptMenuEntry, ShellMenuSmokeAction, TrayIconKind, TrayStatus, TrayStatusInner,
-        UiLocale, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV,
-        DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
-        MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        wait_for_child_exit, BackendAccess, BackendStatus, DesktopHotkeyState,
+        NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry, ShellMenuSmokeAction,
+        TrayIconKind, TrayStatus, TrayStatusInner, UiLocale, AUTOSTART_DEFAULT_ENV,
+        BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE,
+        MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
+        MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
         SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
         TRAY_RECENT_TRANSCRIPT_LIMIT,
@@ -5184,6 +5235,65 @@ mod tests {
         );
 
         assert!(health_response_ready(response));
+    }
+
+    #[test]
+    fn backend_log_messages_hash_paths_and_process_ids() {
+        let program =
+            PathBuf::from(r"C:\Users\private-user\AppData\Local\Scriber\scriber-backend.exe");
+        let data_dir = PathBuf::from(r"C:\Users\private-user\AppData\Roaming\Scriber");
+        let starting = backend_starting_log_message("sidecar", &program, 8765, &data_dir);
+        let started = backend_started_log_message(424_242, "sidecar");
+        let spawn_error = backend_spawn_failed_message(
+            &program,
+            &std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+        );
+
+        assert!(starting.contains("program_label=scriber-backend.exe"));
+        assert!(starting.contains(&format!(
+            "program_path_hash={}",
+            diagnostic_path_hash(&program)
+        )));
+        assert!(starting.contains(&format!(
+            "data_dir_hash={}",
+            diagnostic_path_hash(&data_dir)
+        )));
+        assert!(!starting.contains("private-user"));
+        assert!(!spawn_error.contains("private-user"));
+        assert!(started.contains(&format!("pid_hash={}", diagnostic_process_id_hash(424_242))));
+        assert!(!started.contains("pid=424242"));
+    }
+
+    #[test]
+    fn backend_exit_metadata_omits_the_raw_process_id() {
+        let payload = backend_exit_metadata_payload(424_242, "sidecar", "exit code: 1");
+        let expected_pid_hash = diagnostic_process_id_hash(424_242);
+
+        assert!(payload.get("pid").is_none());
+        assert_eq!(
+            payload.get("pidHash").and_then(|value| value.as_str()),
+            Some(expected_pid_hash.as_str()),
+        );
+        assert!(!payload.to_string().contains("424242"));
+    }
+
+    #[test]
+    fn backend_status_command_payload_omits_the_raw_process_id() {
+        let status = BackendStatus {
+            base_url: "http://127.0.0.1:8765".to_string(),
+            running: true,
+            ready: true,
+            starting: false,
+            managed: true,
+            pid: Some(424_242),
+            message: "ready".to_string(),
+            runtime_mode: "tauri-supervised".to_string(),
+            launch_kind: "sidecar".to_string(),
+        };
+        let payload = serde_json::to_value(status).expect("backend status must serialize");
+
+        assert!(payload.get("pid").is_none());
+        assert!(!payload.to_string().contains("424242"));
     }
 
     #[cfg(windows)]

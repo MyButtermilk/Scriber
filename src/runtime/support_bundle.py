@@ -5,6 +5,7 @@ import os
 import platform
 import re
 import zipfile
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,6 +48,60 @@ _NATIVE_AUDIO_ENDPOINT_RE = re.compile(
     r"SWD(?:\\+|#)+MMDEVAPI(?:\\+|#)+[^\s\"',;<>]+",
     re.IGNORECASE,
 )
+_PATH_VALUE_END = r"(?=(?:\s+[A-Za-z_][A-Za-z0-9_.-]{0,63}\s*[:=])|[\"'\r\n,;]|$)"
+_WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"(?i)\b[A-Z]:[\\/]+.*?" + _PATH_VALUE_END)
+_WINDOWS_UNC_PATH_RE = re.compile(r"(?i)(?<![\\A-Za-z0-9])\\\\[^\\\r\n]+(?:\\+[^\r\n]+?)+?" + _PATH_VALUE_END)
+_UNIX_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9:])/"
+    r"(?:"
+    r"(?:home|Users)/[^/\s\"']+"
+    r"|root"
+    r"|tmp"
+    r"|var"
+    r"|private"
+    r"|run/user/\d+"
+    r"|mnt/[A-Za-z]/Users/[^/\s\"']+"
+    r"|(?:"
+    r"opt|srv|etc|usr|bin|sbin|lib|lib64|proc|sys|dev|data|app|"
+    r"workspace|workspaces|media|Volumes|Library|Applications|System|"
+    r"nix|snap|storage"
+    r")"
+    r")"
+    r"(?:/.*?)?" + _PATH_VALUE_END
+)
+_PROCESS_ID_ASSIGNMENT_RE = re.compile(
+    r"""(?ix)
+    (
+        ["']?
+        (?:
+            PID
+            | PROCESS[_-]?ID
+            | [A-Z_][A-Z0-9_-]{0,127}PID
+            | [A-Z_][A-Z0-9_-]{0,120}PROCESS[_-]?ID
+        )
+        ["']?
+        \s*[:=]\s*
+    )
+    \d+
+    """
+)
+_SENSITIVE_DIAGNOSTIC_KEYS = {
+    "app_pid",
+    "apppid",
+    "backend_pid",
+    "backendpid",
+    "child_pid",
+    "childpid",
+    "parent_pid",
+    "parentpid",
+    "pid",
+    "process_id",
+    "processid",
+}
+_SENSITIVE_PATH_KEY_RE = re.compile(
+    r"(?:^|[_-])(?:data|executable|install|log|output|parent|root|temp|work)?(?:dir|directory|path)$",
+    re.IGNORECASE,
+)
 _MAX_LOG_BYTES = 750_000
 _MAX_LOG_FILES = 32
 _MAX_SUPPORT_BUNDLES = 20
@@ -55,15 +110,32 @@ _MAX_SETTINGS_BYTES = 1024 * 1024
 
 def is_sensitive_key(key: str) -> bool:
     key_str = str(key)
-    if key_str.casefold() in {"endpointid", "prewarmid", "prewarm_id"}:
+    folded_key = key_str.casefold()
+    compact_key = re.sub(r"[^a-z0-9]+", "", folded_key)
+    pid_suffix = bool(
+        re.search(r"(?:^|[_-])(?:pid|process[_-]?id)$", folded_key)
+        or re.search(r"(?:Pid|PID|ProcessId|ProcessID)$", key_str)
+        or compact_key == "pid"
+        or compact_key.endswith("processid")
+        or (len(compact_key) > 3 and compact_key.endswith("pid"))
+    )
+    if pid_suffix or folded_key in {
+        "endpointid",
+        "prewarmid",
+        "prewarm_id",
+        *_SENSITIVE_DIAGNOSTIC_KEYS,
+    }:
         return True
-    return bool(_SENSITIVE_KEY_RE.search(key_str))
+    return bool(_SENSITIVE_KEY_RE.search(key_str) or _SENSITIVE_PATH_KEY_RE.search(key_str))
 
 
 def redact_value(value: Any) -> Any:
-    if isinstance(value, dict):
-        return redact_mapping(value)
-    if isinstance(value, list):
+    if isinstance(value, Mapping):
+        return redact_mapping(dict(value))
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
         return [redact_value(item) for item in value]
     if isinstance(value, str):
         return redact_text(value)
@@ -94,6 +166,13 @@ def redact_text(text: str) -> str:
     redacted = _URL_SECRET_PARAM_RE.sub(r"\1[REDACTED]", redacted)
     redacted = _SHELL_IPC_PIPE_RE.sub("[REDACTED_PIPE]", redacted)
     redacted = _NATIVE_AUDIO_ENDPOINT_RE.sub("[REDACTED_ENDPOINT_ID]", redacted)
+    redacted = _WINDOWS_UNC_PATH_RE.sub("[REDACTED_PATH]", redacted)
+    redacted = _WINDOWS_ABSOLUTE_PATH_RE.sub("[REDACTED_PATH]", redacted)
+    redacted = _UNIX_ABSOLUTE_PATH_RE.sub("[REDACTED_PATH]", redacted)
+    redacted = _PROCESS_ID_ASSIGNMENT_RE.sub(
+        r"\1[REDACTED_PROCESS_ID]",
+        redacted,
+    )
     return redacted
 
 
@@ -267,7 +346,7 @@ def create_support_bundle(
     target_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     unique = uuid4().hex[:8]
-    bundle_path = target_dir / f"scriber-support-{stamp}-{os.getpid()}-{unique}.zip"
+    bundle_path = target_dir / f"scriber-support-{stamp}-{unique}.zip"
     temporary_path = bundle_path.with_suffix(".zip.tmp")
 
     try:

@@ -38,9 +38,9 @@ env:
   SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG: release-cache-rust-diarization-sidecar-v1
 
 jobs:
-  python-full-suite:
-    name: Python full suite
-    uses: ./.github/workflows/python-full-suite.yml
+  quality-gates:
+    name: Exact-revision quality gates
+    uses: ./.github/workflows/quality-gates.yml
     permissions:
       contents: read
 
@@ -51,6 +51,9 @@ jobs:
       actions: read
       contents: read
     outputs:
+      official-release: ${{ steps.official-release.outputs.official-release }}
+      release-tag: ${{ steps.official-release.outputs.release-tag }}
+      release-version: ${{ steps.official-release.outputs.release-version }}
       use-cold-path: ${{ steps.release-path.outputs.use-cold-path }}
       reason: ${{ steps.release-path.outputs.reason }}
       backend-sidecar-hash: ${{ steps.cache-keys.outputs.backend-sidecar-hash }}
@@ -61,9 +64,32 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Resolve canonical official release authorization
+        id: official-release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $mainSha = gh api "repos/${{ github.repository }}/commits/main" --jq .sha
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($mainSha)) {
+            throw "Could not resolve the exact main commit."
+          }
+          python scripts/ci/resolve_official_release.py `
+            --event-name "${{ github.event_name }}" `
+            --ref "${{ github.ref }}" `
+            --ref-type "${{ github.ref_type }}" `
+            --github-sha "${{ github.sha }}" `
+            --main-sha $mainSha `
+            --github-output $env:GITHUB_OUTPUT
+          if ($LASTEXITCODE -ne 0) {
+            throw "Canonical official release authorization failed."
+          }
 
       - name: Validate Outlook release configuration
-        if: startsWith(github.ref, 'refs/tags/')
+        if: steps.official-release.outputs.official-release == 'true'
         shell: pwsh
         run: |
           $clientId = ([string]$env:SCRIBER_OUTLOOK_CLIENT_ID).Trim()
@@ -133,10 +159,10 @@ jobs:
     name: Prepare Tauri binary (cold path)
     needs:
       - release-plan
-      - python-full-suite
+      - quality-gates
     if: >-
       needs.release-plan.result == 'success' &&
-      needs.python-full-suite.result == 'success' &&
+      needs.quality-gates.result == 'success' &&
       needs.release-plan.outputs.use-cold-path == 'true'
     runs-on: windows-latest
     permissions:
@@ -149,6 +175,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -242,10 +270,10 @@ jobs:
     name: Prepare backend product (cold path)
     needs:
       - release-plan
-      - python-full-suite
+      - quality-gates
     if: >-
       needs.release-plan.result == 'success' &&
-      needs.python-full-suite.result == 'success' &&
+      needs.quality-gates.result == 'success' &&
       needs.release-plan.outputs.use-cold-path == 'true'
     runs-on: windows-latest
     permissions:
@@ -257,6 +285,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
 
       - name: Set up Python
         id: cold-backend-python
@@ -308,7 +338,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: .venv
-          key: scriber-python-venv-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
+          key: scriber-python-venv-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}
 
       - name: Restore Python environment release artifact
         id: cold-python-venv-artifact
@@ -320,7 +350,7 @@ jobs:
           & .\scripts\ci\restore_release_cache_artifact.ps1 `
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_PYTHON_VENV_ARTIFACT_TAG `
-            -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}.zip" `
+            -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}.zip" `
             -DestinationPath .venv
 
       - name: Validate restored Python environment
@@ -330,7 +360,7 @@ jobs:
         run: |
           $venvPython = ".\.venv\Scripts\python.exe"
           $marker = ".\.venv\.scriber-release-python-dependencies-key"
-          $expected = "${{ runner.os }}|${{ steps.cold-backend-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}"
+          $expected = "${{ runner.os }}|${{ steps.cold-backend-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}"
           $usable = $false
           if ((Test-Path -LiteralPath $venvPython -PathType Leaf) -and (Test-Path -LiteralPath $marker -PathType Leaf) -and ((Get-Content -LiteralPath $marker -Raw).Trim() -eq $expected)) {
             & $venvPython -m pip check
@@ -344,7 +374,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: build/python-wheelhouse
-          key: scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
+          key: scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}
           restore-keys: |
             scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-
 
@@ -358,7 +388,7 @@ jobs:
           & .\scripts\ci\restore_release_cache_artifact.ps1 `
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG `
-            -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}.zip" `
+            -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}.zip" `
             -DestinationPath build\python-wheelhouse
 
       - name: Prepare Python build environment
@@ -372,23 +402,23 @@ jobs:
           }
           $wheelhouse = "build\python-wheelhouse"
           New-Item -ItemType Directory -Force -Path $wheelhouse | Out-Null
-          & $venvPython -m pip install --upgrade pip
-          if ($LASTEXITCODE -ne 0) { throw "Upgrading pip failed." }
+          & $venvPython -m pip install --constraint requirements-release-constraints.txt pip
+          if ($LASTEXITCODE -ne 0) { throw "Installing the locked pip version failed." }
           if (
             "${{ steps.cold-python-wheelhouse-cache.outputs.cache-hit }}" -ne "true" -and
             "${{ steps.cold-python-wheelhouse-artifact.outputs.restored }}" -ne "true"
           ) {
-            & $venvPython -m pip wheel --wheel-dir $wheelhouse --prefer-binary -r requirements-base.txt -r requirements-build.txt
+            & $venvPython -m pip wheel --constraint requirements-release-constraints.txt --wheel-dir $wheelhouse --prefer-binary -r requirements-base.txt -r requirements-build.txt
             if ($LASTEXITCODE -ne 0) { throw "Building the Python wheelhouse failed." }
           }
           $resolvedWheelhouse = (Resolve-Path $wheelhouse).Path
-          & $venvPython -m pip install --no-index --find-links $resolvedWheelhouse -r requirements-base.txt
+          & $venvPython -m pip install --constraint requirements-release-constraints.txt --no-index --find-links $resolvedWheelhouse -r requirements-base.txt
           if ($LASTEXITCODE -ne 0) { throw "Installing backend runtime dependencies failed." }
-          & $venvPython -m pip install --no-index --find-links $resolvedWheelhouse -r requirements-build.txt
+          & $venvPython -m pip install --constraint requirements-release-constraints.txt --no-index --find-links $resolvedWheelhouse -r requirements-build.txt
           if ($LASTEXITCODE -ne 0) { throw "Installing backend build dependencies failed." }
           & $venvPython -m pip check
           if ($LASTEXITCODE -ne 0) { throw "The Python build environment failed pip check." }
-          "${{ runner.os }}|${{ steps.cold-backend-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}" | Set-Content -LiteralPath ".\.venv\.scriber-release-python-dependencies-key" -Encoding ascii
+          "${{ runner.os }}|${{ steps.cold-backend-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}" | Set-Content -LiteralPath ".\.venv\.scriber-release-python-dependencies-key" -Encoding ascii
 
       - name: Restore Rust audio sidecar cache
         id: cold-rust-audio-cache
@@ -420,7 +450,7 @@ jobs:
             build/ffmpeg-profile-b-msys2/ffmpeg-profile-b-fixtures.json
             build/ffmpeg-profile-b-msys2/media-preparation-smoke-profile-b.json
             build/ffmpeg-profile-b-msys2/profile-b-msys2-build-report.json
-          key: scriber-ffmpeg-profile-b-msys2-n7.0-v4-${{ runner.os }}
+          key: scriber-ffmpeg-profile-b-msys2-${{ runner.os }}-${{ hashFiles('packaging/ffmpeg-profile-b-release-lock-v1.json') }}
 
       - name: Restore finished component fallbacks in parallel
         id: cold-component-artifacts
@@ -527,14 +557,14 @@ jobs:
     name: Build and sign Windows installer
     needs:
       - release-plan
-      - python-full-suite
+      - quality-gates
       - prepare-backend-cold
       - prepare-tauri-cold
     if: >-
       always() &&
       !cancelled() &&
       needs.release-plan.result == 'success' &&
-      needs.python-full-suite.result == 'success'
+      needs.quality-gates.result == 'success'
     concurrency:
       group: ${{ startsWith(github.ref, 'refs/tags/v') && 'release-windows-tags' || format('release-windows-build-{0}', github.ref) }}
       queue: max
@@ -559,6 +589,7 @@ jobs:
       SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.refresh_release_cache_artifacts == 'true') && 'true' || 'false' }}
       SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_full_non_tag_installer == 'true') && '1' || vars.SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER }}
+      SCRIBER_OFFICIAL_RELEASE: ${{ needs.release-plan.outputs.official-release }}
       SCRIBER_OUTLOOK_CLIENT_ID: ${{ vars.SCRIBER_OUTLOOK_CLIENT_ID }}
       CARGO_HOME: ${{ github.workspace }}/.cargo
       CARGO_INCREMENTAL: "1"
@@ -567,9 +598,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
 
       - name: Validate tag release signing preflight
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: needs.release-plan.outputs.official-release == 'true'
         shell: pwsh
         env:
           SCRIBER_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.SCRIBER_TAURI_UPDATER_PUBLIC_KEY }}
@@ -927,7 +960,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: .venv
-          key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
+          key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}
 
       - name: Restore Python venv release artifact
         id: python-venv-artifact
@@ -939,7 +972,7 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\restore_release_cache_artifact.ps1 `
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_PYTHON_VENV_ARTIFACT_TAG `
-            -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}.zip" `
+            -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}.zip" `
             -DestinationPath .venv
 
       - name: Validate restored Python environment
@@ -949,7 +982,7 @@ jobs:
         run: |
           $venvPython = ".\.venv\Scripts\python.exe"
           $markerPath = ".\.venv\.scriber-release-python-dependencies-key"
-          $requirementsKey = "${{ runner.os }}|${{ steps.setup-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}"
+          $requirementsKey = "${{ runner.os }}|${{ steps.setup-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}"
           $trustedRestore = (
             "${{ steps.python-venv-cache.outputs.cache-hit }}" -eq "true" -or
             "${{ steps.python-venv-artifact.outputs.restored }}" -eq "true"
@@ -977,7 +1010,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: build/python-wheelhouse
-          key: scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
+          key: scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}
           restore-keys: |
             scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-
 
@@ -1008,7 +1041,7 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\restore_release_cache_artifact.ps1 `
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG `
-            -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}.zip" `
+            -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}.zip" `
             -DestinationPath build\python-wheelhouse
 
       - name: Restore FFmpeg Profile B cache
@@ -1022,7 +1055,7 @@ jobs:
             build/ffmpeg-profile-b-msys2/ffmpeg-profile-b-fixtures.json
             build/ffmpeg-profile-b-msys2/media-preparation-smoke-profile-b.json
             build/ffmpeg-profile-b-msys2/profile-b-msys2-build-report.json
-          key: scriber-ffmpeg-profile-b-msys2-n7.0-v4-${{ runner.os }}
+          key: scriber-ffmpeg-profile-b-msys2-${{ runner.os }}-${{ hashFiles('packaging/ffmpeg-profile-b-release-lock-v1.json') }}
 
       - name: Restore independent release-cache fallbacks in parallel
         id: component-cache-artifacts
@@ -1068,7 +1101,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ steps.package-store-paths.outputs.pip }}
-          key: scriber-python-pip-store-v1-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
+          key: scriber-python-pip-store-v1-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}
           restore-keys: |
             scriber-python-pip-store-v1-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-
 
@@ -1303,7 +1336,7 @@ jobs:
         run: |
           $venvPython = ".\.venv\Scripts\python.exe"
           $wheelhouse = "build\python-wheelhouse"
-          $requirementsKey = "${{ runner.os }}|${{ steps.setup-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}"
+          $requirementsKey = "${{ runner.os }}|${{ steps.setup-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}"
           $markerPath = ".\.venv\.scriber-release-python-dependencies-key"
           $venvRebuilt = $false
           $wheelhouseBuilt = $false
@@ -1321,12 +1354,12 @@ jobs:
           } else {
             $venvRebuilt = $true
             New-Item -ItemType Directory -Force -Path $wheelhouse | Out-Null
-            & $venvPython -m pip install --upgrade pip
+            & $venvPython -m pip install --constraint requirements-release-constraints.txt pip
             if ($LASTEXITCODE -ne 0) {
               throw "Upgrading pip in the release environment failed with exit code $LASTEXITCODE."
             }
             if (("${{ steps.python-wheelhouse-cache.outputs.cache-hit }}" -ne "true") -and ("${{ steps.python-wheelhouse-artifact.outputs.restored }}" -ne "true")) {
-              & $venvPython -m pip wheel --wheel-dir $wheelhouse --prefer-binary -r requirements-base.txt -r requirements-build.txt
+              & $venvPython -m pip wheel --constraint requirements-release-constraints.txt --wheel-dir $wheelhouse --prefer-binary -r requirements-base.txt -r requirements-build.txt
               if ($LASTEXITCODE -ne 0) {
                 throw "Building the Python release wheelhouse failed with exit code $LASTEXITCODE."
               }
@@ -1335,11 +1368,11 @@ jobs:
               Write-Host "Using cached/restored Python wheelhouse."
             }
             $resolvedWheelhouse = (Resolve-Path $wheelhouse).Path
-            & $venvPython -m pip install --no-index --find-links $resolvedWheelhouse -r requirements-base.txt
+            & $venvPython -m pip install --constraint requirements-release-constraints.txt --no-index --find-links $resolvedWheelhouse -r requirements-base.txt
             if ($LASTEXITCODE -ne 0) {
               throw "Installing base release dependencies failed with exit code $LASTEXITCODE."
             }
-            & $venvPython -m pip install --no-index --find-links $resolvedWheelhouse -r requirements-build.txt
+            & $venvPython -m pip install --constraint requirements-release-constraints.txt --no-index --find-links $resolvedWheelhouse -r requirements-build.txt
             if ($LASTEXITCODE -ne 0) {
               throw "Installing build release dependencies failed with exit code $LASTEXITCODE."
             }
@@ -1366,7 +1399,7 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_release_cache_artifact.ps1 `
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_PYTHON_VENV_ARTIFACT_TAG `
-            -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}.zip" `
+            -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}.zip" `
             -SourcePath .venv `
             -Title "Scriber Python Virtualenv Cache v1"
 
@@ -1379,7 +1412,7 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_release_cache_artifact.ps1 `
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG `
-            -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}.zip" `
+            -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}.zip" `
             -SourcePath build\python-wheelhouse `
             -Title "Scriber Python Wheelhouse Cache v2"
 
@@ -1388,14 +1421,14 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: .venv
-          key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
+          key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}
 
       - name: Save Python wheelhouse cache
         if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.python-dependencies.outputs.wheelhouse-built == 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: build/python-wheelhouse
-          key: scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
+          key: scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}
 
       - name: Save pip package store
         if: >-
@@ -1406,7 +1439,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ steps.package-store-paths.outputs.pip }}
-          key: scriber-python-pip-store-v1-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt') }}
+          key: scriber-python-pip-store-v1-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}
 
       - name: Install frontend dependencies
         if: steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
@@ -1554,7 +1587,7 @@ jobs:
             build/ffmpeg-profile-b-msys2/ffmpeg-profile-b-fixtures.json
             build/ffmpeg-profile-b-msys2/media-preparation-smoke-profile-b.json
             build/ffmpeg-profile-b-msys2/profile-b-msys2-build-report.json
-          key: scriber-ffmpeg-profile-b-msys2-n7.0-v4-${{ runner.os }}
+          key: scriber-ffmpeg-profile-b-msys2-${{ runner.os }}-${{ hashFiles('packaging/ffmpeg-profile-b-release-lock-v1.json') }}
 
       - name: Build Windows installer
         shell: pwsh
@@ -1577,7 +1610,6 @@ jobs:
             "Bypass",
             "-File",
             "scripts\build_windows.ps1",
-            "-SkipSmoke",
             "-SkipPythonTests",
             "-RunRuntimeDependencyFootprint",
             "-MediaToolsDir",
@@ -1602,13 +1634,17 @@ jobs:
             "-MaxPillowRuntimeDependencyMB",
             "6"
           )
+          $isOfficialRelease = $env:SCRIBER_OFFICIAL_RELEASE -eq "true"
+          if (-not $isOfficialRelease) {
+            $buildArgs += "-SkipSmoke"
+          }
           $pythonDependenciesReady = "${{ steps.python-dependencies.outcome }}" -eq "success"
           if ($pythonDependenciesReady -or (Test-Path -LiteralPath ".\.venv\Scripts\python.exe" -PathType Leaf)) {
             $buildArgs += "-RunMediaPreparationSmoke"
           } else {
             Write-Host "Skipping source media preparation smoke because this cached sidecar fast path did not install Python dependencies."
           }
-          $isTagRelease = $env:GITHUB_REF_TYPE -eq "tag"
+          $isTagRelease = $isOfficialRelease
           $coldProductsUsable = "${{ steps.cold-products.outputs.usable }}" -eq "true"
           $usePrebuiltTauriApp = (
             ($coldProductsUsable -or "${{ steps.tauri-app-binary-import.outputs.usable }}" -eq "true") -and
@@ -1781,7 +1817,7 @@ jobs:
         if: >-
           env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' ||
           env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' ||
-          startsWith(github.ref, 'refs/tags/v') ||
+          needs.release-plan.outputs.official-release == 'true' ||
           (env.SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS == 'true' &&
            steps.backend-sidecar-validation.outputs.usable != 'true')
         shell: pwsh
@@ -1882,7 +1918,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
-          $isTagRelease = $env:GITHUB_REF_TYPE -eq "tag"
+          $isTagRelease = $env:SCRIBER_OFFICIAL_RELEASE -eq "true"
           $uploadFullInstaller = $isTagRelease -or ($env:SCRIBER_UPLOAD_FULL_NON_TAG_INSTALLER -eq "1")
           if ($uploadFullInstaller) {
             Write-Host "Collecting full installer artifacts."
@@ -1959,16 +1995,166 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-      - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+      - name: Revalidate live release refs before draft creation
+        if: needs.release-plan.outputs.official-release == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m scripts.ci.validate_live_release_ref `
+            --repository "${{ github.repository }}" `
+            --release-tag "${{ needs.release-plan.outputs.release-tag }}" `
+            --event-sha "${{ github.sha }}" `
+            --output build\live-release-ref-pre-draft.json
+          if ($LASTEXITCODE -ne 0) {
+            throw "The live release tag/main binding failed immediately before draft mutation."
+          }
+
+      - name: Create and sync exact-ID draft release assets
+        id: uploaded-draft
+        if: needs.release-plan.outputs.official-release == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $downloadRoot = "build\release-api-roundtrip"
+          if (Test-Path -LiteralPath $downloadRoot) {
+            Remove-Item -LiteralPath $downloadRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $downloadRoot | Out-Null
+          python -m scripts.ci.sync_draft_release_assets `
+            --repository "${{ github.repository }}" `
+            --release-tag "${{ needs.release-plan.outputs.release-tag }}" `
+            --release-title "Scriber ${{ needs.release-plan.outputs.release-version }}" `
+            --target-commitish "${{ github.sha }}" `
+            --expected-dir release-artifacts `
+            --verification-dir $downloadRoot `
+            --output build\release-asset-api-roundtrip.json `
+            --github-output $env:GITHUB_OUTPUT
+          if ($LASTEXITCODE -ne 0) {
+            throw "Creating, binding, and verifying exact generated-note metadata plus the ID-bound draft asset set failed."
+          }
+          python scripts\verify_release_asset_set.py `
+            --expected-dir release-artifacts `
+            --downloaded-dir $downloadRoot `
+            --output build\release-asset-roundtrip.json
+          if ($LASTEXITCODE -ne 0) {
+            throw "The exact-ID draft release content verification failed."
+          }
+
+      - name: Cryptographically verify downloaded updater signatures
+        if: needs.release-plan.outputs.official-release == 'true'
+        shell: pwsh
+        env:
+          SCRIBER_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.SCRIBER_TAURI_UPDATER_PUBLIC_KEY }}
+        run: |
+          cargo build `
+            --locked `
+            --release `
+            --manifest-path Frontend\src-tauri\Cargo.toml `
+            --bin minisign-verify
+          if ($LASTEXITCODE -ne 0) {
+            throw "Building the release-only Minisign verifier failed."
+          }
+          $verifier = "Frontend\src-tauri\target\release\minisign-verify.exe"
+          $downloadRoot = "build\release-api-roundtrip"
+          $metadata = Get-Content -LiteralPath (Join-Path $downloadRoot "latest.json") -Raw | ConvertFrom-Json
+          $verification = @()
+          foreach ($artifact in @($metadata.artifacts)) {
+            $artifactPath = Join-Path $downloadRoot ([string]$artifact.name)
+            $signaturePath = "$artifactPath.sig"
+            $result = & $verifier `
+              --artifact $artifactPath `
+              --signature $signaturePath `
+              --public-key $env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY
+            if ($LASTEXITCODE -ne 0) {
+              throw "Minisign verification failed for downloaded updater artifact '$($artifact.name)'."
+            }
+            $verification += ($result | ConvertFrom-Json)
+          }
+          [ordered]@{
+            schemaVersion = 1
+            ok = $true
+            artifactCount = $verification.Count
+            artifacts = $verification
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath build\release-minisign-verification.json -Encoding utf8
+
+      - name: Smoke downloaded installer candidate
+        if: needs.release-plan.outputs.official-release == 'true'
+        shell: pwsh
+        run: |
+          $downloadRoot = "build\release-api-roundtrip"
+          $metadata = Get-Content -LiteralPath (Join-Path $downloadRoot "latest.json") -Raw | ConvertFrom-Json
+          $installers = @(
+            $metadata.artifacts |
+              Where-Object { ([string]$_.name).EndsWith(".exe", [StringComparison]::OrdinalIgnoreCase) }
+          )
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one downloaded Windows installer candidate, found $($installers.Count)."
+          }
+          & .\scripts\smoke_windows_installer.ps1 `
+            -InstallerPath (Join-Path $downloadRoot ([string]$installers[0].name)) `
+            -OutputPath tmp\installer-smoke\downloaded-release-candidate.json `
+            -VerifyFrontend `
+            -VerifyMediaPreparation `
+            -VerifySupportBundle `
+            -VerifyUninstall
+
+      - name: Upload draft verification evidence
+        if: needs.release-plan.outputs.official-release == 'true'
+        uses: actions/upload-artifact@v7
         with:
-          files: release-artifacts/*
-          generate_release_notes: true
-          make_latest: legacy
+          name: scriber-windows-draft-verification
+          path: |
+            build/release-asset-api-roundtrip.json
+            build/release-asset-roundtrip.json
+            build/release-minisign-verification.json
+            tmp/installer-smoke/downloaded-release-candidate.json
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Verify and publish exact GitHub release transaction
+        if: needs.release-plan.outputs.official-release == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $prePublishRoot = "build\release-pre-publish-roundtrip"
+          $postPublishRoot = "build\release-post-publish-roundtrip"
+          foreach ($path in @($prePublishRoot, $postPublishRoot)) {
+            if (Test-Path -LiteralPath $path) {
+              Remove-Item -LiteralPath $path -Recurse -Force
+            }
+            New-Item -ItemType Directory -Path $path | Out-Null
+          }
+          python -m scripts.ci.publish_github_release `
+            --repository "${{ github.repository }}" `
+            --release-tag "${{ needs.release-plan.outputs.release-tag }}" `
+            --release-id "${{ steps.uploaded-draft.outputs.release-id }}" `
+            --event-sha "${{ github.sha }}" `
+            --expected-dir release-artifacts `
+            --expected-state-report build\release-asset-api-roundtrip.json `
+            --pre-publish-download-dir $prePublishRoot `
+            --post-publish-download-dir $postPublishRoot `
+            --output build\release-publication-transaction.json
+          if ($LASTEXITCODE -ne 0) {
+            throw "The exact-ID release transaction failed; inspect its rollback evidence."
+          }
+
+      - name: Upload failed release transaction evidence
+        if: >-
+          failure() &&
+          needs.release-plan.outputs.official-release == 'true' &&
+          hashFiles('build/release-publication-transaction.json') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: scriber-windows-failed-release-transaction
+          path: build/release-publication-transaction.json
+          if-no-files-found: error
+          compression-level: 0
 
       - name: Verify published updater metadata
-        if: startsWith(github.ref, 'refs/tags/')
+        if: needs.release-plan.outputs.official-release == 'true'
         shell: pwsh
         env:
           SCRIBER_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.SCRIBER_TAURI_UPDATER_PUBLIC_KEY }}
@@ -1993,17 +2179,19 @@ jobs:
             --output release-artifacts\updater-publication.json
 
       - name: Upload publication evidence
-        if: startsWith(github.ref, 'refs/tags/') && hashFiles('release-artifacts/updater-publication.json') != ''
+        if: needs.release-plan.outputs.official-release == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: scriber-windows-publication-evidence
-          path: release-artifacts/updater-publication.json
+          path: |
+            build/release-publication-transaction.json
+            release-artifacts/updater-publication.json
           if-no-files-found: error
           compression-level: 0
 
       - name: Stage passive release-cache maintenance handoff
         id: release-cache-handoff
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: needs.release-plan.outputs.official-release == 'true'
         shell: pwsh
         run: |
           $handoffArguments = @{
@@ -2057,7 +2245,7 @@ jobs:
           & .\scripts\ci\sync_release_cache_handoff.ps1 @handoffArguments
 
       - name: Upload passive release-cache maintenance handoff
-        if: startsWith(github.ref, 'refs/tags/v') && steps.release-cache-handoff.outputs.stage-ready == 'true'
+        if: needs.release-plan.outputs.official-release == 'true' && steps.release-cache-handoff.outputs.stage-ready == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: scriber-release-cache-handoff

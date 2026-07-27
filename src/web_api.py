@@ -10,7 +10,6 @@ import os
 import re
 import shutil
 import signal
-import socket
 import time
 import threading
 import weakref
@@ -41,6 +40,7 @@ from src.audio_prepare import (
     audio_preparation_implementation,
     prepare_provider_audio_file,
 )
+from src.api.meeting_delivery_routes import register_meeting_delivery_routes
 from src.device_monitor import DeviceMonitor, devices_contain_name, get_device_guard_lock
 from src.core.provider_capabilities import (
     get_capabilities,
@@ -87,7 +87,6 @@ from src.core.ws_contracts import (
     meeting_audio_level_event,
     meeting_live_status_event,
     meeting_chat_delta_event,
-    meeting_delivery_updated_event,
     meeting_detected_event,
     meeting_segment_event,
     meeting_progress_event,
@@ -142,6 +141,7 @@ from src.data.meeting_import_store import (
     MeetingImportStore,
 )
 from src.runtime.paths import app_root, data_dir, downloads_dir, is_frozen, logs_dir, repo_root
+from src.runtime.pcm_audio import pcm16le_rms
 from src.runtime.env_values import env_float as _safe_env_float, env_int as _safe_env_int
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_duration_args, webm_opus_transcode_args
 from src.runtime.media_tools import find_media_tool, require_media_tool
@@ -930,6 +930,34 @@ def _configured_session_token() -> str:
     return os.getenv(_SESSION_TOKEN_ENV, "").strip()
 
 
+def _is_loopback_bind_host(host: str) -> bool:
+    normalized = str(host or "").strip().lower()
+    if normalized == "localhost":
+        return True
+    if normalized.startswith("[") and normalized.endswith("]"):
+        normalized = normalized[1:-1]
+    normalized = normalized.split("%", 1)[0]
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return bool(address.is_loopback or (mapped and mapped.is_loopback))
+
+
+def _validate_server_bind_security(host: str, session_token: str) -> None:
+    """Fail closed before exposing an unauthenticated non-loopback listener."""
+
+    if _is_loopback_bind_host(host):
+        return
+    token = str(session_token or "").strip()
+    if len(token.encode("utf-8", errors="strict")) < 32:
+        raise RuntimeError(
+            "SCRIBER_SESSION_TOKEN must contain at least 32 bytes when "
+            "SCRIBER_WEB_HOST is not loopback."
+        )
+
+
 def _request_session_token(request: web.Request) -> str:
     header_token = request.headers.get(_SESSION_TOKEN_HEADER, "").strip()
     if header_token:
@@ -1177,7 +1205,7 @@ def _audio_diagnostic_import_status() -> dict[str, dict[str, Any]]:
         except Exception as exc:
             statuses[module_name] = {
                 "importable": False,
-                "error": f"{type(exc).__name__}: {exc}",
+                "errorType": type(exc).__name__,
             }
     _AUDIO_DIAGNOSTIC_IMPORT_CACHE = statuses
     return {name: dict(status) for name, status in statuses.items()}
@@ -3389,6 +3417,13 @@ async def _cleanup_meeting_capture_ownership(
     meeting_id = ownership.meeting_id
     if not meeting_id:
         return None
+    clear_level_state = getattr(
+        controller,
+        "clear_meeting_audio_level_state",
+        None,
+    )
+    if callable(clear_level_state):
+        clear_level_state(meeting_id)
 
     recorder = ownership.recorder
     mapped_recorder = getattr(controller, "_meeting_recorders", {}).get(meeting_id)
@@ -3447,6 +3482,12 @@ async def _cleanup_meeting_capture_ownership(
             ownership.live_transcriber = None
         except (Exception, asyncio.CancelledError):
             logger.exception("Meeting live-transcription setup cleanup failed")
+
+    # Producer shutdown may race one final PCM callback after the initial
+    # cleanup above. Clear the throttle state again once every known producer
+    # has been stopped or joined.
+    if callable(clear_level_state):
+        clear_level_state(meeting_id)
 
     failed: dict[str, Any] | None = None
     try:
@@ -4082,6 +4123,7 @@ class ScriberWebController:
                 await _to_thread_cancellation_barrier(
                     self._meeting_store.delete, meeting_id
                 )
+                self.clear_meeting_audio_level_state(meeting_id)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -4427,9 +4469,15 @@ class ScriberWebController:
                     now = time.monotonic()
                     if now - self._last_mic_watchdog_warning_at >= 15.0:
                         self._last_mic_watchdog_warning_at = now
-                        logger.warning(f"Mic watchdog check failed: {exc}")
+                        logger.warning(
+                            "Mic watchdog check failed (error_type={})",
+                            type(exc).__name__,
+                        )
                     else:
-                        logger.debug(f"Mic watchdog check failed: {exc}")
+                        logger.debug(
+                            "Mic watchdog check failed (error_type={})",
+                            type(exc).__name__,
+                        )
         except asyncio.CancelledError:
             return
 
@@ -4441,7 +4489,7 @@ class ScriberWebController:
         try:
             return snapshot()
         except Exception as exc:
-            return {"available": False, "error": str(exc)}
+            return {"available": False, "errorType": type(exc).__name__}
 
     def _rust_native_endpoint_inventory_diagnostics(self) -> dict[str, Any]:
         diagnostics: dict[str, Any] = {
@@ -4504,7 +4552,11 @@ class ScriberWebController:
         try:
             import sounddevice as sd  # type: ignore
         except Exception as exc:
-            return {"available": False, "reason": "sounddeviceUnavailable", "error": str(exc)}
+            return {
+                "available": False,
+                "reason": "sounddeviceUnavailable",
+                "errorType": type(exc).__name__,
+            }
 
         sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
         channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
@@ -4533,7 +4585,11 @@ class ScriberWebController:
             )
             return diagnostics
         except Exception as exc:
-            return {"available": False, "reason": "mappingFailed", "error": str(exc)}
+            return {
+                "available": False,
+                "reason": "mappingFailed",
+                "errorType": type(exc).__name__,
+            }
 
     @staticmethod
     def _native_endpoints_from_rust_inventory(
@@ -4684,7 +4740,7 @@ class ScriberWebController:
         try:
             return snapshot()
         except Exception as exc:
-            return {"available": False, "error": str(exc)}
+            return {"available": False, "errorType": type(exc).__name__}
 
     @staticmethod
     def _prewarm_health_restart_count(diagnostics: dict[str, Any] | None) -> int | None:
@@ -8374,7 +8430,10 @@ class ScriberWebController:
         except asyncio.CancelledError:
             pass
         except Exception as exc:  # pragma: no cover - runtime dependent        
-            logger.error(f"Pipeline error: {exc}")
+            logger.error(
+                "Pipeline error (error_type={})",
+                type(exc).__name__,
+            )
             provider_used = self._active_provider
             self._record_provider_failure(provider_used or "", exc)
             self._live_transcribing_visible = False
@@ -8388,7 +8447,12 @@ class ScriberWebController:
             category = info.category
             user_msg = info.message
             error_payload = self._provider_error_event(exc, provider=provider_used, session_id=session_id)
-            logger.warning(f"Pipeline task failure category={category.value}: {exc}")
+            logger.warning(
+                "Pipeline task failure (category={}, error_type={}, code={})",
+                category.value,
+                type(exc).__name__,
+                info.code or "unknown",
+            )
             self._emit_workflow_event(
                 message=f"Pipeline task failed: {user_msg}",
                 event="pipeline.session.failed",
@@ -8402,7 +8466,10 @@ class ScriberWebController:
                 milestone=True,
                 outcome="failure",
                 error_category=category.value,
-                meta={"error": str(exc), "provider_error_code": info.code},
+                meta={
+                    "error_type": type(exc).__name__,
+                    "provider_error_code": info.code,
+                },
             )
             
             # Broadcast error to frontend
@@ -9403,7 +9470,10 @@ class ScriberWebController:
                     await self._save_transcript_summary_state_async(rec)
                     await self._broadcast_history_updated(record=rec, reason="summary_canceled")
             except Exception as sum_err:
-                logger.warning(f"Auto-summarization failed: {sum_err}")
+                logger.warning(
+                    "Auto-summarization failed (error_type={})",
+                    type(sum_err).__name__,
+                )
                 rec.mark_summary_failed(sum_err)
                 await self._save_transcript_summary_state_async(rec)
                 await self._broadcast_history_updated(record=rec, reason="summary_failed")
@@ -9418,7 +9488,7 @@ class ScriberWebController:
                     provider=provider,
                     outcome="failure",
                     error_category=classify_error_message(str(sum_err)).value,
-                    meta={"error": str(sum_err)},
+                    meta={"error_type": type(sum_err).__name__},
                 )
             finally:
                 self._unregister_summary_task(rec.id, auto_summary_task)
@@ -10018,7 +10088,7 @@ class ScriberWebController:
                 milestone=True,
                 outcome="failure",
                 error_category=classify_error_message(str(exc)).value,
-                meta={"error": str(exc)},
+                meta={"error_type": type(exc).__name__},
             )
         except TimeoutError as exc:
             await stop_current_attempt(canceled=False)
@@ -10046,7 +10116,7 @@ class ScriberWebController:
                 milestone=True,
                 outcome="timeout",
                 error_category=classify_error_message(str(exc)).value,
-                meta={"error": str(exc)},
+                meta={"error_type": type(exc).__name__},
             )
         except YouTubeDownloadError as exc:
             await stop_current_attempt(canceled=False)
@@ -10073,7 +10143,7 @@ class ScriberWebController:
                 milestone=True,
                 outcome="failure",
                 error_category=classify_error_message(str(exc)).value,
-                meta={"error": str(exc)},
+                meta={"error_type": type(exc).__name__},
             )
         except TranscriptPersistenceError as exc:
             await stop_current_attempt(canceled=False)
@@ -10127,7 +10197,7 @@ class ScriberWebController:
                 milestone=True,
                 outcome="failure",
                 error_category=classify_error_message(str(exc)).value,
-                meta={"error": str(exc)},
+                meta={"error_type": type(exc).__name__},
             )
         finally:
             await stop_current_attempt(canceled=None)
@@ -10651,7 +10721,10 @@ class ScriberWebController:
                         await self._save_transcript_summary_state_async(rec)
                         await self._broadcast_history_updated(record=rec, reason="summary_canceled")
                 except Exception as sum_err:
-                    logger.warning(f"Auto-summarization failed: {sum_err}")
+                    logger.warning(
+                        "Auto-summarization failed (error_type={})",
+                        type(sum_err).__name__,
+                    )
                     rec.mark_summary_failed(sum_err)
                     await self._save_transcript_summary_state_async(rec)
                     await self._broadcast_history_updated(record=rec, reason="summary_failed")
@@ -10666,7 +10739,7 @@ class ScriberWebController:
                         provider=provider,
                         outcome="failure",
                         error_category=classify_error_message(str(sum_err)).value,
-                        meta={"error": str(sum_err)},
+                        meta={"error_type": type(sum_err).__name__},
                     )
                 finally:
                     self._unregister_summary_task(rec.id, auto_summary_task)
@@ -10694,7 +10767,7 @@ class ScriberWebController:
                 milestone=True,
                 outcome="failure",
                 error_category=classify_error_message(str(exc)).value,
-                meta={"error": str(exc)},
+                meta={"error_type": type(exc).__name__},
             )
         except TimeoutError as exc:
             self._record_provider_failure(provider, exc)
@@ -10719,7 +10792,7 @@ class ScriberWebController:
                 milestone=True,
                 outcome="timeout",
                 error_category=classify_error_message(str(exc)).value,
-                meta={"error": str(exc)},
+                meta={"error_type": type(exc).__name__},
             )
         except TranscriptPersistenceError as exc:
             retry_error = _retry_error_after_provider_result(
@@ -10768,7 +10841,7 @@ class ScriberWebController:
                 milestone=True,
                 outcome="failure",
                 error_category=classify_error_message(str(exc)).value,
-                meta={"error": str(exc)},
+                meta={"error_type": type(exc).__name__},
             )
         finally:
             if rec.status != "processing" and rec.duration.strip() in {"", "--", "--:--", "-:--"}:
@@ -10885,7 +10958,10 @@ class ScriberWebController:
                     milestone=True,
                     outcome="failure",
                     error_category=info.category.value,
-                    meta={"error": str(exc), "provider_error_code": info.code},
+                    meta={
+                        "error_type": type(exc).__name__,
+                        "provider_error_code": info.code,
+                    },
                 )
                 await self.broadcast(self._provider_error_event_from_info(info))
                 self._finish_live_mic_start_transition(start_generation)
@@ -10961,7 +11037,7 @@ class ScriberWebController:
             def on_pipeline_error(error_msg: str):
                 if session_id != self._session_id:
                     return
-                logger.error(f"Pipeline error callback: {error_msg}")
+                logger.error("Pipeline error callback received")
                 if provider_replay_execution is not None:
                     provider_replay_execution.fail("provider_failed")
                 provider_used = self._active_provider
@@ -10975,7 +11051,11 @@ class ScriberWebController:
                 category = info.category
                 user_msg = info.message
                 error_payload = self._provider_error_event(error_msg, provider=provider_used, session_id=session_id)
-                logger.warning(f"Pipeline error category={category.value}: {error_msg}")
+                logger.warning(
+                    "Pipeline error callback classified (category={}, code={})",
+                    category.value,
+                    info.code or "unknown",
+                )
                 self._emit_workflow_event(
                     message=f"Pipeline error: {user_msg}",
                     event="pipeline.provider.failed",
@@ -10989,7 +11069,10 @@ class ScriberWebController:
                     milestone=True,
                     outcome="failure",
                     error_category=category.value,
-                    meta={"error": error_msg, "provider_error_code": info.code},
+                    meta={
+                        "error_type": "ProviderErrorFrame",
+                        "provider_error_code": info.code,
+                    },
                 )
 
                 # Broadcast error to frontend and stop the pipeline
@@ -12104,7 +12187,10 @@ class ScriberWebController:
                 milestone=True,
                 outcome="failure",
                 error_category=category.value,
-                meta={"error": str(exc), "provider_error_code": stop_error_info.code},
+                meta={
+                    "error_type": type(exc).__name__,
+                    "provider_error_code": stop_error_info.code,
+                },
             )
             self._overlay_audio_enabled = False
             self._hide_recording_overlay_async(session_id=session_id)
@@ -13456,6 +13542,7 @@ class ScriberWebController:
                                 "Meeting capture watchdog live stop failed: {}",
                                 type(exc).__name__,
                             )
+                    self.clear_meeting_audio_level_state(meeting_id)
                     if recorder_errors:
                         stop_payload = (
                             stop_response.get("payload")
@@ -13656,19 +13743,20 @@ class ScriberWebController:
         if now - self._meeting_last_level_broadcast.get(key, 0.0) < (1.0 / 30.0):
             return
         self._meeting_last_level_broadcast[key] = now
-        if not pcm:
-            rms = 0.0
-        else:
-            sample_count = len(pcm) // 2
-            total = 0
-            for offset in range(0, sample_count * 2, 2):
-                sample = int.from_bytes(pcm[offset:offset + 2], "little", signed=True)
-                total += sample * sample
-            rms = min(1.0, (total / max(1, sample_count)) ** 0.5 / 32768.0)
+        rms = min(1.0, pcm16le_rms(pcm) / 32768.0)
         self._loop.call_soon_threadsafe(
             self._enqueue_control_broadcast,
             meeting_audio_level_event(meeting_id, provider_source, rms),
         )
+
+    def clear_meeting_audio_level_state(self, meeting_id: str) -> None:
+        """Drop per-meeting throttle state when capture ownership ends."""
+
+        level_state = getattr(self, "_meeting_last_level_broadcast", None)
+        if not isinstance(level_state, dict):
+            return
+        level_state.pop((meeting_id, "microphone"), None)
+        level_state.pop((meeting_id, "system"), None)
 
     def on_meeting_checkpoint(self, meeting_id: str, checkpoint: dict[str, Any]) -> None:
         """Forward durable checkpoint metadata from recorder threads."""
@@ -13991,6 +14079,7 @@ class ScriberWebController:
             self._transcript_broadcast_task.cancel()
             self._transcript_broadcast_task = None
         self._pending_control_payloads.clear()
+        self._meeting_last_level_broadcast.clear()
         if self._control_broadcast_task is not None:
             self._control_broadcast_task.cancel()
             self._control_broadcast_task = None
@@ -16606,14 +16695,20 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 await persist_detached_summary_failure(str(exc))
             return web.json_response({"message": str(exc)}, status=400)
         except Exception as exc:
-            logger.exception("Summarization failed")
+            info = provider_user_error(None, exc)
+            public_message = "Could not create the summary. Please try again."
+            logger.error(
+                "Summarization failed (error_type={}, code={})",
+                type(exc).__name__,
+                info.code or "unknown",
+            )
             if rec:
-                rec.mark_summary_failed(exc)
+                rec.mark_summary_failed(public_message)
                 await ctl._save_transcript_summary_state_async(rec)
                 await ctl._broadcast_history_updated(record=rec, reason="summary_failed")
             else:
-                await persist_detached_summary_failure(str(exc))
-            return web.json_response({"message": str(exc) or "Summarization failed"}, status=500)
+                await persist_detached_summary_failure(public_message)
+            return web.json_response({"message": public_message}, status=500)
 
     async def stop_transcript(request: web.Request):
         """Cancel a running transcription task."""
@@ -19239,6 +19334,9 @@ def create_app(controller: ScriberWebController) -> web.Application:
         meeting_id = request.match_info.get("id", "")
         finalizing = await asyncio.to_thread(ctl._meeting_store.transition, meeting_id, "finalizing")
         ctl._meeting_recorders.pop(meeting_id, None)
+        clear_level_state = getattr(ctl, "clear_meeting_audio_level_state", None)
+        if callable(clear_level_state):
+            clear_level_state(meeting_id)
         await ctl.broadcast(meeting_state_event(finalizing))
         ctl.schedule_meeting_finalization(meeting_id)
         return web.json_response({**finalizing, "apiVersion": REST_API_VERSION}, status=202)
@@ -19648,8 +19746,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 str(raw.get("id", "workspace")),
                 str(raw.get("body", "")),
                 at_ms=int(raw["atMs"]) if raw.get("atMs") is not None else None,
+                writer_id=raw.get("writerId"),
+                write_generation=raw.get("writeGeneration"),
             )
-            await ctl.broadcast(meeting_note_event(meeting_id, note))
+            if note.get("writeApplied") is not False:
+                await ctl.broadcast(meeting_note_event(meeting_id, note))
             return web.json_response({**note, "apiVersion": REST_API_VERSION})
         except MeetingNotFound:
             return web.json_response({"message": "Meeting not found"}, status=404)
@@ -19722,6 +19823,9 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 await asyncio.to_thread(shutil.rmtree, meeting_root)
             await asyncio.to_thread(db.delete_transcript, meeting_id)
             await asyncio.to_thread(ctl._meeting_store.delete, meeting_id)
+            clear_level_state = getattr(ctl, "clear_meeting_audio_level_state", None)
+            if callable(clear_level_state):
+                clear_level_state(meeting_id)
             await ctl.broadcast(meeting_state_event(discarded))
             return web.json_response({"success": True, "id": meeting_id, "apiVersion": REST_API_VERSION})
         except MeetingNotFound:
@@ -20936,164 +21040,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
             **status,
         })
 
-    def build_meeting_delivery_payload(detail: dict[str, Any]) -> dict[str, Any]:
-        analysis = next(
-            (item.get("payload", {}) for item in detail.get("outputs", []) if item.get("kind") == "analysis"),
-            {},
-        )
-        if isinstance(analysis, dict):
-            analysis = dict(analysis)
-            analysis["actionItems"] = detail.get("actionItems", analysis.get("actionItems", []))
-        return {
-            "apiVersion": REST_API_VERSION,
-            "event": "meeting.ready",
-            "meeting": {
-                "id": detail["id"],
-                "title": detail["title"],
-                "language": detail["language"],
-                "startedAt": detail["startedAt"],
-                "endedAt": detail["endedAt"],
-                "state": detail["state"],
-            },
-            "analysis": analysis,
-            "segments": [
-                {
-                    "id": item["id"], "source": item["source"], "speakerLabel": item["speakerLabel"],
-                    "startMs": item["startMs"], "endMs": item["endMs"], "text": item["text"],
-                }
-                for item in detail.get("segments", [])
-            ],
-            "notes": [
-                {"id": item["id"], "body": item["body"], "atMs": item["atMs"]}
-                for item in detail.get("notes", [])
-            ],
-        }
-
-    async def validate_webhook_url(raw_url: str) -> tuple[str, str]:
-        parsed = urlparse(raw_url.strip())
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-            raise ValueError("Webhook URL must be HTTPS and must not contain credentials.")
-        if parsed.port not in {None, 443}:
-            raise ValueError("Webhook URL must use the standard HTTPS port.")
-        try:
-            addresses = await asyncio.get_running_loop().getaddrinfo(
-                parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM
-            )
-        except socket.gaierror as exc:
-            raise ValueError("Webhook hostname could not be resolved.") from exc
-        if not addresses:
-            raise ValueError("Webhook hostname did not resolve to an address.")
-        for address in addresses:
-            value = ipaddress.ip_address(address[4][0])
-            if not value.is_global:
-                raise ValueError("Webhook targets must resolve only to public internet addresses.")
-        canonical = parsed._replace(fragment="").geturl()
-        stored_target = parsed._replace(query="", fragment="").geturl()
-        return canonical, stored_target
-
-    async def preview_meeting_delivery(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            _, stored_target = await validate_webhook_url(str(raw.get("url", "")))
-            detail = await asyncio.to_thread(ctl._meeting_store.detail, meeting_id)
-            payload = build_meeting_delivery_payload(detail)
-            encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            return web.json_response({
-                "apiVersion": REST_API_VERSION,
-                "target": stored_target,
-                "previewHash": hashlib.sha256(encoded).hexdigest(),
-                "payload": payload,
-                "byteSize": len(encoded),
-            })
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def deliver_meeting_webhook(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            if raw.get("confirmed") is not True:
-                return web.json_response({"message": "Webhook delivery requires explicit confirmation."}, status=409)
-            target_url, stored_target = await validate_webhook_url(str(raw.get("url", "")))
-            detail = await asyncio.to_thread(ctl._meeting_store.detail, meeting_id)
-            payload = build_meeting_delivery_payload(detail)
-            encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            preview_hash = hashlib.sha256(encoded).hexdigest()
-            if not hmac.compare_digest(str(raw.get("previewHash", "")), preview_hash):
-                return web.json_response({"message": "Webhook preview changed; review it again before sending."}, status=409)
-            delivery = await asyncio.to_thread(
-                ctl._meeting_store.create_delivery,
-                meeting_id,
-                kind="webhook",
-                target=stored_target,
-                request_payload={"previewHash": preview_hash, "byteSize": len(encoded), "event": "meeting.ready"},
-                status="sending",
-            )
-            secret = str(raw.get("secret", ""))
-            headers = {
-                "Content-Type": "application/json",
-                "User-Agent": f"Scriber/{app_version()}",
-                "X-Scriber-Event": "meeting.ready",
-                "X-Scriber-Delivery": delivery["id"],
-                "Idempotency-Key": delivery["id"],
-            }
-            if secret:
-                headers["X-Scriber-Signature"] = "sha256=" + hmac.new(
-                    secret.encode("utf-8"), encoded, hashlib.sha256
-                ).hexdigest()
-            session = request.app[APP_HTTP_SESSION]
-            final_status = "failed"
-            final_response: dict[str, Any] = {}
-            final_error = "Webhook delivery failed"
-            attempts = 0
-            for attempt in range(1, 4):
-                attempts = attempt
-                try:
-                    async with session.post(
-                        target_url, data=encoded, headers=headers, allow_redirects=False
-                    ) as response:
-                        final_response = {"httpStatus": response.status}
-                        if 200 <= response.status < 300:
-                            final_status, final_error = "delivered", ""
-                            break
-                        final_error = f"Webhook returned HTTP {response.status}"
-                        if response.status not in {408, 425, 429} and response.status < 500:
-                            break
-                except Exception as exc:
-                    final_error = type(exc).__name__
-                if attempt < 3:
-                    await asyncio.sleep(0.25 * (4 ** (attempt - 1)))
-            delivery = await asyncio.to_thread(
-                ctl._meeting_store.update_delivery,
-                delivery["id"], status=final_status, response_payload=final_response,
-                error_message=final_error, attempt_count=attempts,
-            )
-            await ctl.broadcast(meeting_delivery_updated_event(meeting_id, delivery))
-            status = 201 if delivery["status"] == "delivered" else 502
-            return web.json_response({"apiVersion": REST_API_VERSION, "delivery": delivery}, status=status)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def list_meeting_deliveries(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            items = await asyncio.to_thread(ctl._meeting_store.deliveries, meeting_id)
-            return web.json_response({"apiVersion": REST_API_VERSION, "items": items})
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-
     async def frontend_static(request: web.Request):
         if (
             request.path == "/api"
@@ -21246,9 +21192,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_post(
         "/api/meetings/{id}/speakers/{speakerId}/split-profile", split_speaker_profile
     )
-    app.router.add_post("/api/meetings/{id}/deliveries/preview", preview_meeting_delivery)
-    app.router.add_post("/api/meetings/{id}/deliveries", deliver_meeting_webhook)
-    app.router.add_get("/api/meetings/{id}/deliveries", list_meeting_deliveries)
+    register_meeting_delivery_routes(
+        app,
+        store=getattr(controller, "_meeting_store", None),
+        broadcast=getattr(controller, "broadcast", None),
+    )
     app.router.add_get("/api/meetings/{id}/audio", meeting_audio_mix)
     app.router.add_get("/api/meetings/{id}/audio/{source}", meeting_audio)
     app.router.add_get("/api/meetings/{id}/export/{format}", export_meeting)
@@ -21507,6 +21455,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
 
 async def run_server(host: str, port: int) -> None:
+    _validate_server_bind_security(host, _configured_session_token())
     loop = asyncio.get_running_loop()
     previous_loop_exception_handler = loop.get_exception_handler()
     loop.set_exception_handler(

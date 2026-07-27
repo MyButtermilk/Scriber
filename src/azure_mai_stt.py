@@ -32,6 +32,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
 from src.config import Config
+from src.core.provider_errors import provider_transport_error, provider_user_error
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, mp3_encode_pcm_pipe_args, mp3_transcode_args
 from src.runtime.http_response import read_response_text_limited
 from src.runtime.media_tools import require_media_tool
@@ -378,7 +379,12 @@ async def transcribe_with_azure_mai(
     if on_response_complete is not None:
         on_response_complete()
     if status >= 400:
-        raise RuntimeError(f"Azure MAI transcription failed ({status}): {raw[:500]}")
+        raise provider_transport_error(
+            "azure_mai",
+            "transcription",
+            status=status,
+            response_body=raw,
+        )
 
     if not raw:
         return {}
@@ -671,8 +677,16 @@ class AzureMaiTranscribeSTTService(STTService):
                 return
             await self._flush_transcription(direction)
         except Exception as exc:
-            logger.error(f"Azure MAI transcription failed: {exc}")
-            await self.push_frame(ErrorFrame(error=f"azure mai error: {exc}"), direction)
+            info = provider_user_error("azure_mai", exc)
+            logger.error(
+                "Azure MAI transcription failed (error_type={}, code={})",
+                type(exc).__name__,
+                info.code or "unknown",
+            )
+            await self.push_frame(
+                ErrorFrame(error=f"azure mai error: {info.message}"),
+                direction,
+            )
         finally:
             self._reset_buffer()
         await self.push_frame(frame, direction)

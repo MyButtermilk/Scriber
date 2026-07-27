@@ -793,6 +793,34 @@ def test_loopback_request_detection():
     assert not web_api._is_loopback_request(_FakeRequest(peername=("10.0.0.2", 12345)))
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "127.0.0.1",
+        "::1",
+        "[::1]",
+        "::ffff:127.0.0.1",
+        "localhost",
+    ],
+)
+def test_loopback_server_bind_does_not_require_a_session_token(host):
+    web_api._validate_server_bind_security(host, "")
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "10.0.0.2", "scriber.local"])
+@pytest.mark.parametrize("token", ["", "short-token", "x" * 31])
+def test_non_loopback_server_bind_rejects_missing_or_short_session_token(
+    host,
+    token,
+):
+    with pytest.raises(RuntimeError, match="at least 32 bytes"):
+        web_api._validate_server_bind_security(host, token)
+
+
+def test_non_loopback_server_bind_accepts_a_32_byte_session_token():
+    web_api._validate_server_bind_security("0.0.0.0", "x" * 32)
+
+
 @pytest.mark.asyncio
 async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "secret")

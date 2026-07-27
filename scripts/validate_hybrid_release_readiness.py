@@ -101,7 +101,8 @@ def validate_release_readiness(
     require_authenticode_timestamp: bool = False,
     platform: str = "windows-x86_64",
 ) -> dict[str, Any]:
-    expected_signed_artifact_names = read_updater_artifact_names(updater_metadata)
+    expected_signed_artifact_identities = read_updater_artifact_identities(updater_metadata)
+    expected_signed_artifact_names = list(expected_signed_artifact_identities)
     effective_require_rust_endpoint_inventory = (
         require_rust_endpoint_inventory
         or require_rust_audio_sidecar_smoke
@@ -132,6 +133,7 @@ def validate_release_readiness(
             expected_publisher=expected_authenticode_publisher,
             require_timestamp=require_authenticode_timestamp,
             expected_artifact_names=expected_signed_artifact_names,
+            expected_artifact_identities=expected_signed_artifact_identities,
         ),
     ]
     if (
@@ -2456,15 +2458,27 @@ def validate_authenticode_report(
     expected_publisher: str,
     require_timestamp: bool,
     expected_artifact_names: list[str] | None = None,
+    expected_artifact_identities: dict[str, dict[str, Any]] | None = None,
 ) -> ReadinessCheck:
     expected_artifact_names = expected_artifact_names or []
+    expected_artifact_identities = expected_artifact_identities or {}
     failures: list[str] = []
     details: dict[str, Any] = {
         "report": str(report_path) if report_path else "",
         "expectedPublisher": expected_publisher,
         "requireTimestamp": require_timestamp,
         "expectedArtifactNames": expected_artifact_names,
+        "expectedArtifactIdentities": expected_artifact_identities,
     }
+    expected_identities_by_name: dict[str, dict[str, Any]] = {}
+    for expected_name, expected_identity in expected_artifact_identities.items():
+        normalized_name = expected_name.casefold()
+        existing_identity = expected_identities_by_name.get(normalized_name)
+        if existing_identity is not None and existing_identity != expected_identity:
+            failures.append(
+                "latest.json contains conflicting artifact identities that differ only by case"
+            )
+        expected_identities_by_name[normalized_name] = expected_identity
     if report_path is None:
         failures.append("Authenticode validation report is required")
         return ReadinessCheck("authenticodeSignatures", False, failures, details)
@@ -2497,14 +2511,36 @@ def validate_authenticode_report(
         else:
             reported_artifact_names.add(artifact_name.casefold())
         status = artifact.get("status")
-        if status != "Valid":
-            failures.append(f"Authenticode artifacts[{index}].status must be Valid")
+        if status not in {"Valid", "NotSigned"}:
+            failures.append(
+                f"Authenticode artifacts[{index}].status must be Valid or NotSigned"
+            )
+        if status == "NotSigned" and (expected_publisher or require_timestamp):
+            failures.append(
+                f"Authenticode artifacts[{index}] cannot be NotSigned when publisher or timestamp policy is required"
+            )
         signer_subject = str(artifact.get("signerSubject") or "")
-        if expected_publisher and expected_publisher not in signer_subject:
+        if status == "Valid" and expected_publisher and expected_publisher not in signer_subject:
             failures.append(f"Authenticode artifacts[{index}].signerSubject must contain expected publisher")
         timestamp_subject = str(artifact.get("timestampSubject") or "")
-        if require_timestamp and not timestamp_subject:
+        if status == "Valid" and require_timestamp and not timestamp_subject:
             failures.append(f"Authenticode artifacts[{index}].timestampSubject is required")
+        size_bytes = artifact.get("sizeBytes")
+        sha256 = str(artifact.get("sha256") or "").lower()
+        if not isinstance(size_bytes, int) or size_bytes <= 0:
+            failures.append(f"Authenticode artifacts[{index}].sizeBytes must be positive")
+        if not SHA256_RE.fullmatch(sha256):
+            failures.append(f"Authenticode artifacts[{index}].sha256 must be a SHA256 digest")
+        expected_identity = expected_identities_by_name.get(artifact_name.casefold())
+        if expected_identity:
+            if size_bytes != expected_identity["sizeBytes"]:
+                failures.append(
+                    f"Authenticode artifacts[{index}].sizeBytes does not match latest.json"
+                )
+            if sha256 != expected_identity["sha256"]:
+                failures.append(
+                    f"Authenticode artifacts[{index}].sha256 does not match latest.json"
+                )
 
     missing_expected = [
         name
@@ -2548,23 +2584,35 @@ def is_https_url(value: str) -> bool:
 
 
 def read_updater_artifact_names(metadata_path: Path) -> list[str]:
+    return list(read_updater_artifact_identities(metadata_path))
+
+
+def read_updater_artifact_identities(
+    metadata_path: Path,
+) -> dict[str, dict[str, Any]]:
     try:
         data = json.loads(metadata_path.read_text(encoding="utf-8"))
     except Exception:
-        return []
+        return {}
     if not isinstance(data, dict):
-        return []
+        return {}
     artifacts = data.get("artifacts")
     if not isinstance(artifacts, list):
-        return []
-    names: list[str] = []
+        return {}
+    identities: dict[str, dict[str, Any]] = {}
     for artifact in artifacts:
         if not isinstance(artifact, dict):
             continue
         name = artifact.get("name")
         if isinstance(name, str) and name.strip() and Path(name).name == name:
-            names.append(name.strip())
-    return names
+            sha256 = str(artifact.get("sha256") or "").lower()
+            size_bytes = artifact.get("sizeBytes")
+            if SHA256_RE.fullmatch(sha256) and isinstance(size_bytes, int) and size_bytes > 0:
+                identities[name.strip()] = {
+                    "sha256": sha256,
+                    "sizeBytes": size_bytes,
+                }
+    return identities
 
 
 def parse_optional_path(raw: str) -> Path | None:

@@ -1,6 +1,6 @@
 # Roadmap And Known Issues
 
-Last verified: 2026-07-21
+Last verified: 2026-07-27
 
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
@@ -78,6 +78,13 @@ Reliability and data:
 
 - Job resume/retry scheduling is single-flight, transcript/job deletion is
   coordinated with persistence, and runtime caches/stores have bounded retention.
+- Provider adapters now discard response bodies at their error boundary and
+  expose only allowlisted status/code categories. Mistral realtime transcription
+  has a direct `run_stt` regression test, and Gladia cleanup diagnostics no
+  longer fail on a missing logger.
+- Ruff lint and formatting cover all maintained Python in `src`, `tests`, and
+  `scripts`; frontend ESLint includes the React Hooks rules, and the first
+  Testing Library component suite covers Meeting-note autosave behavior.
 - Issue #18 is implemented and measured: canonical
   activation/stop-to-visible-text KPIs, exact provider/model/container/codec
   route evidence, pass-through-first media preparation, one shared provider
@@ -99,6 +106,11 @@ Meetings:
 - The eager Meetings tab now owns a durable capture-to-analysis state machine,
   recovery, canonical/live revisions, notes, editable action items, cited chat,
   exports, playback, retention, and webhook delivery surfaces.
+- Meeting delivery routes are the first domain extracted from `create_app`.
+  Webhook targets are HTTPS-only, DNS-validated and socket-pinned; confirmation
+  tokens are single-use and durable so retries cannot duplicate a delivery.
+  Meeting notes use a serialized, coalescing save lane with retry and
+  page-teardown flushing.
 - Native meeting capture uses one Rust audio sidecar for mic plus loopback,
   pinned `aec3-rs` echo cancellation, a shared monotonic timeline, three durable
   tracks, health monitoring, pause/resume gaps, and checksum-validated chunks.
@@ -182,6 +194,13 @@ Debug/support:
 Packaging/performance:
 
 - Profile B ffmpeg is the default Windows media-tool profile.
+- Live-meeting PCM16 RMS checks share the native `audioop-lts` implementation
+  instead of per-sample Python loops. Provider wrappers are imported only by the
+  selected pipeline branch, and transcript timing uses prefix sums.
+- Release dependency resolution is constrained by an exact Windows CPython 3.13
+  graph. Profile-B restoration is bound to a versioned artifact identity, and
+  tag releases remain drafts until downloaded assets, updater signatures,
+  Authenticode evidence, installed smoke, and uninstall gates all pass.
 - The latest local unsigned `v0.4.35` LZMA installer is `124.77 MiB`, SHA-256
   `62a141b5f805ae0a61c2ab555b89fd489f6415293854af23601983ddb18a6af8`; its
   installed package smoke measured `320.00 MiB` and passed frontend ownership,
@@ -1185,6 +1204,21 @@ evidence remains mandatory where the slice touches those boundaries.
 
 ## Known Open Areas
 
+Architecture and maintainability:
+
+- `src/web_api.py`, `ScriberWebController`, `MeetingStore`, and
+  `ScriberPipeline` remain large ownership units. Continue the domain-route
+  extraction one bounded group at a time; keep each move behavior-preserving
+  and independently covered rather than attempting a big-bang rewrite.
+- `Frontend/client/src/pages/Settings.tsx` remains the largest frontend
+  component. Split it along the existing tab boundaries before broadening
+  component coverage to Settings and the full Meetings workspace.
+- Continue expanding mypy through reviewed `src` tranches. Do not weaken the
+  repository-wide Ruff/format gate to accommodate new debt.
+- The editing contracts in `AGENTS.md` remain intentionally authoritative but
+  large. A future documentation-only change may move detailed contracts under
+  `docs/contracts/` while keeping `AGENTS.md` as the indexed entry point.
+
 Signing/updater:
 
 - Tauri updater wiring, weekly non-blocking frontend checks, local update cache,
@@ -1207,11 +1241,11 @@ Signing/updater:
   should sign the application/runtime manifests with a release key and verify
   them against a public key embedded in the frozen launcher before importing
   physical application code.
-- Rebuilding an expired Python runtime cache is not yet byte-reproducible:
-  several direct and transitive packages are version ranges rather than one
-  Windows/Python-3.13 constraints lock with wheel hashes. Add that lock before
-  treating independently rebuilt runtime generations as identical release
-  evidence.
+- Rebuilding an expired Python runtime cache now uses an exact
+  Windows/Python-3.13 constraints graph. The graph does not yet carry wheel
+  hashes, so independently rebuilt generations still require the existing
+  wheelhouse and runtime-inventory evidence rather than being assumed
+  byte-identical.
 
 Physical hardware evidence:
 

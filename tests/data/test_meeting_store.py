@@ -11,6 +11,7 @@ import pytest
 from src import database
 from src.data.meeting_store import (
     InvalidMeetingTransition,
+    MAX_MEETING_NOTE_BODY_UTF8_BYTES,
     MeetingConflict,
     MeetingCreate,
     MeetingStore,
@@ -1133,6 +1134,101 @@ def test_delivery_persistence_keeps_only_sanitized_request_metadata(store: Meeti
     assert updated["response"] == {"httpStatus": 204}
 
 
+def test_delivery_confirmation_is_atomically_consumed_once(store: MeetingStore):
+    meeting = store.create(create_request())
+    fingerprint = "a" * 64
+    token = store.create_delivery_confirmation(
+        meeting["id"],
+        fingerprint=fingerprint,
+    )
+    barrier = Barrier(2)
+
+    def claim():
+        barrier.wait(timeout=5)
+        return store.claim_delivery_confirmation(
+            meeting["id"],
+            confirmation_token=token,
+            fingerprint=fingerprint,
+            kind="webhook",
+            target="https://example.com/hook",
+            request_payload={"previewHash": token, "byteSize": 42},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: claim(), range(2)))
+
+    deliveries = [delivery for delivery, _claimed in results]
+    assert sorted(claimed for _delivery, claimed in results) == [False, True]
+    assert {delivery["id"] for delivery in deliveries} == {deliveries[0]["id"]}
+    assert deliveries[0]["idempotencyKey"] == token
+    assert len(store.deliveries(meeting["id"])) == 1
+
+
+def test_delivery_confirmation_replay_survives_store_restart(store: MeetingStore):
+    meeting = store.create(create_request())
+    fingerprint = "b" * 64
+    token = store.create_delivery_confirmation(
+        meeting["id"],
+        fingerprint=fingerprint,
+    )
+    first, claimed = store.claim_delivery_confirmation(
+        meeting["id"],
+        confirmation_token=token,
+        fingerprint=fingerprint,
+        kind="webhook",
+        target="https://example.com/hook",
+        request_payload={"previewHash": token},
+    )
+    assert claimed is True
+
+    replay, claimed_again = MeetingStore().claim_delivery_confirmation(
+        meeting["id"],
+        confirmation_token=token,
+        fingerprint=fingerprint,
+        kind="webhook",
+        target="https://example.com/hook",
+        request_payload={"previewHash": token},
+    )
+
+    assert claimed_again is False
+    assert replay["id"] == first["id"]
+
+
+def test_recover_interrupted_marks_claimed_delivery_outcome_unknown(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    fingerprint = "c" * 64
+    token = store.create_delivery_confirmation(
+        meeting["id"],
+        fingerprint=fingerprint,
+    )
+    delivery, claimed = store.claim_delivery_confirmation(
+        meeting["id"],
+        confirmation_token=token,
+        fingerprint=fingerprint,
+        kind="webhook",
+        target="https://example.com/hook",
+        request_payload={"previewHash": token},
+    )
+    assert claimed is True
+    assert delivery["status"] == "sending"
+
+    assert store.recover_interrupted() == 1
+
+    recovered, claimed_again = store.claim_delivery_confirmation(
+        meeting["id"],
+        confirmation_token=token,
+        fingerprint=fingerprint,
+        kind="webhook",
+        target="https://example.com/hook",
+        request_payload={"previewHash": token},
+    )
+    assert claimed_again is False
+    assert recovered["status"] == "outcome_unknown"
+    assert recovered["errorMessage"] == "process_interrupted_during_delivery"
+
+
 def test_audio_gap_advances_resume_offset(store: MeetingStore):
     meeting = store.create(create_request())
     store.add_audio_chunk(
@@ -1617,6 +1713,233 @@ def test_workspace_note_upsert_and_action_item_edits_survive_regeneration(store:
     retried = store.detail(meeting["id"])["actionItems"]
     assert {item["id"] for item in retried} == set(items)
     assert [item["text"] for item in retried].count("Model replacement") == 1
+
+
+def test_workspace_note_write_generation_wins_independent_of_arrival_order(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    barrier = Barrier(2)
+
+    def write(body: str, generation: int):
+        barrier.wait(timeout=5)
+        return store.put_note(
+            meeting["id"],
+            "workspace",
+            body,
+            writer_id="writer_generation_test",
+            write_generation=generation,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        older = executor.submit(write, "older A", 1)
+        newer = executor.submit(write, "newer B", 2)
+        responses = [older.result(timeout=5), newer.result(timeout=5)]
+
+    assert store.notes(meeting["id"])[0]["body"] == "newer B"
+    assert max(response["writeGeneration"] for response in responses) == 2
+    assert any(
+        response["writeApplied"] is True
+        and response["writeGeneration"] == 2
+        for response in responses
+    )
+
+
+def test_workspace_note_write_head_survives_restart_and_writer_change(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    applied = store.put_note(
+        meeting["id"],
+        "workspace",
+        "new view",
+        writer_id="writer_new_view_123",
+        write_generation=20,
+    )
+    assert applied["writeApplied"] is True
+
+    database._close_all_connections()
+    restarted = MeetingStore()
+    restarted.initialize()
+    stale = restarted.put_note(
+        meeting["id"],
+        "workspace",
+        "late old keepalive",
+        writer_id="writer_old_view_123",
+        write_generation=19,
+    )
+
+    assert stale["writeApplied"] is False
+    assert stale["writeGeneration"] == 20
+    assert stale["body"] == "new view"
+    assert restarted.notes(meeting["id"])[0]["body"] == "new view"
+    with database._get_connection() as conn:
+        head_count = conn.execute(
+            """SELECT COUNT(*) AS count FROM meeting_note_write_heads
+               WHERE meeting_id=? AND note_id='workspace'""",
+            (meeting["id"],),
+        ).fetchone()["count"]
+    assert head_count == 1
+
+
+def test_workspace_note_generation_replay_is_idempotent_including_delete(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    first = store.put_note(
+        meeting["id"],
+        "workspace",
+        "saved once",
+        writer_id="writer_replay_test",
+        write_generation=1,
+    )
+    replay = store.put_note(
+        meeting["id"],
+        "workspace",
+        "must not replace",
+        writer_id="writer_replay_test",
+        write_generation=1,
+    )
+    deleted = store.put_note(
+        meeting["id"],
+        "workspace",
+        "",
+        writer_id="writer_replay_test",
+        write_generation=2,
+    )
+    stale_after_delete = store.put_note(
+        meeting["id"],
+        "workspace",
+        "must not resurrect",
+        writer_id="writer_replay_test",
+        write_generation=1,
+    )
+
+    assert first["writeApplied"] is True
+    assert replay["writeApplied"] is False
+    assert replay["body"] == "saved once"
+    assert deleted["writeApplied"] is True
+    assert stale_after_delete["writeApplied"] is False
+    assert stale_after_delete["writeGeneration"] == 2
+    assert stale_after_delete["body"] == ""
+    assert store.notes(meeting["id"]) == []
+
+
+def test_meeting_note_utf8_size_limit_is_shared_by_add_and_put(
+    store: MeetingStore,
+):
+    meeting = store.create(create_request())
+    exact_limit = "ü" * (MAX_MEETING_NOTE_BODY_UTF8_BYTES // 2)
+    assert store.put_note(meeting["id"], "workspace", exact_limit)["body"] == exact_limit
+
+    too_large = exact_limit + "a"
+    with pytest.raises(ValueError, match="48 KiB"):
+        store.put_note(meeting["id"], "workspace", too_large)
+    with pytest.raises(ValueError, match="48 KiB"):
+        store.add_note(meeting["id"], too_large)
+
+
+def test_workspace_note_id_is_scoped_to_each_meeting(store: MeetingStore):
+    first_meeting = store.create(create_request(title="First"))
+    store.transition(first_meeting["id"], "discarded")
+    second_meeting = store.create(create_request(title="Second"))
+
+    store.put_note(first_meeting["id"], "workspace", "First workspace")
+    store.put_note(second_meeting["id"], "workspace", "Second workspace")
+
+    assert store.notes(first_meeting["id"])[0]["body"] == "First workspace"
+    assert store.notes(second_meeting["id"])[0]["body"] == "Second workspace"
+
+
+def test_meeting_note_primary_key_migration_preserves_legacy_rows_and_index(
+    store: MeetingStore,
+):
+    first_meeting = store.create(create_request(title="Legacy first"))
+    store.transition(first_meeting["id"], "discarded")
+    second_meeting = store.create(create_request(title="Legacy second"))
+    now = "2026-07-27T12:00:00Z"
+
+    conn = database._get_connection()
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.executescript(
+        """
+        DROP TABLE meeting_notes;
+        CREATE TABLE meeting_notes (
+            id TEXT PRIMARY KEY,
+            meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+            body TEXT NOT NULL,
+            at_ms INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_meeting_notes_updated_at_test
+            ON meeting_notes(updated_at);
+        CREATE TRIGGER meeting_notes_insert_test
+        AFTER INSERT ON meeting_notes BEGIN
+            SELECT 1;
+        END;
+        """
+    )
+    conn.execute(
+        """INSERT INTO meeting_notes(
+               id,meeting_id,body,at_ms,created_at,updated_at
+           ) VALUES (?,?,?,?,?,?)""",
+        ("workspace", first_meeting["id"], "Legacy workspace", None, now, now),
+    )
+    conn.execute(
+        """INSERT INTO meeting_notes(
+               id,meeting_id,body,at_ms,created_at,updated_at
+           ) VALUES (?,?,?,?,?,?)""",
+        ("legacy-second", second_meeting["id"], "Legacy second", 25, now, now),
+    )
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=ON")
+
+    store.initialize()
+    store.initialize()
+
+    pk_columns = [
+        row["name"]
+        for row in sorted(
+            (
+                row
+                for row in conn.execute("PRAGMA table_info(meeting_notes)")
+                if row["pk"]
+            ),
+            key=lambda row: row["pk"],
+        )
+    ]
+    assert pk_columns == ["meeting_id", "id"]
+    assert store.notes(first_meeting["id"])[0]["body"] == "Legacy workspace"
+    assert store.notes(second_meeting["id"])[0]["body"] == "Legacy second"
+    preserved_objects = {
+        row["name"]
+        for row in conn.execute(
+            """SELECT name FROM sqlite_master
+               WHERE tbl_name='meeting_notes'
+                 AND type IN ('index','trigger')"""
+        )
+    }
+    assert "idx_meeting_notes_updated_at_test" in preserved_objects
+    assert "meeting_notes_insert_test" in preserved_objects
+    foreign_keys = conn.execute(
+        "PRAGMA foreign_key_list(meeting_notes)"
+    ).fetchall()
+    assert any(
+        row["table"] == "meetings"
+        and row["from"] == "meeting_id"
+        and row["on_delete"] == "CASCADE"
+        for row in foreign_keys
+    )
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+    store.put_note(second_meeting["id"], "workspace", "Second workspace")
+    assert store.notes(first_meeting["id"])[0]["body"] == "Legacy workspace"
+    assert {note["body"] for note in store.notes(second_meeting["id"])} == {
+        "Legacy second",
+        "Second workspace",
+    }
 
 
 def test_reanalysis_matches_edited_action_when_citations_expand_and_keeps_new_action(

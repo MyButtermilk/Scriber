@@ -31,6 +31,11 @@ from pipecat.utils.time import time_now_iso8601
 
 from src.config import Config
 from src.core.provider_audio_formats import SPEECHMATICS_BATCH_DEFAULT_BASE_URL
+from src.core.provider_errors import (
+    parse_provider_json_response,
+    provider_transport_error,
+    provider_user_error,
+)
 from src.gladia_stt import (
     gladia_transcript_payload_to_text,
     transcribe_with_gladia_pre_recorded,
@@ -196,10 +201,19 @@ async def transcribe_with_deepgram_pre_recorded(
     ) as response:
         raw = await read_response_text_limited(response, 64 * 1024 * 1024)
         if response.status >= 400:
-            raise RuntimeError(f"Deepgram transcription failed ({response.status}): {raw[:500]}")
+            raise provider_transport_error(
+                "deepgram",
+                "transcription",
+                status=response.status,
+                response_body=raw,
+            )
         if not raw:
             return {}
-        parsed = json.loads(raw)
+        parsed = parse_provider_json_response(
+            "deepgram",
+            "transcription_response",
+            raw,
+        )
         return parsed if isinstance(parsed, dict) else {}
 
 
@@ -249,7 +263,10 @@ async def _delete_gemini_file(
             if response.status >= 400:
                 logger.debug("Gemini file cleanup returned status {}", response.status)
     except Exception as exc:
-        logger.debug("Gemini file cleanup failed: {}", exc)
+        logger.debug(
+            "Gemini file cleanup failed (error_type={})",
+            type(exc).__name__,
+        )
 
 
 async def _upload_gemini_file(
@@ -278,7 +295,12 @@ async def _upload_gemini_file(
     ) as response:
         raw = await read_response_text_limited(response, 64 * 1024 * 1024)
         if response.status >= 400:
-            raise RuntimeError(f"Gemini file upload start failed ({response.status}): {raw[:500]}")
+            raise provider_transport_error(
+                "gemini",
+                "file_upload_start",
+                status=response.status,
+                response_body=raw,
+            )
         upload_url = response.headers.get("X-Goog-Upload-URL", "")
         if not upload_url:
             raise RuntimeError("Gemini file upload did not return an upload URL.")
@@ -295,12 +317,26 @@ async def _upload_gemini_file(
     ) as response:
         raw = await read_response_text_limited(response, 64 * 1024 * 1024)
         if response.status >= 400:
-            raise RuntimeError(f"Gemini file upload failed ({response.status}): {raw[:500]}")
-        payload = json.loads(raw) if raw else {}
+            raise provider_transport_error(
+                "gemini",
+                "file_upload",
+                status=response.status,
+                response_body=raw,
+            )
+        payload = parse_provider_json_response(
+            "gemini",
+            "file_upload_response",
+            raw,
+            empty_value={},
+        )
 
     file_info = payload.get("file") if isinstance(payload.get("file"), dict) else {}
     if not file_info.get("uri"):
-        raise RuntimeError(f"Gemini file upload response did not include a file URI: {payload}")
+        raise provider_transport_error(
+            "gemini",
+            "file_upload_response",
+            code="missing_file_uri",
+        )
     return file_info
 
 
@@ -340,7 +376,11 @@ async def _wait_for_gemini_file_active(
         if state == "ACTIVE":
             return current
         if state == "FAILED":
-            raise RuntimeError(f"Gemini file processing failed: {current}")
+            raise provider_transport_error(
+                "gemini",
+                "file_processing",
+                code="failed",
+            )
         if asyncio.get_running_loop().time() - started_at >= timeout:
             raise TimeoutError(
                 f"Gemini file processing timed out after {timeout:.1f}s"
@@ -353,10 +393,18 @@ async def _wait_for_gemini_file_active(
         ) as response:
             raw = await read_response_text_limited(response, 1024 * 1024)
             if response.status >= 400:
-                raise RuntimeError(
-                    f"Gemini file status failed ({response.status}): {raw[:500]}"
+                raise provider_transport_error(
+                    "gemini",
+                    "file_status",
+                    status=response.status,
+                    response_body=raw,
                 )
-            parsed = json.loads(raw) if raw else {}
+            parsed = parse_provider_json_response(
+                "gemini",
+                "file_status_response",
+                raw,
+                empty_value={},
+            )
             if not isinstance(parsed, dict):
                 raise RuntimeError("Gemini file status response was invalid.")
             current = parsed.get("file") if isinstance(parsed.get("file"), dict) else parsed
@@ -510,8 +558,18 @@ async def transcribe_with_gemini_audio(
         ) as response:
             raw = await read_response_text_limited(response, 64 * 1024 * 1024)
             if response.status >= 400:
-                raise RuntimeError(f"Gemini transcription failed ({response.status}): {raw[:500]}")
-            parsed = json.loads(raw) if raw else {}
+                raise provider_transport_error(
+                    "gemini",
+                    "transcription",
+                    status=response.status,
+                    response_body=raw,
+                )
+            parsed = parse_provider_json_response(
+                "gemini",
+                "transcription_response",
+                raw,
+                empty_value={},
+            )
             return parsed if isinstance(parsed, dict) else {}
     finally:
         if file_name:
@@ -562,10 +620,19 @@ async def transcribe_with_openai_audio_transcription(
     ) as response:
         raw = await read_response_text_limited(response, 64 * 1024 * 1024)
         if response.status >= 400:
-            raise RuntimeError(f"OpenAI transcription failed ({response.status}): {raw[:500]}")
+            raise provider_transport_error(
+                "openai",
+                "transcription",
+                status=response.status,
+                response_body=raw,
+            )
         if not raw:
             return {}
-        parsed = json.loads(raw)
+        parsed = parse_provider_json_response(
+            "openai",
+            "transcription_response",
+            raw,
+        )
         return parsed if isinstance(parsed, dict) else {"text": raw}
 
 
@@ -644,7 +711,10 @@ async def _delete_speechmatics_job(
                     response.status,
                 )
     except Exception as exc:
-        logger.debug("Speechmatics job cleanup failed: {}", exc)
+        logger.debug(
+            "Speechmatics job cleanup failed (error_type={})",
+            type(exc).__name__,
+        )
 
 
 async def transcribe_with_speechmatics_batch(
@@ -721,8 +791,18 @@ async def transcribe_with_speechmatics_batch(
     ) as response:
         raw = await read_response_text_limited(response, 64 * 1024 * 1024)
         if response.status >= 400:
-            raise RuntimeError(f"Speechmatics batch job start failed ({response.status}): {raw[:500]}")
-        start_payload = json.loads(raw) if raw else {}
+            raise provider_transport_error(
+                "speechmatics",
+                "batch_job_start",
+                status=response.status,
+                response_body=raw,
+            )
+        start_payload = parse_provider_json_response(
+            "speechmatics",
+            "batch_job_response",
+            raw,
+            empty_value={},
+        )
 
     job_id = str(
         start_payload.get("id")
@@ -730,7 +810,11 @@ async def transcribe_with_speechmatics_batch(
         or ""
     ).strip()
     if not job_id:
-        raise RuntimeError(f"Speechmatics batch response did not include a job id: {start_payload}")
+        raise provider_transport_error(
+            "speechmatics",
+            "batch_job_response",
+            code="missing_job_id",
+        )
 
     try:
         _report_progress(on_progress, "Processing transcription...")
@@ -745,14 +829,28 @@ async def transcribe_with_speechmatics_batch(
             ) as response:
                 raw = await read_response_text_limited(response, 64 * 1024 * 1024)
                 if response.status >= 400:
-                    raise RuntimeError(f"Speechmatics batch status failed ({response.status}): {raw[:500]}")
-                status_payload = json.loads(raw) if raw else {}
+                    raise provider_transport_error(
+                        "speechmatics",
+                        "batch_status",
+                        status=response.status,
+                        response_body=raw,
+                    )
+                status_payload = parse_provider_json_response(
+                    "speechmatics",
+                    "batch_status_response",
+                    raw,
+                    empty_value={},
+                )
             job_payload = status_payload.get("job") if isinstance(status_payload.get("job"), dict) else status_payload
             status = str(job_payload.get("status") or "").strip().lower()
             if status in {"done", "completed", "success", "succeeded"}:
                 break
             if status in {"rejected", "failed", "error"}:
-                raise RuntimeError(f"Speechmatics batch transcription failed: {status_payload}")
+                raise provider_transport_error(
+                    "speechmatics",
+                    "batch_transcription",
+                    code=status,
+                )
             await asyncio.sleep(max(0.25, poll_interval_secs))
 
         _report_progress(on_progress, "Retrieving transcript...")
@@ -764,8 +862,18 @@ async def transcribe_with_speechmatics_batch(
         ) as response:
             raw = await read_response_text_limited(response, 64 * 1024 * 1024)
             if response.status >= 400:
-                raise RuntimeError(f"Speechmatics batch transcript failed ({response.status}): {raw[:500]}")
-            parsed = json.loads(raw) if raw else {}
+                raise provider_transport_error(
+                    "speechmatics",
+                    "batch_transcript",
+                    status=response.status,
+                    response_body=raw,
+                )
+            parsed = parse_provider_json_response(
+                "speechmatics",
+                "batch_transcript_response",
+                raw,
+                empty_value={},
+            )
             payload = parsed if isinstance(parsed, dict) else {}
             if on_response_complete is not None:
                 on_response_complete()
@@ -906,8 +1014,17 @@ class _BufferedAsyncProcessor(FrameProcessor):
                             direction,
                         )
             except Exception as exc:
-                logger.error(f"{self.provider_name} async transcription failed: {exc}")
-                await self.push_frame(ErrorFrame(error=f"{self.provider_name} async error: {exc}"), direction)
+                info = provider_user_error(self.provider_name, exc)
+                logger.error(
+                    "{} async transcription failed (error_type={}, code={})",
+                    self.provider_name,
+                    type(exc).__name__,
+                    info.code or "unknown",
+                )
+                await self.push_frame(
+                    ErrorFrame(error=f"{self.provider_name} async error: {info.message}"),
+                    direction,
+                )
             finally:
                 if wav_source is not None:
                     wav_source.close()
@@ -916,7 +1033,9 @@ class _BufferedAsyncProcessor(FrameProcessor):
                         await artifact.release_async()
                     except Exception as exc:
                         logger.debug(
-                            f"{self.provider_name} Rust WAV lease release failed: {exc}"
+                            "{} Rust WAV lease release failed (error_type={})",
+                            self.provider_name,
+                            type(exc).__name__,
                         )
                 self._audio_preparation_implementation = None
                 self._reset_buffer()

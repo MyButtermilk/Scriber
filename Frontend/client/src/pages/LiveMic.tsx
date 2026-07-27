@@ -555,7 +555,7 @@ import { useBackendStatus } from "@/hooks/use-backend-status";
 
 export default function LiveMic() {
   const { toast } = useToast();
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
   const { checkNow: checkBackendStatus } = useBackendStatus();
   const [isRecording, setIsRecording] = useState(false);
   const [recordingState, setRecordingState] = useState<LiveRecordingState>("idle");
@@ -627,10 +627,13 @@ export default function LiveMic() {
   const transcriptsQuery = useTranscriptHistoryQuery<Transcript>({ type: "mic", q: debouncedSearch });
   const transcripts = transcriptsQuery.items;
   const historyLocalDay = new Date().toDateString();
-  const historyReferenceTime = useMemo(() => new Date(), [historyLocalDay]);
+  const historyReferenceTime = useMemo(() => {
+    void historyLocalDay;
+    return new Date();
+  }, [historyLocalDay]);
   const getTranscriptHistoryGroup = useCallback(
     (item: Transcript) => transcriptHistoryPeriod(item.createdAt, historyReferenceTime),
-    [historyReferenceTime, locale],
+    [historyReferenceTime],
   );
   const activeSessionIdRef = useRef<string | null>(null);
 

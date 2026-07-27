@@ -1,0 +1,103 @@
+name: Reusable Quality Gates
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  python-ruff:
+    name: Repository-wide Python Ruff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13.14"
+      - name: Install locked Ruff
+        run: python -m pip install ruff==0.15.22
+      - name: Lint all maintained Python
+        run: python -m ruff check src tests scripts
+      - name: Check all maintained Python formatting
+        run: python -m ruff format --check src tests scripts
+
+  python-full-suite:
+    name: Python tests and extended mypy
+    uses: ./.github/workflows/python-full-suite.yml
+    permissions:
+      contents: read
+
+  frontend:
+    name: Frontend check, lint, test, and build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact source revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: Frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: Frontend
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck frontend
+        working-directory: Frontend
+        run: npm run check
+      - name: Lint frontend
+        working-directory: Frontend
+        run: npm run lint
+      - name: Test frontend
+        working-directory: Frontend
+        run: npm test
+      - name: Build frontend
+        working-directory: Frontend
+        run: npm run build
+
+  rust:
+    name: Rust fmt, clippy, and tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact source revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: Frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: Frontend
+        run: npm ci --no-audit --no-fund
+      - name: Build frontend assets for Tauri gates
+        working-directory: Frontend
+        run: npm run build
+      - name: Create placeholder backend resource directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force Frontend\src-tauri\target\release\backend | Out-Null
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
+        with:
+          components: rustfmt, clippy
+      - name: Check Rust formatting
+        working-directory: Frontend/src-tauri
+        run: cargo fmt --all -- --check
+      - name: Run Rust clippy
+        working-directory: Frontend/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Run Rust tests
+        working-directory: Frontend/src-tauri
+        run: cargo test --locked --all-targets

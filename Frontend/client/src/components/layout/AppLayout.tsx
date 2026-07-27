@@ -24,7 +24,7 @@ interface AppLayoutProps {
 }
 
 export function AppLayout({ children, path }: AppLayoutProps) {
-  const [location, setLocation] = useLocation();
+  const [location] = useLocation();
   const { t } = useI18n();
   const currentKey = path || location;
   const scrollContainerRef = useRef<HTMLDivElement>(null);

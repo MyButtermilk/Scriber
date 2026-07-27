@@ -351,6 +351,27 @@ Packaging and scripts:
   private keys. If `latest.json` lists a signed updater artifact, the matching
   sibling `.sig` file is required in collected release assets; do not silently
   upload a signed metadata file without the corresponding signature asset.
+- Official GitHub publication must remain draft-first and ID-bound. Discover
+  an existing draft through bounded authenticated release-list pagination,
+  bind the exact numeric release ID before upload, and refuse any published
+  match. Before binding either a new or existing draft, call GitHub's bounded
+  `releases/generate-notes` endpoint for the exact release tag and event SHA and
+  require HTTP 200. The bound release must retain the exact
+  `Scriber X.Y.Z` title, event-SHA `target_commitish`, and freshly generated
+  body; never patch or adopt foreign/edited metadata. Evidence may retain only
+  the title, target SHA, bounded UTF-8 body length, and body SHA-256, never the
+  body itself. Create a missing release as an empty draft with
+  `generate_release_notes=true`; never attach assets in a tag-based create
+  command. Delete and upload assets only through numeric
+  release/asset IDs or that exact release's validated `upload_url`, with a
+  final ID/tag/draft read immediately before every mutation. The last asset
+  identity/download and release-metadata verification plus numeric-ID publish
+  PATCH belong to one transaction helper. Recheck the expected-state metadata
+  immediately before and after that PATCH. Verify the same release ID, tag,
+  title, target, body identity, and every asset ID, name, byte size, GitHub
+  SHA-256, and bounded download hash immediately after publication. On any
+  postcondition failure, restore that exact release ID to a verified draft; if
+  rollback cannot be verified, delete only that ID and require an HTTP 404.
 - Rust also exposes a private shell IPC channel for opt-in native text
   injection. `SCRIBER_INJECT_METHOD=tauri` is strict; `auto` must stay on the
   existing Python paste path until installed target-app evidence justifies a
@@ -1605,8 +1626,8 @@ scripts\project-python.cmd -m pip install ruff==0.15.22
 
 ```powershell
 scripts\project-python.cmd -m pytest
-scripts\project-python.cmd -m ruff check src\core src\runtime src\data
-scripts\project-python.cmd -m ruff format --check src\core src\runtime src\data
+scripts\project-python.cmd -m ruff check src tests scripts
+scripts\project-python.cmd -m ruff format --check src tests scripts
 scripts\project-python.cmd -m mypy src\core src\runtime src\data
 ```
 

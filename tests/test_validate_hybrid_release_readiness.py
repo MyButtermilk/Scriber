@@ -8,6 +8,7 @@ from pathlib import Path
 
 from scripts.validate_hybrid_release_readiness import (
     REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS,
+    validate_authenticode_report,
     validate_meeting_release_matrix,
     validate_release_readiness,
 )
@@ -205,6 +206,7 @@ def write_authenticode_report(path: Path) -> None:
 
 
 def write_authenticode_report_for(path: Path, *, artifact_path: str) -> None:
+    artifact_bytes = b"signed Scriber setup"
     path.write_text(
         json.dumps(
             {
@@ -214,6 +216,8 @@ def write_authenticode_report_for(path: Path, *, artifact_path: str) -> None:
                     {
                         "path": artifact_path,
                         "status": "Valid",
+                        "sizeBytes": len(artifact_bytes),
+                        "sha256": sha256(artifact_bytes).hexdigest(),
                         "signerSubject": "CN=Scriber Release Publisher",
                         "timestampSubject": "CN=Timestamp Authority",
                     }
@@ -4125,6 +4129,84 @@ def test_validate_release_readiness_rejects_authenticode_report_for_wrong_artifa
     authenticode_check = next(check for check in result["checks"] if check["name"] == "authenticodeSignatures")
     assert authenticode_check["details"]["expectedArtifactNames"] == ["Scriber_0.1.0_x64-setup.exe"]
     assert any("Scriber_0.1.0_x64-setup.exe" in failure for failure in authenticode_check["failures"])
+
+
+def test_authenticode_evidence_allows_hash_bound_not_signed_artifact(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "authenticode.json"
+    payload = b"installer"
+    report.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 2,
+                "ok": True,
+                "count": 1,
+                "artifacts": [
+                    {
+                        "path": "setup.exe",
+                        "status": "NotSigned",
+                        "sizeBytes": len(payload),
+                        "sha256": sha256(payload).hexdigest(),
+                        "signerSubject": "",
+                        "timestampSubject": "",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    check = validate_authenticode_report(
+        report,
+        expected_publisher="",
+        require_timestamp=False,
+        expected_artifact_names=["setup.exe"],
+        expected_artifact_identities={
+            "setup.exe": {
+                "sizeBytes": len(payload),
+                "sha256": sha256(payload).hexdigest(),
+            }
+        },
+    )
+
+    assert check.ok is True
+
+
+def test_authenticode_evidence_rejects_identity_mismatch(tmp_path: Path) -> None:
+    report = tmp_path / "authenticode.json"
+    write_authenticode_report_for(report, artifact_path="setup.exe")
+    check = validate_authenticode_report(
+        report,
+        expected_publisher="",
+        require_timestamp=False,
+        expected_artifact_names=["setup.exe"],
+        expected_artifact_identities={
+            "setup.exe": {"sizeBytes": 1, "sha256": "0" * 64}
+        },
+    )
+
+    assert check.ok is False
+    assert any("does not match latest.json" in failure for failure in check.failures)
+
+
+def test_authenticode_evidence_binds_identity_case_insensitively(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "authenticode.json"
+    write_authenticode_report_for(report, artifact_path="SETUP.EXE")
+    check = validate_authenticode_report(
+        report,
+        expected_publisher="",
+        require_timestamp=False,
+        expected_artifact_names=["setup.exe"],
+        expected_artifact_identities={
+            "setup.exe": {"sizeBytes": 1, "sha256": "0" * 64}
+        },
+    )
+
+    assert check.ok is False
+    assert any("does not match latest.json" in failure for failure in check.failures)
 
 
 def test_validate_release_readiness_requires_latest_json_artifact_names(tmp_path: Path) -> None:

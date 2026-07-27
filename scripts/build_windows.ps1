@@ -1369,7 +1369,7 @@ try {
         }
     }
 
-    if ($RequireAuthenticodeSignature) {
+    if ($artifacts.Count -gt 0 -or (Test-Path -LiteralPath $releaseExe)) {
         $authenticodeTargets = @()
         if (Test-Path -LiteralPath $releaseExe) {
             $authenticodeTargets += $releaseExe
@@ -1401,6 +1401,9 @@ try {
             }
             if ($RequireAuthenticodeTimestamp) {
                 $authenticodeArgs += "-RequireTimestamp"
+            }
+            if (-not $RequireAuthenticodeSignature) {
+                $authenticodeArgs += "-AllowNotSigned"
             }
             $authenticodeArgs += @("-OutputPath", $authenticodeReportPath)
             powershell @authenticodeArgs

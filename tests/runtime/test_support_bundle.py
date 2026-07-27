@@ -1,5 +1,6 @@
 import json
 import zipfile
+
 import pytest
 
 from src.runtime import support_bundle
@@ -44,16 +45,70 @@ def test_redaction_helpers_hide_sensitive_values():
     assert "[REDACTED_PIPE]" in redacted
     assert "[REDACTED_ENDPOINT_ID]" in redacted
 
+    windows_path = r"C:\Users\Alice\Documents\private-meeting.wav"
+    escaped_windows_path = windows_path.replace("\\", "\\\\")
+    windows_forward_path = "C:/Users/Alice/Documents/private-forward.wav"
+    unc_path = r"\\server\users\Alice\private-unc.wav"
+    unix_path = "/home/alice/Documents/private-meeting.wav"
+    root_path = "/root/private-root.wav"
+    runtime_path = "/run/user/1000/private-runtime.wav"
+    opt_path = "/opt/scriber/private/Alice/meeting.wav"
+    workspace_path = "/workspace/Alice/private-workspace.wav"
+    windows_path_with_spaces = r"C:\Users\Alice\My Private Meeting.wav"
+    unix_path_with_spaces = "/home/alice/My Private Meeting.wav"
+    redacted_diagnostics = redact_text(
+        f"path={windows_path} escaped={escaped_windows_path} "
+        f"forward={windows_forward_path} unc={unc_path} "
+        f"unix={unix_path} root={root_path} runtime={runtime_path} "
+        f"opt={opt_path} workspace={workspace_path} "
+        f"windowsSpaced={windows_path_with_spaces} pid=12345 "
+        f"unixSpaced={unix_path_with_spaces} workerPid=67890 "
+        "url=https://example.test/root/is-not-a-local-path "
+        "processId: 98765"
+    )
+    assert "Alice" not in redacted_diagnostics
+    assert "alice" not in redacted_diagnostics
+    assert "private-meeting.wav" not in redacted_diagnostics
+    assert "private-forward.wav" not in redacted_diagnostics
+    assert "private-unc.wav" not in redacted_diagnostics
+    assert "private-root.wav" not in redacted_diagnostics
+    assert "private-runtime.wav" not in redacted_diagnostics
+    assert "private-workspace.wav" not in redacted_diagnostics
+    assert "Private Meeting.wav" not in redacted_diagnostics
+    assert "https://example.test/root/is-not-a-local-path" in redacted_diagnostics
+    assert "12345" not in redacted_diagnostics
+    assert "67890" not in redacted_diagnostics
+    assert "98765" not in redacted_diagnostics
+    assert "[REDACTED_PATH]" in redacted_diagnostics
+    assert "[REDACTED_PROCESS_ID]" in redacted_diagnostics
+
     mapping = redact_mapping(
         {
             "language": "en",
             "openaiApiKey": "secret-value",
+            "pid": 12345,
+            "workerPid": 23456,
+            "shellPid": 34567,
+            "workerpid": 45678,
+            "rendererprocessid": 56789,
+            "dataDir": windows_path,
             "nested": {"sessionToken": "token-value"},
+            "pathTuple": (
+                r"C:\Users\Alice\private-tuple.wav",
+                "/opt/scriber/private/Alice/private-tuple.log",
+            ),
         }
     )
     assert mapping["language"] == "en"
     assert mapping["openaiApiKey"] == "[REDACTED]"
+    assert mapping["pid"] == "[REDACTED]"
+    assert mapping["workerPid"] == "[REDACTED]"
+    assert mapping["shellPid"] == "[REDACTED]"
+    assert mapping["workerpid"] == "[REDACTED]"
+    assert mapping["rendererprocessid"] == "[REDACTED]"
+    assert mapping["dataDir"] == "[REDACTED]"
     assert mapping["nested"]["sessionToken"] == "[REDACTED]"
+    assert mapping["pathTuple"] == ["[REDACTED_PATH]", "[REDACTED_PATH]"]
 
 
 def test_redaction_helpers_hide_azure_speech_key_variants():
@@ -62,9 +117,7 @@ def test_redaction_helpers_hide_azure_speech_key_variants():
     bare_secret = "azure-bare-secret"
 
     redacted = redact_text(
-        f'AZURE_MAI_SPEECH_KEY={assignment_secret} '
-        f'{{"azureSpeechKey":"{json_secret}"}} '
-        f'SPEECH_KEY: "{bare_secret}"'
+        f'AZURE_MAI_SPEECH_KEY={assignment_secret} {{"azureSpeechKey":"{json_secret}"}} SPEECH_KEY: "{bare_secret}"'
     )
 
     assert assignment_secret not in redacted
@@ -142,7 +195,9 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     (logs_dir / "latest.log").write_text(
         f"\x00\x00OPENAI_API_KEY=log-secret-value Authorization: Bearer bearer-secret "
         f"AZURE_MAI_SPEECH_KEY=azure-log-secret raw_groq={groq_log_key} "
-        f"pipe={shell_pipe} endpoint={raw_endpoint_id}\n",
+        f"pipe={shell_pipe} endpoint={raw_endpoint_id} "
+        r"unc=\\server\users\Alice\private-unc.wav "
+        "root=/root/private-root.wav\n",
         encoding="utf-8",
     )
 
@@ -192,6 +247,8 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     assert "scriber-shell-bundle" not in combined
     assert raw_endpoint_id not in combined
     assert "support-bundle-capture" not in combined
+    assert "private-unc.wav" not in combined
+    assert "private-root.wav" not in combined
     assert "private transcript text" not in combined
     assert "\x00" not in combined
     assert "[REDACTED]" in combined
@@ -344,7 +401,7 @@ def test_support_bundle_includes_redacted_audio_diagnostics(monkeypatch, tmp_pat
                     "lastCallbackAgoSeconds": 0.42,
                     "restartCount": 1,
                     "sessionToken": "audio-secret-token",
-                }
+                },
             },
         },
     )

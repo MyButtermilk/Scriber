@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import json
 import re
 from typing import Any, BinaryIO, Callable
 
@@ -23,6 +22,11 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.time import time_now_iso8601
 
+from src.core.provider_errors import (
+    parse_provider_json_response,
+    provider_transport_error,
+    provider_user_error,
+)
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.http_response import read_response_text_limited
 
@@ -204,12 +208,26 @@ async def transcribe_with_assemblyai_pre_recorded(
     ) as upload_resp:
         raw = await read_response_text_limited(upload_resp, 64 * 1024 * 1024)
         if upload_resp.status not in (200, 201):
-            raise RuntimeError(f"AssemblyAI upload failed ({upload_resp.status}): {raw[:500]}")
-        upload_payload = json.loads(raw) if raw else {}
+            raise provider_transport_error(
+                "assemblyai",
+                "upload",
+                status=upload_resp.status,
+                response_body=raw,
+            )
+        upload_payload = parse_provider_json_response(
+            "assemblyai",
+            "upload_response",
+            raw,
+            empty_value={},
+        )
 
     upload_url = str(upload_payload.get("upload_url") or "").strip()
     if not upload_url:
-        raise RuntimeError("AssemblyAI upload response missing upload_url")
+        raise provider_transport_error(
+            "assemblyai",
+            "upload_response",
+            code="missing_upload_url",
+        )
 
     submit_payload: dict[str, Any] = {
         "audio_url": upload_url,
@@ -234,12 +252,26 @@ async def transcribe_with_assemblyai_pre_recorded(
     ) as submit_resp:
         raw = await read_response_text_limited(submit_resp, 64 * 1024 * 1024)
         if submit_resp.status not in (200, 201):
-            raise RuntimeError(f"AssemblyAI transcript submit failed ({submit_resp.status}): {raw[:500]}")
-        submit_data = json.loads(raw) if raw else {}
+            raise provider_transport_error(
+                "assemblyai",
+                "transcript_submit",
+                status=submit_resp.status,
+                response_body=raw,
+            )
+        submit_data = parse_provider_json_response(
+            "assemblyai",
+            "transcript_submit_response",
+            raw,
+            empty_value={},
+        )
 
     transcript_id = str(submit_data.get("id") or "").strip()
     if not transcript_id:
-        raise RuntimeError("AssemblyAI transcript submit response missing id")
+        raise provider_transport_error(
+            "assemblyai",
+            "transcript_submit_response",
+            code="missing_transcript_id",
+        )
 
     done_statuses = {"completed", "done", "succeeded", "success"}
     error_statuses = {"error", "failed", "canceled", "cancelled"}
@@ -259,18 +291,28 @@ async def transcribe_with_assemblyai_pre_recorded(
             ) as poll_resp:
                 raw = await read_response_text_limited(poll_resp, 64 * 1024 * 1024)
                 if poll_resp.status not in (200, 201):
-                    raise RuntimeError(
-                        f"AssemblyAI transcript polling failed ({poll_resp.status}): {raw[:500]}"
+                    raise provider_transport_error(
+                        "assemblyai",
+                        "transcript_poll",
+                        status=poll_resp.status,
+                        response_body=raw,
                     )
-                poll_payload = json.loads(raw) if raw else {}
+                poll_payload = parse_provider_json_response(
+                    "assemblyai",
+                    "transcript_poll_response",
+                    raw,
+                    empty_value={},
+                )
 
             status = str(poll_payload.get("status") or "").lower()
             if status in done_statuses:
                 _report_progress(on_progress, "Retrieving transcript...")
                 return poll_payload if isinstance(poll_payload, dict) else {}
             if status in error_statuses:
-                raise RuntimeError(
-                    f"AssemblyAI transcription failed: {poll_payload.get('error') or 'unknown error'}"
+                raise provider_transport_error(
+                    "assemblyai",
+                    "transcription",
+                    code=status or "provider_error",
                 )
 
             if elapsed >= 120:
@@ -432,8 +474,16 @@ class AssemblyAIUniversal35ProAsyncProcessor(FrameProcessor):
                             direction,
                         )
             except Exception as exc:
-                logger.error(f"AssemblyAI async transcription failed: {exc}")
-                await self.push_frame(ErrorFrame(error=f"assemblyai async error: {exc}"), direction)
+                info = provider_user_error("assemblyai", exc)
+                logger.error(
+                    "AssemblyAI async transcription failed (error_type={}, code={})",
+                    type(exc).__name__,
+                    info.code or "unknown",
+                )
+                await self.push_frame(
+                    ErrorFrame(error=f"assemblyai async error: {info.message}"),
+                    direction,
+                )
             finally:
                 self._reset_buffer()
             await self.push_frame(frame, direction)

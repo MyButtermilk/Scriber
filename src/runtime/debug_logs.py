@@ -31,7 +31,6 @@ _PUBLIC_META_KEYS = {
     "count",
     "enabled",
     "engine",
-    "error",
     "error_type",
     "errorType",
     "fallback_reason",

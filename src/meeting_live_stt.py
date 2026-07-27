@@ -14,9 +14,9 @@ from uuid import uuid4
 
 from websockets.asyncio.client import connect as websocket_connect
 
+from src.runtime.pcm_audio import pcm16le_meets_rms_threshold
 from src.runtime.smart_turn_mel import install_smart_turn_mel_acceleration
 from src.soniox_region import soniox_realtime_websocket_url
-
 
 SONIOX_REALTIME_URL = soniox_realtime_websocket_url("us")
 END_TOKENS = {"<end>", "<fin>"}
@@ -70,14 +70,7 @@ def create_meeting_smart_turn_analyzer() -> Any:
 
 
 def _pcm_has_speech(pcm: bytes, *, rms_threshold: int = 260) -> bool:
-    if len(pcm) < 2:
-        return False
-    sample_count = len(pcm) // 2
-    total = 0
-    for offset in range(0, sample_count * 2, 2):
-        sample = int.from_bytes(pcm[offset:offset + 2], "little", signed=True)
-        total += sample * sample
-    return (total / max(1, sample_count)) ** 0.5 >= rms_threshold
+    return pcm16le_meets_rms_threshold(pcm, threshold=rms_threshold)
 
 
 class SonioxMeetingStream:
@@ -433,9 +426,9 @@ class SonioxMeetingStream:
                 outage_reported = False
                 delay = self._reconnect_initial_delay_s
         finally:
-            for task in (self.send_task, self.receive_task):
-                if task is not None and not task.done():
-                    task.cancel()
+            for pending_task in (self.send_task, self.receive_task):
+                if pending_task is not None and not pending_task.done():
+                    pending_task.cancel()
             await asyncio.gather(
                 *(task for task in (self.send_task, self.receive_task) if task is not None),
                 return_exceptions=True,

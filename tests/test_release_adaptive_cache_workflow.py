@@ -12,7 +12,6 @@ import yaml
 
 from backend_runtime.contract import RUNTIME_CONTRACT_REVISION
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -47,29 +46,32 @@ def test_release_workflow_uses_adaptive_parallel_cold_producers_and_safe_warm_fa
     assert "Build and attest exact Tauri binary" in workflow
     assert "Build and attest backend product" in workflow
     assert "always() &&" in workflow
-    assert "Cold products were not requested or did not both validate; using the established single-runner path." in workflow
+    assert (
+        "Cold products were not requested or did not both validate; using the established single-runner path."
+        in workflow
+    )
     assert "pattern: scriber-cold-*-product" in workflow
     assert "merge-multiple: true" in workflow
 
 
-def test_release_python_suite_is_a_direct_gate_without_breaking_warm_fallback() -> None:
+def test_release_quality_suite_is_a_direct_gate_without_breaking_warm_fallback() -> None:
     raw = _read(".github/workflows/release-windows.yml")
     workflow = yaml.safe_load(raw)
     jobs = workflow["jobs"]
 
-    assert jobs["python-full-suite"] == {
-        "name": "Python full suite",
-        "uses": "./.github/workflows/python-full-suite.yml",
+    assert jobs["quality-gates"] == {
+        "name": "Exact-revision quality gates",
+        "uses": "./.github/workflows/quality-gates.yml",
         "permissions": {"contents": "read"},
     }
 
     for producer_name in ("prepare-tauri-cold", "prepare-backend-cold"):
         producer = jobs[producer_name]
         condition = " ".join(producer["if"].split())
-        assert set(producer["needs"]) == {"release-plan", "python-full-suite"}
+        assert set(producer["needs"]) == {"release-plan", "quality-gates"}
         assert condition == (
             "needs.release-plan.result == 'success' && "
-            "needs.python-full-suite.result == 'success' && "
+            "needs.quality-gates.result == 'success' && "
             "needs.release-plan.outputs.use-cold-path == 'true'"
         )
 
@@ -77,14 +79,12 @@ def test_release_python_suite_is_a_direct_gate_without_breaking_warm_fallback() 
     build_condition = " ".join(build["if"].split())
     assert set(build["needs"]) == {
         "release-plan",
-        "python-full-suite",
+        "quality-gates",
         "prepare-backend-cold",
         "prepare-tauri-cold",
     }
     assert build_condition == (
-        "always() && !cancelled() && "
-        "needs.release-plan.result == 'success' && "
-        "needs.python-full-suite.result == 'success'"
+        "always() && !cancelled() && needs.release-plan.result == 'success' && needs.quality-gates.result == 'success'"
     )
     assert "cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}" in raw
     assert build["concurrency"] == {
@@ -97,15 +97,12 @@ def test_release_python_suite_is_a_direct_gate_without_breaking_warm_fallback() 
     }
 
     publish = next(
-        step
-        for step in build["steps"]
-        if step["name"] == "Publish GitHub release"
+        step for step in build["steps"] if step["name"] == "Verify and publish exact GitHub release transaction"
     )
-    assert publish["uses"] == (
-        "softprops/action-gh-release@"
-        "3d0d9888cb7fd7b750713d6e236d1fcb99157228"
-    )
-    assert publish["with"]["make_latest"] == "legacy"
+    assert publish["if"] == "needs.release-plan.outputs.official-release == 'true'"
+    assert "python -m scripts.ci.publish_github_release" in publish["run"]
+    assert '--release-id "${{ steps.uploaded-draft.outputs.release-id }}"' in publish["run"]
+    assert "--expected-state-report build\\release-asset-api-roundtrip.json" in publish["run"]
 
 
 @pytest.mark.parametrize(
@@ -138,11 +135,7 @@ def test_release_build_gate_truth_table(
     # enter the established single-runner fallback instead of blocking build.
     assert backend_cold_result in {"success", "failure", "skipped"}
     assert tauri_cold_result in {"success", "failure", "skipped"}
-    actual = (
-        not cancelled
-        and plan_result == "success"
-        and suite_result == "success"
-    )
+    actual = not cancelled and plan_result == "success" and suite_result == "success"
     assert actual is expected
 
 
@@ -210,7 +203,7 @@ def test_backend_cache_keeps_full_identity_but_uses_a_windows_safe_entry_name() 
     assert "$backendEntries[0].Name -notmatch '^[0-9a-f]{24}$'" in cold_product
     assert "$backendCacheKey -notmatch '^[0-9a-f]{64}$'" in cold_product
     assert "$backendEntries[0].Name -ne $backendCacheKey.Substring(0, 24)" in cold_product
-    assert "$relative.Contains(\"..\")" not in cold_product
+    assert '$relative.Contains("..")' not in cold_product
     assert "$relative -match '(^|/)\\.\\.($|/)'" in cold_product
 
     relative = (
@@ -230,18 +223,14 @@ def test_backend_cache_keeps_full_identity_but_uses_a_windows_safe_entry_name() 
 def test_runtime_cache_binding_occurs_only_after_fresh_build_output() -> None:
     workflow = _read(".github/workflows/release-windows.yml")
 
-    cold_restore = workflow.split("- name: Validate frozen backend runtime\n", 1)[1].split(
-        "\n      - name:", 1
-    )[0]
-    cold_fresh = workflow.split("- name: Build and attest backend product\n", 1)[1].split(
-        "\n      - name:", 1
-    )[0]
-    main_restore = workflow.split("- name: Validate frozen backend runtime cache\n", 1)[1].split(
-        "\n      - name:", 1
-    )[0]
-    main_fresh = workflow.split("- name: Validate produced frozen backend runtime\n", 1)[1].split(
-        "\n      - name:", 1
-    )[0]
+    cold_restore = workflow.split("- name: Validate frozen backend runtime\n", 1)[1].split("\n      - name:", 1)[0]
+    cold_fresh = workflow.split("- name: Build and attest backend product\n", 1)[1].split("\n      - name:", 1)[0]
+    main_restore = workflow.split("- name: Validate frozen backend runtime cache\n", 1)[1].split("\n      - name:", 1)[
+        0
+    ]
+    main_fresh = workflow.split("- name: Validate produced frozen backend runtime\n", 1)[1].split("\n      - name:", 1)[
+        0
+    ]
 
     assert "-BindIfMissing" not in cold_restore
     assert "-BindIfMissing" in cold_fresh
@@ -257,8 +246,9 @@ def test_tag_cache_publication_is_detached_and_passive() -> None:
     assert "retention-days: 1" in release
     assert "compression-level: 0" in release
     handoff_upload = release[
-        release.index("Upload passive release-cache maintenance handoff") :
-        release.index("Publish bounded finished component caches in parallel")
+        release.index("Upload passive release-cache maintenance handoff") : release.index(
+            "Publish bounded finished component caches in parallel"
+        )
     ]
     assert "include-hidden-files: true" in handoff_upload
     assert "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" in release
@@ -484,9 +474,7 @@ def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
             for name in quickjs_files
         ],
     }
-    (runtime_root / "runtime-layer-manifest.json").write_text(
-        json.dumps(layer_manifest), encoding="utf-8"
-    )
+    (runtime_root / "runtime-layer-manifest.json").write_text(json.dumps(layer_manifest), encoding="utf-8")
     manifest_path = cache_root / "runtime-cache-manifest.json"
     manifest_path.write_text(json.dumps(cache_manifest), encoding="utf-8")
     workflow_fingerprint = "f" * 64
@@ -502,9 +490,7 @@ def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
         "-FailIfUnusable",
     ]
     try:
-        missing_envelope = subprocess.run(
-            command[:-1], cwd=REPO_ROOT, check=True, capture_output=True, text=True
-        )
+        missing_envelope = subprocess.run(command[:-1], cwd=REPO_ROOT, check=True, capture_output=True, text=True)
         missing_payload = json.loads(missing_envelope.stdout.strip().splitlines()[-1])
         assert missing_payload["usable"] is False
         assert missing_payload["reason"] == "invalid"

@@ -28,7 +28,6 @@ interface TauriBackendStatus {
     ready: boolean;
     starting: boolean;
     managed: boolean;
-    pid: number | null;
     message: string;
     runtimeMode: string;
     launchKind: string;

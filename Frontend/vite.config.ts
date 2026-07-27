@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
@@ -7,7 +7,42 @@ import { metaImagesPlugin } from "./vite-plugin-meta-images";
 
 const packageJson = JSON.parse(readFileSync(path.resolve(import.meta.dirname, "package.json"), "utf-8"));
 
-export default defineConfig({
+function parseExplicitAllowedHosts(value: string | undefined): string[] {
+  const hosts = (value ?? "")
+    .split(",")
+    .map((host) => host.trim())
+    .filter(Boolean);
+
+  for (const host of hosts) {
+    if (
+      host === "*"
+      || host === "true"
+      || host.startsWith(".")
+      || host.includes("://")
+      || host.includes("/")
+      || /\s/.test(host)
+    ) {
+      throw new Error(
+        `Invalid SCRIBER_VITE_ALLOWED_HOSTS entry "${host}". Use exact hostnames separated by commas.`,
+      );
+    }
+  }
+
+  return [...new Set(hosts)];
+}
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, import.meta.dirname, "");
+  const allowLan = env.SCRIBER_VITE_ALLOW_LAN === "1";
+  const explicitAllowedHosts = parseExplicitAllowedHosts(env.SCRIBER_VITE_ALLOWED_HOSTS);
+
+  if (allowLan && explicitAllowedHosts.length === 0) {
+    throw new Error(
+      "SCRIBER_VITE_ALLOW_LAN=1 requires explicit SCRIBER_VITE_ALLOWED_HOSTS.",
+    );
+  }
+
+  return {
   plugins: [react(), tailwindcss(), metaImagesPlugin()],
   resolve: {
     alias: {
@@ -107,11 +142,12 @@ export default defineConfig({
     },
   },
   server: {
-    host: "0.0.0.0",
-    allowedHosts: true,
+    host: allowLan ? "0.0.0.0" : "127.0.0.1",
+    allowedHosts: ["localhost", ...(allowLan ? explicitAllowedHosts : [])],
     fs: {
       strict: true,
       deny: ["**/.*"],
     },
   },
+  };
 });

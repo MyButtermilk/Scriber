@@ -98,10 +98,15 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { PageIntro } from "@/components/page-intro";
 import { OutlookMeetingPicker } from "@/components/meeting/OutlookMeetingPicker";
+import { MeetingNotesEditor } from "@/components/meeting/MeetingNotesEditor";
 import {
   SpeakerAttendeeAssignments,
   type MeetingSpeakerAssignmentFocusRequest,
 } from "@/components/meeting/SpeakerAttendeeAssignments";
+import {
+  saveWorkspaceMeetingNote,
+  useMeetingNotesAutosave,
+} from "@/components/meeting/useMeetingNotesAutosave";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
@@ -129,7 +134,6 @@ import type {
   MeetingDeviceTestResponse,
   MeetingImportJob,
   MeetingImportsResponse,
-  MeetingNote,
   MeetingProviderProfile,
   MeetingProcessingProgress,
   MeetingProcessingComponent,
@@ -874,10 +878,6 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const [calendarSelectionNeedsReview, setCalendarSelectionNeedsReview] = useState(false);
   const calendarSelectionInitializedRef = useRef(false);
   const selectedCalendarSubjectRef = useRef("");
-  const [note, setNote] = useState("");
-  const [noteHydratedFor, setNoteHydratedFor] = useState("");
-  const lastSavedNote = useRef("");
-  const noteDraftRef = useRef({ meetingId: "", body: "", savedBody: "" });
   const [workspaceView, setWorkspaceView] = useState<MeetingWorkspaceView>("transcript");
   const [chatQuestion, setChatQuestion] = useState("");
   const [chatAnswer, setChatAnswer] = useState<{ content: string; citations: string[] } | null>(null);
@@ -1136,7 +1136,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       current,
       persistedProgress,
     ));
-  }, [detail?.id, detail?.processingProgress, detail?.state]);
+  }, [detail]);
   const speakerProfilesQuery = useQuery<SpeakerProfilesResponse>({
     queryKey: ["/api/meetings/speaker-profiles"],
     queryFn: ({ signal }) => fetchJson("/api/meetings/speaker-profiles", signal),
@@ -1179,8 +1179,6 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     setChatAnswer(null);
     setTranscriptSearch("");
     setRetryFinalProvider("");
-    setNote("");
-    setNoteHydratedFor("");
   }, [selectedId]);
 
   useEffect(() => () => {
@@ -1190,15 +1188,6 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     preview.removeAttribute("src");
     savedVoicePreviewRef.current = null;
   }, []);
-
-  useEffect(() => {
-    if (!detail || noteHydratedFor === detail.id) return;
-    const workspaceNote = detail.notes.find((item) => item.id === "workspace")?.body ?? "";
-    setNote(workspaceNote);
-    lastSavedNote.current = workspaceNote;
-    noteDraftRef.current = { meetingId: detail.id, body: workspaceNote, savedBody: workspaceNote };
-    setNoteHydratedFor(detail.id);
-  }, [detail, noteHydratedFor]);
 
   useEffect(() => {
     if (detail?.id && detail.state === "finalization_failed") {
@@ -1503,7 +1492,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         request.ontimeout = () => reject(new Error("The meeting recording import timed out."));
         request.onabort = () => reject(new DOMException("Meeting import cancelled", "AbortError"));
         request.onload = () => {
-          let payload: (MeetingImportJob & { message?: string }) | null = null;
+          let payload: MeetingImportJob & { message?: string };
           try {
             payload = JSON.parse(request.responseText) as MeetingImportJob & { message?: string };
           } catch {
@@ -1669,39 +1658,22 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     }
   }, [emailPreviewQuery.data]);
 
-  const noteMutation = useMutation({
-    mutationFn: async ({ id, body }: { id: string; body: string }) => {
-      const response = await apiRequest("PUT", `/api/meetings/${id}/notes`, { id: "workspace", body });
-      return response.json() as Promise<MeetingNote>;
+  const workspaceNoteBody = detail?.notes.find((item) => item.id === "workspace")?.body ?? "";
+  const noteAutosave = useMeetingNotesAutosave({
+    initialBody: workspaceNoteBody,
+    meetingId: selectedId,
+    saveNote: saveWorkspaceMeetingNote,
+    onSaved: (savedNote, meetingId) => {
+      applyMeetingNoteEvent(queryClient, meetingId, savedNote);
     },
-    onSuccess: (_payload, variables) => {
-      if (noteDraftRef.current.meetingId === variables.id) {
-        lastSavedNote.current = variables.body;
-        noteDraftRef.current.savedBody = variables.body;
-      }
-      applyMeetingNoteEvent(queryClient, variables.id, _payload);
-    },
-    onError: (error) => toast({ variant: "destructive", title: t("Note was not saved"), description: t(error.message) }),
-  });
-  useEffect(() => {
-    if (!selectedId || noteHydratedFor !== selectedId) return;
-    const body = note.trim();
-    noteDraftRef.current = { meetingId: selectedId, body, savedBody: noteDraftRef.current.savedBody };
-    if (body === lastSavedNote.current || noteMutation.isPending) return;
-    const handle = window.setTimeout(() => noteMutation.mutate({ id: selectedId, body }), 700);
-    return () => window.clearTimeout(handle);
-  }, [note, noteHydratedFor, selectedId, noteMutation.isPending]);
-  useEffect(() => () => {
-    const draft = noteDraftRef.current;
-    if (draft.meetingId && draft.body !== draft.savedBody) {
-      void apiRequest("PUT", `/api/meetings/${draft.meetingId}/notes`, {
-        id: "workspace",
-        body: draft.body,
-      }).catch((error) => {
-        toast({ variant: "destructive", title: t("Note was not saved"), description: t(error.message) });
+    onError: (error) => {
+      toast({
+        variant: "destructive",
+        title: t("Note was not saved"),
+        description: t(error.message),
       });
-    }
-  }, [selectedId, t, toast]);
+    },
+  });
   const actionItemMutation = useMutation({
     scope: { id: "meeting-action-item-updates" },
     mutationFn: async ({ id, itemId, changes }: { id: string; itemId: string; changes: Record<string, unknown> }) => {
@@ -1987,7 +1959,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 ? t("Ready to record · safety saves every {{seconds}} seconds", { seconds: formatNumber(longSession?.checkpointIntervalSeconds ?? 30) })
                 : t("Ready for a shorter meeting · review the details before a long recording.");
   const meetingImportBusy = meetingImportMutation.isPending || Boolean(meetingImportId);
-  const liveSegments = detail?.segments ?? [];
+  const liveSegments = useMemo(() => detail?.segments ?? [], [detail?.segments]);
   const groupedSegments = useMemo(() => liveSegments.map((segment) => {
     const rawLabel = segment.speakerLabel
       || (segment.source === "microphone" ? "You" : "Meeting audio");
@@ -2830,7 +2802,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                           <Button disabled={!chatQuestion.trim() || chatMutation.isPending} onClick={() => chatMutation.mutate({ id: detail.id, question: chatQuestion })}>{chatMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{t("Ask meeting")}</Button>
                         </div>
                       ) : workspaceView === "notes" ? (
-                        <div className="max-w-2xl"><h3 className="text-sm font-semibold">{t("Meeting notes")}</h3><p className="mt-1 text-xs text-muted-foreground">{t("Your notes remain separate from generated outputs.")}</p><Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder={t("Capture decisions and follow-ups...")} rows={8} className="mt-4" />{detail.notes.filter((savedNote) => savedNote.id !== "workspace").map((savedNote) => <div key={savedNote.id} className="mt-3 rounded-xl bg-muted/55 p-3"><p className="text-xs font-medium text-primary">{formatOffset(savedNote.atMs)}</p><p className="mt-1 text-sm leading-6">{savedNote.body}</p></div>)}</div>
+                        <div className="max-w-2xl"><h3 className="text-sm font-semibold">{t("Meeting notes")}</h3><p className="mt-1 text-xs text-muted-foreground">{t("Your notes remain separate from generated outputs.")}</p><MeetingNotesEditor autosave={noteAutosave} rows={8} textareaClassName="mt-4" />{detail.notes.filter((savedNote) => savedNote.id !== "workspace").map((savedNote) => <div key={savedNote.id} className="mt-3 rounded-xl bg-muted/55 p-3"><p className="text-xs font-medium text-primary">{formatOffset(savedNote.atMs)}</p><p className="mt-1 text-sm leading-6">{savedNote.body}</p></div>)}</div>
                       ) : !analysis ? (
                         <div className="flex min-h-64 items-center justify-center rounded-2xl border border-dashed border-border text-center text-sm text-muted-foreground">
                           <div>{detail.state === "analyzing" ? <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin" /> : <AlertTriangle className="mx-auto mb-3 h-6 w-6" />}<p>{detail.state === "analyzing" ? t("Creating your meeting brief…") : t("No meeting brief yet.")}</p>{detail.state === "ready" && <Button type="button" size="sm" variant="outline" className="mt-4" disabled={analysisMutation.isPending || !hasCanonicalTranscript} onClick={generateAnalysis}>{analysisMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}{t("Create meeting brief")}</Button>}</div>
@@ -2985,13 +2957,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
 
                 <aside className="border-t border-border/60 bg-muted/15 px-5 py-5 2xl:border-l 2xl:border-t-0">
                   <div className="flex items-center gap-2"><NotebookPen className="h-4 w-4 text-muted-foreground" /><h3 className="text-sm font-semibold">{t("Live notes")}</h3></div>
-                  <div className="mt-3 space-y-2">
-                    <Textarea value={note} onChange={(event) => { const body = event.target.value; setNote(body); noteDraftRef.current = { meetingId: selectedId, body: body.trim(), savedBody: noteDraftRef.current.savedBody }; }} placeholder={t("Capture decisions and follow-ups…")} rows={5} />
-                    <p className="flex items-center text-xs text-muted-foreground">
-                      {noteMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Check className="mr-2 h-3.5 w-3.5" />}
-                      {noteMutation.isPending ? t("Saving…") : t("Notes autosave and AI regeneration never overwrites them.")}
-                    </p>
-                  </div>
+                  <MeetingNotesEditor autosave={noteAutosave} />
                   <div className="mt-5 space-y-2">
                     {detail.notes.length === 0 && <p className="text-xs leading-5 text-muted-foreground">{t("Notes are timestamped and retained with this meeting.")}</p>}
                     {detail.notes.filter((savedNote) => savedNote.id !== "workspace").map((savedNote) => <div key={savedNote.id} className="rounded-xl bg-muted/60 px-3 py-2.5"><p className="text-xs font-medium text-primary">{formatOffset(savedNote.atMs)}</p><p className="mt-1 text-sm leading-5">{savedNote.body}</p></div>)}

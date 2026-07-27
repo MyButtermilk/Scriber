@@ -7,10 +7,11 @@ import json
 from typing import Any, BinaryIO, Callable
 
 import aiohttp
-
+from loguru import logger
 from pipecat.transcriptions.language import Language
-from src.runtime.http_response import read_response_text_limited
 
+from src.core.provider_errors import provider_transport_error
+from src.runtime.http_response import read_response_text_limited
 
 _GLADIA_BASE_URL = "https://api.gladia.io/v2"
 
@@ -35,6 +36,34 @@ def gladia_language_code(language: Language | str | None) -> str:
 
 def _gladia_headers(api_key: str) -> dict[str, str]:
     return {"x-gladia-key": api_key}
+
+
+def _parse_gladia_object(raw: str, operation: str) -> dict[str, Any]:
+    if not raw:
+        return {}
+    invalid_json = False
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        payload = None
+        invalid_json = True
+    if invalid_json:
+        error = provider_transport_error(
+            "gladia",
+            operation,
+            response_body=raw,
+        )
+        raw = ""
+        raise error
+    if not isinstance(payload, dict):
+        error = provider_transport_error(
+            "gladia",
+            operation,
+            response_body=raw,
+        )
+        raw = ""
+        raise error
+    return payload
 
 
 def _build_pre_recorded_payload(
@@ -153,12 +182,17 @@ async def transcribe_with_gladia_pre_recorded(
     ) as response:
         raw = await read_response_text_limited(response, 64 * 1024 * 1024)
         if response.status >= 400:
-            raise RuntimeError(f"Gladia upload failed ({response.status}): {raw[:500]}")
-        upload_payload = json.loads(raw) if raw else {}
+            raise provider_transport_error(
+                "gladia",
+                "upload",
+                status=response.status,
+                response_body=raw,
+            )
+        upload_payload = _parse_gladia_object(raw, "upload response")
 
     audio_url = str(upload_payload.get("audio_url") or "").strip()
     if not audio_url:
-        raise RuntimeError(f"Gladia upload response did not include audio_url: {upload_payload}")
+        raise provider_transport_error("gladia", "upload response")
 
     _report_progress(on_progress, "Processing transcription...")
     submit_payload = _build_pre_recorded_payload(
@@ -175,12 +209,17 @@ async def transcribe_with_gladia_pre_recorded(
     ) as response:
         raw = await read_response_text_limited(response, 64 * 1024 * 1024)
         if response.status >= 400:
-            raise RuntimeError(f"Gladia transcription start failed ({response.status}): {raw[:500]}")
-        start_payload = json.loads(raw) if raw else {}
+            raise provider_transport_error(
+                "gladia",
+                "transcription start",
+                status=response.status,
+                response_body=raw,
+            )
+        start_payload = _parse_gladia_object(raw, "transcription start response")
 
     job_id = str(start_payload.get("id") or "").strip()
     if not job_id:
-        raise RuntimeError(f"Gladia transcription start response did not include id: {start_payload}")
+        raise provider_transport_error("gladia", "transcription start response")
 
     done_statuses = {"done", "completed", "success", "succeeded"}
     pending_statuses = {"queued", "processing", "running", "pending", "pre-recorded"}
@@ -197,20 +236,31 @@ async def transcribe_with_gladia_pre_recorded(
             ) as response:
                 raw = await read_response_text_limited(response, 64 * 1024 * 1024)
                 if response.status >= 400:
-                    raise RuntimeError(f"Gladia transcription status failed ({response.status}): {raw[:500]}")
-                status_payload = json.loads(raw) if raw else {}
+                    raise provider_transport_error(
+                        "gladia",
+                        "transcription status",
+                        status=response.status,
+                        response_body=raw,
+                    )
+                status_payload = _parse_gladia_object(raw, "transcription status response")
 
-            if not isinstance(status_payload, dict):
-                raise RuntimeError("Gladia transcription status response was not an object")
             status = str(status_payload.get("status") or "").strip().lower()
             error_code = status_payload.get("error_code")
             if error_code not in (None, "", 0):
-                raise RuntimeError(f"Gladia transcription failed with error_code {error_code}: {status_payload}")
+                raise provider_transport_error(
+                    "gladia",
+                    "transcription",
+                    code=str(error_code),
+                )
             if status in done_statuses or (status_payload.get("completed_at") and status_payload.get("result")):
                 _report_progress(on_progress, "Retrieving transcript...")
                 return status_payload
             if status and status not in pending_statuses:
-                raise RuntimeError(f"Gladia transcription failed with status {status}: {status_payload}")
+                raise provider_transport_error(
+                    "gladia",
+                    "transcription",
+                    code=status,
+                )
 
             await asyncio.sleep(max(0.25, poll_interval_secs))
     finally:
@@ -225,5 +275,8 @@ async def transcribe_with_gladia_pre_recorded(
                         "Gladia provider-side cleanup returned status {}",
                         response.status,
                     )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "Gladia provider-side cleanup failed (error_type={})",
+                type(exc).__name__,
+            )

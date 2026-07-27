@@ -784,7 +784,7 @@ async def test_pipeline_direct_modulate_uses_batch_adapter(monkeypatch, tmp_path
         return {"text": "Only final text.", "duration_ms": 1000}
 
     monkeypatch.setattr(
-        "src.pipeline.transcribe_with_modulate_multilingual", _fake_transcribe
+        "src.modulate_stt.transcribe_with_modulate_multilingual", _fake_transcribe
     )
     received: list[tuple[str, bool]] = []
     pipeline = ScriberPipeline(

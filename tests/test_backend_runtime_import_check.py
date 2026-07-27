@@ -137,6 +137,7 @@ def test_backend_worker_startup_timeout_simulation_is_once(monkeypatch, tmp_path
 def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     required_modules = {module for module, _reason in REQUIRED_IMPORTS}
 
+    assert "audioop" in required_modules
     assert "pyloudnorm" in required_modules
     assert "onnxruntime" in required_modules
     assert "onnx_asr" in required_modules
@@ -145,8 +146,8 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "sherpa_onnx" not in required_modules
     assert "pipecat.audio.vad.silero" in required_modules
     assert "pipecat.pipeline.pipeline" in required_modules
-    assert "pipecat.pipeline.task" in required_modules
-    assert "pipecat.pipeline.runner" in required_modules
+    assert "pipecat.pipeline.worker" in required_modules
+    assert "pipecat.workers.runner" in required_modules
     assert "pipecat.services.stt_service" in required_modules
     assert "pipecat.transcriptions.language" in required_modules
     assert "pipecat.transports.base_input" in required_modules
@@ -173,11 +174,11 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
 def test_frozen_runtime_contract_covers_direct_pipecat_pipeline_imports():
     frozen_modules = {module for module, _reason in RUNTIME_REQUIRED_IMPORTS}
 
-    assert RUNTIME_CONTRACT_REVISION == 4
+    assert RUNTIME_CONTRACT_REVISION == 5
     assert {
         "pipecat.pipeline.pipeline",
-        "pipecat.pipeline.task",
-        "pipecat.pipeline.runner",
+        "pipecat.pipeline.worker",
+        "pipecat.workers.runner",
         "pipecat.processors.frame_processor",
         "pipecat.services.ai_service",
         "pipecat.services.settings",

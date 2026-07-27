@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from unittest.mock import patch
 
 import pytest
 
 from src.config import Config
 from src.gladia_stt import (
+    _parse_gladia_object,
     gladia_transcript_payload_to_text,
     transcribe_with_gladia_pre_recorded,
 )
@@ -165,6 +167,93 @@ async def test_transcribe_with_gladia_pre_recorded_raises_on_provider_error(monk
 
 
 @pytest.mark.asyncio
+async def test_gladia_http_error_does_not_expose_provider_content():
+    private_marker = "PRIVATE_TRANSCRIPT_91a5e7"
+    session = _FakeSession(
+        post_responses=[
+            _FakeResponse(
+                status=500,
+                text=json.dumps(
+                    {
+                        "code": "server_error",
+                        "message": private_marker,
+                    }
+                ),
+            ),
+        ],
+        get_responses=[],
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        await transcribe_with_gladia_pre_recorded(
+            session=session,
+            api_key="test-key",
+            audio_source=b"audio-bytes",
+            filename="sample.wav",
+            content_type="audio/wav",
+            language="de",
+        )
+
+    rendered = f"{caught.value!s} {caught.value!r}"
+    assert "status=500" in rendered
+    assert "server_error" in rendered
+    assert private_marker not in rendered
+
+
+def test_gladia_invalid_json_error_has_no_private_exception_context():
+    private_marker = "PRIVATE_TRANSCRIPT_91a5e7"
+
+    with pytest.raises(RuntimeError) as caught:
+        _parse_gladia_object("{invalid " + private_marker, "upload response")
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert private_marker not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_gladia_cleanup_http_500_logs_only_redacted_status():
+    private_response_text = "private transcript must not enter diagnostics"
+    session = _FakeSession(
+        post_responses=[
+            _FakeResponse(status=200, payload={"audio_url": "https://audio.example/upload.wav"}),
+            _FakeResponse(status=200, payload={"id": "job_private_123"}),
+        ],
+        get_responses=[
+            _FakeResponse(
+                status=200,
+                payload={
+                    "status": "done",
+                    "result": {"transcription": {"full_transcript": "hello world"}},
+                },
+            ),
+        ],
+        delete_responses=[
+            _FakeResponse(status=500, text=private_response_text),
+        ],
+    )
+
+    with patch("src.gladia_stt.logger.debug") as debug_log:
+        payload = await transcribe_with_gladia_pre_recorded(
+            session=session,
+            api_key="test-key",
+            audio_source=b"audio-bytes",
+            filename="sample.wav",
+            content_type="audio/wav",
+            language="de",
+        )
+
+    assert payload["status"] == "done"
+    debug_log.assert_called_once_with(
+        "Gladia provider-side cleanup returned status {}",
+        500,
+    )
+    logged_arguments = " ".join(str(value) for value in debug_log.call_args.args)
+    assert private_response_text not in logged_arguments
+    assert "job_private_123" not in logged_arguments
+
+
+@pytest.mark.asyncio
 async def test_pipeline_direct_upload_gladia_uses_pre_recorded_api(monkeypatch, tmp_path):
     file_path = tmp_path / "sample.wav"
     file_path.write_bytes(b"fake-audio")
@@ -187,7 +276,10 @@ async def test_pipeline_direct_upload_gladia_uses_pre_recorded_api(monkeypatch, 
             },
         }
 
-    monkeypatch.setattr("src.pipeline.transcribe_with_gladia_pre_recorded", _fake_transcribe)
+    monkeypatch.setattr(
+        "src.gladia_stt.transcribe_with_gladia_pre_recorded",
+        _fake_transcribe,
+    )
     monkeypatch.setattr(Config, "GLADIA_API_KEY", "test-key")
     monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber,Pipecat")
     monkeypatch.setattr(Config, "LANGUAGE", "de")

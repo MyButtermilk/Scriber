@@ -15,8 +15,8 @@ from typing import Any, BinaryIO, Callable, Mapping, Optional
 from loguru import logger
 
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.task import PipelineTask, PipelineParams
-from pipecat.pipeline.runner import PipelineRunner
+from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+from pipecat.workers.runner import WorkerRunner
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.services.stt_service import SegmentedSTTService, STTService
@@ -1342,58 +1342,6 @@ from src.device_monitor import get_device_guard_lock
 from src.injector import InjectionTargetGuard, TextInjector
 from src.microphone import MicrophoneInput
 from src.audio_file_input import FfmpegAudioFileInput
-from src.mistral_stt import (
-    MistralAsyncProcessor,
-    MistralRealtimeSTTService,
-    format_mistral_segments_with_speakers,
-    transcribe_with_mistral,
-)
-from src.smallest_stt import (
-    SmallestAsyncProcessor,
-    SmallestRealtimeSTTService,
-    smallest_transcript_payload_to_text,
-    transcribe_with_smallest_pre_recorded,
-)
-from src.azure_mai_stt import (
-    AzureMaiTranscribeSTTService,
-    azure_mai_content_type,
-    azure_mai_transcript_payload_to_text,
-    prepared_azure_mai_audio_file,
-    transcribe_with_azure_mai,
-    validate_azure_mai_region,
-)
-from src.assemblyai_async_stt import (
-    AssemblyAIUniversal3ProAsyncProcessor,
-    assemblyai_universal_35_language_code,
-    assemblyai_transcript_payload_to_text,
-    build_keyterms_from_vocab,
-    transcribe_with_assemblyai_pre_recorded,
-)
-from src.gladia_stt import (
-    gladia_transcript_payload_to_text,
-    transcribe_with_gladia_pre_recorded,
-)
-from src.cloud_async_stt import (
-    DeepgramAsyncProcessor,
-    GeminiAsyncProcessor,
-    GladiaAsyncProcessor,
-    OpenAIAsyncProcessor,
-    SpeechmaticsAsyncProcessor,
-    deepgram_transcript_payload_to_text,
-    gemini_transcript_payload_to_text,
-    openai_transcript_payload_to_text,
-    speechmatics_transcript_payload_to_text,
-    transcribe_with_deepgram_pre_recorded,
-    transcribe_with_gemini_audio,
-    transcribe_with_openai_audio_transcription,
-    transcribe_with_speechmatics_batch,
-)
-from src.modulate_stt import (
-    ModulateAsyncProcessor,
-    ModulateRealtimeSTTService,
-    modulate_transcript_payload_to_text,
-    transcribe_with_modulate_multilingual,
-)
 
 LANGUAGE_MAP = {
     "auto": None,
@@ -1446,6 +1394,11 @@ def _create_assemblyai_realtime_service(
     language: str,
     custom_vocab: str,
 ) -> object:
+    from src.assemblyai_async_stt import (
+        assemblyai_universal_35_language_code,
+        build_keyterms_from_vocab,
+    )
+
     module = import_provider_runtime_module("assemblyai_realtime", "pipecat.services.assemblyai.stt")
     service_cls = getattr(module, "AssemblyAISTTService", None)
     if service_cls is None:
@@ -2048,9 +2001,9 @@ class ScriberPipeline:
             if math.isfinite(expected_duration) and expected_duration > 0.0
             else 0.0
         )
-        self.pipeline = None
-        self.task = None
-        self.runner = None
+        self.pipeline: Any | None = None
+        self.task: PipelineWorker | None = None
+        self.runner: WorkerRunner | None = None
         self.audio_input = None
         self._provider_ingress_drain_processor: (
             _ProviderIngressDrainProcessor | None
@@ -2643,7 +2596,7 @@ class ScriberPipeline:
         if not self._requires_provider_ingress_audio_drain():
             return False
 
-        # Without a PipelineTask there is no SystemFrame lane, EndFrame, or
+        # Without a PipelineWorker there is no SystemFrame lane, EndFrame, or
         # terminal provider upload to fence.  Once a task exists, a missing
         # barrier remains a fail-closed runtime error below.
         if self.task is None:
@@ -3187,6 +3140,11 @@ class ScriberPipeline:
             return service
 
         elif self.service_name in ("mistral", "mistral_async"):
+            from src.mistral_stt import (
+                MistralAsyncProcessor,
+                MistralRealtimeSTTService,
+            )
+
             if not _get_api_key("mistral"):
                 raise ValueError("Mistral API Key is missing.")
 
@@ -3212,6 +3170,11 @@ class ScriberPipeline:
             )
 
         elif self.service_name in ("smallest", "smallest_async"):
+            from src.smallest_stt import (
+                SmallestAsyncProcessor,
+                SmallestRealtimeSTTService,
+            )
+
             if not _get_api_key("smallest"):
                 raise ValueError("Smallest AI API Key is missing.")
 
@@ -3235,6 +3198,10 @@ class ScriberPipeline:
             )
 
         elif self.service_name == "assemblyai":
+            from src.assemblyai_async_stt import (
+                AssemblyAIUniversal3ProAsyncProcessor,
+            )
+
             if not _get_api_key("assemblyai"):
                 raise ValueError("AssemblyAI API Key is missing.")
             logger.info("Using AssemblyAI Universal-3.5-Pro async transcription mode")
@@ -3320,6 +3287,8 @@ class ScriberPipeline:
             )
 
         elif self.service_name == "gemini_stt":
+            from src.cloud_async_stt import GeminiAsyncProcessor
+
             api_key = Config.get_api_key("gemini_stt")
             if not api_key:
                 raise ValueError("Gemini API key is missing.")
@@ -3335,6 +3304,8 @@ class ScriberPipeline:
             )
         
         elif self.service_name == "elevenlabs":
+            from src.assemblyai_async_stt import build_keyterms_from_vocab
+
             # Lazy import - only loaded when ElevenLabs is used
             module = import_provider_runtime_module("elevenlabs", "pipecat.services.elevenlabs.stt")
             if not _get_api_key("elevenlabs"): raise ValueError("ElevenLabs API Key is missing.")
@@ -3393,6 +3364,8 @@ class ScriberPipeline:
             )
         
         elif self.service_name == "deepgram":
+            from src.assemblyai_async_stt import build_keyterms_from_vocab
+
             # Lazy import - only loaded when Deepgram is used
             module = import_provider_runtime_module("deepgram", "pipecat.services.deepgram.stt")
             DeepgramSTTService = module.DeepgramSTTService
@@ -3454,6 +3427,8 @@ class ScriberPipeline:
             )
 
         elif self.service_name == "deepgram_async":
+            from src.cloud_async_stt import DeepgramAsyncProcessor
+
             if not _get_api_key("deepgram"):
                 raise ValueError("Deepgram API Key is missing.")
             logger.info("Using Deepgram async pre-recorded transcription mode")
@@ -3492,6 +3467,8 @@ class ScriberPipeline:
             )
 
         elif self.service_name == "openai_async":
+            from src.cloud_async_stt import OpenAIAsyncProcessor
+
             if not _get_api_key("openai"):
                 raise ValueError("OpenAI API Key is missing.")
             logger.info("Using OpenAI async audio transcription mode")
@@ -3506,6 +3483,11 @@ class ScriberPipeline:
             )
         
         elif self.service_name == "azure_mai":
+            from src.azure_mai_stt import (
+                AzureMaiTranscribeSTTService,
+                validate_azure_mai_region,
+            )
+
             api_key = _get_api_key("azure_mai")
             if not api_key and self.azure_mai_raw_transport is None:
                 raise ValueError("Azure MAI Speech Key is missing.")
@@ -3616,6 +3598,8 @@ class ScriberPipeline:
             )
 
         elif self.service_name == "gladia_async":
+            from src.cloud_async_stt import GladiaAsyncProcessor
+
             if not _get_api_key("gladia"):
                 raise ValueError("Gladia API Key is missing.")
             logger.info("Using Gladia pre-recorded async transcription mode")
@@ -3688,6 +3672,8 @@ class ScriberPipeline:
             return GroqSTTService(**service_kwargs)
         
         elif self.service_name == "speechmatics":
+            from src.assemblyai_async_stt import build_keyterms_from_vocab
+
             # Lazy import - only loaded when Speechmatics is used
             module = import_provider_runtime_module("speechmatics", "pipecat.services.speechmatics.stt")
             SpeechmaticsSTTService = module.SpeechmaticsSTTService
@@ -3789,6 +3775,8 @@ class ScriberPipeline:
             return SpeechmaticsSTTService(**service_kwargs)
 
         elif self.service_name == "speechmatics_async":
+            from src.cloud_async_stt import SpeechmaticsAsyncProcessor
+
             api_key = _get_api_key("speechmatics")
             if not api_key and self.speechmatics_batch_raw_transport is None:
                 raise ValueError("Speechmatics API Key is missing.")
@@ -3820,6 +3808,11 @@ class ScriberPipeline:
             )
 
         elif self.service_name in {"modulate", "modulate_async"}:
+            from src.modulate_stt import (
+                ModulateAsyncProcessor,
+                ModulateRealtimeSTTService,
+            )
+
             api_key = _get_api_key("modulate")
             if not api_key:
                 raise ValueError("Modulate API Key is missing.")
@@ -4121,9 +4114,9 @@ class ScriberPipeline:
                 )
 
                 self.pipeline = Pipeline(steps)
-                self.task = PipelineTask(
+                self.task = PipelineWorker(
                     self.pipeline,
-                    params=PipelineParams(allow_interruptions=True),
+                    params=PipelineParams(),
                     # Scriber does not expose RTVI or Pipecat turn-tracking. Keep
                     # those framework processors out of every live task so they
                     # cannot add per-frame work or retain unused conversation state.
@@ -4145,13 +4138,14 @@ class ScriberPipeline:
                             await task.cancel(reason=error_msg)
 
                 # Disable signal handling because runner executes in background thread
-                self.runner = PipelineRunner(handle_sigint=False, handle_sigterm=False)
+                self.runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
+                await self.runner.add_workers(self.task)
                 self.is_active = True
 
                 if self.on_status_change:
                     self.on_status_change("Listening")
 
-                await self.runner.run(self.task)
+                await self.runner.run()
 
         except (ValueError, ImportError) as e:
             logger.error(f"Configuration error: {e}")
@@ -4245,21 +4239,25 @@ class ScriberPipeline:
                     steps.append(transcript_cb)
 
                 self.pipeline = Pipeline(steps)
-                self.task = PipelineTask(
+                self.task = PipelineWorker(
                     self.pipeline,
-                    params=PipelineParams(allow_interruptions=False),
+                    params=PipelineParams(),
                     enable_rtvi=False,
                     enable_turn_tracking=False,
                     check_dangling_tasks=False,
                 )
-                self.runner = PipelineRunner(handle_sigint=False, handle_sigterm=False)
+                self.runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
+                await self.runner.add_workers(self.task)
                 self.is_active = True
 
                 if self.on_status_change:
                     self.on_status_change("Transcribing...")
 
                 self.mark_provider_request_may_be_committed()
-                run_task = asyncio.create_task(self.runner.run(self.task), name="scriber_file_pipeline")
+                run_task = asyncio.create_task(
+                    self.runner.run(),
+                    name="scriber_file_pipeline",
+                )
 
                 # Wait until the input transport has finished feeding (and its internal audio queue has drained),
                 # then end the pipeline gracefully so providers can flush final transcripts.
@@ -4587,6 +4585,11 @@ class ScriberPipeline:
                 )
 
             if self.service_name == "assemblyai":
+                from src.assemblyai_async_stt import (
+                    assemblyai_transcript_payload_to_text,
+                    transcribe_with_assemblyai_pre_recorded,
+                )
+
                 api_key = Config.get_api_key("assemblyai")
                 if not api_key:
                     raise ValueError("AssemblyAI API key is missing")
@@ -4620,6 +4623,11 @@ class ScriberPipeline:
                 return
 
             if self.service_name in ("mistral", "mistral_async"):
+                from src.mistral_stt import (
+                    format_mistral_segments_with_speakers,
+                    transcribe_with_mistral,
+                )
+
                 api_key = Config.get_api_key("mistral")
                 if not api_key:
                     raise ValueError("Mistral API key is missing")
@@ -4669,6 +4677,11 @@ class ScriberPipeline:
                 return
 
             if self.service_name in ("smallest", "smallest_async"):
+                from src.smallest_stt import (
+                    smallest_transcript_payload_to_text,
+                    transcribe_with_smallest_pre_recorded,
+                )
+
                 api_key = Config.get_api_key("smallest")
                 if not api_key:
                     raise ValueError("Smallest AI API key is missing")
@@ -4700,6 +4713,11 @@ class ScriberPipeline:
                 return
 
             if self.service_name == "deepgram_async":
+                from src.cloud_async_stt import (
+                    deepgram_transcript_payload_to_text,
+                    transcribe_with_deepgram_pre_recorded,
+                )
+
                 api_key = Config.get_api_key("deepgram")
                 if not api_key:
                     raise ValueError("Deepgram API key is missing")
@@ -4734,6 +4752,11 @@ class ScriberPipeline:
                 return
 
             if self.service_name == "openai_async":
+                from src.cloud_async_stt import (
+                    openai_transcript_payload_to_text,
+                    transcribe_with_openai_audio_transcription,
+                )
+
                 api_key = Config.get_api_key("openai")
                 if not api_key:
                     raise ValueError("OpenAI API key is missing")
@@ -4768,6 +4791,11 @@ class ScriberPipeline:
                 return
 
             if self.service_name == "gemini_stt":
+                from src.cloud_async_stt import (
+                    gemini_transcript_payload_to_text,
+                    transcribe_with_gemini_audio,
+                )
+
                 api_key = Config.get_api_key("gemini_stt")
                 if not api_key:
                     raise ValueError("Gemini API key is missing")
@@ -4799,6 +4827,14 @@ class ScriberPipeline:
                 return
 
             if self.service_name == "azure_mai":
+                from src.azure_mai_stt import (
+                    azure_mai_content_type,
+                    azure_mai_transcript_payload_to_text,
+                    prepared_azure_mai_audio_file,
+                    transcribe_with_azure_mai,
+                    validate_azure_mai_region,
+                )
+
                 api_key = Config.get_api_key("azure_mai")
                 if not api_key:
                     raise ValueError("Azure MAI Speech key is missing")
@@ -4851,6 +4887,11 @@ class ScriberPipeline:
                 return
 
             if self.service_name in ("gladia", "gladia_async"):
+                from src.gladia_stt import (
+                    gladia_transcript_payload_to_text,
+                    transcribe_with_gladia_pre_recorded,
+                )
+
                 api_key = Config.get_api_key("gladia")
                 if not api_key:
                     raise ValueError("Gladia API key is missing")
@@ -4884,6 +4925,11 @@ class ScriberPipeline:
                 return
 
             if self.service_name in {"modulate", "modulate_async"}:
+                from src.modulate_stt import (
+                    modulate_transcript_payload_to_text,
+                    transcribe_with_modulate_multilingual,
+                )
+
                 api_key = Config.get_api_key("modulate")
                 if not api_key:
                     raise ValueError("Modulate API key is missing")
@@ -4917,6 +4963,11 @@ class ScriberPipeline:
                 return
 
             if self.service_name == "speechmatics_async":
+                from src.cloud_async_stt import (
+                    speechmatics_transcript_payload_to_text,
+                    transcribe_with_speechmatics_batch,
+                )
+
                 api_key = Config.get_api_key("speechmatics")
                 if not api_key:
                     raise ValueError("Speechmatics API key is missing")

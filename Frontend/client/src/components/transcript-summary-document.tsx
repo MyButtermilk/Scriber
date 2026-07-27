@@ -146,7 +146,7 @@ export function SummaryTableOfContents({ outline, scrollContainerRef, title }: S
       .filter((heading): heading is HTMLElement => heading !== null);
     const passed = headings.filter((heading) => heading.getBoundingClientRect().top <= activationTop + 1);
     setActiveId((passed.at(-1) || headings[0])?.id || "");
-  }, [outlineKey, outline, scrollContainerRef]);
+  }, [outline, scrollContainerRef]);
 
   const releaseNavigationTarget = useCallback((expectedId: string) => {
     if (navigationTargetRef.current !== expectedId) return;

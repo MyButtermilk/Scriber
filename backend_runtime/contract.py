@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 RUNTIME_CONTRACT_NAME = "scriber-frozen-python-runtime"
-RUNTIME_CONTRACT_REVISION = 4
+RUNTIME_CONTRACT_REVISION = 5
 APPLICATION_LAYER_SCHEMA_VERSION = 1
 RUNTIME_LAYER_SCHEMA_VERSION = 1
 APPLICATION_ENTRY_POINT = "src.backend_worker:main"
@@ -17,6 +17,7 @@ RUNTIME_MANIFEST_NAME = "runtime-layer-manifest.json"
 # changes incompatibly.
 RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     ("aiohttp", "backend HTTP and WebSocket server runtime"),
+    ("audioop", "PCM16 RMS runtime supplied by audioop-lts"),
     ("comtypes", "Windows audio endpoint integration"),
     ("docx", "DOCX meeting export runtime"),
     ("dotenv", "local settings environment loader"),
@@ -29,8 +30,8 @@ RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     ("openai", "OpenAI API runtime"),
     ("pipecat.frames.frames", "Pipecat frame runtime"),
     ("pipecat.pipeline.pipeline", "Pipecat pipeline graph runtime"),
-    ("pipecat.pipeline.task", "Pipecat pipeline task runtime"),
-    ("pipecat.pipeline.runner", "Pipecat pipeline runner runtime"),
+    ("pipecat.pipeline.worker", "Pipecat pipeline worker runtime"),
+    ("pipecat.workers.runner", "Pipecat worker runner runtime"),
     ("pipecat.processors.frame_processor", "Pipecat frame processor runtime"),
     ("pipecat.services.ai_service", "Pipecat AI service runtime"),
     ("pipecat.services.settings", "Pipecat STT settings runtime"),
@@ -83,6 +84,7 @@ REQUIRED_PACKAGE_VERSIONS: tuple[tuple[str, str], ...] = (
 APPLICATION_EXTERNAL_IMPORT_ROOTS = frozenset(
     {
         "aiohttp",
+        "audioop",
         "comtypes",
         "docx",
         "dotenv",

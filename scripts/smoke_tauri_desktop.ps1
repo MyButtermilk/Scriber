@@ -2934,11 +2934,27 @@ function Wait-BackendCrashMetadata {
     )
 
     $metadataPath = Join-Path $DataDir "logs\backend-crash-metadata.jsonl"
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $pidBytes = [System.Text.Encoding]::UTF8.GetBytes(
+            $BackendPid.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+        )
+        $pidDigest = $sha256.ComputeHash($pidBytes)
+        $expectedPidHash = (
+            [System.BitConverter]::ToString($pidDigest, 0, 8)
+        ).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
     $deadline = (Get-Date).AddSeconds($DeadlineSec)
     while ((Get-Date) -lt $deadline) {
         if (Test-Path $metadataPath) {
             $content = Get-Content -Raw -Path $metadataPath
-            if ($content -match '"event"\s*:\s*"managed_backend_exit"' -and $content -match "`"pid`"\s*:\s*$BackendPid") {
+            if (
+                $content -match '"event"\s*:\s*"managed_backend_exit"' -and
+                $content -match "`"pidHash`"\s*:\s*`"$expectedPidHash`""
+            ) {
                 return $metadataPath
             }
         }

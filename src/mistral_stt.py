@@ -4,14 +4,13 @@ Mistral STT services for realtime and async transcription.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import re
-import io
-from typing import Any, AsyncGenerator, BinaryIO, Callable, Optional
+from typing import Any, AsyncGenerator, BinaryIO, Callable, Optional, cast
 
 import aiohttp
 from loguru import logger
-
 from pipecat.frames.frames import (
     AudioRawFrame,
     CancelFrame,
@@ -27,9 +26,9 @@ from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from src.core.provider_errors import provider_transport_error, provider_user_error
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.http_response import read_response_text_limited
-
 
 _MISTRAL_TRANSCRIPTIONS_URL = "https://api.mistral.ai/v1/audio/transcriptions"
 
@@ -153,7 +152,6 @@ async def transcribe_with_mistral(
     diarize: bool = False,
     timestamp_granularities: Optional[list[str]] = None,
     timeout_secs: int = 180,
-    _allow_language_retry: bool = True,
 ) -> dict[str, Any]:
     effective_language = language
     # Mistral currently does not support combining language + timestamp_granularities.
@@ -186,41 +184,12 @@ async def transcribe_with_mistral(
     ) as resp:
         raw = await read_response_text_limited(resp, 64 * 1024 * 1024)
         if resp.status >= 400:
-            lower = raw.lower()
-            if (
-                _allow_language_retry
-                and effective_language
-                and timestamp_granularities
-                and "timestamp_granularities" in lower
-                and "language" in lower
-            ):
-                if not isinstance(file_content, (bytes, bytearray)):
-                    if not hasattr(file_content, "seek"):
-                        raise RuntimeError(
-                            "Mistral transcription retry requires a seekable file object."
-                        )
-                    try:
-                        file_content.seek(0)
-                    except Exception as exc:
-                        raise RuntimeError(
-                            f"Mistral transcription retry could not rewind file stream: {exc}"
-                        ) from exc
-                logger.info("Retrying Mistral transcription without language (timestamp_granularities incompatibility)")
-                return await transcribe_with_mistral(
-                    session=session,
-                    api_key=api_key,
-                    model=model,
-                    file_content=file_content,
-                    filename=filename,
-                    content_type=content_type,
-                    language=None,
-                    context_bias=context_bias,
-                    diarize=diarize,
-                    timestamp_granularities=timestamp_granularities,
-                    timeout_secs=timeout_secs,
-                    _allow_language_retry=False,
-                )
-            raise RuntimeError(f"Mistral transcription failed ({resp.status}): {raw[:500]}")
+            raise provider_transport_error(
+                "mistral",
+                "transcription",
+                status=resp.status,
+                response_body=raw,
+            )
 
     if not raw:
         return {}
@@ -268,31 +237,38 @@ class MistralRealtimeSTTService(SegmentedSTTService):
         if not audio:
             return
         try:
-            wav_bytes = _pcm_to_wav(
-                audio_bytes=audio,
-                sample_rate=self.sample_rate or 16000,
-                channels=1,
+            wav_source = cast(
+                BinaryIO,
+                await asyncio.to_thread(
+                    pcm_stream_to_wav,
+                    io.BytesIO(audio),
+                    self.sample_rate or 16000,
+                    1,
+                ),
             )
-            language = self._language if self._language != "auto" else None
+            try:
+                language = self._language if self._language != "auto" else None
 
-            async def _transcribe(session: aiohttp.ClientSession) -> dict[str, Any]:
-                return await transcribe_with_mistral(
-                    session=session,
-                    api_key=self._api_key,
-                    model=self._model,
-                    file_content=wav_bytes,
-                    filename="audio.wav",
-                    content_type="audio/wav",
-                    language=language,
-                    context_bias=self._context_bias,
-                    diarize=False,
-                )
+                async def _transcribe(session: aiohttp.ClientSession) -> dict[str, Any]:
+                    return await transcribe_with_mistral(
+                        session=session,
+                        api_key=self._api_key,
+                        model=self._model,
+                        file_content=wav_source,
+                        filename="audio.wav",
+                        content_type="audio/wav",
+                        language=language,
+                        context_bias=self._context_bias,
+                        diarize=False,
+                    )
 
-            if self._session:
-                payload = await _transcribe(self._session)
-            else:
-                async with aiohttp.ClientSession() as session:
-                    payload = await _transcribe(session)
+                if self._session:
+                    payload = await _transcribe(self._session)
+                else:
+                    async with aiohttp.ClientSession() as session:
+                        payload = await _transcribe(session)
+            finally:
+                wav_source.close()
 
             text = _extract_text(payload)
             if text:
@@ -303,8 +279,13 @@ class MistralRealtimeSTTService(SegmentedSTTService):
                     result=None,
                 )
         except Exception as exc:
-            logger.error(f"Mistral realtime STT error: {exc}")
-            yield ErrorFrame(error=f"mistral realtime error: {exc}")
+            info = provider_user_error("mistral", exc)
+            logger.error(
+                "Mistral realtime STT failed (error_type={}, code={})",
+                type(exc).__name__,
+                info.code or "unknown",
+            )
+            yield ErrorFrame(error=f"mistral realtime error: {info.message}")
 
 
 class MistralAsyncProcessor(FrameProcessor):
@@ -451,8 +432,16 @@ class MistralAsyncProcessor(FrameProcessor):
                             direction,
                         )
             except Exception as exc:
-                logger.error(f"Mistral async transcription failed: {exc}")
-                await self.push_frame(ErrorFrame(error=f"mistral async error: {exc}"), direction)
+                info = provider_user_error("mistral", exc)
+                logger.error(
+                    "Mistral async transcription failed (error_type={}, code={})",
+                    type(exc).__name__,
+                    info.code or "unknown",
+                )
+                await self.push_frame(
+                    ErrorFrame(error=f"mistral async error: {info.message}"),
+                    direction,
+                )
             finally:
                 self._reset_buffer()
             await self.push_frame(frame, direction)

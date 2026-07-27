@@ -1512,19 +1512,6 @@ class FrontendSmokeBackend:
                     break
         except ConnectionResetError:
             pass
-        except BaseException as exc:
-            if args.evidence_dir:
-                failure_path = Path(args.evidence_dir).resolve() / "browser-smoke-error.json"
-                failure_path.parent.mkdir(parents=True, exist_ok=True)
-                failure_path.write_text(
-                    json.dumps({
-                        "errorType": exc.__class__.__name__,
-                        "message": str(exc),
-                        "traceback": traceback.format_exc(),
-                    }, indent=2, ensure_ascii=False) + "\n",
-                    encoding="utf-8",
-                )
-            raise
         finally:
             self.websockets.discard(ws)
         return ws

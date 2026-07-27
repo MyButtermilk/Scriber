@@ -16,6 +16,8 @@ param(
 
     [switch]$RequireTimestamp,
 
+    [switch]$AllowNotSigned,
+
     [string]$OutputPath = ""
 )
 
@@ -78,19 +80,27 @@ foreach ($rawPath in $Path) {
             $timestampSubject = $signature.TimeStamperCertificate.Subject
         }
 
-        if ($signature.Status -ne "Valid") {
+        $status = [string]$signature.Status
+        $statusAllowed = $status -eq "Valid" -or ($AllowNotSigned -and $status -eq "NotSigned")
+        if (-not $statusAllowed) {
             throw "Authenticode signature for '$artifactPath' is '$($signature.Status)': $($signature.StatusMessage)"
         }
-        if (-not (Test-Publisher -Certificate $signature.SignerCertificate -ExpectedPublisher $ExpectedPublisher)) {
+        if (
+            $status -eq "Valid" -and
+            -not (Test-Publisher -Certificate $signature.SignerCertificate -ExpectedPublisher $ExpectedPublisher)
+        ) {
             throw "Authenticode publisher for '$artifactPath' does not match expected publisher '$ExpectedPublisher'. Actual subject: '$signerSubject'."
         }
-        if ($RequireTimestamp -and $null -eq $signature.TimeStamperCertificate) {
+        if ($status -eq "Valid" -and $RequireTimestamp -and $null -eq $signature.TimeStamperCertificate) {
             throw "Authenticode timestamp is required for '$artifactPath' but no timestamp certificate was found."
         }
 
+        $artifactItem = Get-Item -LiteralPath $artifactPath
         $results += [pscustomobject]@{
             path = $artifactPath
-            status = [string]$signature.Status
+            status = $status
+            sizeBytes = [int64]$artifactItem.Length
+            sha256 = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
             signerSubject = $signerSubject
             timestampSubject = $timestampSubject
         }
@@ -98,7 +108,9 @@ foreach ($rawPath in $Path) {
 }
 
 $payload = [pscustomobject]@{
+    schemaVersion = 2
     ok = $true
+    allowNotSigned = [bool]$AllowNotSigned
     count = $results.Count
     artifacts = $results
 }

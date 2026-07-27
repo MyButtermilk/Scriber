@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import builtins
 import hashlib
+import hmac
 import json
 import math
 import re
@@ -50,6 +51,9 @@ MEETING_PROCESSING_STATE_BY_PHASE = {
     "analysis": "analyzing",
 }
 MEETING_AUDIO_SPEAKER_LABEL = "Meeting audio"
+MAX_MEETING_NOTE_BODY_UTF8_BYTES = 48 * 1024
+MAX_MEETING_NOTE_WRITE_GENERATION = (1 << 53) - 1
+_MEETING_NOTE_WRITER_ID_RE = re.compile(r"[A-Za-z0-9_-]{16,96}\Z")
 
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "starting": frozenset({"recording", "finalizing", "capture_failed", "interrupted", "discarded"}),
@@ -102,6 +106,13 @@ def _loads(value: str | None, fallback: Any) -> Any:
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return fallback
+
+
+def _normalized_meeting_note_body(body: str) -> str:
+    normalized = str(body).strip()
+    if len(normalized.encode("utf-8")) > MAX_MEETING_NOTE_BODY_UTF8_BYTES:
+        raise ValueError("Meeting note exceeds the 48 KiB UTF-8 size limit.")
+    return normalized
 
 
 def _generated_speaker_profile_name(profile_id: str) -> str:
@@ -333,6 +344,83 @@ class MeetingStore:
                 (speaker_id, display_name, meeting_id),
             )
 
+    @staticmethod
+    def _ensure_meeting_notes_composite_primary_key(
+        conn: sqlite3.Connection,
+    ) -> None:
+        """Migrate the legacy global note id to a Meeting-local primary key."""
+
+        table_info = conn.execute("PRAGMA table_info(meeting_notes)").fetchall()
+        primary_key_columns = [
+            str(row["name"])
+            for row in sorted(
+                (row for row in table_info if int(row["pk"] or 0) > 0),
+                key=lambda row: int(row["pk"]),
+            )
+        ]
+        if primary_key_columns == ["meeting_id", "id"]:
+            return
+
+        schema_objects = [
+            str(row["sql"])
+            for row in conn.execute(
+                """SELECT sql FROM sqlite_master
+                   WHERE tbl_name='meeting_notes'
+                     AND type IN ('index','trigger')
+                     AND sql IS NOT NULL
+                   ORDER BY type,name"""
+            ).fetchall()
+        ]
+        foreign_keys_enabled = bool(
+            conn.execute("PRAGMA foreign_keys").fetchone()[0]
+        )
+        if conn.in_transaction:
+            conn.commit()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DROP TABLE IF EXISTS meeting_notes_composite_migration")
+            conn.execute(
+                """CREATE TABLE meeting_notes_composite_migration (
+                    id TEXT NOT NULL,
+                    meeting_id TEXT NOT NULL
+                        REFERENCES meetings(id) ON DELETE CASCADE,
+                    body TEXT NOT NULL,
+                    at_ms INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(meeting_id, id)
+                )"""
+            )
+            conn.execute(
+                """INSERT INTO meeting_notes_composite_migration(
+                       id,meeting_id,body,at_ms,created_at,updated_at
+                   )
+                   SELECT id,meeting_id,body,at_ms,created_at,updated_at
+                   FROM meeting_notes"""
+            )
+            conn.execute("DROP TABLE meeting_notes")
+            conn.execute(
+                """ALTER TABLE meeting_notes_composite_migration
+                   RENAME TO meeting_notes"""
+            )
+            for statement in schema_objects:
+                conn.execute(statement)
+            violations = conn.execute(
+                "PRAGMA foreign_key_check(meeting_notes)"
+            ).fetchall()
+            if violations:
+                raise sqlite3.IntegrityError(
+                    "Meeting note migration produced foreign-key violations."
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            if foreign_keys_enabled:
+                conn.execute("PRAGMA foreign_keys=ON")
+
     def initialize(self, *, speaker_library_enabled: bool = True) -> None:
         with db._get_connection() as conn:  # shared WAL connection lifecycle
             conn.executescript(
@@ -562,12 +650,21 @@ class MeetingStore:
                 CREATE INDEX IF NOT EXISTS idx_meeting_analysis_chunks_recent
                     ON meeting_analysis_chunks(meeting_id,updated_at DESC);
                 CREATE TABLE IF NOT EXISTS meeting_notes (
-                    id TEXT PRIMARY KEY,
+                    id TEXT NOT NULL,
                     meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
                     body TEXT NOT NULL,
                     at_ms INTEGER,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(meeting_id, id)
+                );
+                CREATE TABLE IF NOT EXISTS meeting_note_write_heads (
+                    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+                    note_id TEXT NOT NULL,
+                    writer_id TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(meeting_id, note_id)
                 );
                 CREATE TABLE IF NOT EXISTS meeting_action_items (
                     id TEXT NOT NULL,
@@ -617,6 +714,16 @@ class MeetingStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS meeting_delivery_confirmations (
+                    confirmation_token TEXT PRIMARY KEY,
+                    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+                    fingerprint TEXT NOT NULL,
+                    delivery_id TEXT UNIQUE REFERENCES meeting_deliveries(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    consumed_at TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_meeting_delivery_confirmations_meeting
+                    ON meeting_delivery_confirmations(meeting_id, created_at DESC);
                 CREATE TABLE IF NOT EXISTS meeting_store_metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -656,6 +763,7 @@ class MeetingStore:
                 END;
                 """
             )
+            self._ensure_meeting_notes_composite_primary_key(conn)
             profile_columns = {row["name"] for row in conn.execute("PRAGMA table_info(speaker_profiles)")}
             if "embedding_blob" not in profile_columns:
                 conn.execute("ALTER TABLE speaker_profiles ADD COLUMN embedding_blob BLOB")
@@ -922,6 +1030,15 @@ class MeetingStore:
                 WHERE state IN ('starting','recording','paused')
                 """,
                 (now, now),
+            )
+            conn.execute(
+                """
+                UPDATE meeting_deliveries
+                SET status = 'outcome_unknown', updated_at = ?,
+                    error_message = 'process_interrupted_during_delivery'
+                WHERE status = 'sending'
+                """,
+                (now,),
             )
             conn.commit()
             return int(analysis_cursor.rowcount) + int(finalization_cursor.rowcount) + int(interrupted_cursor.rowcount)
@@ -1546,7 +1663,7 @@ class MeetingStore:
 
     def add_note(self, meeting_id: str, body: str, *, at_ms: int | None = None) -> dict[str, Any]:
         self.get(meeting_id)
-        body = body.strip()
+        body = _normalized_meeting_note_body(body)
         if not body:
             raise ValueError("Meeting note cannot be empty.")
         now = _utc_now()
@@ -1566,42 +1683,112 @@ class MeetingStore:
         body: str,
         *,
         at_ms: int | None = None,
+        writer_id: str | None = None,
+        write_generation: int | None = None,
     ) -> dict[str, Any]:
         self.get(meeting_id)
         note_id = note_id.strip()[:96]
-        body = body.strip()
+        body = _normalized_meeting_note_body(body)
         if not note_id:
             raise ValueError("Meeting note id is required.")
+        if (writer_id is None) != (write_generation is None):
+            raise ValueError(
+                "Meeting note writerId and writeGeneration must be supplied together."
+            )
+        ordered_write = writer_id is not None
+        if ordered_write:
+            writer_id = str(writer_id).strip()
+            if not _MEETING_NOTE_WRITER_ID_RE.fullmatch(writer_id):
+                raise ValueError("Invalid meeting note writerId.")
+            if (
+                isinstance(write_generation, bool)
+                or not isinstance(write_generation, int)
+                or not 0 < write_generation <= MAX_MEETING_NOTE_WRITE_GENERATION
+            ):
+                raise ValueError("Invalid meeting note writeGeneration.")
         now = _utc_now()
         with db._get_connection() as conn:
-            existing = conn.execute(
-                "SELECT created_at FROM meeting_notes WHERE meeting_id = ? AND id = ?",
-                (meeting_id, note_id),
-            ).fetchone()
-            created_at = existing["created_at"] if existing else now
-            if not body:
-                conn.execute(
-                    "DELETE FROM meeting_notes WHERE meeting_id = ? AND id = ?",
+            if ordered_write:
+                conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = conn.execute(
+                    """SELECT id,meeting_id,body,at_ms,created_at,updated_at
+                       FROM meeting_notes WHERE meeting_id = ? AND id = ?""",
                     (meeting_id, note_id),
+                ).fetchone()
+                current_head = (
+                    conn.execute(
+                        """SELECT writer_id,generation,updated_at
+                           FROM meeting_note_write_heads
+                           WHERE meeting_id = ? AND note_id = ?""",
+                        (meeting_id, note_id),
+                    ).fetchone()
+                    if ordered_write
+                    else None
                 )
+                if (
+                    current_head is not None
+                    and write_generation is not None
+                    and write_generation <= int(current_head["generation"])
+                ):
+                    conn.commit()
+                    if existing is not None:
+                        return {
+                            "id": existing["id"],
+                            "meetingId": existing["meeting_id"],
+                            "body": existing["body"],
+                            "atMs": existing["at_ms"],
+                            "createdAt": existing["created_at"],
+                            "updatedAt": existing["updated_at"],
+                            "writeApplied": False,
+                            "writeGeneration": int(current_head["generation"]),
+                        }
+                    head_updated_at = str(current_head["updated_at"])
+                    return {
+                        "id": note_id,
+                        "meetingId": meeting_id,
+                        "body": "",
+                        "atMs": None,
+                        "createdAt": head_updated_at,
+                        "updatedAt": head_updated_at,
+                        "writeApplied": False,
+                        "writeGeneration": int(current_head["generation"]),
+                    }
+
+                created_at = existing["created_at"] if existing else now
+                if ordered_write:
+                    conn.execute(
+                        """INSERT INTO meeting_note_write_heads(
+                               meeting_id,note_id,writer_id,generation,updated_at
+                           ) VALUES (?,?,?,?,?)
+                           ON CONFLICT(meeting_id,note_id) DO UPDATE SET
+                               writer_id=excluded.writer_id,
+                               generation=excluded.generation,
+                               updated_at=excluded.updated_at""",
+                        (meeting_id, note_id, writer_id, write_generation, now),
+                    )
+                if not body:
+                    conn.execute(
+                        "DELETE FROM meeting_notes WHERE meeting_id = ? AND id = ?",
+                        (meeting_id, note_id),
+                    )
+                else:
+                    conn.execute(
+                        """INSERT INTO meeting_notes(
+                               id,meeting_id,body,at_ms,created_at,updated_at
+                           ) VALUES (?,?,?,?,?,?)
+                           ON CONFLICT(meeting_id,id) DO UPDATE SET
+                               body=excluded.body,
+                               at_ms=excluded.at_ms,
+                               updated_at=excluded.updated_at""",
+                        (note_id, meeting_id, body, at_ms, created_at, now),
+                    )
                 conn.commit()
-                return {
-                    "id": note_id,
-                    "meetingId": meeting_id,
-                    "body": "",
-                    "atMs": at_ms,
-                    "createdAt": created_at,
-                    "updatedAt": now,
-                }
-            conn.execute(
-                """INSERT INTO meeting_notes(id,meeting_id,body,at_ms,created_at,updated_at)
-                   VALUES (?,?,?,?,?,?)
-                   ON CONFLICT(id) DO UPDATE SET body=excluded.body,at_ms=excluded.at_ms,
-                   updated_at=excluded.updated_at WHERE meeting_notes.meeting_id=excluded.meeting_id""",
-                (note_id, meeting_id, body, at_ms, created_at, now),
-            )
-            conn.commit()
-        return {
+            except Exception:
+                conn.rollback()
+                raise
+
+        result: dict[str, Any] = {
             "id": note_id,
             "meetingId": meeting_id,
             "body": body,
@@ -1609,6 +1796,10 @@ class MeetingStore:
             "createdAt": created_at,
             "updatedAt": now,
         }
+        if ordered_write:
+            result["writeApplied"] = True
+            result["writeGeneration"] = write_generation
+        return result
 
     def add_audio_chunk(
         self,
@@ -4439,6 +4630,129 @@ class MeetingStore:
             "oldProfileId": old_profile_id,
             "newProfileId": new_profile_id,
         }
+
+    def create_delivery_confirmation(
+        self,
+        meeting_id: str,
+        *,
+        fingerprint: str,
+    ) -> str:
+        """Persist a one-time webhook confirmation token."""
+
+        self.get(meeting_id)
+        normalized_fingerprint = str(fingerprint or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", normalized_fingerprint):
+            raise ValueError("Invalid delivery confirmation fingerprint.")
+        confirmation_token = uuid4().hex
+        with db._get_connection() as conn:
+            conn.execute(
+                """INSERT INTO meeting_delivery_confirmations
+                   (confirmation_token,meeting_id,fingerprint,delivery_id,created_at,consumed_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (
+                    confirmation_token,
+                    meeting_id,
+                    normalized_fingerprint,
+                    None,
+                    _utc_now(),
+                    "",
+                ),
+            )
+            conn.commit()
+        return confirmation_token
+
+    def claim_delivery_confirmation(
+        self,
+        meeting_id: str,
+        *,
+        confirmation_token: str,
+        fingerprint: str,
+        kind: str,
+        target: str,
+        request_payload: dict[str, Any],
+        status: str = "sending",
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically consume a confirmation and create one delivery.
+
+        Replays return the already-created delivery with ``claimed=False``.
+        This gives the network layer a durable at-most-once send boundary even
+        across concurrent handlers and process restarts.
+        """
+
+        token = str(confirmation_token or "").strip()
+        normalized_fingerprint = str(fingerprint or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{32}", token):
+            raise MeetingConflict("Delivery confirmation is invalid or expired.")
+        if not re.fullmatch(r"[0-9a-f]{64}", normalized_fingerprint):
+            raise MeetingConflict("Delivery confirmation is invalid or expired.")
+
+        now = _utc_now()
+        conn = db._get_connection()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            confirmation = conn.execute(
+                """SELECT fingerprint,delivery_id FROM meeting_delivery_confirmations
+                   WHERE confirmation_token=? AND meeting_id=?""",
+                (token, meeting_id),
+            ).fetchone()
+            if (
+                confirmation is None
+                or not hmac.compare_digest(
+                    str(confirmation["fingerprint"]),
+                    normalized_fingerprint,
+                )
+            ):
+                raise MeetingConflict("Delivery confirmation is invalid or expired.")
+
+            existing_delivery_id = str(confirmation["delivery_id"] or "")
+            if existing_delivery_id:
+                row = conn.execute(
+                    "SELECT * FROM meeting_deliveries WHERE id=?",
+                    (existing_delivery_id,),
+                ).fetchone()
+                if row is None:
+                    raise MeetingConflict("Delivery confirmation is no longer available.")
+                conn.commit()
+                return self._delivery(row), False
+
+            delivery_id = uuid4().hex
+            conn.execute(
+                """INSERT INTO meeting_deliveries
+                   (id,meeting_id,kind,target,status,request_json,payload_version,
+                    attempt_count,idempotency_key,next_attempt_at,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    delivery_id,
+                    meeting_id,
+                    kind,
+                    target,
+                    status,
+                    _json(request_payload),
+                    1,
+                    0,
+                    token,
+                    "",
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                """UPDATE meeting_delivery_confirmations
+                   SET delivery_id=?,consumed_at=?
+                   WHERE confirmation_token=? AND meeting_id=? AND delivery_id IS NULL""",
+                (delivery_id, now, token, meeting_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM meeting_deliveries WHERE id=?",
+                (delivery_id,),
+            ).fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        if row is None:
+            raise MeetingNotFound("Meeting delivery not found")
+        return self._delivery(row), True
 
     def create_delivery(
         self,

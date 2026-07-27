@@ -5,7 +5,6 @@ from pathlib import Path
 
 from PIL import Image
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -106,8 +105,8 @@ def test_settings_put_commits_the_server_response_to_the_global_query_cache() ->
         REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
     ).read_text(encoding="utf-8")
     update_section = source[
-        source.index("const updateSettings = async") : source.index(
-            "const saveCustomVocabulary"
+        source.index("const updateSettings =") : source.index(
+            "const saveCustomVocabulary ="
         )
     ]
 
@@ -124,6 +123,8 @@ def test_settings_put_commits_the_server_response_to_the_global_query_cache() ->
     assert cache_write in update_section
     assert bootstrap_invalidation in update_section
     assert returned_response in update_section
+    assert "settingsUpdateQueueRef.current.then(async () =>" in update_section
+    assert "settingsUpdateQueueRef.current = request.then(" in update_section
     assert update_section.index(parsed_response) < update_section.index(cache_write)
     assert update_section.index(cache_write) < update_section.index(bootstrap_invalidation)
     assert update_section.index(bootstrap_invalidation) < update_section.index(returned_response)
@@ -290,8 +291,12 @@ def test_windows_taskbar_identity_uses_the_contrast_safe_tray_artwork() -> None:
     assert taskbar_frame.size == tray_frame.size == (32, 32)
     mean_channel_delta = sum(
         abs(taskbar_channel - tray_channel)
-        for taskbar_pixel, tray_pixel in zip(taskbar_frame.getdata(), tray_frame.getdata())
-        for taskbar_channel, tray_channel in zip(taskbar_pixel, tray_pixel)
+        for taskbar_pixel, tray_pixel in zip(
+            taskbar_frame.getdata(), tray_frame.getdata(), strict=True
+        )
+        for taskbar_channel, tray_channel in zip(
+            taskbar_pixel, tray_pixel, strict=True
+        )
     ) / (32 * 32 * 4)
     assert mean_channel_delta < 1.0
     assert sum(
@@ -620,8 +625,21 @@ def test_live_mic_history_uses_snippets_period_sections_and_stable_virtual_rows(
     assert "getItemGroup={getTranscriptHistoryGroup}" in page_source
     assert "getItemGroup={(item)" not in page_source
     assert "const getTranscriptHistoryGroup = useCallback(" in page_source
-    assert "const historyReferenceTime = useMemo(() => new Date(), [historyLocalDay]);" in page_source
-    assert "[historyReferenceTime, locale]" in page_source
+    reference_section = page_source[
+        page_source.index("const historyLocalDay =") : page_source.index(
+            "const activeSessionIdRef"
+        )
+    ]
+    assert "const historyLocalDay = new Date().toDateString();" in reference_section
+    assert "const historyReferenceTime = useMemo(() => {" in reference_section
+    assert "void historyLocalDay;" in reference_section
+    assert "return new Date();" in reference_section
+    assert "}, [historyLocalDay]);" in reference_section
+    assert (
+        "(item: Transcript) => transcriptHistoryPeriod(item.createdAt, historyReferenceTime)"
+        in reference_section
+    )
+    assert "[historyReferenceTime]" in reference_section
     assert 'label: translateNow("Today")' in period_source
     assert 'label: translateNow("Last week")' in period_source
     assert 'label: translateNow("Last month")' in period_source
@@ -1106,8 +1124,8 @@ def test_silero_switch_waits_for_the_authoritative_settings_response() -> None:
         REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
     ).read_text(encoding="utf-8")
 
-    update_start = source.index("const updateSettings = async")
-    update_end = source.index("const saveCustomVocabulary", update_start)
+    update_start = source.index("const updateSettings =")
+    update_end = source.index("const saveCustomVocabulary =", update_start)
     update_block = source[update_start:update_end]
     handler_start = source.index("const handleSegmentSpeechWithVadChange")
     handler_end = source.index("const handleWsMessage", handler_start)
@@ -2085,6 +2103,24 @@ def test_meeting_workspace_scopes_drafts_playback_and_imports_to_durable_state()
     meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
         encoding="utf-8"
     )
+    note_autosave = (
+        REPO_ROOT
+        / "Frontend"
+        / "client"
+        / "src"
+        / "components"
+        / "meeting"
+        / "useMeetingNotesAutosave.ts"
+    ).read_text(encoding="utf-8")
+    note_editor = (
+        REPO_ROOT
+        / "Frontend"
+        / "client"
+        / "src"
+        / "components"
+        / "meeting"
+        / "MeetingNotesEditor.tsx"
+    ).read_text(encoding="utf-8")
     settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
         encoding="utf-8"
     )
@@ -2092,9 +2128,22 @@ def test_meeting_workspace_scopes_drafts_playback_and_imports_to_durable_state()
     assert 'setChatQuestion("");' in meetings
     assert "variables.id !== selectedId" in meetings
     assert 'setTranscriptSearch("");' in meetings
-    assert "noteDraftRef.current" in meetings
-    assert "draft.body !== draft.savedBody" in meetings
-    assert 'body: draft.body' in meetings
+    assert 'from "@/components/meeting/useMeetingNotesAutosave"' in meetings
+    assert 'detail?.notes.find((item) => item.id === "workspace")?.body ?? ""' in meetings
+    assert "const noteAutosave = useMeetingNotesAutosave({" in meetings
+    assert "initialBody: workspaceNoteBody" in meetings
+    assert "meetingId: selectedId" in meetings
+    assert "saveNote: saveWorkspaceMeetingNote" in meetings
+    assert "applyMeetingNoteEvent(queryClient, meetingId, savedNote);" in meetings
+    assert meetings.count("<MeetingNotesEditor autosave={noteAutosave}") == 2
+    assert "const queues = useRef(new Map<string, MeetingNotesSaveQueue>());" in note_autosave
+    assert "const existing = queues.current.get(meetingId);" in note_autosave
+    assert "queues.current.set(meetingId, created);" in note_autosave
+    assert "queue.hydrate(initialBody);" in note_autosave
+    assert "queue.flushForTeardown();" in note_autosave
+    assert "queue.flush();" in note_autosave
+    assert "value={body}" in note_editor
+    assert "onChange={(event) => setBody(event.target.value)}" in note_editor
     assert 'asset.kind === "playback_mix"' in meetings
     assert 'src={apiUrl(`/api/meetings/${detail.id}/audio`)}' in meetings
     assert "meetingSpeakerSampleWindow(" in meetings

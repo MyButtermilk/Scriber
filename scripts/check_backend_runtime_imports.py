@@ -20,6 +20,7 @@ from src.runtime.provider_dependencies import STANDARD_PROVIDER_RUNTIME_IMPORTS
 
 
 CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
+    ("audioop", "PCM16 RMS runtime supplied by audioop-lts"),
     ("pyloudnorm", "local Pipecat loudness compatibility dependency"),
     ("onnxruntime", "Silero VAD native runtime dependency"),
     ("onnx_asr", "bundled local ONNX speech-to-text runtime dependency"),
@@ -27,8 +28,8 @@ CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("yt_dlp_ejs", "YouTube external JavaScript challenge scripts"),
     ("pipecat.frames.frames", "Pipecat startup dependency"),
     ("pipecat.pipeline.pipeline", "Pipecat pipeline graph dependency"),
-    ("pipecat.pipeline.task", "Pipecat pipeline task dependency"),
-    ("pipecat.pipeline.runner", "Pipecat pipeline runner dependency"),
+    ("pipecat.pipeline.worker", "Pipecat pipeline worker dependency"),
+    ("pipecat.workers.runner", "Pipecat worker runner dependency"),
     ("pipecat.processors.frame_processor", "Pipecat frame processor dependency"),
     ("pipecat.services.ai_service", "Pipecat AI service dependency"),
     ("pipecat.services.settings", "Pipecat STT settings dependency"),

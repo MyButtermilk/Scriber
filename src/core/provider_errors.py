@@ -11,6 +11,44 @@ from src.core.error_taxonomy import ErrorCategory, classify_error_message, is_re
 from src.runtime.provider_dependencies import ProviderRuntimeDependencyError
 
 
+class ProviderTransportError(RuntimeError):
+    """Credential-free provider failure safe for logs and public classifiers.
+
+    Provider response bodies can contain echoed prompts, transcript fragments,
+    or other user content.  This exception deliberately retains only bounded
+    protocol metadata and never stores the response body.
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        operation: str,
+        status: int | None = None,
+        code: str = "",
+        retryable: bool | None = None,
+        response_bytes: int | None = None,
+    ) -> None:
+        self.provider = _bounded_identifier(provider, fallback="provider")
+        self.operation = _bounded_identifier(operation, fallback="request")
+        self.status = status if isinstance(status, int) and 100 <= status <= 599 else None
+        self.code = code if _is_safe_code(code) else ""
+        self.retryable = retryable
+        self.response_bytes = (
+            max(0, int(response_bytes))
+            if isinstance(response_bytes, int) and not isinstance(response_bytes, bool)
+            else None
+        )
+
+        details: list[str] = []
+        if self.status is not None:
+            details.append(f"status={self.status}")
+        if self.code:
+            details.append(f"code={self.code}")
+        suffix = f" ({', '.join(details)})" if details else ""
+        super().__init__(f"{self.provider} {self.operation} failed{suffix}")
+
+
 @dataclass(frozen=True)
 class ProviderUserError:
     provider: str
@@ -29,9 +67,11 @@ _HTTP_STATUS_RE = re.compile(r"(?<![\d:])([1-5]\d{2})(?!\d)")
 _SAFE_CODE_RE = re.compile(r"^[A-Za-z0-9_.:-]{2,80}$")
 _KNOWN_CODES = (
     "model_not_available",
+    "model_not_found",
     "invalid_request_error",
     "authentication_error",
     "rate_limit_error",
+    "quota_exceeded",
     "server_error",
     "ServiceUnavailable",
     "InternalServerError",
@@ -45,21 +85,71 @@ _KNOWN_CODES = (
     "TOO_MANY_REQUESTS",
     "INVALID_AUTH",
     "INSUFFICIENT_PERMISSIONS",
+    "unsupported_audio",
+    "audio_limit_exceeded",
+    "audio_error",
+    "missing_upload_url",
+    "missing_transcript_id",
+    "missing_file_uri",
+    "missing_job_id",
+    "missing_provider_runtime",
+    "missing_api_key",
+    "provider_error",
+    "invalid_json",
+    "empty_response",
     "DATA-0000",
     "NET-0000",
     "NET-0001",
+)
+_SAFE_EXCEPTION_CODES = (
+    "APIError",
+    "APIConnectionError",
+    "APITimeoutError",
+    "AuthenticationError",
+    "BadRequestError",
+    "ClientError",
+    "ClientConnectionError",
+    "ClientConnectorCertificateError",
+    "ClientConnectorError",
+    "ClientConnectorSSLError",
+    "ClientOSError",
+    "ClientPayloadError",
+    "ClientResponseError",
+    "ConnectionTimeoutError",
+    "JSONDecodeError",
+    "OSError",
+    "PermissionDeniedError",
+    "RateLimitError",
+    "RuntimeError",
+    "ServerConnectionError",
+    "ServerDisconnectedError",
+    "ServerTimeoutError",
+    "SocketTimeoutError",
+    "TimeoutError",
+    "UnprocessableEntityError",
+)
+_SAFE_PUBLIC_CODES = frozenset(
+    code.casefold() for code in (*_KNOWN_CODES, *_SAFE_EXCEPTION_CODES, "1008", "4001", "4029")
 )
 
 
 def provider_user_error(provider: str | None, error: Exception | str) -> ProviderUserError:
     dependency_error = error if isinstance(error, ProviderRuntimeDependencyError) else None
+    transport_error = error if isinstance(error, ProviderTransportError) else None
     raw = _error_text(error)
     payload = _parse_payload(raw)
-    normalized_provider = _normalize_provider(provider or getattr(dependency_error, "provider", None), raw)
+    normalized_provider = _normalize_provider(
+        provider or getattr(dependency_error, "provider", None) or getattr(transport_error, "provider", None),
+        raw,
+    )
     label = _provider_label(normalized_provider)
     combined = _combined_text(raw, payload)
-    status = _status_code(raw, payload)
-    code = _public_error_code(raw, payload, status=status)
+    status = transport_error.status if transport_error is not None else _status_code(raw, payload)
+    code = (
+        transport_error.code
+        if transport_error is not None and transport_error.code
+        else _public_error_code(raw, payload, status=status)
+    )
 
     if dependency_error:
         return _make_error(
@@ -102,16 +192,220 @@ def provider_user_error(provider: str | None, error: Exception | str) -> Provide
         specific = None
 
     if specific:
+        if transport_error is not None and transport_error.status is not None and transport_error.status >= 400:
+            authoritative_category = _transport_error_category(
+                transport_error,
+                fallback=specific.category,
+            )
+            return _make_error(
+                normalized_provider,
+                label,
+                authoritative_category,
+                (
+                    specific.message
+                    if specific.category is authoritative_category
+                    else _generic_provider_message(label, authoritative_category)
+                ),
+                code=transport_error.code or str(transport_error.status or ""),
+                retryable=transport_error.retryable,
+            )
         return specific
 
     category = classify_error_message(raw)
+    if transport_error is not None:
+        category = _transport_error_category(transport_error, fallback=category)
     return _make_error(
         normalized_provider,
         label,
         category,
         _generic_provider_message(label, category),
         code=code,
+        retryable=transport_error.retryable if transport_error is not None else None,
     )
+
+
+def provider_transport_error(
+    provider: str,
+    operation: str,
+    *,
+    status: int | None = None,
+    response_body: str | bytes | None = None,
+    code: str = "",
+    retryable: bool | None = None,
+) -> ProviderTransportError:
+    """Build a sanitized provider error without retaining response content."""
+
+    extracted_code = code if _is_safe_code(code) else _provider_code_from_body(response_body)
+    if isinstance(response_body, bytes):
+        response_bytes = len(response_body)
+    elif isinstance(response_body, str):
+        response_bytes = len(response_body.encode("utf-8", errors="replace"))
+    else:
+        response_bytes = None
+    return ProviderTransportError(
+        provider=provider,
+        operation=operation,
+        status=status,
+        code=extracted_code,
+        retryable=retryable,
+        response_bytes=response_bytes,
+    )
+
+
+def parse_provider_json_response(
+    provider: str,
+    operation: str,
+    response_body: str,
+    *,
+    empty_value: Any = None,
+) -> Any:
+    """Parse provider JSON without allowing ``JSONDecodeError.doc`` to escape.
+
+    ``JSONDecodeError`` retains its complete source document. Provider
+    responses may echo transcript or prompt content, so callers must receive a
+    sanitized transport error instead of the decoder exception.
+    """
+
+    raw = str(response_body or "")
+    if not raw:
+        return empty_value
+    invalid_json = False
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        payload = None
+        invalid_json = True
+    if invalid_json:
+        error = provider_transport_error(
+            provider,
+            operation,
+            code="invalid_json",
+        )
+        raw = ""
+        raise error
+    return payload
+
+
+def provider_public_code(value: Any) -> str:
+    """Return a public diagnostic code only when it is explicitly allowlisted."""
+
+    candidate = str(value or "").strip()
+    return candidate if _is_safe_code(candidate) else ""
+
+
+def _provider_code_from_body(response_body: str | bytes | None) -> str:
+    if response_body is None:
+        return ""
+    raw = response_body.decode("utf-8", errors="replace") if isinstance(response_body, bytes) else response_body
+    if len(raw) > 1_000_000:
+        return ""
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+
+    candidates: list[Any] = [
+        payload.get("code"),
+        payload.get("error_code"),
+        payload.get("errorCode"),
+        payload.get("type"),
+        payload.get("status"),
+    ]
+    nested = payload.get("error")
+    if isinstance(nested, dict):
+        candidates.extend(
+            (
+                nested.get("code"),
+                nested.get("error_code"),
+                nested.get("errorCode"),
+                nested.get("type"),
+                nested.get("status"),
+            )
+        )
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if _is_safe_code(value):
+            return value
+    lowered = raw.casefold()
+    derived_signals = (
+        (
+            "model_not_available",
+            (
+                "model not found",
+                "model_not_found",
+                "model does not exist",
+                "unknown model",
+                "model not available",
+            ),
+        ),
+        (
+            "quota_exceeded",
+            (
+                "quota exceeded",
+                "quota_exceeded",
+                "insufficient quota",
+                "insufficient credits",
+                "credit balance",
+                "payment required",
+            ),
+        ),
+        (
+            "rate_limit_error",
+            ("rate limit", "rate_limit", "too many requests"),
+        ),
+        (
+            "unsupported_audio",
+            (
+                "unsupported audio",
+                "unsupported format",
+                "unsupported codec",
+                "corrupt audio",
+                "could not decode",
+                "cannot decode",
+            ),
+        ),
+        (
+            "audio_limit_exceeded",
+            (
+                "audio duration",
+                "duration too long",
+                "file too large",
+                "file size",
+            ),
+        ),
+        (
+            "authentication_error",
+            (
+                "invalid api key",
+                "authentication failed",
+                "unauthorized",
+            ),
+        ),
+        (
+            "ServiceUnavailable",
+            (
+                "service unavailable",
+                "no healthy upstream",
+                "bad gateway",
+                "gateway timeout",
+            ),
+        ),
+        (
+            "invalid_request_error",
+            ("invalid request", "bad request", "validation error"),
+        ),
+    )
+    for safe_code, signals in derived_signals:
+        if any(signal in lowered for signal in signals):
+            return safe_code
+    return ""
+
+
+def _bounded_identifier(value: str, *, fallback: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(value or "").strip())[:80]
+    return normalized or fallback
 
 
 def _make_error(
@@ -337,7 +631,50 @@ def _public_error_code(raw: str, payload: dict[str, Any], *, status: int | None)
 
 
 def _is_safe_code(code: str | None) -> bool:
-    return bool(code and _SAFE_CODE_RE.match(str(code)))
+    value = str(code or "").strip()
+    if not _SAFE_CODE_RE.fullmatch(value):
+        return False
+    if value.casefold() in _SAFE_PUBLIC_CODES:
+        return True
+    return bool(re.fullmatch(r"[1-5]\d{2}", value))
+
+
+def _transport_error_category(
+    error: ProviderTransportError,
+    *,
+    fallback: ErrorCategory,
+) -> ErrorCategory:
+    code = error.code.casefold()
+    # Protocol statuses are authoritative. Response text can contain echoed
+    # user content, so phrases in a provider body must never override the
+    # category established by the HTTP response.
+    if error.status in {402, 429}:
+        return ErrorCategory.PROVIDER_LIMIT
+    if error.status in {401, 403}:
+        return ErrorCategory.AUTH_INVALID
+    if error.status == 408:
+        return ErrorCategory.TRANSIENT_NETWORK
+    if error.status is not None and 500 <= error.status <= 599:
+        return ErrorCategory.TRANSIENT_PROVIDER
+    if error.status in {413, 415, 422}:
+        return ErrorCategory.AUDIO_INVALID
+    if error.status is not None and 400 <= error.status <= 499:
+        return ErrorCategory.CONFIG_INVALID
+    if code in {
+        "unsupported_audio",
+        "audio_limit_exceeded",
+        "audio_error",
+        "data-0000",
+        "asr_unprocessable_entity",
+    }:
+        return ErrorCategory.AUDIO_INVALID
+    if code in {"quota_exceeded", "rate_limit_error", "too_many_requests"}:
+        return ErrorCategory.PROVIDER_LIMIT
+    if code in {"model_not_available", "model_not_found", "invalid_request_error"}:
+        return ErrorCategory.CONFIG_INVALID
+    if code in {"authentication_error", "invalid_auth", "insufficient_permissions"}:
+        return ErrorCategory.AUTH_INVALID
+    return fallback
 
 
 def _has(text: str, *tokens: str) -> bool:
@@ -351,7 +688,14 @@ def _is_5xx(status: int | None) -> bool:
 def _is_audio_error(text: str, status: int | None, code: str) -> bool:
     return (
         status == 422
-        or code.lower() in {"data-0000", "asr_unprocessable_entity"}
+        or code.lower()
+        in {
+            "data-0000",
+            "asr_unprocessable_entity",
+            "unsupported_audio",
+            "audio_limit_exceeded",
+            "audio_error",
+        }
         or _has(
             text,
             "unsupported audio",
@@ -547,9 +891,14 @@ def _classify_mistral(provider: str, label: str, text: str, status: int | None, 
             "Mistral is temporarily unavailable. Please retry shortly.",
             code=code or str(status or ""),
         )
-    if _has(text, "model_not_found", "model does not exist", "model not found", "unknown model") or (
-        "model" in text and "not found" in text
-    ):
+    if _has(
+        text,
+        "model_not_available",
+        "model_not_found",
+        "model does not exist",
+        "model not found",
+        "unknown model",
+    ) or ("model" in text and "not found" in text):
         return _make_error(
             provider,
             label,

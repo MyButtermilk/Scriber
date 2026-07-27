@@ -3185,6 +3185,8 @@ name = "scriber-desktop"
 version = "0.1.0"
 dependencies = [
  "aec3",
+ "base64 0.22.1",
+ "minisign-verify",
  "reqwest",
  "serde",
  "serde_json",

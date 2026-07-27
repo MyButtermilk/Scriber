@@ -150,6 +150,8 @@ export interface MeetingNote {
   atMs: number | null;
   createdAt: string;
   updatedAt: string;
+  writeApplied?: boolean;
+  writeGeneration?: number;
 }
 
 export interface MeetingTranscriptCheckpoint {

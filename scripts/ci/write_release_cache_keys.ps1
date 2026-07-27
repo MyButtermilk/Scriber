@@ -328,12 +328,14 @@ $backendRuntimeEntries = New-EntryList
 foreach ($path in @(
     "requirements-base.txt",
     "requirements-build.txt",
+    "requirements-release-constraints.txt",
     "packaging/scriber-backend.spec",
     "packaging/backend-sidecar-output-contract.json",
     "packaging/nltk-punkt-tab-lock-v1.json",
     "packaging/wheels/numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl",
     "packaging/wheels/numpy-noblas-wheel-lock-v1.json",
     "packaging/quickjs-youtube-runtime-lock-v1.json",
+    "packaging/ffmpeg-profile-b-release-lock-v1.json",
     "scripts/validate_numpy_noblas_wheel.py",
     "scripts/prepare_nltk_punkt_data.py",
     "scripts/build_quickjs_youtube_runtime.py",
@@ -366,7 +368,7 @@ foreach ($path in @(
     Add-RawFileEntry -Entries $backendEntries -Path $path
 }
 Add-GitTrackedEntries -Entries $backendEntries -Paths @("src")
-$backendEntries.Add("constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v4")
+$backendEntries.Add("constant`tffmpeg-profile-lock`tffmpeg-profile-b-release-lock-v1")
 $backendEntries.Add("flag`tbundleMediaTools`ttrue")
 $backendEntries.Add("flag`tuseProfileBFfmpeg`ttrue")
 $backendEntries.Add("flag`tuseGyanFfmpegEssentials`tfalse")

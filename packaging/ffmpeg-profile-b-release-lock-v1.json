@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "profile": "profile-b",
+  "repository": "MyButtermilk/Scriber",
+  "release": {
+    "tag": "ffmpeg-profile-b-n7.0-v4",
+    "prerelease": true,
+    "asset": {
+      "id": 479459114,
+      "name": "scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip",
+      "sizeBytes": 5139991,
+      "sha256": "b029f1e941d3a89a32f033e0398ba03776ac59a882902a7a935839e7825997d1",
+      "createdAt": "2026-07-16T17:48:41Z",
+      "updatedAt": "2026-07-16T17:48:42Z",
+      "downloadUrl": "https://github.com/MyButtermilk/Scriber/releases/download/ffmpeg-profile-b-n7.0-v4/scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip"
+    }
+  },
+  "source": {
+    "url": "https://git.ffmpeg.org/ffmpeg.git",
+    "gitRef": "n7.0"
+  },
+  "files": [
+    {
+      "path": "dist/scriber-ffmpeg-profile-b/bin/ffmpeg.exe",
+      "sizeBytes": 2779648,
+      "sha256": "d2c9fe4af2a3227d0dd191fc41e4e6cba9cbb8c8b1c14f2619dcb5d0c39f2cfb"
+    },
+    {
+      "path": "dist/scriber-ffmpeg-profile-b/bin/ffprobe.exe",
+      "sizeBytes": 2657792,
+      "sha256": "066c2db8c0982a1e5a702d77b38c2f703eba84d3f6293102c833f9b6200c3f18"
+    },
+    {
+      "path": "dist/scriber-ffmpeg-profile-b/bin/libmp3lame-0.dll",
+      "sizeBytes": 329487,
+      "sha256": "7ae709bf841478222fc468d6aa08cdb47a683feb40ff13fe9fb36359333d4559"
+    },
+    {
+      "path": "dist/scriber-ffmpeg-profile-b/bin/libopus-0.dll",
+      "sizeBytes": 492271,
+      "sha256": "c12f9a671a106c649a5517d28061670aa57c805d242b80764853a7551099498d"
+    },
+    {
+      "path": "dist/scriber-ffmpeg-profile-b/bin/libwinpthread-1.dll",
+      "sizeBytes": 64703,
+      "sha256": "f6fc2efd3c7cbc7dc67f021e71db876be92b8d311aedcd51a6aa73ca98b367e2"
+    }
+  ]
+}

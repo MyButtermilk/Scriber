@@ -35,7 +35,6 @@ from src.data.transcript_artifact_store import (
 from src.provider_transcript import has_speaker_evidence, normalize_provider_segments
 from src.youtube_download import YouTubeCaptionCue
 
-
 PARSER_ID = "scriber-provider-transcript"
 PARSER_VERSION = "1"
 CAPTION_PARSER_ID = "youtube-caption-cues"
@@ -261,6 +260,7 @@ def freeze_provider_route(
         transport or ("direct_upload" if direct else "decoded_pcm")
     )
     realtime_pcm_implementation = realtime_pcm_preparation_implementation(key)
+    runtime_audio_contract: tuple[AudioInputFormat, str] | None
     if streaming_only and realtime_pcm_implementation:
         # Each streaming-only key consumes decoded signed 16-bit mono PCM.
         # OpenAI's Pipecat service resamples that stream to its required 24 kHz
@@ -447,9 +447,15 @@ def _estimated_units(text: str, *, duration_ms: int, source_track: str) -> tuple
     weights = [max(1, len(re.findall(r"\w+", block))) for block in blocks]
     total = sum(weights)
     cursor = 0
+    cumulative_weight = 0
     units: list[StageUnit] = []
-    for index, (block, weight) in enumerate(zip(blocks, weights)):
-        end = duration_ms if index == len(blocks) - 1 else round(duration_ms * sum(weights[: index + 1]) / total)
+    for index, (block, weight) in enumerate(zip(blocks, weights, strict=True)):
+        cumulative_weight += weight
+        end = (
+            duration_ms
+            if index == len(blocks) - 1
+            else round(duration_ms * cumulative_weight / total)
+        )
         end = max(cursor + 1, end)
         units.append(
             StageUnit(

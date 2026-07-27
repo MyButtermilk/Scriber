@@ -55,7 +55,6 @@ import { invalidateSettingsBootstrap, loadSettingsBootstrap } from "@/lib/settin
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { responseErrorMessage } from "@/lib/request-errors";
 import type {
-  ApiMessageResponse,
   DiarizationComponentStatus,
   LocalModelActionResponse,
   MicrophoneDevice,
@@ -1416,7 +1415,6 @@ export default function Settings() {
   const [favoriteMic, setFavoriteMic] = useState("");
   const [isMicDropdownOpen, setIsMicDropdownOpen] = useState(false);
   const [isLanguageDropdownOpen, setIsLanguageDropdownOpen] = useState(false);
-  const [isTranscriptionModelDropdownOpen, setIsTranscriptionModelDropdownOpen] = useState(false);
   const [speakerProfilePendingDelete, setSpeakerProfilePendingDelete] = useState<{ id: string; name: string } | null>(null);
   const [voiceLibraryDeleteOpen, setVoiceLibraryDeleteOpen] = useState(false);
   const [outlookDisconnectOpen, setOutlookDisconnectOpen] = useState(false);
@@ -1673,7 +1671,7 @@ export default function Settings() {
 
   useEffect(() => {
     const consumeRequestedSection = () => {
-      let section = "";
+      let section: string;
       try {
         section = window.sessionStorage.getItem(SETTINGS_SECTION_REQUEST_KEY) || "";
         if (section) {
@@ -2102,7 +2100,7 @@ export default function Settings() {
     }
   }, [settingsLoaded, onnxAvailable, loadOnnxModels]);
 
-  const updateSettings = async (patch: SettingsUpdatePayload): Promise<SettingsResponse> => {
+  const updateSettings = useCallback(async (patch: SettingsUpdatePayload): Promise<SettingsResponse> => {
     const request = settingsUpdateQueueRef.current.then(async () => {
       const res = await fetchWithTimeout(apiUrl("/api/settings"), {
         method: "PUT",
@@ -2124,7 +2122,7 @@ export default function Settings() {
       () => undefined,
     );
     return request;
-  };
+  }, [queryClient]);
 
   const saveCustomVocabulary = useCallback((nextValue: string): Promise<void> => {
     pendingCustomVocabularyRef.current = nextValue;
@@ -2158,7 +2156,7 @@ export default function Settings() {
       }
     });
     return request;
-  }, [toast]);
+  }, [toast, updateSettings]);
 
   useEffect(() => {
     if (!settingsLoaded || customVocabulary === savedCustomVocabularyRef.current) {
@@ -2512,13 +2510,6 @@ export default function Settings() {
         duration: 4000,
       });
     }
-  };
-
-  const handleTranscriptionModelSelectFromDropdown = async (value: string) => {
-    await handleTranscriptionModelChange(value);
-    window.setTimeout(() => {
-      setIsTranscriptionModelDropdownOpen(false);
-    }, 500);
   };
 
   const handleLanguageSelectFromDropdown = async (value: string) => {

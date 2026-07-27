@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -26,6 +28,7 @@ jobs:
             requirements-dev.txt
             requirements-test.txt
             requirements-test-constraints.txt
+            requirements-release-constraints.txt
 
       - name: Create isolated test environment
         shell: pwsh
@@ -37,6 +40,7 @@ jobs:
           .\venv\Scripts\python.exe -m pip install pip==26.1.2
           .\venv\Scripts\python.exe -m pip install `
             -c requirements-test-constraints.txt `
+            -c requirements-release-constraints.txt `
             -r requirements-base.txt `
             -r requirements-test.txt
           .\venv\Scripts\python.exe -m pip check
@@ -70,9 +74,22 @@ jobs:
           .\venv\Scripts\python.exe -m pytest -n 4 --dist loadfile -ra `
             --junitxml build\test-results\python-full-suite.xml
 
-      - name: Typecheck scoped Python modules
+      - name: Typecheck extended Python tranche
         shell: pwsh
-        run: .\venv\Scripts\python.exe -m mypy src\core src\runtime src\data
+        run: >-
+          .\venv\Scripts\python.exe -m mypy
+          src\core
+          src\runtime
+          src\data
+          src\native_overlay.py
+          src\soniox_region.py
+          src\version.py
+          src\config.py
+          src\main.py
+          src\backend_worker.py
+          src\export.py
+          src\post_processing.py
+          src\meeting_export.py
 
       - name: Upload Python test results
         if: always()

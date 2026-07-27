@@ -20,8 +20,8 @@ scripts\project-python.cmd -m pip install ruff==0.15.22
 
 ```powershell
 scripts\project-python.cmd -m pytest -n 4 --dist loadfile -ra
-scripts\project-python.cmd -m ruff check src\core src\runtime src\data
-scripts\project-python.cmd -m ruff format --check src\core src\runtime src\data
+scripts\project-python.cmd -m ruff check src tests scripts
+scripts\project-python.cmd -m ruff format --check src tests scripts
 scripts\project-python.cmd -m mypy src\core src\runtime src\data
 ```
 
@@ -35,10 +35,11 @@ release artifact, and replaces every inherited provider credential with an
 inert test sentinel before application modules load. The full suite therefore
 does not depend on a developer `.env`, local media tools, or real API keys.
 Ruff remains an independent, lightweight Ubuntu gate that installs only
-`ruff==0.15.22` and intentionally stays out of `requirements-test.txt`. Both
-static gates are deliberately limited to `src/core`, `src/runtime`, and
-`src/data`. CI also pins the pip resolver version and validates the complete
-test environment with `pip check`.
+`ruff==0.15.22` and intentionally stays out of `requirements-test.txt`. Lint
+and formatting are enforced without a debt baseline across all maintained
+Python in `src`, `tests`, and `scripts`; mypy expands in reviewed tranches. CI
+also pins the pip resolver version and validates the complete test environment
+with `pip check`.
 
 Frontend:
 
@@ -238,9 +239,11 @@ scripts\project-python.cmd scripts\smoke_diarization_worker_resource.py `
   module and `onnx_asr`. This protects the installed AssemblyAI Universal-3.5
   realtime path and the bundled ONNX local-ASR path. The exact-module AST gate
   additionally requires every direct `pipecat.*` import under `src` to be in the
-  frozen contract; revision 4 preserves the revision-3
-  `pipecat.transports.base_input` transport boundary and adds the bounded
-  installer-research YouTube holdout probe executed by the frozen backend.
+  frozen contract; revision 5 replaces Pipecat's deprecated task/runner aliases
+  with the canonical `pipecat.pipeline.worker` and `pipecat.workers.runner`
+  modules and includes the `audioop-lts` PCM RMS runtime, while preserving the
+  revision-4 bounded installer-research YouTube holdout probe and revision-3
+  `pipecat.transports.base_input` boundary.
 - Provider tests for custom Pipecat services must run with deprecation warnings
   promoted to errors and assert complete Pipecat 1.5 `STTSettings`. Lifecycle
   coverage also verifies that only the expected Windows Proactor WinError 10054
@@ -1278,6 +1281,33 @@ out of `latest.json`.
 Publishing an update still requires uploading the installer, `.sig`,
 `latest.json`, and `SHA256SUMS.txt` to a public HTTPS GitHub Release endpoint,
 then running publication verification against the released `latest.json`.
+The official workflow creates or reuses a draft only after re-reading the live
+annotated tag and `main`. Existing drafts are discovered through a bounded,
+authenticated release-list traversal, bound to their numeric GitHub release
+ID, and never mutated if they are already published. A missing release is first
+created as an empty draft with `generate_release_notes=true`. For both a new
+and an existing draft, the workflow first calls GitHub's bounded
+`releases/generate-notes` API and requires HTTP 200 for the exact tag and event
+SHA. The bound draft must then have exactly `Scriber X.Y.Z` as its title, the
+event SHA as `target_commitish`, and the freshly generated body. A rerun refuses
+foreign or manually edited metadata instead of patching or adopting it.
+Evidence records only the release title, target SHA, bounded UTF-8 body byte
+length, and body SHA-256; it never records the release-note body. Existing
+assets are deleted by asset ID and replacements are uploaded only through the
+bound release's numeric-ID `upload_url`; an exact ID, tag, draft, and metadata
+read is the final API operation before every mutation. The uploaded draft is
+verified by exact release metadata and release ID plus asset ID, name, byte
+size, GitHub SHA-256, and a bounded download hash.
+
+The final draft-byte and expected-state metadata check, live-ref check,
+numeric-ID publication PATCH, and published postconditions run in one Python
+transaction helper. Title, target SHA, and body length/SHA-256 are rechecked
+immediately before and after the PATCH and again during the published-state
+download verification. If any post-publication condition fails, including a
+body race, that helper returns the same release ID to a verified draft. If the
+draft rollback cannot be verified, it deletes exactly that release ID and
+requires a confirming HTTP 404. It never resolves a different release by tag
+for rollback or deletion.
 
 Authenticode validation exists as a gate, but actual signing requires a real
 certificate or cloud-signing provider.

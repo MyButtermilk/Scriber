@@ -21,6 +21,11 @@ from src.celeris import (
     is_celeris_model,
 )
 from src.config import Config
+from src.core.provider_errors import (
+    ProviderTransportError,
+    provider_public_code,
+    provider_transport_error,
+)
 from src.summary_html import normalize_summary_document_html
 from src.runtime.http_response import read_response_text_limited
 
@@ -146,6 +151,9 @@ def _is_retryable_gemini_failure(message: str) -> bool:
         "gemini api error 429",
         "gemini api error 500",
         "gemini api error 503",
+        "status=429",
+        "status=500",
+        "status=503",
         "gemini hit max_tokens",
         "finish_reason=max_tokens",
         "resource_exhausted",
@@ -696,9 +704,9 @@ async def _try_openrouter_summary_fallback(
 
     fallback_models = _openrouter_fallback_models()
     logger.warning(
-        "Summarization with {} failed ({}). Falling back to OpenRouter models {}.",
+        "Summarization with {} failed (error_type={}). Falling back to OpenRouter models {}.",
         primary_model,
-        primary_error,
+        type(primary_error).__name__,
         fallback_models,
     )
     try:
@@ -721,10 +729,10 @@ async def _try_openrouter_summary_fallback(
         raise RuntimeError(
             f"{primary_model} summarization failed and OpenRouter fallback timed out after {timeout_display}s."
         ) from exc
-    except Exception as fallback_exc:
+    except Exception:
         raise RuntimeError(
-            f"{primary_model} summarization failed and the OpenRouter fallback also failed: {fallback_exc}"
-        ) from fallback_exc
+            f"{primary_model} summarization failed and the OpenRouter fallback also failed."
+        ) from None
 
 
 async def summarize_text(
@@ -874,11 +882,10 @@ async def summarize_text(
                         raise RuntimeError(
                             f"Summarization timed out after {timeout_display}s (fallback model: {fallback_model}). Please try again."
                         ) from timeout_exc
-                    except Exception as fallback_exc:
+                    except Exception:
                         raise RuntimeError(
-                            "Gemini summarization failed and the configured OpenAI fallback also failed: "
-                            f"{fallback_exc}"
-                        ) from fallback_exc
+                            "Gemini summarization failed and the configured OpenAI fallback also failed."
+                        ) from None
                 else:
                     raise
             else:
@@ -990,10 +997,19 @@ async def _summarize_openai(prompt: str, model: str, max_output_tokens: int) -> 
 
     except openai.APIError as e:
         logger.error("OpenAI API error ({})", type(e).__name__)
-        raise RuntimeError(f"OpenAI API error: {e}")
+        raise provider_transport_error(
+            "openai",
+            "summarization",
+            status=getattr(e, "status_code", None),
+            code=str(getattr(e, "code", "") or ""),
+        ) from None
     except Exception as e:
         logger.error("OpenAI summarization failed ({})", type(e).__name__)
-        raise RuntimeError(f"OpenAI summarization failed: {e}")
+        raise provider_transport_error(
+            "openai",
+            "summarization",
+            code=type(e).__name__,
+        ) from None
 
 
 def _extract_openai_response_text(response: Any) -> str:
@@ -1043,24 +1059,59 @@ def _build_openrouter_payload(
     return payload
 
 
-def _openrouter_error_detail(status: int, raw: str) -> str:
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return raw[:600]
+_OPENROUTER_FINISH_REASONS = frozenset(
+    {"stop", "length", "content_filter", "tool_calls", "error"}
+)
+_GEMINI_FINISH_REASONS = frozenset(
+    {
+        "BLOCKLIST",
+        "FINISH_REASON_UNSPECIFIED",
+        "IMAGE_OTHER",
+        "IMAGE_PROHIBITED_CONTENT",
+        "IMAGE_SAFETY",
+        "INVALID_IMAGE",
+        "LANGUAGE",
+        "MALFORMED_FUNCTION_CALL",
+        "MAX_TOKENS",
+        "MISSING_THOUGHT_SIGNATURE",
+        "NO_IMAGE",
+        "OTHER",
+        "PROHIBITED_CONTENT",
+        "RECITATION",
+        "SAFETY",
+        "SPII",
+        "STOP",
+        "TOO_MANY_TOOL_CALLS",
+        "UNEXPECTED_TOOL_CALL",
+    }
+)
+_GEMINI_BLOCK_REASONS = frozenset(
+    {
+        "BLOCKLIST",
+        "BLOCK_REASON_UNSPECIFIED",
+        "OTHER",
+        "PROHIBITED_CONTENT",
+        "SAFETY",
+    }
+)
 
-    error = data.get("error") if isinstance(data, dict) else None
-    if isinstance(error, dict):
-        parts = []
-        code = error.get("code")
-        message = error.get("message")
-        if code is not None:
-            parts.append(str(code))
-        if message:
-            parts.append(str(message))
-        if parts:
-            return ": ".join(parts)[:600]
-    return raw[:600] or str(status)
+
+def _safe_model_identifier(value: Any, *, fallback: str = "") -> str:
+    candidate = str(value or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,159}", candidate):
+        return candidate
+    return fallback
+
+
+def _safe_enum_value(value: Any, allowed: frozenset[str]) -> str:
+    candidate = str(value or "").strip()
+    return candidate if candidate in allowed else ""
+
+
+def _safe_nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
 
 
 def _openrouter_reasoning_config() -> dict[str, Any]:
@@ -1108,10 +1159,12 @@ def _openrouter_usage_summary(data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(completion_details, dict):
         completion_details = {}
     return {
-        "prompt_tokens": usage.get("prompt_tokens"),
-        "completion_tokens": usage.get("completion_tokens"),
-        "total_tokens": usage.get("total_tokens"),
-        "reasoning_tokens": completion_details.get("reasoning_tokens"),
+        "prompt_tokens": _safe_nonnegative_int(usage.get("prompt_tokens")),
+        "completion_tokens": _safe_nonnegative_int(usage.get("completion_tokens")),
+        "total_tokens": _safe_nonnegative_int(usage.get("total_tokens")),
+        "reasoning_tokens": _safe_nonnegative_int(
+            completion_details.get("reasoning_tokens")
+        ),
     }
 
 
@@ -1123,8 +1176,7 @@ def _openrouter_choice_diagnostics(choice: dict[str, Any]) -> dict[str, Any]:
     error = choice.get("error") if isinstance(choice, dict) else None
     if isinstance(error, dict):
         choice_error = {
-            "code": error.get("code"),
-            "message": str(error.get("message") or "")[:240] or None,
+            "code": provider_public_code(error.get("code")) or None,
         }
     else:
         choice_error = None
@@ -1133,8 +1185,16 @@ def _openrouter_choice_diagnostics(choice: dict[str, Any]) -> dict[str, Any]:
     reasoning_details = message.get("reasoning_details")
     content_type = type(content).__name__ if content is not None else "None"
     return {
-        "finish_reason": choice.get("finish_reason"),
-        "native_finish_reason": choice.get("native_finish_reason"),
+        "finish_reason": _safe_enum_value(
+            choice.get("finish_reason"),
+            _OPENROUTER_FINISH_REASONS,
+        )
+        or None,
+        "native_finish_reason": _safe_enum_value(
+            choice.get("native_finish_reason"),
+            _OPENROUTER_FINISH_REASONS,
+        )
+        or None,
         "content_type": content_type,
         "content_chars": len(_extract_openrouter_message_content(message).strip()),
         "reasoning_chars": len(reasoning.strip()) if isinstance(reasoning, str) else None,
@@ -1165,7 +1225,7 @@ def _openrouter_empty_response_detail(data: dict[str, Any]) -> str:
     choice_detail = _openrouter_choice_diagnostics(first_choice) if isinstance(first_choice, dict) else {}
     usage = _openrouter_usage_summary(data)
     detail = {
-        "model": data.get("model") if isinstance(data, dict) else None,
+        "model": _openrouter_used_model(data, "unknown"),
         "choice": choice_detail,
         "usage": usage,
     }
@@ -1197,14 +1257,38 @@ async def _post_openrouter_chat_completion(
     ) as resp:
         raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
         if resp.status >= 400:
-            detail = _openrouter_error_detail(resp.status, raw)
-            raise RuntimeError(f"OpenRouter API error {resp.status}: {detail}")
-        return json.loads(raw)
+            raise provider_transport_error(
+                "openrouter",
+                "summarization",
+                status=resp.status,
+                response_body=raw,
+            )
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise provider_transport_error(
+                "openrouter",
+                "summarization_response",
+                code="invalid_json",
+            ) from None
 
 
 def _openrouter_used_model(data: dict[str, Any], fallback: str) -> str:
     model = data.get("model") if isinstance(data, dict) else None
-    return str(model or fallback)
+    candidate = _safe_model_identifier(model)
+    allowed_models = {
+        configured
+        for configured in _MODEL_OUTPUT_TOKEN_CAPS
+        if _is_openrouter_model(configured)
+    }
+    if fallback and fallback != "unknown":
+        allowed_models.add(fallback)
+    if candidate and any(
+        _same_openrouter_model(candidate, allowed)
+        for allowed in allowed_models
+    ):
+        return candidate
+    return fallback
 
 
 def _openrouter_retry_candidates(
@@ -1447,10 +1531,18 @@ async def _summarize_openrouter(
         raise RuntimeError(f"OpenRouter returned empty response. detail={last_empty_detail}")
     except aiohttp.ClientError as e:
         logger.error("OpenRouter summarization HTTP error ({})", type(e).__name__)
-        raise RuntimeError(f"OpenRouter summarization failed: {e}")
+        raise provider_transport_error(
+            "openrouter",
+            "summarization",
+            code=type(e).__name__,
+        ) from None
     except json.JSONDecodeError as e:
         logger.error("OpenRouter summarization parse error ({})", type(e).__name__)
-        raise RuntimeError(f"OpenRouter response parse failed: {e}")
+        raise provider_transport_error(
+            "openrouter",
+            "summarization_response",
+            code="invalid_json",
+        ) from None
     finally:
         await session.close()
 
@@ -1483,9 +1575,20 @@ async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int) -
             async with session.post("https://api.cerebras.ai/v1/chat/completions", headers=headers, json=payload) as resp:
                 raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
                 if resp.status >= 400:
-                    detail = raw[:600]
-                    raise RuntimeError(f"Cerebras API error {resp.status}: {detail}")
-                data = json.loads(raw)
+                    raise provider_transport_error(
+                        "cerebras",
+                        "summarization",
+                        status=resp.status,
+                        response_body=raw,
+                    )
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    raise provider_transport_error(
+                        "cerebras",
+                        "summarization_response",
+                        code="invalid_json",
+                    ) from None
 
         content = _extract_openrouter_response_text(data).strip()
         if not content:
@@ -1499,10 +1602,18 @@ async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int) -
         return content
     except aiohttp.ClientError as e:
         logger.error("Cerebras summarization HTTP error ({})", type(e).__name__)
-        raise RuntimeError(f"Cerebras summarization failed: {e}")
+        raise provider_transport_error(
+            "cerebras",
+            "summarization",
+            code=type(e).__name__,
+        ) from None
     except json.JSONDecodeError as e:
         logger.error("Cerebras summarization parse error ({})", type(e).__name__)
-        raise RuntimeError(f"Cerebras response parse failed: {e}")
+        raise provider_transport_error(
+            "cerebras",
+            "summarization_response",
+            code="invalid_json",
+        ) from None
 
 
 def _build_gemini_payload(prompt: str, model: str, max_output_tokens: int) -> dict[str, Any]:
@@ -1531,14 +1642,18 @@ async def _post_gemini_generate_content(
     retries: int,
 ) -> dict[str, Any]:
     data: dict[str, Any] = {}
-    last_error: RuntimeError | None = None
+    last_error: ProviderTransportError | None = None
 
     for attempt in range(retries + 1):
         async with session.post(url, json=payload) as resp:
             raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
             if resp.status >= 400:
-                detail = raw[:600]
-                err = RuntimeError(f"Gemini API error {resp.status}: {detail}")
+                err = provider_transport_error(
+                    "gemini",
+                    "summarization",
+                    status=resp.status,
+                    response_body=raw,
+                )
                 if resp.status in {429, 500, 503} and attempt < retries:
                     delay = min(8.0, 1.5 * (2 ** attempt))
                     logger.warning(
@@ -1552,7 +1667,14 @@ async def _post_gemini_generate_content(
                     last_error = err
                     continue
                 raise err
-            data = json.loads(raw)
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise provider_transport_error(
+                    "gemini",
+                    "summarization_response",
+                    code="invalid_json",
+                ) from None
             last_error = None
             break
 
@@ -1571,10 +1693,26 @@ def _extract_gemini_response(data: dict[str, Any]) -> tuple[str, str | None, Any
         if isinstance(part, dict) and isinstance(part.get("text"), str)
     ).strip()
 
-    finish_reason = first.get("finishReason") if isinstance(first, dict) else None
+    finish_reason = (
+        _safe_enum_value(
+            first.get("finishReason"),
+            _GEMINI_FINISH_REASONS,
+        )
+        or None
+        if isinstance(first, dict)
+        else None
+    )
     usage = data.get("usageMetadata", {}) if isinstance(data, dict) else {}
-    candidate_tokens = usage.get("candidatesTokenCount")
-    total_tokens = usage.get("totalTokenCount")
+    candidate_tokens = (
+        _safe_nonnegative_int(usage.get("candidatesTokenCount"))
+        if isinstance(usage, dict)
+        else None
+    )
+    total_tokens = (
+        _safe_nonnegative_int(usage.get("totalTokenCount"))
+        if isinstance(usage, dict)
+        else None
+    )
     return content, finish_reason, candidate_tokens, total_tokens
 
 
@@ -1641,8 +1779,24 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> 
                     )
 
                 if not content:
-                    prompt_feedback = data.get("promptFeedback") if isinstance(data, dict) else None
-                    raise RuntimeError(f"Gemini returned empty response. promptFeedback={prompt_feedback}")
+                    feedback = (
+                        data.get("promptFeedback")
+                        if isinstance(data, dict)
+                        else None
+                    )
+                    block_reason = (
+                        _safe_enum_value(
+                            feedback.get("blockReason"),
+                            _GEMINI_BLOCK_REASONS,
+                        )
+                        if isinstance(feedback, dict)
+                        else ""
+                    )
+                    raise provider_transport_error(
+                        "gemini",
+                        "summarization_response",
+                        code=block_reason or "empty_response",
+                    )
 
                 return content
 
@@ -1650,12 +1804,24 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> 
 
     except aiohttp.ClientError as e:
         logger.error("Gemini summarization HTTP error ({})", type(e).__name__)
-        raise RuntimeError(f"Gemini summarization failed: {e}")
+        raise provider_transport_error(
+            "gemini",
+            "summarization",
+            code=type(e).__name__,
+        ) from None
     except json.JSONDecodeError as e:
         logger.error("Gemini summarization parse error ({})", type(e).__name__)
-        raise RuntimeError(f"Gemini response parse failed: {e}")
+        raise provider_transport_error(
+            "gemini",
+            "summarization_response",
+            code="invalid_json",
+        ) from None
     except RuntimeError:
         raise
     except Exception as e:
         logger.error("Gemini summarization failed ({})", type(e).__name__)
-        raise RuntimeError(f"Gemini summarization failed: {e}")
+        raise provider_transport_error(
+            "gemini",
+            "summarization",
+            code=type(e).__name__,
+        ) from None

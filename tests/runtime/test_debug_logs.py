@@ -138,6 +138,7 @@ def test_structured_logs_expose_only_bounded_redacted_debug_context(monkeypatch,
                     "stop_requested_to_first_paste_ms": 1281.0015,
                     "model": "velma-2-stt-streaming",
                     "mode": "realtime",
+                    "error": "private provider response text",
                     "api_key": "must-never-leave-the-log-file",
                     "transcript": "private spoken words",
                     "nested": {
@@ -178,6 +179,7 @@ def test_structured_logs_expose_only_bounded_redacted_debug_context(monkeypatch,
     assert "must-never-leave" not in serialized
     assert "also-secret" not in serialized
     assert "private spoken words" not in serialized
+    assert "private provider response text" not in serialized
 
 
 def test_structured_log_context_caps_legacy_metric_dumps(monkeypatch, tmp_path):

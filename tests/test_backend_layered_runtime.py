@@ -219,6 +219,35 @@ def test_direct_pipecat_imports_use_exact_frozen_runtime_modules() -> None:
     assert "pipecat.transports.base_input" in direct_modules
 
 
+def test_pipeline_provider_wrappers_are_static_lazy_imports_for_packaging() -> None:
+    """Keep provider wrappers lazy without hiding them from PyInstaller analysis."""
+
+    expected_modules = {
+        "src.assemblyai_async_stt",
+        "src.azure_mai_stt",
+        "src.cloud_async_stt",
+        "src.gladia_stt",
+        "src.mistral_stt",
+        "src.modulate_stt",
+        "src.smallest_stt",
+    }
+    source = REPO_ROOT / "src" / "pipeline.py"
+    tree = ast.parse(source.read_text(encoding="utf-8-sig"), filename=str(source))
+    static_imports = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module
+    }
+    module_level_imports = {
+        node.module
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module
+    }
+
+    assert expected_modules <= static_imports
+    assert expected_modules.isdisjoint(module_level_imports)
+
+
 def test_application_layer_stages_only_tracked_files(tmp_path: Path) -> None:
     untracked = REPO_ROOT / "src" / "local-release-secret.env"
     assert not untracked.exists()

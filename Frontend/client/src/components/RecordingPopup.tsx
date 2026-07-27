@@ -3,7 +3,6 @@
 import React, { useEffect, useRef, useState, memo, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Square, Loader2 } from "lucide-react";
-import { wsUrl } from "@/lib/backend";
 import { requestLiveMicStop } from "@/lib/live-mic-control";
 import { useToast } from "@/hooks/use-toast";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
@@ -263,7 +262,7 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
                 setIsTranscribing(false);
                 showRecordingErrorToast(toast, msg);
                 break;
-            case "audio_level":
+            case "audio_level": {
                 if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
                     break;
                 }
@@ -289,6 +288,7 @@ export function RecordingPopup({ className }: RecordingPopupProps) {
                     levelsRef.current[i] = norm * freqFactor * wave;
                 }
                 break;
+            }
         }
     }, [toast]);
 

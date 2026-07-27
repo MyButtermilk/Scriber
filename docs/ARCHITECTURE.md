@@ -29,11 +29,12 @@ composed sidecar remains independently cacheable for exact hits.
 
 The runtime contract pins Pipecat 1.5 and enumerates the exact direct
 `pipecat.*` modules used by `src`. An AST parity gate prevents application code
-from importing a module that PyInstaller did not freeze. Contract revision 4
-also freezes the bounded installer-research YouTube holdout probe beside the
-revision-3 `pipecat.transports.base_input` addition; changing that revision
-invalidates the stable runtime cache instead of reusing an incomplete packaged
-interpreter.
+from importing a module that PyInstaller did not freeze. Contract revision 5
+uses Pipecat 1.5's canonical `PipelineWorker` and `WorkerRunner` modules and
+freezes the `audioop-lts` PCM RMS runtime, while preserving the revision-4
+bounded installer-research YouTube holdout probe and revision-3
+`pipecat.transports.base_input` addition. Changing that revision invalidates the
+stable runtime cache instead of reusing an incomplete packaged interpreter.
 
 The installed app is local-first. The backend binds to loopback, and the Tauri
 supervisor injects a per-run session token for local control endpoints.
@@ -188,7 +189,10 @@ Meetings:
    may hold and merge an early Soniox endpoint when the local ONNX analyzer
    reports an incomplete phrase, but it never gates durable recording, system
    audio, or the canonical post-meeting transcript. Analyzer failures fall back
-   to provider endpointing and remain visible only as redacted counters.
+   to provider endpointing and remain visible only as redacted counters. The
+   preview speech gate and bounded UI level calculation share
+   `src.runtime.pcm_audio` backed by `audioop-lts`; one trailing partial PCM16
+   byte is ignored consistently at capture boundaries.
 4. Pause arms the Python readers for an intentional disconnect before releasing
    native capture, commits any valid in-progress WAV through the normal
    two-phase path, and records a timeline gap. This ordering is required because

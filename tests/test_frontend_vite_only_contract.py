@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_ROOT = REPO_ROOT / "Frontend"
 
@@ -75,14 +74,29 @@ def test_frontend_package_is_vite_only() -> None:
     assert scripts["build"] == "npm run build:webview"
     assert scripts["build:webview"] == "vite build"
     assert scripts["check"] == "npm run check:app && npm run check:tests"
-    assert scripts["test"] == 'tsx --test "client/src/**/*.test.ts"'
+    assert scripts["lint"] == "eslint . --max-warnings 0"
+    assert scripts["test"] == "npm run test:lib && npm run test:components"
+    assert scripts["test:lib"] == 'tsx --test "client/src/**/*.test.ts"'
+    assert (
+        scripts["test:components"]
+        == "vitest run --config vitest.components.config.ts"
+    )
     assert scripts["tauri:dev"] == "tauri dev"
     assert scripts["tauri:build"] == "tauri build"
     assert scripts["tauri:bundle"] == "tauri bundle"
     assert {"start", "db:push"}.isdisjoint(scripts)
 
     assert len(dependencies) == 62
-    assert len(dev_dependencies) == 12
+    assert len(dev_dependencies) == 24
+    assert {
+        "@eslint/js",
+        "@testing-library/react",
+        "eslint",
+        "eslint-plugin-react-hooks",
+        "jsdom",
+        "typescript-eslint",
+        "vitest",
+    } <= set(dev_dependencies)
     assert REMOVED_DEPENDENCIES.isdisjoint(dependencies)
     assert REMOVED_DEV_DEPENDENCIES.isdisjoint(dev_dependencies)
     assert not package.get("optionalDependencies")

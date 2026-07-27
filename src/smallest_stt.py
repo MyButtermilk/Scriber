@@ -28,6 +28,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from src.core.provider_errors import provider_transport_error, provider_user_error
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.http_response import read_response_text_limited
 
@@ -178,7 +179,12 @@ async def transcribe_with_smallest_pre_recorded(
     ) as resp:
         raw = await read_response_text_limited(resp, 64 * 1024 * 1024)
         if resp.status >= 400:
-            raise RuntimeError(f"Smallest AI transcription failed ({resp.status}): {raw[:500]}")
+            raise provider_transport_error(
+                "smallest",
+                "transcription",
+                status=resp.status,
+                response_body=raw,
+            )
 
     if not raw:
         return {}
@@ -190,7 +196,11 @@ async def transcribe_with_smallest_pre_recorded(
         return {}
     status = str(payload.get("status") or "").strip().lower()
     if status and status != "success":
-        raise RuntimeError(f"Smallest AI transcription failed: {payload}")
+        raise provider_transport_error(
+            "smallest",
+            "transcription",
+            code=status,
+        )
     return payload
 
 
@@ -313,8 +323,16 @@ class SmallestAsyncProcessor(FrameProcessor):
                             direction,
                         )
             except Exception as exc:
-                logger.error(f"Smallest AI async transcription failed: {exc}")
-                await self.push_frame(ErrorFrame(error=f"smallest async error: {exc}"), direction)
+                info = provider_user_error("smallest", exc)
+                logger.error(
+                    "Smallest AI async transcription failed (error_type={}, code={})",
+                    type(exc).__name__,
+                    info.code or "unknown",
+                )
+                await self.push_frame(
+                    ErrorFrame(error=f"smallest async error: {info.message}"),
+                    direction,
+                )
             finally:
                 self._reset_buffer()
             await self.push_frame(frame, direction)
@@ -395,9 +413,14 @@ class SmallestRealtimeSTTService(FrameProcessor):
             return True
         except Exception as exc:
             self._connect_failed = True
-            logger.error(f"Smallest AI realtime websocket connection failed: {exc}")
+            info = provider_user_error("smallest", exc)
+            logger.error(
+                "Smallest AI realtime websocket connection failed (error_type={}, code={})",
+                type(exc).__name__,
+                info.code or "unknown",
+            )
             await self.push_frame(
-                ErrorFrame(error=f"smallest realtime connection error: {exc}"),
+                ErrorFrame(error=f"smallest realtime connection error: {info.message}"),
                 direction,
             )
             return False
@@ -421,22 +444,41 @@ class SmallestRealtimeSTTService(FrameProcessor):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.error(f"Smallest AI realtime receive failed: {exc}")
-            await self.push_frame(ErrorFrame(error=f"smallest realtime error: {exc}"), direction)
+            info = provider_user_error("smallest", exc)
+            logger.error(
+                "Smallest AI realtime receive failed (error_type={}, code={})",
+                type(exc).__name__,
+                info.code or "unknown",
+            )
+            await self.push_frame(
+                ErrorFrame(error=f"smallest realtime error: {info.message}"),
+                direction,
+            )
 
     async def _handle_response(self, raw: str, direction: FrameDirection) -> bool:
         try:
             payload = json.loads(raw)
         except Exception:
-            logger.debug(f"Smallest AI realtime returned non-JSON message: {raw[:200]}")
+            logger.debug(
+                "Smallest AI realtime returned non-JSON message (response_bytes={})",
+                len(raw.encode("utf-8", errors="replace")),
+            )
             return False
         if not isinstance(payload, dict):
             return False
 
         status = str(payload.get("status") or "").strip().lower()
         if status and status != "success":
+            info = provider_user_error(
+                "smallest",
+                provider_transport_error(
+                    "smallest",
+                    "realtime",
+                    code=status,
+                ),
+            )
             await self.push_frame(
-                ErrorFrame(error=f"smallest realtime error: {payload}"),
+                ErrorFrame(error=f"smallest realtime error: {info.message}"),
                 direction,
             )
             return False
@@ -466,7 +508,10 @@ class SmallestRealtimeSTTService(FrameProcessor):
                 await ws.send_str(json.dumps({"type": "close_stream"}))
                 self._close_sent = True
             except Exception as exc:
-                logger.debug(f"Smallest AI close_stream warning: {exc}")
+                logger.debug(
+                    "Smallest AI close_stream warning (error_type={})",
+                    type(exc).__name__,
+                )
 
         task = self._receive_task
         if wait_for_last and task and not task.done():
@@ -477,7 +522,10 @@ class SmallestRealtimeSTTService(FrameProcessor):
             except asyncio.CancelledError:
                 pass
             except Exception as exc:
-                logger.debug(f"Smallest AI receive task warning: {exc}")
+                logger.debug(
+                    "Smallest AI receive task warning (error_type={})",
+                    type(exc).__name__,
+                )
 
         if ws and not ws.closed:
             await ws.close()
@@ -499,8 +547,16 @@ class SmallestRealtimeSTTService(FrameProcessor):
                 try:
                     await self._ws.send_bytes(frame.audio)  # type: ignore[union-attr]
                 except Exception as exc:
-                    logger.error(f"Smallest AI realtime send failed: {exc}")
-                    await self.push_frame(ErrorFrame(error=f"smallest realtime send error: {exc}"), direction)
+                    info = provider_user_error("smallest", exc)
+                    logger.error(
+                        "Smallest AI realtime send failed (error_type={}, code={})",
+                        type(exc).__name__,
+                        info.code or "unknown",
+                    )
+                    await self.push_frame(
+                        ErrorFrame(error=f"smallest realtime send error: {info.message}"),
+                        direction,
+                    )
             await self.push_frame(frame, direction)
             return
 

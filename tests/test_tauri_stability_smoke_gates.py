@@ -8,6 +8,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,9 +33,7 @@ def test_hotkey_refresh_is_serialized_and_partial_registration_is_settled() -> N
     wrapper = lib.split("fn refresh_global_hotkey_for_app<R: Runtime>", 1)[1].split(
         "fn refresh_global_hotkey_for_app_locked", 1
     )[0]
-    locked = lib.split("fn refresh_global_hotkey_for_app_locked", 1)[1].split(
-        "fn handle_global_shortcut_event", 1
-    )[0]
+    locked = lib.split("fn refresh_global_hotkey_for_app_locked", 1)[1].split("fn handle_global_shortcut_event", 1)[0]
 
     assert "registration: Mutex<()>" in lib
     assert "lock_unpoisoned(&hotkey_state.registration)" in wrapper
@@ -75,8 +74,8 @@ def test_unexpected_backend_exit_stops_all_audio_sidecars_before_recovery() -> N
 
     assert 'shutdown_all_audio_sidecars(\n                    "managedBackendExitedUnexpectedly"' in lib
     assert 'shutdown_all_audio_sidecars(\n                    "managedBackendInspectionFailed"' in lib
-    assert "after unexpected backend exit pid={pid}" in lib
-    assert "after backend inspection failure pid={pid}" in lib
+    assert "after unexpected backend exit pid_hash={pid_hash}" in lib
+    assert "after backend inspection failure pid_hash={pid_hash}" in lib
 
 
 def test_every_managed_backend_replacement_drains_audio_sidecars_first() -> None:
@@ -288,7 +287,7 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "function Sync-DirectoryContents" in sidecar
     assert "function Copy-FileIfChanged" in sidecar
     assert "function Get-RustAudioSidecarInputManifest" in sidecar
-    assert r'Frontend\src-tauri\src\meeting_aec.rs' in sidecar
+    assert r"Frontend\src-tauri\src\meeting_aec.rs" in sidecar
     assert "function Write-SidecarBuildMetadata" in sidecar
     assert "PySide6" not in sidecar
     assert "[switch]$UseProfileBFfmpeg" in sidecar
@@ -326,12 +325,14 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "rust-audio-sidecar-target" in sidecar
     assert '"target\\release"' in sidecar
     assert "audio-sidecar-build-metadata.json" in sidecar
-    assert 'Test-ScriberFfmpegCapabilities -Path $copiedFfmpeg' in sidecar
+    assert "Test-ScriberFfmpegCapabilities -Path $copiedFfmpeg" in sidecar
     assert '-Label "copied"' in sidecar
     assert '-Label "target-current"' in sidecar
     assert '"--meeting-only"' in sidecar
     assert 'foreach ($filter in @("adelay"' in sidecar
-    assert 'Test-ScriberFfmpegCapabilities -Path (Join-Path $script:PreparedProfileBMediaToolsDir "ffmpeg.exe")' in sidecar
+    assert (
+        'Test-ScriberFfmpegCapabilities -Path (Join-Path $script:PreparedProfileBMediaToolsDir "ffmpeg.exe")' in sidecar
+    )
     assert "Ignoring stale or unusable Profile B build report" in sidecar
     assert "sidecarSha256 = Get-Sha256Hex -Path $cachedSidecarExe" in sidecar
     assert 'Get-ObjectPropertyValue -Object $rustAudio -Name "sha256"' in sidecar
@@ -352,7 +353,10 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "executable failed validation" in sidecar
     assert '-Filter "*.dll"' in sidecar
     assert "[switch]$SkipBundledFfprobe" in sidecar
-    assert 'Copy-MediaTools -SidecarDir $sidecarDir -SearchDir $MediaToolsDir -SkipFfprobe ([bool]$SkipBundledFfprobe) -ValidateSlimBundle ([bool]$ValidateSlimMediaTools)' in sidecar
+    assert (
+        "Copy-MediaTools -SidecarDir $sidecarDir -SearchDir $MediaToolsDir -SkipFfprobe ([bool]$SkipBundledFfprobe) -ValidateSlimBundle ([bool]$ValidateSlimMediaTools)"
+        in sidecar
+    )
     assert "Skipping bundled ffprobe" in sidecar
     assert "sidecar-build-metadata.json" in sidecar
     assert "sidecar-cache-save" in sidecar
@@ -398,27 +402,18 @@ def test_diarization_cold_build_is_prestaged_in_parallel_without_sharing_backend
         "Starting Rust diarization sidecar prestage in parallel with the Python backend."
     ) < sidecar.index('Invoke-TimedStep -Label "pyinstaller-build"')
 
-    backend_staging_index = sidecar.index(
-        'Invoke-TimedStep -Label "copy-to-tauri-release"'
-    )
+    backend_staging_index = sidecar.index('Invoke-TimedStep -Label "copy-to-tauri-release"')
     shared_audio_index = sidecar.index(
         "$script:RustAudioSidecarCopied = Copy-RustAudioSidecarToTauriRelease "
         "-Root $RepoRoot -UseIsolatedTarget ([bool]$RustAudioIsolatedTarget)"
     )
     diarization_join_index = sidecar.index(
-        "if ($rustDiarizationParallelProcess) {\n"
-        "    $rustDiarizationParallelOk = $false"
+        "if ($rustDiarizationParallelProcess) {\n    $rustDiarizationParallelOk = $false"
     )
     final_diarization_staging_index = sidecar.index(
-        "if ($BundleRustDiarizationSidecar) {\n"
-        '    Invoke-TimedStep -Label "rust-diarization-sidecar-build"'
+        'if ($BundleRustDiarizationSidecar) {\n    Invoke-TimedStep -Label "rust-diarization-sidecar-build"'
     )
-    assert (
-        backend_staging_index
-        < shared_audio_index
-        < diarization_join_index
-        < final_diarization_staging_index
-    )
+    assert backend_staging_index < shared_audio_index < diarization_join_index < final_diarization_staging_index
 
     assert '$sidecarArgs += "-ParallelizeRustDiarizationBuild"' in installer
     assert '$sidecarArgs += "-ParallelizeIndependentBuilds"' not in installer
@@ -437,7 +432,7 @@ def test_sidecar_cache_key_excludes_frontend_dist() -> None:
     assert '"packaging\\scriber-backend.spec"' in manifest_block
     assert '"scripts/check_backend_runtime_imports.py"' in manifest_block
     assert "Frontend/dist/public" not in spec
-    assert "Frontend\" / \"dist\" / \"public" not in spec
+    assert 'Frontend" / "dist" / "public' not in spec
 
 
 def test_gyan_essentials_prepare_script_downloads_and_verifies_archive() -> None:
@@ -476,7 +471,7 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "cleanMessage = Remove-AnsiEscapeSequences -Value $message" in build
     assert "tauri-windows-bundle.log" in build
     assert "tauri-bundle-log-summary.json" in build
-    assert '[System.IO.StreamWriter]::new($tauriBundleLogPath' in build
+    assert "[System.IO.StreamWriter]::new($tauriBundleLogPath" in build
     assert "cmd.exe /d /s /c $tauriCommand" in build
     assert "2>&1' -f $quotedBundleArg, $quotedConfigPath" in build
     assert '$tauriLogWriter.WriteLine(("{0}`t{1}"' in build
@@ -484,7 +479,10 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "$failureBuildMode" in build
     assert "failed = $true" in build
     assert "cargoCompiling" in build
-    assert 'cargoFinished = Get-LogMatchCount -Lines $messageLines -Pattern "(?i)^\\s*Finished\\s+.*profile.*target\\(s\\)"' in build
+    assert (
+        'cargoFinished = Get-LogMatchCount -Lines $messageLines -Pattern "(?i)^\\s*Finished\\s+.*profile.*target\\(s\\)"'
+        in build
+    )
     assert "firstLineToMakensisSeconds" in build
     assert "makensisToUpdaterSignatureSeconds" in build
     assert "firstCargoCompileLines" in build
@@ -494,8 +492,8 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert "--remove-before-bundle-command" in build
     assert "--skip-updater-config" in build
     assert "--nsis-compression" in build
-    assert "npm run tauri:build -- --bundles \"{0}\" --config \"{1}\" --ci 2>&1" in build
-    assert "npm run tauri:bundle -- --bundles \"{0}\" --config \"{1}\" --ci 2>&1" in build
+    assert 'npm run tauri:build -- --bundles "{0}" --config "{1}" --ci 2>&1' in build
+    assert 'npm run tauri:bundle -- --bundles "{0}" --config "{1}" --ci 2>&1' in build
     assert "[switch]$UsePrebuiltTauriApp" in build
     assert "[switch]$ParallelizeIndependentBuilds" in build
     assert "function Start-TrackedReleaseProcess" in build
@@ -568,12 +566,7 @@ def test_release_workflow_builds_profile_b_media_tools_for_standard_build() -> N
 
     assert "PrunePySide6" not in workflow
     assert "Set up MSYS2" in workflow
-    assert (
-        workflow.count(
-            "msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2"
-        )
-        == 2
-    )
+    assert workflow.count("msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2") == 2
     assert "Build FFmpeg Profile B media tools" in workflow
     assert "scripts\\ffmpeg\\build_profile_b_msys2.ps1" in workflow
     assert "profile-b-msys2-build-report.json" in workflow
@@ -623,16 +616,16 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert '"runtime`tsource-commit`t$env:GITHUB_SHA"' in workflow
     assert "SCRIBER_OUTLOOK_CLIENT_ID: ${{ vars.SCRIBER_OUTLOOK_CLIENT_ID }}" in workflow
     assert "Validate Outlook release configuration" in workflow
-    assert "if: startsWith(github.ref, 'refs/tags/')" in workflow
-    assert workflow.index("Validate Outlook release configuration") < workflow.index(
-        "Compute release cache keys"
-    )
+    assert "if: steps.official-release.outputs.official-release == 'true'" in workflow
+    assert workflow.index("Validate Outlook release configuration") < workflow.index("Compute release cache keys")
     assert "Validate tag release signing preflight" in workflow
-    assert "if: startsWith(github.ref, 'refs/tags/v')" in workflow
+    assert "if: needs.release-plan.outputs.official-release == 'true'" in workflow
     assert "scripts\\ci\\validate_tag_release_preflight.ps1" in workflow
-    assert workflow.index("Validate Outlook release configuration") < workflow.index(
-        "Validate tag release signing preflight"
-    ) < workflow.index("Compute release cache keys")
+    assert (
+        workflow.index("Validate Outlook release configuration")
+        < workflow.index("Validate tag release signing preflight")
+        < workflow.index("Compute release cache keys")
+    )
     assert '[Guid]::TryParseExact($clientId, "D", [ref]$parsed)' in workflow
     assert "Official tag releases require a valid SCRIBER_OUTLOOK_CLIENT_ID" in workflow
     assert 'Add-DynamicRow -Path $tauriAppBinaryPath -Name "outlook-client-id-present"' in cache_key_finalizer
@@ -645,7 +638,10 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "Restore Python wheelhouse cache" in workflow
     assert "scriber-python-wheelhouse-" in workflow
     assert 'Name = "Python pip download store"' in workflow
-    assert "pip wheel --wheel-dir $wheelhouse --prefer-binary" in workflow
+    assert (
+        "pip wheel --constraint requirements-release-constraints.txt --wheel-dir $wheelhouse --prefer-binary"
+        in workflow
+    )
     assert "requirements-dev.txt" not in workflow
     assert "npm ci --prefer-offline --no-audit --fund=false" in workflow
     assert "npm ls --depth=0 --silent" not in workflow
@@ -656,8 +652,14 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert 'Name = "npm package store"' in workflow
     assert "not-needed-node_modules" in workflow
     assert "hashFiles('build/cache-keys/frontend-dependencies.txt')" in workflow
-    assert "key: scriber-backend-sidecar-v2-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}" in workflow
-    assert "scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip" in workflow
+    assert (
+        "key: scriber-backend-sidecar-v2-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}"
+        in workflow
+    )
+    assert (
+        "scriber-backend-sidecar-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}.zip"
+        in workflow
+    )
     assert "Resolve cached FFmpeg Profile B media tools" in workflow
     assert "Restore independent release-cache fallbacks in parallel" in workflow
     assert "Publish bounded finished component caches in parallel" in workflow
@@ -682,11 +684,17 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "build\\release-cache-summary.json" in workflow
     assert "Wrote machine-readable cache summary" in workflow
     assert "ConvertTo-Json -Depth 6" in workflow
-    assert 'Get-PathEvidence "Rust build" @(".cargo\\registry\\index", ".cargo\\registry\\cache", ".cargo\\git\\db", "Frontend\\src-tauri\\target\\release\\.fingerprint", "Frontend\\src-tauri\\target\\release\\deps", "Frontend\\src-tauri\\target\\release\\incremental")' in workflow
+    assert (
+        'Get-PathEvidence "Rust build" @(".cargo\\registry\\index", ".cargo\\registry\\cache", ".cargo\\git\\db", "Frontend\\src-tauri\\target\\release\\.fingerprint", "Frontend\\src-tauri\\target\\release\\deps", "Frontend\\src-tauri\\target\\release\\incremental")'
+        in workflow
+    )
     assert 'Get-PathEvidence "Rust build target cache"' in workflow
     assert "| Cache path | Exists | Non-empty | Existing paths |" in workflow
     assert "Copy-Item -LiteralPath build\\release-cache-summary.json -Destination release-artifacts\\" in workflow
-    assert "Copy-Item Frontend\\src-tauri\\target\\release\\release-metadata\\*.log release-artifacts\\ -ErrorAction SilentlyContinue" in workflow
+    assert (
+        "Copy-Item Frontend\\src-tauri\\target\\release\\release-metadata\\*.log release-artifacts\\ -ErrorAction SilentlyContinue"
+        in workflow
+    )
     assert "path: build/tauri-sidecar-cache" in workflow
     assert "build/rust-audio-sidecar-cache\n          key: scriber-backend-sidecar" not in workflow
     assert "Report Windows installer timing" in workflow
@@ -702,7 +710,10 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "Collect failure diagnostics" in workflow
     assert "scriber-windows-failure-diagnostics" in workflow
     assert "Summarize release artifact timing" in workflow
-    assert "scripts\\summarize_release_artifacts.py release-artifacts --output release-artifacts\\release-artifact-summary.json" in workflow
+    assert (
+        "scripts\\summarize_release_artifacts.py release-artifacts --output release-artifacts\\release-artifact-summary.json"
+        in workflow
+    )
     assert "Release artifact timing brief" in workflow
     assert "release-artifacts\\release-artifact-summary.json" in workflow
     assert "restore_component_cache_artifacts_parallel.ps1" in workflow
@@ -710,22 +721,24 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "ffmpeg-profile-b-n7.0-v4" in workflow
     assert 'Name = "FFmpeg Profile B"' in workflow
     assert "$ffmpegProfileBArtifactRestored" in workflow
-    assert "mode = \"release-artifact\"" in workflow
+    assert 'mode = "release-artifact"' in workflow
     assert "ffmpeg-profile-b-resolve.outputs.usable != 'true'" in workflow
     assert "Restored Profile B media tools were not usable" in workflow
-    assert "scriber-ffmpeg-profile-b-msys2-n7.0-v4-" in workflow
+    assert (
+        "scriber-ffmpeg-profile-b-msys2-${{ runner.os }}-${{ hashFiles('packaging/ffmpeg-profile-b-release-lock-v1.json') }}"
+        in workflow
+    )
     assert "Restore backend sidecar cache" in workflow
     assert "Report release cache hits" in workflow
     assert "Export Rust build release artifact" in workflow
     assert (
-        "env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && "
-        "steps.rust-build-artifact.outputs.exact != 'true'"
+        "env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true'"
     ) in workflow
     assert "steps.rust-build-cache.outputs.cache-matched-key == ''" in workflow
     assert "SCRIBER_SAVE_ACTIONS_CACHES" in workflow
     assert "SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS" in workflow
     assert "SCRIBER_PUBLISH_FINISHED_COMPONENT_CACHE_ARTIFACTS" in workflow
-    assert 'startsWith(github.ref, \'refs/tags/\')' in workflow
+    assert "needs.release-plan.outputs.official-release == 'true'" in workflow
     assert "github.ref == 'refs/heads/main'" in workflow
     assert "github.event.inputs.refresh_release_cache_artifacts == 'true'" in workflow
     assert "actions: write" in workflow
@@ -734,7 +747,10 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "SCRIBER_PUBLISH_BACKEND_FINISHED_CACHE" in workflow
     assert "env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true'" in workflow
     assert "steps.backend-sidecar-cache-selection.outputs.selected == 'true'" in workflow
-    assert "if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true'" in workflow
+    assert (
+        "if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.rust-build-artifact.outputs.exact != 'true'"
+        in workflow
+    )
     assert "Select current backend sidecar cache entry" in workflow
     assert "scripts\\ci\\select_backend_sidecar_cache_entry.ps1" in workflow
     assert "Restore exact Tauri app binary" in workflow
@@ -756,9 +772,7 @@ def test_release_workflow_parallelizes_only_disjoint_finished_cache_fallbacks() 
     assert "Restore Rust audio sidecar release artifact" not in workflow
     assert "Restore Rust diarization sidecar release artifact" not in workflow
     assert "Restore FFmpeg Profile B release artifact" not in workflow
-    restore_block = workflow[
-        restore_index : workflow.index("Restore pip package store", restore_index)
-    ]
+    restore_block = workflow[restore_index : workflow.index("Restore pip package store", restore_index)]
     assert "$restoreArgs = @{" in restore_block
     assert "$restoreArgs.RestoreRustAudio = $true" in restore_block
     assert "$restoreArgs.RestoreRustDiarization = $true" in restore_block
@@ -772,7 +786,7 @@ def test_release_workflow_parallelizes_only_disjoint_finished_cache_fallbacks() 
     assert "Stop-Job -Job" not in helper
     assert "& $ScriptPath" in helper
     assert "powershell.exe -NoProfile -File" not in helper
-    assert '$env:GITHUB_OUTPUT = $ChildOutputPath' in helper
+    assert "$env:GITHUB_OUTPUT = $ChildOutputPath" in helper
     assert '"{0}.github-output.txt" -f $component.Slug' in helper
     assert 'DestinationPath = "build\\rust-audio-sidecar-cache"' in helper
     assert 'DestinationPath = "build\\rust-diarization-sidecar-cache"' in helper
@@ -790,13 +804,50 @@ def test_release_workflow_parallelizes_only_disjoint_finished_cache_fallbacks() 
 def test_finished_component_cache_publication_is_parallel_and_post_release() -> None:
     workflow = read_script(".github/workflows/release-windows.yml")
     helper = read_script("scripts/ci/publish_finished_component_caches_parallel.ps1")
+    publisher = read_script("scripts/ci/publish_github_release.py")
+    workflow_data = yaml.safe_load(workflow)
+    steps = workflow_data["jobs"]["build-windows"]["steps"]
+    step_names = [step.get("name", "") for step in steps]
 
     collect_index = workflow.index("Collect release artifacts")
-    release_index = workflow.index("Publish GitHub release")
+    release_index = workflow.index("Verify and publish exact GitHub release transaction")
     verify_index = workflow.index("Verify published updater metadata")
     evidence_index = workflow.index("Upload publication evidence")
     caches_index = workflow.index("Publish bounded finished component caches in parallel")
     assert collect_index < release_index < verify_index < evidence_index < caches_index
+    assert step_names.index("Verify and publish exact GitHub release transaction") < (
+        step_names.index("Verify published updater metadata")
+    )
+    assert step_names.index("Verify published updater metadata") < step_names.index("Upload publication evidence")
+    assert step_names.index("Upload publication evidence") < step_names.index(
+        "Publish bounded finished component caches in parallel"
+    )
+    release_step = next(
+        step for step in steps if step.get("name") == "Verify and publish exact GitHub release transaction"
+    )
+    verification_step = next(step for step in steps if step.get("name") == "Verify published updater metadata")
+    evidence_step = next(step for step in steps if step.get("name") == "Upload publication evidence")
+    cache_step = next(
+        step for step in steps if step.get("name") == "Publish bounded finished component caches in parallel"
+    )
+    assert "python -m scripts.ci.publish_github_release" in release_step["run"]
+    assert "--post-publish-download-dir $postPublishRoot" in release_step["run"]
+    assert "build\\release-publication-transaction.json" in release_step["run"]
+    assert "scripts\\verify_tauri_updater_publication.py" in verification_step["run"]
+    assert "build/release-publication-transaction.json" in evidence_step["with"]["path"]
+    official_release_condition = "needs.release-plan.outputs.official-release == 'true'"
+    assert release_step["if"] == official_release_condition
+    assert verification_step["if"] == official_release_condition
+    assert evidence_step["if"] == official_release_condition
+    assert release_step.get("continue-on-error") is not True
+    assert verification_step.get("continue-on-error") is not True
+    assert evidence_step.get("continue-on-error") is not True
+    cache_condition = str(cache_step["if"])
+    assert all(status_function not in cache_condition for status_function in ("always()", "failure()", "cancelled()"))
+    assert 'phase="published"' in publisher
+    assert "published_report = verify_github_release_state(" in publisher
+    assert "post_publish_live_ref_report = validate_live_release_ref(" in publisher
+    assert "_rollback_publication(" in publisher
     assert workflow.count("Publish bounded finished component caches in parallel") == 1
     assert "continue-on-error: true" in workflow[caches_index:]
     assert "SCRIBER_PUBLISH_FFMPEG_FINISHED_CACHE" in workflow[caches_index:]
@@ -824,9 +875,9 @@ def test_finished_component_cache_publication_is_parallel_and_post_release() -> 
     assert "[int]$PublicationTimeoutSeconds = 900" in helper
     assert "-Timeout $PublicationTimeoutSeconds" in helper
     assert "Stop-Job -Job $timedOutJobs" in helper
-    assert '$env:GITHUB_OUTPUT = $ChildOutputPath' in helper
+    assert "$env:GITHUB_OUTPUT = $ChildOutputPath" in helper
     assert '"{0}.github-output.txt" -f $component.Slug' in helper
-    assert "mode = \"parallel-best-effort\"" in helper
+    assert 'mode = "parallel-best-effort"' in helper
     assert "The verified app release remains valid" in helper
     assert "::warning title=Scriber cache publication::" in helper
     assert "publish_profile_b_release_artifact.ps1" in helper
@@ -949,9 +1000,7 @@ def test_parallel_tauri_compile_config_strips_only_bundle_resources(tmp_path: Pa
         )
         assert result.returncode == 0, result.stderr
 
-        compile_config = json.loads(
-            (config_path.parent / "tauri.compile-only.conf.json").read_text(encoding="utf-8")
-        )
+        compile_config = json.loads((config_path.parent / "tauri.compile-only.conf.json").read_text(encoding="utf-8"))
         assert compile_config["bundle"]["resources"] == []
         if bundle_mode == "without-bundle":
             assert compile_config["bundle"] == {"resources": []}
@@ -986,22 +1035,25 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert "Normalize-CargoLock" in script
     assert "Normalize-PythonVersionFile" in script
     assert 'Add-RawFileEntry -Entries $rustEntries -Path "Frontend/src-tauri/tauri.conf.json"' in script
-    assert 'Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/capabilities" -Filter "*.json"' in script
+    assert (
+        'Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/capabilities" -Filter "*.json"' in script
+    )
     assert 'Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/icons" -Filter "*"' in script
     assert '"scripts/check_backend_runtime_imports.py"' in script
     assert 'Add-FileGlobEntries -Entries $backendRuntimeEntries -Root "backend_runtime" -Filter "*.py"' in script
     assert 'Add-FileGlobEntries -Entries $backendRuntimeEntries -Root "pyloudnorm" -Filter "*.py"' in script
-    assert 'constant`tffmpeg-profile`tffmpeg-profile-b-n7.0-v4' in script
+    assert "constant`tffmpeg-profile-lock`tffmpeg-profile-b-release-lock-v1" in script
+    assert '"packaging/ffmpeg-profile-b-release-lock-v1.json"' in script
     assert "Get-BackendSidecarOutputContract" in script
-    assert 'packaging/backend-sidecar-output-contract.json' in script
-    assert 'contract`trevision`t$($backendContract.revision)' in script
-    assert 'flag`tbundleMediaTools`ttrue' in script
-    assert 'flag`tuseProfileBFfmpeg`ttrue' in script
-    assert 'flag`tuseGyanFfmpegEssentials`tfalse' in script
-    assert 'flag`tskipBundledFfprobe`tfalse' in script
-    assert 'flag`tvalidateSlimMediaTools`ttrue' in script
-    assert 'flag`tpyInstallerClean`ttrue' in script
-    assert script.count('constant`ttoolchain`trust-1.97.0') == 3
+    assert "packaging/backend-sidecar-output-contract.json" in script
+    assert "contract`trevision`t$($backendContract.revision)" in script
+    assert "flag`tbundleMediaTools`ttrue" in script
+    assert "flag`tuseProfileBFfmpeg`ttrue" in script
+    assert "flag`tuseGyanFfmpegEssentials`tfalse" in script
+    assert "flag`tskipBundledFfprobe`tfalse" in script
+    assert "flag`tvalidateSlimMediaTools`ttrue" in script
+    assert "flag`tpyInstallerClean`ttrue" in script
+    assert script.count("constant`ttoolchain`trust-1.97.0") == 3
     assert "Add-GitTrackedEntries" in script
     assert "__pycache__" in script
     assert '@(".pyc", ".pyo")' in script
@@ -1026,23 +1078,20 @@ def test_release_cache_gc_keeps_exactly_one_current_generation() -> None:
     assert "[switch]$VerifyCurrentGeneration" in gc
     assert "expected exactly one main Rust dependency cache" in gc
     assert "Release cache generation verification passed" in gc
-    assert gc.index("if ($VerifyCurrentGeneration -and $Apply)") < gc.index(
-        "if (-not (Get-Command gh"
-    )
+    assert gc.index("if ($VerifyCurrentGeneration -and $Apply)") < gc.index("if (-not (Get-Command gh")
     assert "release-cache-backend-sidecar-v2" in gc
     assert "release-cache-rust-build-v2" in gc
     assert "ffmpeg-profile-b-n7.0-v4" in gc
-    rolling_gc = gc.split("foreach ($family in $rollingFamilies)", 1)[1].split(
-        "# Ref-scoped caches", 1
-    )[0]
-    assert rolling_gc.index("[DateTimeOffset]$_.createdAt") < rolling_gc.index(
-        "[DateTimeOffset]$_.lastAccessedAt"
-    )
+    rolling_gc = gc.split("foreach ($family in $rollingFamilies)", 1)[1].split("# Ref-scoped caches", 1)[0]
+    assert rolling_gc.index("[DateTimeOffset]$_.createdAt") < rolling_gc.index("[DateTimeOffset]$_.lastAccessedAt")
     assert "Prune obsolete release caches" in workflow
     assert "Verify current release cache generation" in workflow
     verify_block = workflow.split("- name: Verify current release cache generation", 1)[1]
     assert "-ExpectedRustDependencyKey" in verify_block
-    assert "scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}" in verify_block
+    assert (
+        "scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}"
+        in verify_block
+    )
     assert "-VerifyCurrentGeneration" in verify_block
     assert "continue-on-error: true" not in verify_block.split("\n      - name:", 1)[0]
     assert "actions: write" in workflow
@@ -1058,10 +1107,10 @@ def test_python_release_environment_is_exact_and_reproducible() -> None:
     )[0]
     assert "restore-keys:" not in venv_block
     assert "pyinstaller==6.20.0" in requirements
-    assert "pyinstaller-hooks-contrib==2026.5" in requirements
+    assert "pyinstaller-hooks-contrib==2026.6" in requirements
     assert "pytest-asyncio==1.3.0" in requirements
     assert "pytest==9.0.1" in requirements
-    assert "setuptools==80.10.1" in requirements
+    assert "setuptools==83.0.0" in requirements
     assert ">=" not in requirements
 
 
@@ -1092,7 +1141,7 @@ def test_release_cache_key_outputs_are_stable_for_version_only_churn() -> None:
     output_root = REPO_ROOT / "tmp" / f"cache-key-normalization-{uuid.uuid4().hex}"
 
     def run_cache_key_script(name: str) -> dict[str, str]:
-        relative_output = str((Path("tmp") / output_root.name / name)).replace("/", "\\")
+        relative_output = str(Path("tmp") / output_root.name / name).replace("/", "\\")
         result = subprocess.run(
             [
                 "pwsh",
@@ -1111,10 +1160,7 @@ def test_release_cache_key_outputs_are_stable_for_version_only_churn() -> None:
         )
         assert result.returncode == 0, result.stderr
         resolved = REPO_ROOT / relative_output
-        return {
-            path.name: path.read_text(encoding="utf-8")
-            for path in sorted(resolved.glob("*.txt"))
-        }
+        return {path.name: path.read_text(encoding="utf-8") for path in sorted(resolved.glob("*.txt"))}
 
     try:
         before = run_cache_key_script("before")
@@ -1190,8 +1236,8 @@ def test_rust_audio_sidecar_cache_key_ignores_app_version_only_churn() -> None:
     assert "Normalize-CargoLockForCache" in script
     assert 'version = "__app_version__"' in script
     assert "scriber-desktop" in script
-    assert "Get-NormalizedFileHashEntry -Root $Root -RelativePath \"Frontend\\src-tauri\\Cargo.toml\"" in script
-    assert "Get-NormalizedFileHashEntry -Root $Root -RelativePath \"Frontend\\src-tauri\\Cargo.lock\"" in script
+    assert 'Get-NormalizedFileHashEntry -Root $Root -RelativePath "Frontend\\src-tauri\\Cargo.toml"' in script
+    assert 'Get-NormalizedFileHashEntry -Root $Root -RelativePath "Frontend\\src-tauri\\Cargo.lock"' in script
 
 
 def test_native_recording_overlay_is_tauri_owned() -> None:
@@ -1209,11 +1255,15 @@ def test_native_recording_overlay_is_tauri_owned() -> None:
     assert "src.overlay" not in native_overlay_py
     assert "recording-overlay" in native_overlay_rs
     assert "scriber-overlay-state" in native_overlay_rs
-    assert 'index.html?overlay=1&overlayMode=initializing' in native_overlay_rs
+    assert "index.html?overlay=1&overlayMode=initializing" in native_overlay_rs
     assert '"rendererReady"' in native_overlay_rs
     assert "pub fn mark_renderer_ready()" in native_overlay_rs
-    assert 'window\n        .show()\n        .map_err(|err| format!("overlay show failed: {err}"))?' in native_overlay_rs
-    assert 'window\n        .hide()\n        .map_err(|err| format!("overlay hide failed: {err}"))?' in native_overlay_rs
+    assert (
+        'window\n        .show()\n        .map_err(|err| format!("overlay show failed: {err}"))?' in native_overlay_rs
+    )
+    assert (
+        'window\n        .hide()\n        .map_err(|err| format!("overlay hide failed: {err}"))?' in native_overlay_rs
+    )
     assert "ShowWindow" not in native_overlay_rs
     assert "IsWindowVisible" in native_overlay_rs
     assert "create_overlay_window(app)" in lib_rs
@@ -1316,7 +1366,7 @@ def test_desktop_smoke_can_verify_os_global_hotkey_dispatch() -> None:
     assert "function Test-GlobalHotkeyDispatch" in desktop
     assert '[ValidateSet("synthetic", "manual")]' in desktop
     assert 'Write-Warning "Manual global hotkey smoke: press' in desktop
-    assert 'dispatchMethod = $DispatchMethod' in desktop
+    assert "dispatchMethod = $DispatchMethod" in desktop
     assert "function Wait-GlobalHotkeyUserReady" in desktop
     assert "api/metrics/hot-path?limit=10&includeActive=1" in desktop
     assert "hotkey_received_to_mic_ready_ms" in desktop
@@ -1327,7 +1377,10 @@ def test_desktop_smoke_can_verify_os_global_hotkey_dispatch() -> None:
     assert '"SCRIBER_POST_PROCESSING_HOTKEY=ctrl+shift+f"' in desktop
     assert '"SCRIBER_MEETING_HOTKEY=ctrl+shift+m"' in desktop
     assert "SCRIBER_DEFAULT_STT=$effectiveDefaultStt" in desktop
-    assert "Assert-UnderRoot -Root (Join-Path $Root \"tmp\") -Path $RuntimeDataDir -Label \"Global hotkey smoke DataDir\"" in desktop
+    assert (
+        'Assert-UnderRoot -Root (Join-Path $Root "tmp") -Path $RuntimeDataDir -Label "Global hotkey smoke DataDir"'
+        in desktop
+    )
     assert "$env:SCRIBER_HOTKEY = $globalHotkeySmokeConfig.hotkey" in desktop
     assert "$env:SCRIBER_DEFAULT_STT = $globalHotkeySmokeConfig.defaultStt" in desktop
     assert "stopSkipped = $stopSkipped" in desktop
@@ -1457,24 +1510,27 @@ def test_desktop_and_installer_smokes_support_live_recording_stability_gate() ->
     assert "/api/runtime/audio-diagnostics" in desktop
     assert "-CollectAudioDiagnostics $true" in desktop
     assert "Invoke-LiveMicStart" in desktop
-    assert '-FailurePredicate { param($state) ([string]$state.recordingState -eq "failed") -or ([string]$state.status -eq "Error") }' in desktop
+    assert (
+        '-FailurePredicate { param($state) ([string]$state.recordingState -eq "failed") -or ([string]$state.status -eq "Error") }'
+        in desktop
+    )
     assert "Invoke-LiveMicStop" in desktop
     assert "nonRecordingSampleCount = $nonRecordingSamples.Count" in desktop
     assert "[switch]$DisableLiveTextInjection" in desktop
-    assert "$env:SCRIBER_DISABLE_TEXT_INJECTION = \"1\"" in desktop
+    assert '$env:SCRIBER_DISABLE_TEXT_INJECTION = "1"' in desktop
     assert '[string]$LiveRecordingEnvFile = ""' in desktop
     assert '[string]$LiveRecordingDefaultStt = ""' in desktop
     assert '[string]$LiveRecordingSonioxMode = ""' in desktop
     assert "function Read-EnvFileAssignments" in desktop
-    assert "Set-SmokeEnvironmentVariable -Name \"SCRIBER_DEFAULT_STT\" -Value $LiveRecordingDefaultStt" in desktop
-    assert "Set-SmokeEnvironmentVariable -Name \"SCRIBER_SONIOX_MODE\" -Value $LiveRecordingSonioxMode" in desktop
+    assert 'Set-SmokeEnvironmentVariable -Name "SCRIBER_DEFAULT_STT" -Value $LiveRecordingDefaultStt' in desktop
+    assert 'Set-SmokeEnvironmentVariable -Name "SCRIBER_SONIOX_MODE" -Value $LiveRecordingSonioxMode' in desktop
     assert '[string]$LiveRecordingAudioEngine = ""' in desktop
     assert '[string]$LiveRecordingRustAudioCaptureMode = ""' in desktop
     assert "[switch]$LiveRecordingMicAlwaysOn" in desktop
     assert "$env:SCRIBER_AUDIO_ENGINE = $LiveRecordingAudioEngine" in desktop
-    assert "$env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = \"1\"" in desktop
-    assert "$env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = \"1\"" in desktop
-    assert "$env:SCRIBER_MIC_ALWAYS_ON = \"1\"" in desktop
+    assert '$env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = "1"' in desktop
+    assert '$env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = "1"' in desktop
+    assert '$env:SCRIBER_MIC_ALWAYS_ON = "1"' in desktop
     assert "-LiveRecordingRustAudioCaptureMode requires -LiveRecordingAudioEngine rust-wasapi." in desktop
     assert "textInjectionDisabled = $TextInjectionDisabled" in desktop
     assert "liveRecording = $liveRecording" in desktop

@@ -89,7 +89,7 @@ async def test_openai_flac_is_prepared_as_wav_before_request(
         return {"text": "done"}
 
     monkeypatch.setattr(
-        "src.pipeline.transcribe_with_openai_audio_transcription",
+        "src.cloud_async_stt.transcribe_with_openai_audio_transcription",
         _transcribe,
     )
     transport = _RecordingProviderTransport()
@@ -128,7 +128,7 @@ async def test_azure_mp3_is_passed_through_without_second_preparation(
         raise AssertionError("Azure legacy preparation must not run")
 
     monkeypatch.setattr(
-        "src.pipeline.prepared_azure_mai_audio_file",
+        "src.azure_mai_stt.prepared_azure_mai_audio_file",
         _unexpected_legacy_preparation,
     )
     captured: dict[str, object] = {}
@@ -139,7 +139,7 @@ async def test_azure_mp3_is_passed_through_without_second_preparation(
         captured["body"] = kwargs["audio_source"].read()
         return {"combinedPhrases": [{"text": "done"}]}
 
-    monkeypatch.setattr("src.pipeline.transcribe_with_azure_mai", _transcribe)
+    monkeypatch.setattr("src.azure_mai_stt.transcribe_with_azure_mai", _transcribe)
     transport = _RecordingProviderTransport()
     pipeline = ScriberPipeline(
         service_name="azure_mai",
@@ -179,7 +179,10 @@ async def test_failure_before_first_request_chunk_remains_safe_to_retry(
     async def fail_before_body(**_kwargs):
         raise ConnectionError("synthetic connect failure")
 
-    monkeypatch.setattr("src.pipeline.transcribe_with_azure_mai", fail_before_body)
+    monkeypatch.setattr(
+        "src.azure_mai_stt.transcribe_with_azure_mai",
+        fail_before_body,
+    )
     pipeline = ScriberPipeline(
         service_name="azure_mai",
         execution_route=_frozen_route("azure_mai"),
@@ -226,7 +229,7 @@ async def test_external_prepared_audio_is_borrowed_without_probe_or_cleanup(
         _unexpected_preparation,
     )
     monkeypatch.setattr(
-        "src.pipeline.prepared_azure_mai_audio_file",
+        "src.azure_mai_stt.prepared_azure_mai_audio_file",
         _unexpected_preparation,
     )
     captured: dict[str, object] = {}
@@ -237,7 +240,7 @@ async def test_external_prepared_audio_is_borrowed_without_probe_or_cleanup(
         captured["body"] = kwargs["audio_source"].read()
         return {"combinedPhrases": [{"text": "done"}]}
 
-    monkeypatch.setattr("src.pipeline.transcribe_with_azure_mai", _transcribe)
+    monkeypatch.setattr("src.azure_mai_stt.transcribe_with_azure_mai", _transcribe)
     pipeline = ScriberPipeline(
         service_name="azure_mai",
         execution_route=route,
@@ -296,7 +299,7 @@ async def test_generic_container_codec_mismatch_fails_before_provider_session(
         return {"text": "unexpected"}
 
     monkeypatch.setattr(
-        "src.pipeline.transcribe_with_openai_audio_transcription",
+        "src.cloud_async_stt.transcribe_with_openai_audio_transcription",
         _transcribe,
     )
     transport = _RecordingProviderTransport()

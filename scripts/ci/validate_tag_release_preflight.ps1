@@ -33,11 +33,9 @@ function Assert-OptionalBooleanEnvironmentValue {
     return $value
 }
 
-$allowUnsignedValue = Assert-OptionalBooleanEnvironmentValue -Name "SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE"
 $requireAuthenticodeValue = Assert-OptionalBooleanEnvironmentValue -Name "SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE"
 $requireAuthenticodeTimestampValue = Assert-OptionalBooleanEnvironmentValue -Name "SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP"
 
-$allowUnsigned = $allowUnsignedValue -eq "1"
 $requireAuthenticode = $requireAuthenticodeValue -eq "1"
 $requireAuthenticodeTimestamp = $requireAuthenticodeTimestampValue -eq "1"
 $authenticodePublisher = Get-TrimmedEnvironmentValue -Name "SCRIBER_AUTHENTICODE_PUBLISHER"
@@ -61,31 +59,27 @@ if (-not $updaterPrivateKey -and $updaterPrivateKeyPath) {
     }
 }
 
-if (-not $hasUpdaterSigning -and -not $allowUnsigned) {
-    throw "Signed v* releases require SCRIBER_TAURI_UPDATER_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY or TAURI_SIGNING_PRIVATE_KEY_PATH. Set SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE=1 only for an intentional unsigned tag test build."
+if (-not $hasUpdaterSigning) {
+    throw "Official releases require SCRIBER_TAURI_UPDATER_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY or TAURI_SIGNING_PRIVATE_KEY_PATH."
 }
 
-if ($hasUpdaterSigning) {
-    $updaterEndpoint = Get-TrimmedEnvironmentValue -Name "SCRIBER_TAURI_UPDATER_ENDPOINT"
-    if (-not $updaterEndpoint) {
-        $updaterEndpoint = "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json"
-    }
-
-    $parsedEndpoint = $null
-    $isAbsoluteUri = [Uri]::TryCreate($updaterEndpoint, [UriKind]::Absolute, [ref]$parsedEndpoint)
-    if (
-        -not $isAbsoluteUri -or
-        $null -eq $parsedEndpoint -or
-        $parsedEndpoint.Scheme -ine [Uri]::UriSchemeHttps -or
-        [string]::IsNullOrWhiteSpace($parsedEndpoint.Host)
-    ) {
-        throw "SCRIBER_TAURI_UPDATER_ENDPOINT must be an absolute HTTPS URL."
-    }
-
-    Write-Host "Tag release preflight passed: updater signing and HTTPS publication endpoint are configured."
-} else {
-    Write-Warning "Intentional unsigned v* release override is enabled; signed updater artifacts will not be created."
+$updaterEndpoint = Get-TrimmedEnvironmentValue -Name "SCRIBER_TAURI_UPDATER_ENDPOINT"
+if (-not $updaterEndpoint) {
+    $updaterEndpoint = "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json"
 }
+
+$parsedEndpoint = $null
+$isAbsoluteUri = [Uri]::TryCreate($updaterEndpoint, [UriKind]::Absolute, [ref]$parsedEndpoint)
+if (
+    -not $isAbsoluteUri -or
+    $null -eq $parsedEndpoint -or
+    $parsedEndpoint.Scheme -ine [Uri]::UriSchemeHttps -or
+    [string]::IsNullOrWhiteSpace($parsedEndpoint.Host)
+) {
+    throw "SCRIBER_TAURI_UPDATER_ENDPOINT must be an absolute HTTPS URL."
+}
+
+Write-Host "Tag release preflight passed: updater signing and HTTPS publication endpoint are configured."
 
 if ($requireAuthenticode) {
     Write-Host "Authenticode verification is required for this tag release."

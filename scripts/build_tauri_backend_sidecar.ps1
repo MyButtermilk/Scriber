@@ -707,6 +707,7 @@ function Get-BackendRuntimeInputManifest {
         "packaging\quickjs-youtube-runtime-lock-v1.json",
         "requirements-base.txt",
         "requirements-build.txt",
+        "requirements-release-constraints.txt",
         "scripts\validate_numpy_noblas_wheel.py",
         "scripts\prepare_nltk_punkt_data.py",
         "scripts\build_quickjs_youtube_runtime.py",

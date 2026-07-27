@@ -133,7 +133,7 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
         "Install Python test dependencies",
         "Restore locked FFmpeg test runtime",
         "Run complete Python test suite",
-        "Typecheck scoped Python modules",
+        "Typecheck extended Python tranche",
         "Upload Python test results",
     ]
     assert len(step_names) == len(set(step_names))
@@ -143,7 +143,7 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
     install = steps["Install Python test dependencies"]["run"]
     restore_ffmpeg = steps["Restore locked FFmpeg test runtime"]
     run = steps["Run complete Python test suite"]["run"]
-    typecheck = steps["Typecheck scoped Python modules"]
+    typecheck = steps["Typecheck extended Python tranche"]
     upload = steps["Upload Python test results"]
 
     assert (
@@ -164,6 +164,7 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
         "requirements-dev.txt",
         "requirements-test.txt",
         "requirements-test-constraints.txt",
+        "requirements-release-constraints.txt",
     ]
     assert create_environment["run"] == "python -m venv venv"
     assert ".\\venv\\Scripts\\python.exe -m pip install pip==26.1.2" in install
@@ -193,10 +194,12 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
         ),
     ]
     assert typecheck["shell"] == "pwsh"
-    assert typecheck["run"] == (
+    assert typecheck["run"].startswith(
         ".\\venv\\Scripts\\python.exe -m mypy src\\core src\\runtime src\\data"
     )
-    assert step_names.index("Typecheck scoped Python modules") == (
+    assert "src\\native_overlay.py" in typecheck["run"]
+    assert "src\\meeting_export.py" in typecheck["run"]
+    assert step_names.index("Typecheck extended Python tranche") == (
         step_names.index("Run complete Python test suite") + 1
     )
     assert all(
@@ -222,9 +225,7 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
 
 def test_python_quality_docs_install_the_pinned_local_ruff_tool() -> None:
     install_command = "scripts\\project-python.cmd -m pip install ruff==0.15.22"
-    check_command = (
-        "scripts\\project-python.cmd -m ruff check src\\core src\\runtime src\\data"
-    )
+    check_command = "scripts\\project-python.cmd -m ruff check src tests scripts"
     for path in (
         REPO_ROOT / "README.md",
         REPO_ROOT / "AGENTS.md",

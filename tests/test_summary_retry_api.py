@@ -131,11 +131,12 @@ async def test_summary_retry_failure_keeps_transcript_completed_and_persists_err
         await client.close()
 
     assert response.status == 500
-    assert payload == {"message": "summary provider timed out"}
+    assert payload == {"message": "Could not create the summary. Please try again."}
     assert record.status == "completed"
     assert record.content.startswith("This durable transcript")
     assert record.summary_status == "failed"
-    assert record.summary_error == "summary provider timed out"
+    assert record.summary_error == "Could not create the summary. Please try again."
+    assert "provider timed out" not in payload["message"]
     assert record.summary == "## Previous summary"
     assert record.summary_format == "markdown"
     reasons = [call.kwargs["reason"] for call in broadcast.await_args_list]

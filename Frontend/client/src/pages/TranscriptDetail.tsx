@@ -1,9 +1,7 @@
 import { useParams, Link, useLocation } from "wouter";
-import { ArrowLeft, Share2, Download, Copy, Play, Search, Clock, Calendar, Pencil, Check, Loader2, Sparkles, FileText, Square, Youtube, ExternalLink } from "lucide-react";
+import { ArrowLeft, Download, Copy, Calendar, Check, Loader2, Sparkles, FileText, Square, Youtube, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import {
   DropdownMenu,
@@ -198,7 +196,7 @@ function FitText({ children, minFontSize = 12, maxFontSize = 24, className = "" 
     } else {
       setFontSize(maxFontSize);
     }
-  }, [children, maxFontSize, minFontSize]);
+  }, [maxFontSize, minFontSize]);
 
   // Calculate on mount and when children change
   useLayoutEffect(() => {

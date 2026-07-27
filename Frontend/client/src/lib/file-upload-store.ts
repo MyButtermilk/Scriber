@@ -248,7 +248,7 @@ function uploadSingleFile(
 
     xhr.onload = () => {
       const responseText = xhr.responseText || "";
-      let parsed: Partial<FileTranscribeResponse> & ApiMessageResponse = {};
+      let parsed: Partial<FileTranscribeResponse> & ApiMessageResponse;
       try {
         parsed = responseText ? (JSON.parse(responseText) as Partial<FileTranscribeResponse> & ApiMessageResponse) : {};
       } catch {

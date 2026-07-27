@@ -264,6 +264,30 @@ def test_plain_provider_text_is_honestly_estimated_over_duration():
     assert evidence["estimatedTiming"] is True
 
 
+def test_plain_provider_text_estimation_scales_to_many_uniform_blocks():
+    block_count = 10_000
+    duration_ms = block_count * 100
+    text = " ".join(f"Satz {index}." for index in range(block_count))
+
+    units, evidence = stage_units_from_provider(
+        provider="gemini_stt",
+        payload={"text": text},
+        text=text,
+        duration_ms=duration_ms,
+    )
+
+    assert len(units) == block_count
+    assert units[0].start_ms == 0
+    assert units[0].end_ms == 100
+    assert units[block_count // 2].start_ms == (block_count // 2) * 100
+    assert units[-1].end_ms == duration_ms
+    assert all(
+        previous.end_ms == current.start_ms
+        for previous, current in zip(units, units[1:], strict=False)
+    )
+    assert evidence["estimatedTiming"] is True
+
+
 def test_caption_route_and_units_preserve_real_cue_times_without_speakers():
     route = freeze_caption_route(workload="youtube", language="de", automatic=True)
     units, evidence = stage_units_from_captions(

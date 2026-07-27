@@ -7,6 +7,8 @@ import sys
 from hashlib import sha256
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATE_SCRIPT = REPO_ROOT / "scripts" / "validate_tauri_updater_metadata.py"
 PREPARE_SCRIPT = REPO_ROOT / "scripts" / "prepare_tauri_updater_config.py"
@@ -417,11 +419,41 @@ def test_prepare_tauri_updater_config_requires_signing_key(tmp_path: Path) -> No
 def test_release_workflow_verifies_published_updater_metadata_after_release() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     preflight = TAG_RELEASE_PREFLIGHT_SCRIPT.read_text(encoding="utf-8")
+    sync_draft = (REPO_ROOT / "scripts" / "ci" / "sync_draft_release_assets.py").read_text(encoding="utf-8")
+    release_metadata = (REPO_ROOT / "scripts" / "ci" / "github_release_metadata.py").read_text(encoding="utf-8")
+    release_verifier = (REPO_ROOT / "scripts" / "ci" / "verify_github_release_state.py").read_text(encoding="utf-8")
+    release_publisher = (REPO_ROOT / "scripts" / "ci" / "publish_github_release.py").read_text(encoding="utf-8")
 
-    publish_index = workflow.index("Publish GitHub release")
+    pre_draft_ref_index = workflow.index("Revalidate live release refs before draft creation")
+    draft_index = workflow.index("Create and sync exact-ID draft release assets")
+    minisign_index = workflow.index("Cryptographically verify downloaded updater signatures")
+    smoke_index = workflow.index("Smoke downloaded installer candidate")
+    publish_index = workflow.index("Verify and publish exact GitHub release transaction")
+    failure_evidence_index = workflow.index("Upload failed release transaction evidence")
     verify_index = workflow.index("Verify published updater metadata")
     upload_index = workflow.index("Upload publication evidence")
-    assert publish_index < verify_index < upload_index
+    assert pre_draft_ref_index < draft_index < minisign_index < smoke_index < publish_index
+    assert publish_index < failure_evidence_index < verify_index < upload_index
+    workflow_data = yaml.safe_load(workflow)
+    step_names = [step.get("name", "") for step in workflow_data["jobs"]["build-windows"]["steps"]]
+    assert step_names.index("Revalidate live release refs before draft creation") + 1 == (
+        step_names.index("Create and sync exact-ID draft release assets")
+    )
+    assert workflow.count("python -m scripts.ci.validate_live_release_ref") == 1
+    assert workflow.count("python -m scripts.ci.sync_draft_release_assets") == 1
+    assert workflow.count("python -m scripts.ci.publish_github_release") == 1
+    assert "gh release upload" not in workflow
+    assert "gh release create" not in workflow
+    assert "--github-output $env:GITHUB_OUTPUT" in workflow
+    assert "steps.uploaded-draft.outputs.release-id" in workflow
+    assert '--release-title "Scriber ${{ needs.release-plan.outputs.release-version }}"' in workflow
+    assert '--target-commitish "${{ github.sha }}"' in workflow
+    assert '--event-sha "${{ github.sha }}"' in workflow
+    assert "--expected-state-report build\\release-asset-api-roundtrip.json" in workflow
+    assert "--pre-publish-download-dir $prePublishRoot" in workflow
+    assert "--post-publish-download-dir $postPublishRoot" in workflow
+    assert "build\\release-publication-transaction.json" in workflow
+    assert "scriber-windows-failed-release-transaction" in workflow
     assert "scripts\\verify_tauri_updater_publication.py" in workflow
     assert "--output release-artifacts\\updater-publication.json" in workflow
     assert "--attempts 6" in workflow
@@ -431,10 +463,28 @@ def test_release_workflow_verifies_published_updater_metadata_after_release() ->
     assert "TAURI_SIGNING_PRIVATE_KEY_PATH" in workflow
     assert "SCRIBER_TAURI_UPDATER_ENDPOINT" in workflow
     assert "latest/download/latest.json" in workflow
-    assert "hashFiles('release-artifacts/updater-publication.json')" in workflow
-    assert "SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE" in workflow
     assert "Validate tag release signing preflight" in workflow
-    assert "Signed v* releases require SCRIBER_TAURI_UPDATER_PUBLIC_KEY" in preflight
+    assert "Official releases require SCRIBER_TAURI_UPDATER_PUBLIC_KEY" in preflight
+    assert '"generate_release_notes": True' in sync_draft
+    assert "generate_release_metadata(" in sync_draft
+    assert "require_generated_release_metadata(" in sync_draft
+    assert 'f"/repos/{repository}/releases/generate-notes"' in release_metadata
+    assert '"tag_name": release_tag' in release_metadata
+    assert '"target_commitish": target_commitish' in release_metadata
+    assert "expected_status=200" in release_metadata
+    assert "MAX_RELEASE_BODY_BYTES" in release_metadata
+    for field in (
+        "releaseTitle",
+        "targetCommitish",
+        "releaseBodySizeBytes",
+        "releaseBodySha256",
+    ):
+        assert field in release_metadata
+    assert "**expected_metadata.evidence()" in sync_draft
+    assert "require_reported_release_metadata(" in release_verifier
+    assert "expected_state_report: Path" in release_verifier
+    assert "require_reported_release_metadata(" in release_publisher
+    assert "expected_state=draft_report" in release_publisher
 
 
 def test_release_workflow_requires_signature_file_for_signed_updater_artifacts() -> None:

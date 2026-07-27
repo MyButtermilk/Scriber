@@ -258,7 +258,7 @@ def test_tag_release_preflight_accepts_signed_updater_without_logging_keys() -> 
     assert private_key not in combined_output
 
 
-def test_tag_release_preflight_rejects_missing_updater_signing_without_override() -> None:
+def test_tag_release_preflight_rejects_missing_updater_signing() -> None:
     result = run_powershell(
         "-NoProfile",
         "-ExecutionPolicy",
@@ -269,10 +269,10 @@ def test_tag_release_preflight_rejects_missing_updater_signing_without_override(
     )
 
     assert result.returncode == 1
-    assert "Signed v* releases require SCRIBER_TAURI_UPDATER_PUBLIC_KEY" in result.stderr
+    assert "Official releases require SCRIBER_TAURI_UPDATER_PUBLIC_KEY" in result.stderr
 
 
-def test_tag_release_preflight_allows_explicit_unsigned_override() -> None:
+def test_tag_release_preflight_rejects_unsigned_override() -> None:
     result = run_powershell(
         "-NoProfile",
         "-ExecutionPolicy",
@@ -282,8 +282,8 @@ def test_tag_release_preflight_allows_explicit_unsigned_override() -> None:
         env=tag_release_preflight_env(SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE="1"),
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "Intentional unsigned v* release override is enabled" in result.stdout
+    assert result.returncode == 1
+    assert "Official releases require SCRIBER_TAURI_UPDATER_PUBLIC_KEY" in result.stderr
 
 
 def test_tag_release_preflight_rejects_non_https_updater_endpoint() -> None:
@@ -315,16 +315,15 @@ def test_tag_release_preflight_rejects_non_https_updater_endpoint() -> None:
             {"SCRIBER_AUTHENTICODE_PUBLISHER": "Unused Publisher"},
             "SCRIBER_AUTHENTICODE_PUBLISHER is only valid",
         ),
-        (
-            {"SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE": "true"},
-            "SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE must be unset, '0', or '1'",
-        ),
     ],
 )
 def test_tag_release_preflight_rejects_inconsistent_policy(
     overrides: dict[str, str], expected_error: str
 ) -> None:
-    policy = {"SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE": "1"}
+    policy = {
+        "SCRIBER_TAURI_UPDATER_PUBLIC_KEY": "PUBLIC_KEY",
+        "TAURI_SIGNING_PRIVATE_KEY": "PRIVATE_KEY",
+    }
     policy.update(overrides)
     result = run_powershell(
         "-NoProfile",

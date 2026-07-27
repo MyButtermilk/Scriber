@@ -40,7 +40,10 @@ export async function apiRequest(
     return res;
   } catch (error) {
     // Re-throw with a friendlier message
-    throw new Error(friendlyError(error, "An unexpected error occurred."));
+    throw new Error(
+      friendlyError(error, "An unexpected error occurred."),
+      { cause: error },
+    );
   }
 }
 

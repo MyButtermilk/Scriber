@@ -1,5 +1,6 @@
 import inspect
 import json
+import traceback
 
 import pytest
 
@@ -210,6 +211,139 @@ def test_openrouter_empty_response_detail_includes_provider_diagnostics():
     assert detail["choice"]["reasoning_chars"] == 14
     assert detail["usage"]["completion_tokens"] == 12
     assert detail["usage"]["reasoning_tokens"] == 12
+
+
+def test_openrouter_empty_response_detail_excludes_provider_error_message():
+    private_marker = "private transcript fragment echoed by provider"
+    data = {
+        "model": "minimax/minimax-m3:nitro",
+        "choices": [
+            {
+                "finish_reason": "error",
+                "error": {
+                    "code": "provider_error",
+                    "message": private_marker,
+                },
+                "message": {"content": ""},
+            }
+        ],
+    }
+
+    detail = summarization._openrouter_empty_response_detail(data)
+
+    assert private_marker not in detail
+    assert json.loads(detail)["choice"]["error"] == {"code": "provider_error"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("post", "args"),
+    [
+        (
+            summarization._post_openrouter_chat_completion,
+            ({"messages": []}, {},),
+        ),
+        (
+            summarization._post_gemini_generate_content,
+            ("https://gemini.example/generate", {"contents": []}),
+        ),
+    ],
+)
+async def test_summary_http_errors_discard_private_provider_response(
+    post,
+    args,
+):
+    private_marker = "private transcript fragment echoed by provider"
+
+    class Response:
+        status = 429
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return json.dumps(
+                {
+                    "error": {
+                        "code": "rate_limit_error",
+                        "message": private_marker,
+                    }
+                }
+            )
+
+    class Session:
+        def post(self, *_args, **_kwargs):
+            return Response()
+
+    with pytest.raises(RuntimeError) as captured:
+        if post is summarization._post_gemini_generate_content:
+            await post(Session(), *args, retries=0)
+        else:
+            await post(*args, Session())
+
+    assert private_marker not in str(captured.value)
+    assert private_marker not in repr(captured.value)
+    assert "rate_limit_error" in str(captured.value)
+
+
+@pytest.mark.asyncio
+async def test_invalid_summary_json_is_absent_from_formatted_exception_chain():
+    private_marker = "PRIVATE_TRANSCRIPT_91a5e7"
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return "{invalid " + private_marker
+
+    class Session:
+        def post(self, *_args, **_kwargs):
+            return Response()
+
+    with pytest.raises(RuntimeError) as captured:
+        await summarization._post_openrouter_chat_completion(
+            {"messages": []},
+            {},
+            Session(),
+        )
+
+    formatted = "".join(
+        traceback.format_exception(
+            type(captured.value),
+            captured.value,
+            captured.value.__traceback__,
+        )
+    )
+    assert private_marker not in formatted
+
+
+def test_summary_diagnostics_discard_unknown_identifier_shaped_values():
+    private_marker = "patient_Alice_2026"
+    data = {
+        "model": private_marker,
+        "choices": [
+            {
+                "finish_reason": private_marker,
+                "native_finish_reason": "550e8400-e29b-41d4-a716-446655440000",
+                "error": {"code": private_marker},
+                "message": {"content": ""},
+            }
+        ],
+    }
+
+    detail = summarization._openrouter_empty_response_detail(data)
+
+    assert private_marker not in detail
+    assert "550e8400-e29b-41d4-a716-446655440000" not in detail
 
 
 def test_gemini_payload_sets_explicit_thinking_level(monkeypatch: pytest.MonkeyPatch):

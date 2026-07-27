@@ -19,8 +19,8 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+from pipecat.workers.runner import WorkerRunner
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.turns.user_start import VADUserTurnStartStrategy
@@ -611,14 +611,14 @@ async def test_provider_ingress_drain_waits_for_delayed_last_system_audio_before
     provider = _DelayedTerminalProvider()
     drain_processor = _ProviderIngressDrainProcessor()
     runtime_pipeline = Pipeline([source, provider, drain_processor, _Sink()])
-    task = PipelineTask(
+    task = PipelineWorker(
         runtime_pipeline,
-        params=PipelineParams(allow_interruptions=False),
+        params=PipelineParams(),
         enable_rtvi=False,
         enable_turn_tracking=False,
         check_dangling_tasks=False,
     )
-    runner = PipelineRunner(
+    runner = WorkerRunner(
         handle_sigint=False,
         handle_sigterm=False,
         check_dangling_tasks=False,
@@ -630,7 +630,8 @@ async def test_provider_ingress_drain_waits_for_delayed_last_system_audio_before
     pipeline.audio_input = source
     pipeline._provider_ingress_drain_processor = drain_processor
 
-    run_task = asyncio.create_task(runner.run(task))
+    await runner.add_workers(task)
+    run_task = asyncio.create_task(runner.run())
     first = b"\x01\x00" * 256
     last = b"\x02\x00" * 256
     try:
@@ -801,10 +802,13 @@ async def test_pipecat_owned_file_request_state_is_terminal_only_after_success(
 
     class _Runner:
         def __init__(self, **_kwargs):
-            pass
+            self.workers = ()
 
-        async def run(self, task):
-            task.finished = True
+        async def add_workers(self, *workers):
+            self.workers = workers
+
+        async def run(self):
+            self.workers[0].finished = True
             if runner_fails:
                 raise RuntimeError("synthetic provider failure")
 
@@ -813,8 +817,8 @@ async def test_pipecat_owned_file_request_state_is_terminal_only_after_success(
 
     monkeypatch.setattr("src.pipeline.FfmpegAudioFileInput", _FileInput)
     monkeypatch.setattr("src.pipeline.Pipeline", lambda steps: steps)
-    monkeypatch.setattr("src.pipeline.PipelineTask", _Task)
-    monkeypatch.setattr("src.pipeline.PipelineRunner", _Runner)
+    monkeypatch.setattr("src.pipeline.PipelineWorker", _Task)
+    monkeypatch.setattr("src.pipeline.WorkerRunner", _Runner)
 
     pipeline = ScriberPipeline(
         service_name=provider,
@@ -853,7 +857,8 @@ async def test_deepgram_direct_uses_frozen_model_after_config_changes(
         }
 
     monkeypatch.setattr(
-        "src.pipeline.transcribe_with_deepgram_pre_recorded", fake_transcribe
+        "src.cloud_async_stt.transcribe_with_deepgram_pre_recorded",
+        fake_transcribe,
     )
     monkeypatch.setattr(Config, "DEEPGRAM_API_KEY", "key")
     pipeline = ScriberPipeline(
@@ -887,7 +892,7 @@ async def test_gemini_direct_uses_frozen_model_after_config_changes(
         captured.update(kwargs)
         return {"candidates": [{"content": {"parts": [{"text": "done"}]}}]}
 
-    monkeypatch.setattr("src.pipeline.transcribe_with_gemini_audio", fake_transcribe)
+    monkeypatch.setattr("src.cloud_async_stt.transcribe_with_gemini_audio", fake_transcribe)
     monkeypatch.setattr(Config, "GOOGLE_API_KEY", "key")
     pipeline = ScriberPipeline(
         service_name="gemini_stt",
@@ -920,7 +925,7 @@ async def test_azure_mai_direct_uses_frozen_model_and_vocab_after_config_changes
         captured.update(kwargs)
         return {"combinedPhrases": [{"text": "done"}]}
 
-    monkeypatch.setattr("src.pipeline.transcribe_with_azure_mai", fake_transcribe)
+    monkeypatch.setattr("src.azure_mai_stt.transcribe_with_azure_mai", fake_transcribe)
     monkeypatch.setattr(Config, "AZURE_MAI_SPEECH_KEY", "key")
     monkeypatch.setattr(Config, "AZURE_MAI_REGION", "northeurope")
     pipeline = ScriberPipeline(
