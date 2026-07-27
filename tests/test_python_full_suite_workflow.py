@@ -41,11 +41,11 @@ def test_python_full_suite_has_reproducible_test_dependency_closure() -> None:
         "pytest==9.0.1",
         "pytest-asyncio==1.3.0",
         "pytest-mock==3.15.1",
+        "PyYAML==6.0.3",
     ]
     assert test_requirements == [
         "-r requirements-dev.txt",
         "",
-        "PyYAML==6.0.3",
         "PyInstaller==6.20.0",
         "mypy==2.3.0",
         "pytest-xdist==3.8.0",

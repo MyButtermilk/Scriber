@@ -216,6 +216,12 @@ def test_collect_native_capture_endpoint_inventory_infers_flow_and_filters_inact
 
 
 def test_collect_native_capture_endpoint_inventory_suppresses_pycaw_property_noise():
+    class _PycawPropertyNoise(UserWarning):
+        pass
+
+    class _UnrelatedInventoryWarning(UserWarning):
+        pass
+
     class _Device:
         DeviceID = "capture-id"
         FriendlyName = "Dock Mic"
@@ -224,7 +230,12 @@ def test_collect_native_capture_endpoint_inventory_suppresses_pycaw_property_noi
     def get_all_devices():
         warnings.warn(
             "COMError attempting to get property 26 from device",
-            UserWarning,
+            _PycawPropertyNoise,
+            stacklevel=2,
+        )
+        warnings.warn(
+            "unrelated native inventory warning",
+            _UnrelatedInventoryWarning,
             stacklevel=2,
         )
         return [_Device()]
@@ -239,4 +250,5 @@ def test_collect_native_capture_endpoint_inventory_suppresses_pycaw_property_noi
         inventory = collect_native_capture_endpoint_inventory(audio_utilities)
 
     assert inventory[0]["friendlyName"] == "Dock Mic"
-    assert caught == []
+    assert not any(item.category is _PycawPropertyNoise for item in caught)
+    assert any(item.category is _UnrelatedInventoryWarning for item in caught)

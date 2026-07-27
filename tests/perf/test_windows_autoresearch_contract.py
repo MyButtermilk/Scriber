@@ -337,7 +337,8 @@ def test_profile_script_writes_profile_json(monkeypatch):
             text=True,
             capture_output=True,
             check=False,
-            timeout=60,
+            # Full xdist CI load can delay nested PowerShell and Git startup.
+            timeout=120,
         )
 
     result = collect(profile_path)

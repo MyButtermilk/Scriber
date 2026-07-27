@@ -1,6 +1,5 @@
 -r requirements-dev.txt
 
-PyYAML==6.0.3
 PyInstaller==6.20.0
 mypy==2.3.0
 pytest-xdist==3.8.0
